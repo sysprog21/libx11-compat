@@ -1,0 +1,47 @@
+src/image.c
+  s_9c70ab608fee0a::t_5d06ea591807db 335-345,347
+src/netAtoms.h
+  s_9c70ab608fee0a::t_75d90d5995dab6 63-64,66
+tests/check.c
+  s_9c70ab608fee0a::t_2ad80d21867682 318-400
+  s_9c70ab608fee0a::t_83a97a9d1dda43 1626
+  s_9c70ab608fee0a::t_5ecfda24cf7ea0 16
+  s_9c70ab608fee0a::t_014035435b921d 832-863,869-935
+src/drawing.h
+  s_9c70ab608fee0a::t_75d90d5995dab6 61-63
+src/events.c
+  s_9c70ab608fee0a::t_75d90d5995dab6 421-424,634-674
+src/missing.c
+  s_9c70ab608fee0a::t_7845248f8d7dce 8
+  s_9c70ab608fee0a::t_39673ae69eaff9 169-196
+src/region.c
+  s_9c70ab608fee0a::t_75d90d5995dab6 282-299
+src/font.c
+  s_9c70ab608fee0a::t_5d06ea591807db 871-879,881,932-942,944
+src/atomList.h
+  s_9c70ab608fee0a::t_75d90d5995dab6 136-137
+src/gc.h
+  s_9c70ab608fee0a::t_75d90d5995dab6 28-33,39-42,45
+src/drawing.c
+  s_9c70ab608fee0a::t_75d90d5995dab6 141-187,378-388,390,423-432,435,462-469,471,519-526,528,695-709,755-762,764,818-884
+src/window.c
+  s_9c70ab608fee0a::t_75d90d5995dab6 2,11,893-917,977,983-990,994-1003,1010-1011,1014-1015,1020-1021,1024-1146,1232-1236,1238-1241,1349-1351
+src/gc.c
+  s_9c70ab608fee0a::t_75d90d5995dab6 14-19,102-104,235-236,361-364,394-400,426-428,435-437,454,461-463,471-473,480-482,489-491,503-508,515-517
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3a2302c9a9e61d6e2b62d37f282419de4eaacc08",
+  "prompts": {},
+  "sessions": {
+    "s_9c70ab608fee0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccb385c3-456e-41f3-b65b-eb7bf9e0889f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
