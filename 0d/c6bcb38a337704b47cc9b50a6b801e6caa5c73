@@ -1,0 +1,47 @@
+mk/upstream-headers.mk
+  s_9926e69baff8d9::t_a5c6197a14ed2a 1-11,18,21-38
+  s_9926e69baff8d9::t_8f6d0f326ff7fa 15-17
+  s_9926e69baff8d9::t_9d6a2436421858 12-14,19-20
+mk/toolchain.mk
+  s_9926e69baff8d9::t_c545953bb0b78a 16
+src/X11/locking.h
+  s_9926e69baff8d9::t_cf1001a4a0956a 37-42
+scripts/sync-upstream-headers.py
+  s_9926e69baff8d9::t_32cd0fc0947bc0 323
+  s_9926e69baff8d9::t_6d395b66081835 36,38
+  s_91254cffc41c67::t_0eaf487ca8d53e 176-179
+  s_9926e69baff8d9::t_1c22d9b9994329 89-93,95-100,106-115,131-135,137-142,145,147-148
+  s_9926e69baff8d9::t_53e9d09946cb33 1-35,37,39-67,76-88,94,101-105,116-130,136,143-144,146,149-175,182-183,204,206-208,212-221,228-322,324-337
+  s_9926e69baff8d9::t_d15468dafb861c 68-75
+  s_91254cffc41c67::t_4375a17412d565 180-181
+  s_9926e69baff8d9::t_e278a047a7e5d5 184-203,205,209-211,222-227
+mk/config.mk
+  s_9926e69baff8d9::t_11bb86934ad296 21-22
+  s_9926e69baff8d9::t_58b405d7423b31 13-16,18
+Makefile
+  s_9926e69baff8d9::t_5f59afab4a648e 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0dc6bcb38a337704b47cc9b50a6b801e6caa5c73",
+  "prompts": {},
+  "sessions": {
+    "s_91254cffc41c67": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e7e8c-ba74-7991-80dd-81b804e597a2",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_9926e69baff8d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32b22759-29dd-4268-93a8-9e6a715f7383",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
