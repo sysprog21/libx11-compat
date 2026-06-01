@@ -1,0 +1,47 @@
+mk/library.mk
+  ai_agent 1-10
+mk/sources.mk
+  ai_agent 1-20
+.clang-format
+  ai_agent 1-35
+mk/upstream-headers.mk
+  ai_agent 1-45
+Makefile
+  ai_agent 1-14
+mk/examples.mk
+  ai_agent 1-40
+scripts/sync-upstream-headers.py
+  ai_agent 1-515
+mk/help.mk
+  ai_agent 1-18
+mk/common.mk
+  ai_agent 1-41
+mk/tests.mk
+  ai_agent 1-24
+mk/toolchain.mk
+  ai_agent 1,3,5-10,13-16
+.gitignore
+  s_9c70ab608fee0a::t_8ff513f5531774 1-6
+mk/config.mk
+  ai_agent 1-45
+mk/format.mk
+  ai_agent 1-26
+mk/deps.mk
+  ai_agent 1-3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "04f93d81452b513d54efe277e5d289c0914390ca",
+  "prompts": {},
+  "sessions": {
+    "s_9c70ab608fee0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccb385c3-456e-41f3-b65b-eb7bf9e0889f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
