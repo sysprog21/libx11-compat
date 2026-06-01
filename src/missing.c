@@ -347,17 +347,6 @@ int XkbTranslateKeySym(Display *dpy,
     return 0;
 }
 
-int XDrawPoints(register Display *dpy,
-                Drawable d,
-                GC gc,
-                XPoint *points,
-                int n_points,
-                int mode) /* CoordMode */
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
 int XStoreColor(register Display *dpy, Colormap cmap, XColor *def)
 {
     WARN_UNIMPLEMENTED;
@@ -1009,12 +998,6 @@ int XChangePointerControl(register Display *dpy,
     return 1;
 }
 
-int XDrawArcs(register Display *dpy, Drawable d, GC gc, XArc *arcs, int n_arcs)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
 int XQueryTextExtents(register Display *dpy,
                       Font fid,
                       register _Xconst char *string,
@@ -1296,16 +1279,6 @@ int XQueryKeymap(register Display *dpy, char keys[32])
     return 0;
 }
 
-int XDrawRectangles(register Display *dpy,
-                    Drawable d,
-                    GC gc,
-                    XRectangle *rects,
-                    int n_rects)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
 unsigned long XDisplayMotionBufferSize(Display *dpy)
 {
     WARN_UNIMPLEMENTED;
@@ -1315,12 +1288,6 @@ unsigned long XDisplayMotionBufferSize(Display *dpy)
 int XSetPointerMapping(register Display *dpy,
                        _Xconst unsigned char *map,
                        int nmaps)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
-int XFillArcs(register Display *dpy, Drawable d, GC gc, XArc *arcs, int n_arcs)
 {
     WARN_UNIMPLEMENTED;
     return 0;

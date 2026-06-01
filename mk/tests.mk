@@ -1,6 +1,7 @@
 CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage
+BENCH_BINS := $(OUT)/tests/bench-paths
 
-.PHONY: check symbol-coverage api-symbol-coverage
+.PHONY: check symbol-coverage api-symbol-coverage bench-paths
 
 ## Build and run the regression test suite
 check: $(CHECK_BINS)
@@ -17,6 +18,9 @@ symbol-coverage: $(OUT)/tests/symbol-coverage api-symbol-coverage
 
 api-symbol-coverage: $(TARGET) tests/api-symbols.txt tests/check-api-symbols.py
 	$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
+
+bench-paths: $(BENCH_BINS)
+	SDL_VIDEODRIVER=dummy $(OUT)/tests/bench-paths
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)

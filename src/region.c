@@ -1,32 +1,17 @@
 #include "X11/Xlib.h"
 #include "X11/Xutil.h"
-#include <inttypes.h>
-#include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <X11/Xregion.h>
 #include <pixman.h>
-#include "drawing.h"
 #include "resource-types.h"
+#include "util.h"
+#include "path/edges.h"
+#include "path/rasterize.h"
 
 typedef struct pixman_region16 *pRegion;
 #define GET_REGION(pixmanRegion) ((Region) (void *) pixmanRegion)
 #define GET_P_REGION(region) ((pRegion) (void *) region)
-
-typedef struct {
-    double x;
-    int winding;
-} PolygonCrossing;
-
-static int compareCrossing(const void *left, const void *right)
-{
-    const PolygonCrossing *a = left;
-    const PolygonCrossing *b = right;
-    if (a->x < b->x)
-        return -1;
-    if (a->x > b->x)
-        return 1;
-    return 0;
-}
 
 int XDestroyRegion(Region region)
 {
@@ -81,11 +66,12 @@ int XRectInRegion(Region region,
 int XClipBox(Region region, XRectangle *rect_return)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XClipBox.html
-    pixman_box16_t *extends = pixman_region_extents(GET_P_REGION(region));
-    rect_return->width = (unsigned short) abs(extends->x2 - extends->x1);
-    rect_return->y = extends->y1;
-    rect_return->height = (unsigned short) abs(extends->y2 - extends->y1);
-    rect_return->x = extends->x1;
+    /* pixman_region_extents always returns x1<=x2 and y1<=y2. */
+    pixman_box16_t *extents = pixman_region_extents(GET_P_REGION(region));
+    rect_return->x = extents->x1;
+    rect_return->y = extents->y1;
+    rect_return->width = (unsigned short) (extents->x2 - extents->x1);
+    rect_return->height = (unsigned short) (extents->y2 - extents->y1);
     return 1;
 }
 
@@ -115,7 +101,6 @@ int XSubtractRegion(Region sra, Region srb, Region dr_return)
                ? 1
                : 0;
 }
-
 
 int XXorRegion(Region sra, Region srb, Region dr_return)
 {
@@ -190,84 +175,41 @@ Region XPolygonRegion(XPoint *points, int count, int fill_rule)
     if (!region || !points || count < 3) {
         return region;
     }
-
-    int minY = points[0].y;
-    int maxY = points[0].y;
-    for (int i = 1; i < count; i++) {
-        if (points[i].y < minY)
-            minY = points[i].y;
-        if (points[i].y > maxY)
-            maxY = points[i].y;
-    }
-
-    PolygonCrossing *crossings =
-        malloc(sizeof(PolygonCrossing) * (size_t) count);
-    if (!crossings) {
+    /* +1 trailing closing point. Compute in size_t to avoid signed overflow
+     * when count is near INT_MAX, then bound by allocator-safe size. */
+    if ((size_t) count > SIZE_MAX / sizeof(PathPoint) - 1) {
         XDestroyRegion(region);
         return NULL;
     }
+    PathPoint *pathPoints = malloc(sizeof(PathPoint) * ((size_t) count + 1));
+    if (!pathPoints) {
+        XDestroyRegion(region);
+        return NULL;
+    }
+    for (int i = 0; i < count; i++) {
+        pathPoints[i].x = points[i].x;
+        pathPoints[i].y = points[i].y;
+    }
+    pathPoints[count] = pathPoints[0];
 
-    for (int y = minY; y < maxY; y++) {
-        double scanY = (double) y + 0.5;
-        int crossingCount = 0;
-        for (int i = 0; i < count; i++) {
-            XPoint p1 = points[i];
-            XPoint p2 = points[(i + 1) % count];
-            if (p1.y == p2.y) {
-                continue;
-            }
-            int ymin = p1.y < p2.y ? p1.y : p2.y;
-            int ymax = p1.y > p2.y ? p1.y : p2.y;
-            if (scanY < ymin || scanY >= ymax) {
-                continue;
-            }
-            double t = (scanY - p1.y) / (double) (p2.y - p1.y);
-            crossings[crossingCount].x = p1.x + t * (double) (p2.x - p1.x);
-            crossings[crossingCount].winding = p2.y > p1.y ? 1 : -1;
-            crossingCount++;
-        }
-        qsort(crossings, (size_t) crossingCount, sizeof(PolygonCrossing),
-              compareCrossing);
-
-        if (fill_rule == WindingRule) {
-            int winding = 0;
-            int startX = 0;
-            for (int i = 0; i < crossingCount; i++) {
-                int oldWinding = winding;
-                winding += crossings[i].winding;
-                if (oldWinding == 0 && winding != 0) {
-                    startX = (int) ceil(crossings[i].x);
-                } else if (oldWinding != 0 && winding == 0) {
-                    int endX = (int) ceil(crossings[i].x);
-                    if (endX > startX) {
-                        if (!pixman_region_union_rect(
-                                GET_P_REGION(region), GET_P_REGION(region),
-                                startX, y, (unsigned int) (endX - startX), 1)) {
-                            free(crossings);
-                            XDestroyRegion(region);
-                            return NULL;
-                        }
-                    }
-                }
-            }
-        } else {
-            for (int i = 0; i + 1 < crossingCount; i += 2) {
-                int startX = (int) ceil(crossings[i].x);
-                int endX = (int) ceil(crossings[i + 1].x);
-                if (endX > startX) {
-                    if (!pixman_region_union_rect(
-                            GET_P_REGION(region), GET_P_REGION(region), startX,
-                            y, (unsigned int) (endX - startX), 1)) {
-                        free(crossings);
-                        XDestroyRegion(region);
-                        return NULL;
-                    }
-                }
-            }
-        }
+    PathEdgeList edges = {.edges = NULL};
+    PathSpanList spans = {.spans = NULL};
+    Bool ok = pathBuildEdges(pathPoints, (size_t) count + 1, &edges) &&
+              pathRasterizeEdges(&edges, fill_rule, &spans);
+    for (size_t i = 0; ok && i < spans.count; i++) {
+        PathSpan span = spans.spans[i];
+        ok = pixman_region_union_rect(
+            GET_P_REGION(region), GET_P_REGION(region), span.xStart, span.y,
+            (unsigned int) (span.xEnd - span.xStart + 1), 1);
     }
 
-    free(crossings);
+    pathFreeSpans(&spans);
+    pathFreeEdges(&edges);
+    free(pathPoints);
+    if (!ok) {
+        XDestroyRegion(region);
+        return NULL;
+    }
     return region;
 }
 
