@@ -1,0 +1,317 @@
+
+2.2.1. Display Macros
+
+Applications should not directly modify any part of the Display and Screen structures. The members should be considered read-only, although they may change as the result of other operations on the display.
+
+The following lists the C language macros, their corresponding function equivalents that are for other language bindings, and what data they both can return.
+AllPlanes
+
+
+AllPlanes
+
+unsigned long XAllPlanes() 
+
+Both return a value with all bits set to 1 suitable for use in a plane argument to a procedure.
+BlackPixel, WhitePixel
+
+Both BlackPixel() and WhitePixel() can be used in implementing a monochrome application. These pixel values are for permanently allocated entries in the default colormap. The actual RGB (red, green, and blue) values are settable on some screens and, in any case, may not actually be black or white. The names are intended to convey the expected relative intensity of the colors.
+
+
+BlackPixel(display, screen_number)
+
+unsigned long XBlackPixel(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the black pixel value for the specified screen.
+
+WhitePixel(display, screen_number)
+
+unsigned long XWhitePixel(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the white pixel value for the specified screen.
+
+ConnectionNumber
+
+ConnectionNumber(display)
+
+int XConnectionNumber(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+Both return a connection number for the specified display. On a POSIX-conformant system, this is the file descriptor of the connection.
+DefaultColormap
+
+DefaultColormap(display, screen_number)
+
+Colormap XDefaultColormap(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the default colormap ID for allocation on the specified screen. Most routine allocations of color should be made out of this colormap.
+DefaultDepth
+
+DefaultDepth(display, screen_number)
+
+int XDefaultDepth(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+Both return the depth (number of planes) of the default root window for the specified screen. Other depths may also be supported on this screen (see .PN XMatchVisualInfo ).
+
+XListDepths
+To determine the number of depths that are available on a given screen, use XListDepths().
+
+int *XListDepths(display, screen_number, count_return)
+      Display *display;
+      int screen_number;
+      int *count_return;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+count_return 	Returns the number of depths
+
+The XListDepths() function returns the array of depths that are available on the specified screen. If the specified screen_number is valid and sufficient memory for the array can be allocated, XListDepths() sets count_return to the number of available depths. Otherwise, it does not set count_return and returns NULL. To release the memory allocated for the array of depths, use XFree().
+
+DefaultGC
+
+DefaultGC(display, screen_number)
+
+GC XDefaultGC(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the default graphics context for the root window of the specified screen. This GC is created for the convenience of simple applications and contains the default GC components with the foreground and background pixel values initialized to the black and white pixels for the screen, respectively. You can modify its contents freely because it is not used in any Xlib function. This GC should never be freed.
+
+DefaultRootWindow
+
+DefaultRootWindow(display)
+
+Window XDefaultRootWindow(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the root window for the default screen.
+
+DefaultScreenOfDisplay
+
+DefaultScreenOfDisplay(display)
+
+Screen *XDefaultScreenOfDisplay(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return a pointer to the default screen.
+
+ScreensOfDisplay
+
+ScreenOfDisplay(display, screen_number)
+
+Screen *XScreenOfDisplay(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return a pointer to the indicated screen.
+
+DefaultScreen
+
+DefaultScreen(display)
+
+int XDefaultScreen(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the default screen number referenced by the XOpenDisplay() function. This macro or function should be used to retrieve the screen number in applications that will use only a single screen.
+
+DefaultVisual
+
+DefaultVisual(display, screen_number)
+
+Visual *XDefaultVisual(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the default visual type for the specified screen. For further information about visual types, see section 3.1.
+
+DisplayCells
+
+DisplayCells(display, screen_number)
+
+int XDisplayCells(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the number of entries in the default colormap.
+
+DisplayPlanes
+
+DisplayPlanes(display, screen_number)
+
+int XDisplayPlanes(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the depth of the root window of the specified screen. For an explanation of depth, see the glossary.
+
+DisplayString
+
+DisplayString(display)
+
+char *XDisplayString(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the string that was passed to XOpenDisplay() when the current display was opened. On POSIX-conformant systems, if the passed string was NULL, these return the value of the DISPLAY environment variable when the current display was opened. These are useful to applications that invoke the fork system call and want to open a new connection to the same display from the child process as well as for printing error messages.
+
+XExtendedMaxRequestSize
+
+long XExtendedMaxRequestSize(display)
+	Display *display;
+
+display 	Specifies the connection to the X server.
+
+The XExtendedMaxRequestSize() function returns zero if the specified display does not support an extended-length protocol encoding; otherwise, it returns the maximum request size (in 4-byte units) supported by the server using the extended-length encoding. The Xlib functions XDrawLines(), XDrawArcs(), XFillPolygon(), XChangeProperty(), XSetClipRectangles(), and XSetRegion() will use the extended-length encoding as necessary, if supported by the server. Use of the extended-length encoding in other Xlib functions (for example, XDrawPoints(), XDrawRectangles(), XDrawSegments(), XFillArcs(), XFillRectangles(), XPutImage()) is permitted but not required; an Xlib implementation may choose to split the data across multiple smaller requests instead.
+
+XMaxRequestSize
+
+long XMaxRequestSize(display)
+	Display *display;
+
+display 	Specifies the connection to the X server.
+
+The XMaxRequestSize() function returns the maximum request size (in 4-byte units) supported by the server without using an extended-length protocol encoding. Single protocol requests to the server can be no larger than this size unless an extended-length protocol encoding is supported by the server. The protocol guarantees the size to be no smaller than 4096 units (16384 bytes). Xlib automatically breaks data up into multiple protocol requests as necessary for the following functions: XDrawPoints(), XDrawRectangles(), XDrawSegments(), XFillArcs(), XFillRectangles(), and XPutImage().
+
+LastKnownRequestProcessed
+
+LastKnownRequestProcessed(display)
+
+unsigned long XLastKnownRequestProcessed(display)
+     Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both extract the full serial number of the last request known by Xlib to have been processed by the X server. Xlib automatically sets this number when replies, events, and errors are received.
+
+NextRequest
+
+NextRequest(display)
+
+unsigned long XNextRequest(display)
+     Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both extract the full serial number that is to be used for the next request. Serial numbers are maintained separately for each display connection.
+
+ProtocolVersion
+
+ProtocolVersion(display)
+
+int XProtocolVersion(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the major version number (11) of the X protocol associated with the connected display.
+
+ProtocolRevision
+
+ProtocolRevision(display)
+
+int XProtocolRevision(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the minor protocol revision number of the X server.
+
+QLength
+
+QLength(display)
+
+int XQLength(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the length of the event queue for the connected display. Note that there may be more events that have not been read into the queue yet (see XEventsQueued()).
+
+RootWindow
+
+RootWindow(display, screen_number)
+
+Window XRootWindow(display, screen_number)
+      Display *display;
+      int screen_number;
+
+display 	Specifies the connection to the X server.
+screen_number 	Specifies the appropriate screen number on the host server.
+
+Both return the root window. These are useful with functions that need a drawable of a particular screen and for creating top-level windows.
+
+ScreenCount
+
+ScreenCount(display)
+
+int XScreenCount(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return the number of available screens.
+
+ServerVendor
+
+ServerVendor(display)
+
+char *XServerVendor(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return a pointer to a null-terminated string that provides some identification of the owner of the X server implementation. If the data returned by the server is in the Latin Portable Character Encoding, then the string is in the Host Portable Character Encoding. Otherwise, the contents of the string are implementation dependent.
+
+VendorRelease
+
+VendorRelease(display)
+
+int XVendorRelease(display)
+      Display *display;
+
+display 	Specifies the connection to the X server.
+
+Both return a number related to a vendor's release of the X server.
+Next: Image Format Functions and Macros
+Christophe Tronche, ch@tronche.com

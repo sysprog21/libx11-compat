@@ -5,10 +5,10 @@
 
 static const struct {
     KeySym keySym;
-    const char* name;
+    const char *name;
 } KEY_SYM_LIST[] = {
     {XK_VoidSymbol, "VoidSymbol"},
-    #ifdef XK_MISCELLANY
+#ifdef XK_MISCELLANY
     {XK_BackSpace, "BackSpace"},
     {XK_Tab, "Tab"},
     {XK_Linefeed, "Linefeed"},
@@ -173,8 +173,8 @@ static const struct {
     {XK_Super_R, "Super_R"},
     {XK_Hyper_L, "Hyper_L"},
     {XK_Hyper_R, "Hyper_R"},
-    #endif /* XK_MISCELLANY */
-    #ifdef XK_LATIN1
+#endif /* XK_MISCELLANY */
+#ifdef XK_LATIN1
     {XK_space, "space"},
     {XK_exclam, "exclam"},
     {XK_quotedbl, "quotedbl"},
@@ -192,7 +192,8 @@ static const struct {
     {XK_minus, "minus"},
     {XK_period, "period"},
     {XK_slash, "slash"},
-    // TODO: Remove these from list
+    /* Keep digit aliases: canonical keysym headers expose XK_0..XK_9, and
+     * XStringToKeysym("0") style lookups depend on these printable names. */
     {XK_0, "0"},
     {XK_1, "1"},
     {XK_2, "2"},
@@ -371,8 +372,8 @@ static const struct {
     {XK_yacute, "yacute"},
     {XK_thorn, "thorn"},
     {XK_ydiaeresis, "ydiaeresis"},
-    #endif /* XK_LATIN1 */
-    #ifdef XK_LATIN2
+#endif /* XK_LATIN1 */
+#ifdef XK_LATIN2
     {XK_Aogonek, "Aogonek"},
     {XK_breve, "breve"},
     {XK_Lstroke, "Lstroke"},
@@ -430,8 +431,8 @@ static const struct {
     {XK_uring, "uring"},
     {XK_tcedilla, "tcedilla"},
     {XK_abovedot, "abovedot"},
-    #endif /* XK_LATIN2 */
-    #ifdef XK_LATIN3
+#endif /* XK_LATIN2 */
+#ifdef XK_LATIN3
     {XK_Hstroke, "Hstroke"},
     {XK_Hcircumflex, "Hcircumflex"},
     {XK_Iabovedot, "Iabovedot"},
@@ -454,8 +455,8 @@ static const struct {
     {XK_gcircumflex, "gcircumflex"},
     {XK_ubreve, "ubreve"},
     {XK_scircumflex, "scircumflex"},
-    #endif /* XK_LATIN3 */
-    #ifdef XK_LATIN4
+#endif /* XK_LATIN3 */
+#ifdef XK_LATIN4
     {XK_kra, "kra"},
     {XK_kappa, "kappa"},
     {XK_Rcedilla, "Rcedilla"},
@@ -492,8 +493,8 @@ static const struct {
     {XK_uogonek, "uogonek"},
     {XK_utilde, "utilde"},
     {XK_umacron, "umacron"},
-    #endif /* XK_LATIN4 */
-    #ifdef XK_KATAKANA
+#endif /* XK_LATIN4 */
+#ifdef XK_KATAKANA
     {XK_overline, "overline"},
     {XK_kana_fullstop, "kana_fullstop"},
     {XK_kana_openingbracket, "kana_openingbracket"},
@@ -564,8 +565,8 @@ static const struct {
     {XK_voicedsound, "voicedsound"},
     {XK_semivoicedsound, "semivoicedsound"},
     {XK_kana_switch, "kana_switch"},
-    #endif /* XK_KATAKANA */
-    #ifdef XK_ARABIC
+#endif /* XK_KATAKANA */
+#ifdef XK_ARABIC
     {XK_Arabic_comma, "Arabic_comma"},
     {XK_Arabic_semicolon, "Arabic_semicolon"},
     {XK_Arabic_question_mark, "Arabic_question_mark"},
@@ -616,8 +617,8 @@ static const struct {
     {XK_Arabic_shadda, "Arabic_shadda"},
     {XK_Arabic_sukun, "Arabic_sukun"},
     {XK_Arabic_switch, "Arabic_switch"},
-    #endif /* XK_ARABIC */
-    #ifdef XK_CYRILLIC
+#endif /* XK_ARABIC */
+#ifdef XK_CYRILLIC
     {XK_Serbian_dje, "Serbian_dje"},
     {XK_Macedonia_gje, "Macedonia_gje"},
     {XK_Cyrillic_io, "Cyrillic_io"},
@@ -725,8 +726,8 @@ static const struct {
     {XK_Cyrillic_SHCHA, "Cyrillic_SHCHA"},
     {XK_Cyrillic_CHE, "Cyrillic_CHE"},
     {XK_Cyrillic_HARDSIGN, "Cyrillic_HARDSIGN"},
-    #endif /* XK_CYRILLIC */
-    #ifdef XK_GREEK
+#endif /* XK_CYRILLIC */
+#ifdef XK_GREEK
     {XK_Greek_ALPHAaccent, "Greek_ALPHAaccent"},
     {XK_Greek_EPSILONaccent, "Greek_EPSILONaccent"},
     {XK_Greek_ETAaccent, "Greek_ETAaccent"},
@@ -801,8 +802,8 @@ static const struct {
     {XK_Greek_psi, "Greek_psi"},
     {XK_Greek_omega, "Greek_omega"},
     {XK_Greek_switch, "Greek_switch"},
-    #endif /* XK_GREEK */
-    #ifdef XK_TECHNICAL
+#endif /* XK_GREEK */
+#ifdef XK_TECHNICAL
     {XK_leftradical, "leftradical"},
     {XK_topleftradical, "topleftradical"},
     {XK_horizconnector, "horizconnector"},
@@ -852,8 +853,8 @@ static const struct {
     {XK_uparrow, "uparrow"},
     {XK_rightarrow, "rightarrow"},
     {XK_downarrow, "downarrow"},
-    #endif /* XK_TECHNICAL */
-    #ifdef XK_SPECIAL
+#endif /* XK_TECHNICAL */
+#ifdef XK_SPECIAL
     {XK_blank, "blank"},
     {XK_soliddiamond, "soliddiamond"},
     {XK_checkerboard, "checkerboard"},
@@ -878,8 +879,8 @@ static const struct {
     {XK_bott, "bott"},
     {XK_topt, "topt"},
     {XK_vertbar, "vertbar"},
-    #endif /* XK_SPECIAL */
-    #ifdef XK_PUBLISHING
+#endif /* XK_SPECIAL */
+#ifdef XK_PUBLISHING
     {XK_emspace, "emspace"},
     {XK_enspace, "enspace"},
     {XK_em3space, "em3space"},
@@ -963,8 +964,8 @@ static const struct {
     {XK_singlelowquotemark, "singlelowquotemark"},
     {XK_doublelowquotemark, "doublelowquotemark"},
     {XK_cursor, "cursor"},
-    #endif /* XK_PUBLISHING */
-    #ifdef XK_APL
+#endif /* XK_PUBLISHING */
+#ifdef XK_APL
     {XK_leftcaret, "leftcaret"},
     {XK_rightcaret, "rightcaret"},
     {XK_downcaret, "downcaret"},
@@ -984,8 +985,8 @@ static const struct {
     {XK_leftshoe, "leftshoe"},
     {XK_lefttack, "lefttack"},
     {XK_righttack, "righttack"},
-    #endif /* XK_APL */
-    #ifdef XK_HEBREW
+#endif /* XK_APL */
+#ifdef XK_HEBREW
     {XK_hebrew_doublelowline, "hebrew_doublelowline"},
     {XK_hebrew_aleph, "hebrew_aleph"},
     {XK_hebrew_bet, "hebrew_bet"},
@@ -1026,7 +1027,7 @@ static const struct {
     {XK_hebrew_taw, "hebrew_taw"},
     {XK_hebrew_taf, "hebrew_taf"},
     {XK_Hebrew_switch, "Hebrew_switch"},
-    #endif /* XK_HEBREW */
+#endif /* XK_HEBREW */
 };
 
 #define KEY_SYM_LIST_LENGTH (sizeof(KEY_SYM_LIST) / sizeof(KEY_SYM_LIST[0]))
@@ -1035,169 +1036,173 @@ static const struct {
     SDL_Keycode keycode;
     KeySym keysym;
 } SDLKeycodeToKeySym[] = {
-    { SDLK_UNKNOWN, NoSymbol },
-    { SDLK_BACKSPACE, XK_BackSpace },
-    { SDLK_TAB, XK_Tab },
-    { SDLK_RETURN, XK_Return },
-    { SDLK_ESCAPE, XK_Escape },
-    { SDLK_SPACE, XK_space },
-    { SDLK_EXCLAIM, XK_exclam },
-    { SDLK_QUOTEDBL, XK_quotedbl },
-    { SDLK_HASH, XK_numbersign },
-    { SDLK_DOLLAR, XK_dollar },
-    { SDLK_PERCENT, XK_percent },
-    { SDLK_AMPERSAND, XK_ampersand},
-    { SDLK_QUOTE, XK_quoteright },
-    { SDLK_LEFTPAREN, XK_parenleft },
-    { SDLK_RIGHTPAREN, XK_parenright },
-    { SDLK_ASTERISK, XK_asterisk },
-    { SDLK_PLUS, XK_plus },
-    { SDLK_COMMA, XK_comma },
-    { SDLK_MINUS, XK_minus },
-    { SDLK_PERIOD, XK_period },
-    { SDLK_SLASH, XK_slash},
-    { SDLK_COLON, XK_colon },
-    { SDLK_SEMICOLON, XK_semicolon },
-    { SDLK_LESS, XK_less },
-    { SDLK_EQUALS, XK_equal },
-    { SDLK_GREATER, XK_greater },
-    { SDLK_QUESTION, XK_question },
-    { SDLK_AT, XK_at },
-    { SDLK_LEFTBRACKET, XK_bracketleft },
-    { SDLK_BACKSLASH, XK_backslash },
-    { SDLK_RIGHTBRACKET, XK_bracketright },
-    { SDLK_CARET, XK_asciicircum },
-    { SDLK_UNDERSCORE, XK_underscore },
-    { SDLK_BACKQUOTE, XK_quoteleft },
-    { SDLK_DELETE, XK_Delete },
-    { SDLK_CAPSLOCK, XK_Caps_Lock },
-    { SDLK_F1, XK_F1 },
-    { SDLK_F2, XK_F2 },
-    { SDLK_F3, XK_F3 },
-    { SDLK_F4, XK_F4 },
-    { SDLK_F5, XK_F5 },
-    { SDLK_F6, XK_F6 },
-    { SDLK_F7, XK_F7 },
-    { SDLK_F8, XK_F8 },
-    { SDLK_F9, XK_F9 },
-    { SDLK_F10, XK_F10 },
-    { SDLK_F11, XK_F11 },
-    { SDLK_F12, XK_F12 },
-    { SDLK_PRINTSCREEN, XK_Print },
-    { SDLK_SCROLLLOCK, XK_Scroll_Lock },
-    { SDLK_PAUSE, XK_Pause },
-    { SDLK_INSERT, XK_Insert },
-    { SDLK_HOME, XK_Home },
-    { SDLK_PAGEUP, XK_Prior },
-    { SDLK_END, XK_End },
-    { SDLK_PAGEDOWN, XK_Next },
-    { SDLK_RIGHT, XK_Right },
-    { SDLK_LEFT, XK_Left },
-    { SDLK_DOWN, XK_Down },
-    { SDLK_UP, XK_Up },
-    { SDLK_NUMLOCKCLEAR, XK_Num_Lock },
-    { SDLK_KP_DIVIDE, XK_KP_Divide },
-    { SDLK_KP_MULTIPLY, XK_KP_Multiply },
-    { SDLK_KP_MINUS, XK_KP_Subtract },
-    { SDLK_KP_PLUS, XK_KP_Add },
-    { SDLK_KP_ENTER, XK_KP_Enter },
-    { SDLK_KP_1, XK_KP_1 },
-    { SDLK_KP_2, XK_KP_2 },
-    { SDLK_KP_3, XK_KP_3 },
-    { SDLK_KP_4, XK_KP_4 },
-    { SDLK_KP_5, XK_KP_5 },
-    { SDLK_KP_6, XK_KP_6 },
-    { SDLK_KP_7, XK_KP_7 },
-    { SDLK_KP_8, XK_KP_8 },
-    { SDLK_KP_9, XK_KP_9 },
-    { SDLK_KP_0, XK_KP_0 },
-    { SDLK_KP_PERIOD, XK_KP_Decimal },
-    { SDLK_APPLICATION, XK_Hyper_R },
-    { SDLK_KP_EQUALS, XK_KP_Equal },
-    { SDLK_F13, XK_F13 },
-    { SDLK_F14, XK_F14 },
-    { SDLK_F15, XK_F15 },
-    { SDLK_F16, XK_F16 },
-    { SDLK_F17, XK_F17 },
-    { SDLK_F18, XK_F18 },
-    { SDLK_F19, XK_F19 },
-    { SDLK_F20, XK_F20 },
-    { SDLK_F21, XK_F21 },
-    { SDLK_F22, XK_F22 },
-    { SDLK_F23, XK_F23 },
-    { SDLK_F24, XK_F24 },
-    { SDLK_EXECUTE, XK_Execute },
-    { SDLK_HELP, XK_Help },
-    { SDLK_MENU, XK_Menu },
-    { SDLK_SELECT, XK_Select },
-    { SDLK_STOP, XK_Cancel },
-    { SDLK_AGAIN, XK_Redo },
-    { SDLK_UNDO, XK_Undo },
-    { SDLK_FIND, XK_Find },
-    { SDLK_KP_COMMA, XK_KP_Separator },
-    { SDLK_KP_EQUALSAS400, XK_KP_Equal },
-    { SDLK_ALTERASE, XK_Delete },
-    { SDLK_CANCEL, XK_Cancel },
-    { SDLK_CLEAR, XK_Clear },
-    { SDLK_PRIOR, XK_Prior },
-    { SDLK_RETURN2, XK_Return },
-    { SDLK_SEPARATOR, XK_KP_Separator },
-    { SDLK_THOUSANDSSEPARATOR, XK_KP_Separator },
-    #ifdef XK_PUBLISHING
-    { SDLK_DECIMALSEPARATOR, XK_decimalpoint },
-    #endif /* XK_PUBLISHING */
-    { SDLK_CURRENCYUNIT, XK_currency },
-    { SDLK_CURRENCYSUBUNIT, XK_currency },
-    { SDLK_KP_LEFTPAREN, XK_parenleft },
-    { SDLK_KP_RIGHTPAREN, XK_parenright },
-    { SDLK_KP_LEFTBRACE , XK_braceleft },
-    { SDLK_KP_RIGHTBRACE , XK_braceright },
-    { SDLK_KP_TAB, XK_KP_Tab },
-    { SDLK_KP_BACKSPACE, XK_BackSpace },
-    { SDLK_KP_A, XK_a },
-    { SDLK_KP_B, XK_b },
-    { SDLK_KP_C, XK_c },
-    { SDLK_KP_D, XK_d },
-    { SDLK_KP_E, XK_e },
-    { SDLK_KP_F, XK_f },
-    { SDLK_KP_PERCENT, XK_percent },
-    { SDLK_KP_LESS, XK_less },
-    { SDLK_KP_GREATER, XK_greater },
-    { SDLK_KP_AMPERSAND, XK_ampersand},
-    { SDLK_KP_VERTICALBAR, XK_bar},
-    { SDLK_KP_COLON, XK_colon},
-    { SDLK_KP_HASH, XK_numbersign },
-    { SDLK_KP_SPACE, XK_KP_Space },
-    { SDLK_KP_AT, XK_at },
-    { SDLK_KP_PLUSMINUS, XK_plusminus },
-    { SDLK_KP_CLEAR, XK_Clear },
-    { SDLK_KP_DECIMAL, XK_KP_Decimal },
-    { SDLK_LCTRL, XK_Control_L },
-    { SDLK_LSHIFT, XK_Shift_L },
-    { SDLK_LALT, XK_Alt_L },
-    { SDLK_LGUI, XK_Meta_L },
-    { SDLK_RCTRL, XK_Control_R },
-    { SDLK_RSHIFT, XK_Shift_R },
-    { SDLK_RALT, XK_Alt_R },
-    { SDLK_RGUI, XK_Meta_R },
-    { SDLK_MODE, XK_Mode_switch },
-    { SDLK_AC_SEARCH, XK_Find },
-    { SDLK_AC_HOME, XK_Home },
-    { SDLK_SYSREQ, XK_Sys_Req },
+    {SDLK_UNKNOWN, NoSymbol},
+    {SDLK_BACKSPACE, XK_BackSpace},
+    {SDLK_TAB, XK_Tab},
+    {SDLK_RETURN, XK_Return},
+    {SDLK_ESCAPE, XK_Escape},
+    {SDLK_SPACE, XK_space},
+    {SDLK_EXCLAIM, XK_exclam},
+    {SDLK_QUOTEDBL, XK_quotedbl},
+    {SDLK_HASH, XK_numbersign},
+    {SDLK_DOLLAR, XK_dollar},
+    {SDLK_PERCENT, XK_percent},
+    {SDLK_AMPERSAND, XK_ampersand},
+    {SDLK_QUOTE, XK_quoteright},
+    {SDLK_LEFTPAREN, XK_parenleft},
+    {SDLK_RIGHTPAREN, XK_parenright},
+    {SDLK_ASTERISK, XK_asterisk},
+    {SDLK_PLUS, XK_plus},
+    {SDLK_COMMA, XK_comma},
+    {SDLK_MINUS, XK_minus},
+    {SDLK_PERIOD, XK_period},
+    {SDLK_SLASH, XK_slash},
+    {SDLK_COLON, XK_colon},
+    {SDLK_SEMICOLON, XK_semicolon},
+    {SDLK_LESS, XK_less},
+    {SDLK_EQUALS, XK_equal},
+    {SDLK_GREATER, XK_greater},
+    {SDLK_QUESTION, XK_question},
+    {SDLK_AT, XK_at},
+    {SDLK_LEFTBRACKET, XK_bracketleft},
+    {SDLK_BACKSLASH, XK_backslash},
+    {SDLK_RIGHTBRACKET, XK_bracketright},
+    {SDLK_CARET, XK_asciicircum},
+    {SDLK_UNDERSCORE, XK_underscore},
+    {SDLK_BACKQUOTE, XK_quoteleft},
+    {SDLK_DELETE, XK_Delete},
+    {SDLK_CAPSLOCK, XK_Caps_Lock},
+    {SDLK_F1, XK_F1},
+    {SDLK_F2, XK_F2},
+    {SDLK_F3, XK_F3},
+    {SDLK_F4, XK_F4},
+    {SDLK_F5, XK_F5},
+    {SDLK_F6, XK_F6},
+    {SDLK_F7, XK_F7},
+    {SDLK_F8, XK_F8},
+    {SDLK_F9, XK_F9},
+    {SDLK_F10, XK_F10},
+    {SDLK_F11, XK_F11},
+    {SDLK_F12, XK_F12},
+    {SDLK_PRINTSCREEN, XK_Print},
+    {SDLK_SCROLLLOCK, XK_Scroll_Lock},
+    {SDLK_PAUSE, XK_Pause},
+    {SDLK_INSERT, XK_Insert},
+    {SDLK_HOME, XK_Home},
+    {SDLK_PAGEUP, XK_Prior},
+    {SDLK_END, XK_End},
+    {SDLK_PAGEDOWN, XK_Next},
+    {SDLK_RIGHT, XK_Right},
+    {SDLK_LEFT, XK_Left},
+    {SDLK_DOWN, XK_Down},
+    {SDLK_UP, XK_Up},
+    {SDLK_NUMLOCKCLEAR, XK_Num_Lock},
+    {SDLK_KP_DIVIDE, XK_KP_Divide},
+    {SDLK_KP_MULTIPLY, XK_KP_Multiply},
+    {SDLK_KP_MINUS, XK_KP_Subtract},
+    {SDLK_KP_PLUS, XK_KP_Add},
+    {SDLK_KP_ENTER, XK_KP_Enter},
+    {SDLK_KP_1, XK_KP_1},
+    {SDLK_KP_2, XK_KP_2},
+    {SDLK_KP_3, XK_KP_3},
+    {SDLK_KP_4, XK_KP_4},
+    {SDLK_KP_5, XK_KP_5},
+    {SDLK_KP_6, XK_KP_6},
+    {SDLK_KP_7, XK_KP_7},
+    {SDLK_KP_8, XK_KP_8},
+    {SDLK_KP_9, XK_KP_9},
+    {SDLK_KP_0, XK_KP_0},
+    {SDLK_KP_PERIOD, XK_KP_Decimal},
+    {SDLK_APPLICATION, XK_Hyper_R},
+    {SDLK_KP_EQUALS, XK_KP_Equal},
+    {SDLK_F13, XK_F13},
+    {SDLK_F14, XK_F14},
+    {SDLK_F15, XK_F15},
+    {SDLK_F16, XK_F16},
+    {SDLK_F17, XK_F17},
+    {SDLK_F18, XK_F18},
+    {SDLK_F19, XK_F19},
+    {SDLK_F20, XK_F20},
+    {SDLK_F21, XK_F21},
+    {SDLK_F22, XK_F22},
+    {SDLK_F23, XK_F23},
+    {SDLK_F24, XK_F24},
+    {SDLK_EXECUTE, XK_Execute},
+    {SDLK_HELP, XK_Help},
+    {SDLK_MENU, XK_Menu},
+    {SDLK_SELECT, XK_Select},
+    {SDLK_STOP, XK_Cancel},
+    {SDLK_AGAIN, XK_Redo},
+    {SDLK_UNDO, XK_Undo},
+    {SDLK_FIND, XK_Find},
+    {SDLK_KP_COMMA, XK_KP_Separator},
+    {SDLK_KP_EQUALSAS400, XK_KP_Equal},
+    {SDLK_ALTERASE, XK_Delete},
+    {SDLK_CANCEL, XK_Cancel},
+    {SDLK_CLEAR, XK_Clear},
+    {SDLK_PRIOR, XK_Prior},
+    {SDLK_RETURN2, XK_Return},
+    {SDLK_SEPARATOR, XK_KP_Separator},
+    {SDLK_THOUSANDSSEPARATOR, XK_KP_Separator},
+#ifdef XK_PUBLISHING
+    {SDLK_DECIMALSEPARATOR, XK_decimalpoint},
+#endif /* XK_PUBLISHING */
+    {SDLK_CURRENCYUNIT, XK_currency},
+    {SDLK_CURRENCYSUBUNIT, XK_currency},
+    {SDLK_KP_LEFTPAREN, XK_parenleft},
+    {SDLK_KP_RIGHTPAREN, XK_parenright},
+    {SDLK_KP_LEFTBRACE, XK_braceleft},
+    {SDLK_KP_RIGHTBRACE, XK_braceright},
+    {SDLK_KP_TAB, XK_KP_Tab},
+    {SDLK_KP_BACKSPACE, XK_BackSpace},
+    {SDLK_KP_A, XK_a},
+    {SDLK_KP_B, XK_b},
+    {SDLK_KP_C, XK_c},
+    {SDLK_KP_D, XK_d},
+    {SDLK_KP_E, XK_e},
+    {SDLK_KP_F, XK_f},
+    {SDLK_KP_PERCENT, XK_percent},
+    {SDLK_KP_LESS, XK_less},
+    {SDLK_KP_GREATER, XK_greater},
+    {SDLK_KP_AMPERSAND, XK_ampersand},
+    {SDLK_KP_VERTICALBAR, XK_bar},
+    {SDLK_KP_COLON, XK_colon},
+    {SDLK_KP_HASH, XK_numbersign},
+    {SDLK_KP_SPACE, XK_KP_Space},
+    {SDLK_KP_AT, XK_at},
+    {SDLK_KP_PLUSMINUS, XK_plusminus},
+    {SDLK_KP_CLEAR, XK_Clear},
+    {SDLK_KP_DECIMAL, XK_KP_Decimal},
+    {SDLK_LCTRL, XK_Control_L},
+    {SDLK_LSHIFT, XK_Shift_L},
+    {SDLK_LALT, XK_Alt_L},
+    {SDLK_LGUI, XK_Meta_L},
+    {SDLK_RCTRL, XK_Control_R},
+    {SDLK_RSHIFT, XK_Shift_R},
+    {SDLK_RALT, XK_Alt_R},
+    {SDLK_RGUI, XK_Meta_R},
+    {SDLK_MODE, XK_Mode_switch},
+    {SDLK_AC_SEARCH, XK_Find},
+    {SDLK_AC_HOME, XK_Home},
+    {SDLK_SYSREQ, XK_Sys_Req},
     /* Missing in X11:
-     *  SDLK_POWER, SDLK_CUT, SDLK_COPY, SDLK_PASTE, SDLK_MUTE, SDLK_VOLUMEUP, SDLK_VOLUMEDOWN,
-     *  SDLK_OUT, SDLK_OPER, SDLK_CLEARAGAIN, SDLK_CRSEL, SDLK_EXSEL, SDLK_KP_00, SDLK_KP_000,
-     *  SDLK_KP_XOR, SDLK_KP_POWER, SDLK_KP_DBLAMPERSAND, SDLK_KP_DBLVERTICALBAR, SDLK_KP_MEMSTORE,
-     *  SDLK_KP_MEMRECALL, SDLK_KP_MEMCLEAR, SDLK_KP_MEMADD, SDLK_KP_MEMSUBTRACT,
-     *  SDLK_KP_MEMMULTIPLY, SDLK_KP_MEMDIVIDE, SDLK_KP_CLEARENTRY, SDLK_KP_BINARY, SDLK_KP_OCTAL,
-     *  SDLK_KP_HEXADECIMAL, SDLK_AUDIONEXT, SDLK_AUDIOPREV, SDLK_AUDIOSTOP, SDLK_AUDIOPLAY,
-     *  SDLK_AUDIOMUTE, SDLK_MEDIASELECT, SDLK_WWW, SDLK_MAIL, SDLK_CALCULATOR, SDLK_COMPUTER,
-     *  SDLK_AC_BACK, SDLK_AC_FORWARD, SDLK_AC_STOP, SDLK_AC_REFRESH, SDLK_AC_BOOKMARKS,
-     *  SDLK_BRIGHTNESSDOWN, SDLK_BRIGHTNESSUP, SDLK_DISPLAYSWITCH, SDLK_KBDILLUMTOGGLE,
+     *  SDLK_POWER, SDLK_CUT, SDLK_COPY, SDLK_PASTE, SDLK_MUTE, SDLK_VOLUMEUP,
+     * SDLK_VOLUMEDOWN, SDLK_OUT, SDLK_OPER, SDLK_CLEARAGAIN, SDLK_CRSEL,
+     * SDLK_EXSEL, SDLK_KP_00, SDLK_KP_000, SDLK_KP_XOR, SDLK_KP_POWER,
+     * SDLK_KP_DBLAMPERSAND, SDLK_KP_DBLVERTICALBAR, SDLK_KP_MEMSTORE,
+     *  SDLK_KP_MEMRECALL, SDLK_KP_MEMCLEAR, SDLK_KP_MEMADD,
+     * SDLK_KP_MEMSUBTRACT, SDLK_KP_MEMMULTIPLY, SDLK_KP_MEMDIVIDE,
+     * SDLK_KP_CLEARENTRY, SDLK_KP_BINARY, SDLK_KP_OCTAL, SDLK_KP_HEXADECIMAL,
+     * SDLK_AUDIONEXT, SDLK_AUDIOPREV, SDLK_AUDIOSTOP, SDLK_AUDIOPLAY,
+     *  SDLK_AUDIOMUTE, SDLK_MEDIASELECT, SDLK_WWW, SDLK_MAIL, SDLK_CALCULATOR,
+     * SDLK_COMPUTER, SDLK_AC_BACK, SDLK_AC_FORWARD, SDLK_AC_STOP,
+     * SDLK_AC_REFRESH, SDLK_AC_BOOKMARKS, SDLK_BRIGHTNESSDOWN,
+     * SDLK_BRIGHTNESSUP, SDLK_DISPLAYSWITCH, SDLK_KBDILLUMTOGGLE,
      *  SDLK_KBDILLUMDOWN, SDLK_KBDILLUMUP, SDLK_EJECT, SDLK_SLEEP
      */
 };
 
-#define SDL_KEYCODE_TO_KEYSYM_LENGTH (sizeof(SDLKeycodeToKeySym) / sizeof(SDLKeycodeToKeySym[0]))
+#define SDL_KEYCODE_TO_KEYSYM_LENGTH \
+    (sizeof(SDLKeycodeToKeySym) / sizeof(SDLKeycodeToKeySym[0]))
 
 #endif /* _KEY_SYM_LIST_H_ */

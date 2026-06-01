@@ -2,7 +2,7 @@
 #define _NET_ATOMS_H_
 // XA_LAST_PREDEFINED is 68
 
-#define _NET_WM_NAME ((Atom) 69) 
+#define _NET_WM_NAME ((Atom) 69)
 #define _NET_WM_VISIBLE_NAME ((Atom) 70)
 #define _NET_WM_ICON_NAME ((Atom) 71)
 #define _NET_WM_VISIBLE_ICON_NAME ((Atom) 72)
@@ -60,7 +60,9 @@
 #define _NET_WM_USER_TIME ((Atom) 124)
 #define _NET_WM_USER_TIME_WINDOW ((Atom) 125)
 #define _NET_FRAME_EXTENTS ((Atom) 126)
+#define _MOTIF_WM_HINTS ((Atom) 127)
+#define _XSETTINGS_SETTINGS_ATOM ((Atom) 128)
 
-#define _NET_LAST_PREDEFINED ((Atom) 126)
+#define _NET_LAST_PREDEFINED ((Atom) 128)
 
 #endif /* _NET_ATOMS_H_ */

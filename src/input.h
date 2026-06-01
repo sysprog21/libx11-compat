@@ -5,5 +5,6 @@
 #include "window.h"
 
 Window getKeyboardFocus();
+void setKeyboardFocus(Window window);
 
 #endif /* INPUT_H */

@@ -1,10 +1,10 @@
 #include "X11/Xatom.h"
-#include "netAtoms.h"
+#include "net-atoms.h"
 
-#define ATOM_LIST_ENTRY(atom) { #atom, atom }
+#define ATOM_LIST_ENTRY(atom) {#atom, atom}
 
 static const struct {
-    const char* name;
+    const char *name;
     Atom atom;
 } PredefinedAtomList[] = {
     ATOM_LIST_ENTRY(XA_PRIMARY),
@@ -133,6 +133,9 @@ static const struct {
     ATOM_LIST_ENTRY(_NET_WM_USER_TIME),
     ATOM_LIST_ENTRY(_NET_WM_USER_TIME_WINDOW),
     ATOM_LIST_ENTRY(_NET_FRAME_EXTENTS),
+    ATOM_LIST_ENTRY(_MOTIF_WM_HINTS),
+    {"_XSETTINGS_SETTINGS", (Atom) _XSETTINGS_SETTINGS_ATOM},
 };
 
-#define PREDEFINED_ATOM_LIST_SIZE (sizeof(PredefinedAtomList) / sizeof(PredefinedAtomList[0]))
+#define PREDEFINED_ATOM_LIST_SIZE \
+    (sizeof(PredefinedAtomList) / sizeof(PredefinedAtomList[0]))
