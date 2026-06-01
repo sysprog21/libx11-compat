@@ -341,6 +341,39 @@ static Bool removeMatchingPutBackIfEvent(Display *display,
     return False;
 }
 
+/* SDL_SetEventFilter only stores one (callback, userdata) pair, so we
+ * keep a registry of every Display that has installed onSdlEvent. The
+ * active slot always points at the most recent open; closing the
+ * active slot hands it off to whichever display is still open
+ * (most-recently-opened wins) instead of nulling the filter and
+ * stranding the remaining display(s). The registry uses the project's
+ * dynamic Array helper so multi-display flows are not silently capped
+ * at an arbitrary number of opens.
+ */
+static Array trackedDisplays = {NULL, 0, 0};
+
+static void trackDisplay(Display *display)
+{
+    if (findInArray(&trackedDisplays, display) >= 0) {
+        return;
+    }
+    if (!insertArray(&trackedDisplays, display)) {
+        LOG("Failed to track display %p for SDL event-filter handoff\n",
+            (void *) display);
+    }
+}
+
+static void untrackDisplay(Display *display)
+{
+    ssize_t index = findInArray(&trackedDisplays, display);
+    if (index >= 0) {
+        removeArray(&trackedDisplays, (size_t) index, True);
+    }
+    if (trackedDisplays.length == 0) {
+        freeArray(&trackedDisplays);
+    }
+}
+
 int initEventPipe(Display *display)
 {
     captureMainEventThreadIfUnset();
@@ -371,7 +404,36 @@ int initEventPipe(Display *display)
         ENQUEUE_EVENT_IN_PIPE(display);
     }
     SDL_SetEventFilter(onSdlEvent, display);
+    trackDisplay(display);
     return READ_EVENT_FD;
+}
+
+/* Detach the SDL event filter before XCloseDisplay frees the Display.
+ * SDL_SetEventFilter only tracks the latest registration, so closing a
+ * display whose pointer is still installed as filter userdata leaves a
+ * dangling reference; the next SDL_PumpEvents would deliver an event
+ * through onSdlEvent and dereference freed memory (AddressSanitizer
+ * caught this as a heap-use-after-free during test_extensions when a
+ * nested XOpenDisplay/XCloseDisplay pair handed the slot off and the
+ * outer display then pushed an event). When other displays remain
+ * open we hand the slot to one of them so their event pipe keeps
+ * draining; only the final close nulls the filter.
+ */
+void closeEventPipe(Display *display)
+{
+    untrackDisplay(display);
+    SDL_EventFilter currentFilter = NULL;
+    void *currentUserdata = NULL;
+    SDL_GetEventFilter(&currentFilter, &currentUserdata);
+    if (currentFilter != onSdlEvent || currentUserdata != display) {
+        return;
+    }
+    if (trackedDisplays.length > 0) {
+        SDL_SetEventFilter(onSdlEvent,
+                           trackedDisplays.array[trackedDisplays.length - 1]);
+    } else {
+        SDL_SetEventFilter(NULL, NULL);
+    }
 }
 
 unsigned int convertModifierState(Uint16 mod)

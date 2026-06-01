@@ -13,35 +13,45 @@
  */
 #define _XLIBINT_
 #include "X11/Xlibint.h"
+#include "util.h"
 
 #ifdef XTHREADS
 #include <X11/Xthreads.h>
 
-LockInfoPtr _Xglobal_lock = NULL;
-void (*_XCreateMutex_fn)(LockInfoPtr) = NULL;
-void (*_XFreeMutex_fn)(LockInfoPtr) = NULL;
-void (*_XLockMutex_fn)(LockInfoPtr
+/* Every lock function pointer and global lock pointer below is
+ * LIBX11_COMPAT_HIDDEN. A system libX11.so.6 loaded into the same
+ * process via SDL2's transitive deps exports identical names; without
+ * hidden visibility the dynamic linker picks one slot as canonical
+ * and both libraries write through it, so libX11.so.6's XInitThreads
+ * (or implicit init) would clobber our state and our LockDisplay
+ * macro would dispatch into libX11.so.6 code against the
+ * libX11-compat Display layout. See util.h for the full rationale.
+ */
+LIBX11_COMPAT_HIDDEN LockInfoPtr _Xglobal_lock = NULL;
+LIBX11_COMPAT_HIDDEN void (*_XCreateMutex_fn)(LockInfoPtr) = NULL;
+LIBX11_COMPAT_HIDDEN void (*_XFreeMutex_fn)(LockInfoPtr) = NULL;
+LIBX11_COMPAT_HIDDEN void (*_XLockMutex_fn)(LockInfoPtr
 #if defined(XTHREADS_WARN) || defined(XTHREADS_FILE_LINE)
-                       ,
-                       char *,
-                       int
+                                            ,
+                                            char *,
+                                            int
 #endif
-                       ) = NULL;
-void (*_XUnlockMutex_fn)(LockInfoPtr
+                                            ) = NULL;
+LIBX11_COMPAT_HIDDEN void (*_XUnlockMutex_fn)(LockInfoPtr
 #if defined(XTHREADS_WARN) || defined(XTHREADS_FILE_LINE)
-                         ,
-                         char *,
-                         int
+                                              ,
+                                              char *,
+                                              int
 #endif
-                         ) = NULL;
-xthread_t (*_Xthread_self_fn)(void) = NULL;
+                                              ) = NULL;
+LIBX11_COMPAT_HIDDEN xthread_t (*_Xthread_self_fn)(void) = NULL;
 
 /* lcWrap.c owns _Xi18n_lock and lcConv.c owns _conv_lock in upstream;
  * neither file is compiled here, so locking.c initializes through these
  * stubs at XInitThreads() time.
  */
-LockInfoPtr _Xi18n_lock = NULL;
-LockInfoPtr _conv_lock = NULL;
+LIBX11_COMPAT_HIDDEN LockInfoPtr _Xi18n_lock = NULL;
+LIBX11_COMPAT_HIDDEN LockInfoPtr _conv_lock = NULL;
 
 #endif /* XTHREADS */
 

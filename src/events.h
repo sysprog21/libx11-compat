@@ -11,6 +11,7 @@
     ((GET_WINDOW_STRUCT(window)->eventMask & mask) == mask)
 
 int initEventPipe(Display *display);
+void closeEventPipe(Display *display);
 void captureMainEventThreadIfUnset(void);
 void releaseMainEventThread(void);
 unsigned int convertModifierState(Uint16 mod);

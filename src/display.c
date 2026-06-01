@@ -21,11 +21,13 @@
 
 /* Lock hooks installed by libX11's locking.c when XInitThreads runs;
  * we hold the function-pointer storage so display open/close can invoke
- * them without dragging in upstream XlibInt.c.
+ * them without dragging in upstream XlibInt.c. The storage is
+ * LIBX11_COMPAT_HIDDEN so a system libX11.so.6 loaded alongside us
+ * cannot reach in and overwrite it; see util.h for the rationale.
  */
 #include "locking.h"
-int (*_XInitDisplayLock_fn)(Display *dpy) = NULL;
-void (*_XFreeDisplayLock_fn)(Display *dpy) = NULL;
+LIBX11_COMPAT_HIDDEN int (*_XInitDisplayLock_fn)(Display *dpy) = NULL;
+LIBX11_COMPAT_HIDDEN void (*_XFreeDisplayLock_fn)(Display *dpy) = NULL;
 
 #define InitDisplayLock(d) \
     (_XInitDisplayLock_fn ? (*_XInitDisplayLock_fn)(d) : Success)
@@ -82,6 +84,7 @@ int XCloseDisplay(Display *display)
         }
         free(GET_DISPLAY(display)->screens);
     }
+    closeEventPipe(display);
     free(display);
     return 0;
 }

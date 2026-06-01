@@ -64,10 +64,14 @@ typedef struct {
 #define PictOpOver 3
 #define PictOpOverReverse 4
 #define PictOpIn 5
-#define PictOpOut 6
+#define PictOpInReverse 6
+#define PictOpOut 7
+#define PictOpOutReverse 8
 #define PictOpAtop 9
+#define PictOpAtopReverse 10
 #define PictOpXor 11
 #define PictOpAdd 12
+#define PictOpSaturate 13
 
 #define PictStandardARGB32 0
 #define PictStandardRGB24 1
