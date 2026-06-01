@@ -1,0 +1,107 @@
+src/selection.c
+  s_2614a3cec564c2::t_cea74ebb1059c5 60,62,64,71,73,79
+  s_2614a3cec564c2::t_6d93fe86d3edf0 210
+  s_2614a3cec564c2::t_302d81d52f8a2f 193
+  s_2614a3cec564c2::t_64fbae909ab95b 11,15-17,26-33,35-59,63,76-78,82-83,89-90,94-109
+  s_2614a3cec564c2::t_d7a5c83d346480 236
+src/events.h
+  s_2614a3cec564c2::t_6b6aeda75cf0b7 14
+src/drawing.c
+  s_2614a3cec564c2::t_a9ded5546eeae1 502
+  s_2614a3cec564c2::t_490ba9e9b8fe76 234-238
+  s_2614a3cec564c2::t_0d9f08741545a4 464-465
+  s_2614a3cec564c2::t_b0f64444a14806 719-720
+  s_2614a3cec564c2::t_e1b9dabf8776d2 425
+  s_2614a3cec564c2::t_dffcd564601877 92-95
+  s_2614a3cec564c2::t_dcabdd850dfe56 555
+  s_2614a3cec564c2::t_16a718724888a4 648
+  s_2614a3cec564c2::t_d6b91bb365fe36 897-898
+  s_2614a3cec564c2::t_465c21099ddfa9 192-233
+  s_2614a3cec564c2::t_f2e59d94b06793 784
+src/drawing.h
+  s_2614a3cec564c2::t_7343fa1a5b5e2e 66-76,82
+  s_2614a3cec564c2::t_c341d0b17ac965 77-81
+src/selection.h
+  s_2614a3cec564c2::t_6a456dd6b7b7a1 1-8
+src/missing.c
+  s_2614a3cec564c2::t_447c59ea7381c1 604,640,652-653,657,661,673-674,677-678,680,685-686,695-697,702-706,726,728-729,732-734
+  s_2614a3cec564c2::t_20cd7f7a56a47a 721-725,727,730-731,735-737
+  s_2614a3cec564c2::t_fcb20b4a0055e6 797-798,800,805-810
+  s_2614a3cec564c2::t_bf8d0c3c301c61 687-688,690-691,693-694
+  s_2614a3cec564c2::t_0f9f3ebc9d1eb8 17-19
+  s_2614a3cec564c2::t_557164ea040ff3 1293-1297
+  s_e6551704cd2ef9::t_1b788c9dfb7107 603,605-639,641-651,654-656,658-660,662-672,679,689,692,799
+tests/check.c
+  s_e6551704cd2ef9::t_5575549c01089a 294-295
+  s_e6551704cd2ef9::t_223c2cc565ef81 1112-1119
+  s_e6551704cd2ef9::t_302bceff4c46aa 1166-1181,1194-1195,1199,1209
+  s_e6551704cd2ef9::t_b6be11f43c6009 1188-1193,1200-1203,1207-1208
+  s_e6551704cd2ef9::t_48a048459253d2 299,1182-1187,1196-1198,1204-1206
+src/gc.c
+  s_2614a3cec564c2::t_6a340fd420e76a 10
+  s_e6551704cd2ef9::t_aa4c49d0894ab8 107
+src/font.c
+  s_2614a3cec564c2::t_52f5a342b78783 274-317,325-327
+  s_2614a3cec564c2::t_f533eeff112b74 976
+src/pixmap.c
+  s_2614a3cec564c2::t_cadc32bd979907 102
+src/cursor.c
+  s_2614a3cec564c2::t_72bf1bdcdc1302 4-5
+  s_2614a3cec564c2::t_eb61e49539823a 343,346-363
+  s_2614a3cec564c2::t_8fa680a354211e 82-92,99
+  s_2614a3cec564c2::t_2c2e366253f410 18-25,38-52,55-81,93-98,100-104
+  s_2614a3cec564c2::t_a328b16c157abb 28-37,53-54
+  s_2614a3cec564c2::t_66ffa230765f5a 297-301
+  s_2614a3cec564c2::t_5dd95823904f59 242-244,248-255,258-269
+  s_2614a3cec564c2::t_88471e52e5e391 149
+  s_2614a3cec564c2::t_0478faad22efcb 215-231
+src/windowDebug.c
+  s_2614a3cec564c2::t_f18dc2bd12c271 111
+  s_2614a3cec564c2::t_302edcc50a012e 157
+  s_2614a3cec564c2::t_0f4818346da4f7 135
+  s_2614a3cec564c2::t_3fdd4c949bcba1 86
+src/events.c
+  s_2614a3cec564c2::t_7f6d6a817aee24 1259,1267
+  s_2614a3cec564c2::t_f62739a4105eed 44-53
+  s_2614a3cec564c2::t_ef9c6d6a2251c8 1890
+  s_2614a3cec564c2::t_afa35b8621aea0 36
+  s_2614a3cec564c2::t_b15b9720086c25 269
+  s_2614a3cec564c2::t_15b60d925340a4 24-25,33-35,37-38,40,64,66-70
+  s_2614a3cec564c2::t_a02f452abec3c1 1739,1818
+  s_2614a3cec564c2::t_e7fff001b8f176 26-32,39,41-43,54-63,65
+src/display.c
+  s_2614a3cec564c2::t_3cf2d38385dc42 16
+  s_2614a3cec564c2::t_9205c12933b2c3 47
+  s_2614a3cec564c2::t_179b3b0cc2b7eb 62
+src/image.c
+  s_2614a3cec564c2::t_fbecf30429ff9d 1-2
+  s_2614a3cec564c2::t_0678338b7f9b08 92-98,121-124
+  s_2614a3cec564c2::t_9c14de27208a93 424
+  s_2614a3cec564c2::t_8aba40bf65ab5f 53-57,62-65
+  s_2614a3cec564c2::t_66ecb7281f0514 399-406,408
+  s_2614a3cec564c2::t_7cb2eb18be8c14 66-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1638c14823ee760a9c4fed8ee4f8c51b735a85f8",
+  "prompts": {},
+  "sessions": {
+    "s_2614a3cec564c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "688ca350-bec6-4c79-8b6a-b6328b5c7616",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_e6551704cd2ef9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e80d8-2ef5-7db0-92fb-1075f235a12b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
