@@ -1,0 +1,57 @@
+docs/EXAMPLES.md
+  s_d1d2c6ba4544d4::t_384a98da352ff1 20
+examples/processing.c
+  s_d1d2c6ba4544d4::t_e7da7942e22c44 409
+mk/examples.mk
+  s_d1d2c6ba4544d4::t_05472af0f16400 1
+src/drawing.c
+  s_6ef848ba2c4b99::t_b0f14ba455d8dd 509-510
+  s_d1d2c6ba4544d4::t_dba990328da74e 571-574
+  s_6ef848ba2c4b99::t_5f38b69c531602 492-496,506-508,511-513,515,517-520,522-526,528-559,633-650,687,694
+  s_abea5c86e21c3d::t_e1960d9ddd983d 14,486,490-491,570,575-581,585-623,627-632,651-656,658-666,672,674,695-699,701
+  s_f6f6df51349c9d::t_82a53e77f85530 480-485,487-489,582-584,624-626,657,667-671,673,675-686,688-693,700
+  s_6ef848ba2c4b99::t_e3dd3898190a19 497-505,514,516,521,527,1469
+README.md
+  s_d1d2c6ba4544d4::t_0ae3a9e72cb95a 47
+  s_abea5c86e21c3d::t_4576ee028a9927 48-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d1e19e3c17c21de3b6835c05d42ace3ba4931526",
+  "prompts": {},
+  "sessions": {
+    "s_6ef848ba2c4b99": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8467-15fe-7300-bd89-9341208acde4",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    },
+    "s_abea5c86e21c3d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e841d-2c58-7e53-8eb2-7f2ea47109c6",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    },
+    "s_d1d2c6ba4544d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45927467-ead2-402e-a716-c55fc4e4ba3d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    },
+    "s_f6f6df51349c9d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e844f-7595-7e50-a33b-7b213b9000d1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
