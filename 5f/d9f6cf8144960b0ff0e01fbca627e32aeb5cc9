@@ -1,0 +1,21 @@
+src/events.c
+  s_4ae3a30c2feeb9::t_6ff074c1a4c107 344,352,354-356,359,363-367,374-376,407,411-430,434
+  s_4ae3a30c2feeb9::t_422eaf6803c110 345-351,353,357-358,360-362,368-373
+  s_4ae3a30c2feeb9::t_cf6445454e7f64 431-433
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5fd9f6cf8144960b0ff0e01fbca627e32aeb5cc9",
+  "prompts": {},
+  "sessions": {
+    "s_4ae3a30c2feeb9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1c4bda8-5ae7-4446-ab5b-184d25743784",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}
