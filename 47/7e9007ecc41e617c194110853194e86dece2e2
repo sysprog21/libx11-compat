@@ -1,0 +1,61 @@
+examples/x11perf/do_complex.c
+  ai_agent 1-189
+examples/x11perf/config.h
+  ai_agent 1-13
+examples/x11perf/do_simple.c
+  ai_agent 1-99
+examples/x11perf/do_tests.c
+  ai_agent 1-1416
+examples/x11perf/do_text.c
+  ai_agent 1-538
+examples/x11perf/do_tris.c
+  ai_agent 1-229
+examples/x11perf/do_windows.c
+  ai_agent 1-260
+examples/2048.c
+  ai_agent 1-237
+examples/x11perf/do_segs.c
+  ai_agent 1-372
+examples/x11perf/do_lines.c
+  ai_agent 1-297
+examples/x11perf/do_traps.c
+  ai_agent 1-392
+examples/x11perf/README.md
+  ai_agent 1-49
+examples/x11perf/COPYING
+  ai_agent 1-31
+examples/x11perf/do_valgc.c
+  ai_agent 1-75
+examples/x11perf/do_arcs.c
+  ai_agent 1-491
+examples/x11perf/x11perf.h
+  ai_agent 1-390
+examples/x11perf/do_blt.c
+  ai_agent 1-794
+examples/x11perf/bitmaps.c
+  ai_agent 1-876
+examples/mandel.c
+  ai_agent 1-170
+examples/life.c
+  ai_agent 1-209
+examples/x11perf/do_movewin.c
+  ai_agent 1-191
+examples/x11perf/do_dots.c
+  ai_agent 1-61
+examples/paint.c
+  ai_agent 1-203
+examples/x11perf/do_rects.c
+  ai_agent 1-116
+examples/x11perf/x11perf.c
+  ai_agent 1-1635
+examples/x11perf/bitmaps.h
+  ai_agent 1-26
+examples/clock.c
+  ai_agent 1-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "477e9007ecc41e617c194110853194e86dece2e2",
+  "prompts": {}
+}
