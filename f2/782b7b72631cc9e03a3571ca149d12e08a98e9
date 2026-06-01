@@ -1,0 +1,30 @@
+include/X11/extensions/Xrender.h
+  s_abea5c86e21c3d::t_2e371f528df68d 68
+  s_abea5c86e21c3d::t_74f0487d4f5916 67,69,71,74
+tests/check.c
+  s_4ae3a30c2feeb9::t_fd178cb937c831 699-702
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f2782b7b72631cc9e03a3571ca149d12e08a98e9",
+  "prompts": {},
+  "sessions": {
+    "s_4ae3a30c2feeb9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1c4bda8-5ae7-4446-ab5b-184d25743784",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_abea5c86e21c3d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e841d-2c58-7e53-8eb2-7f2ea47109c6",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
