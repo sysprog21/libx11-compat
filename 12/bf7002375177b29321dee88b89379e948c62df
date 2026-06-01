@@ -1,0 +1,20 @@
+src/events.c
+  s_4ae3a30c2feeb9::t_422eaf6803c110 345-351,353,357-358,360-362,368-373
+  s_4ae3a30c2feeb9::t_cf6445454e7f64 431-433
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "12bf7002375177b29321dee88b89379e948c62df",
+  "prompts": {},
+  "sessions": {
+    "s_4ae3a30c2feeb9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1c4bda8-5ae7-4446-ab5b-184d25743784",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
