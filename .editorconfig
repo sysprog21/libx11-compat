@@ -1,0 +1,50 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+# shfmt reads these properties at parse time when no formatting flags
+# are passed on the command line. mk/format.mk relies on that to keep
+# the .ci/ shell scripts on a single style without duplicating flags.
+[*.sh]
+indent_style = space
+indent_size = 4
+shell_variant = bash
+binary_next_line = true
+switch_case_indent = true
+
+[mk/*]
+indent_style = tab
+indent_size = 4
+
+[*.[ch]]
+indent_style = space
+indent_size = 4
+max_line_length = 80
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.sh]
+indent_style = space
+indent_size = 4
+
+[*.hook]
+indent_style = space
+indent_size = 4
+
+[*.yml]
+indent_style = space
+indent_size = 2
+# test
+# test
+# test
+# test
+# x

@@ -31,7 +31,7 @@ CPPFLAGS += -Iinclude -Isrc \
             $(if $(SDL2_PREFIX),-I$(SDL2_PREFIX)/include) \
             $(if $(SDL2_TTF_PREFIX),-I$(SDL2_TTF_PREFIX)/include) \
             $(SDL2_CFLAGS) $(SDL2_TTF_CFLAGS) $(PIXMAN_CFLAGS) \
-            -DNARROWPROTO -DXTHREADS
+            -DNARROWPROTO -DXTHREADS -D_GNU_SOURCE
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC
 LDLIBS += $(SDL2_LIBS) \
           $(if $(SDL2_TTF_PREFIX),-L$(SDL2_TTF_PREFIX)/lib) \

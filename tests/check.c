@@ -696,7 +696,10 @@ static int test_pixmaps(Display *display)
           "XCreatePixmap accepted an unsupported depth");
     XSetErrorHandler(oldErrorHandler);
 
-    char bits[] = {0x01};
+    /* XCreateBitmapFromData expects ceil(width/8) * height packed bytes.
+     * For a 2x2 bitmap that is two bytes (one per row); supplying a single
+     * byte tripped AddressSanitizer's stack-buffer-overflow check. */
+    char bits[] = {0x01, 0x00};
     Pixmap bitmap = XCreateBitmapFromData(display, root, bits, 2, 2);
     CHECK(bitmap != None, "XCreateBitmapFromData failed");
     SDL_Renderer *renderer = NULL;

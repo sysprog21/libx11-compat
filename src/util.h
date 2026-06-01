@@ -31,6 +31,21 @@
 
 #define WARN_UNIMPLEMENTED LOG("Hit unimplemented function %s.\n", __func__)
 
+/* Hide private data symbols (lock function pointers, global mutex state)
+ * from the dynamic symbol table so a system libX11.so.6 loaded into the
+ * same process via SDL2's transitive dependency chain cannot interpose
+ * on them. Without this, libX11.so.6 and libX11-compat.so share storage
+ * for _XInitDisplayLock_fn et al., libX11.so.6's XInitThreads (or any
+ * implicit init) writes a libX11.so.6 function address into the shared
+ * slot, our XOpenDisplay invokes it, and Display->lock_fns ends up with
+ * libX11.so.6's vtable -- crashing the next LockDisplay against a
+ * mismatched struct layout. */
+#if defined(__GNUC__) || defined(__clang__)
+#define LIBX11_COMPAT_HIDDEN __attribute__((visibility("hidden")))
+#else
+#define LIBX11_COMPAT_HIDDEN
+#endif
+
 #include "X11/Xlib.h"
 
 typedef struct {

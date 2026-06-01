@@ -1,0 +1,130 @@
+# Build libx11-compat, run the regression suite, and gate on lint /
+# sanitizer findings. Action versions track the latest major release
+# (no SHA pinning); the LLVM apt repo is added so clang-format-20 is
+# available on ubuntu-24.04 (which ships clang-format-18 by default).
+name: CI
+
+on:
+  push:
+    branches: [main, cicd]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---- Lint: formatting, newline, security, cppcheck ----
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install LLVM 20 apt source
+        # Drop the GPG key in /usr/share/keyrings/ and reference it with
+        # signed-by= so trust is scoped to the LLVM repo instead of every
+        # other source apt sees. Use the HTTPS endpoint so the package
+        # download itself isn't sent in the clear.
+        run: |
+          set -e
+          sudo install -d -m 0755 /usr/share/keyrings
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /usr/share/keyrings/llvm-archive-keyring.asc >/dev/null
+          sudo chmod 0644 /usr/share/keyrings/llvm-archive-keyring.asc
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.asc] https://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-20 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-20.list >/dev/null
+
+      - name: Install lint tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-format-20 cppcheck file shfmt
+
+      - name: Confirm tool versions
+        run: |
+          clang-format-20 --version
+          shfmt --version
+
+      - name: Check trailing newline
+        run: .ci/check-newline.sh
+
+      - name: Check clang-format
+        env:
+          CLANG_FORMAT: clang-format-20
+        run: .ci/check-format.sh
+
+      - name: Check shell formatting (shfmt)
+        # shfmt picks up the [*.sh] section of .editorconfig so the
+        # style stays in lockstep with `make check-format`.
+        run: shfmt -d $(git ls-files -- '*.sh')
+
+      - name: Security checks
+        run: .ci/check-security.sh
+
+      - name: Static analysis (cppcheck)
+        # Pre-existing findings (memleak / doubleFree / va_end / syntaxError on
+        # SDL_VERSION_ATLEAST) still need triage. Keep the step non-blocking
+        # for now so the report surfaces in CI logs; flip to required once
+        # the backlog is cleared or suppressed inline.
+        continue-on-error: true
+        run: .ci/check-cppcheck.sh
+
+  # ---- Build the shared library and run the regression suite ----
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang make pkg-config python3 \
+            libsdl2-dev libsdl2-ttf-dev libpixman-1-dev
+
+      - name: Build libX11-compat.so
+        run: make -j"$(nproc)"
+
+      - name: Run regression tests (make check)
+        env:
+          SDL_VIDEODRIVER: dummy
+        run: make check
+
+      - name: Build bundled examples
+        run: make examples -j"$(nproc)"
+
+      - name: Build with DEBUG_LIBX11_COMPAT
+        run: |
+          make clean
+          make CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT -j"$(nproc)"
+
+  # ---- Run make check with AddressSanitizer + UndefinedBehaviorSanitizer ----
+  sanitize:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang make pkg-config python3 \
+            libsdl2-dev libsdl2-ttf-dev libpixman-1-dev
+
+      - name: Build and test with ASan + UBSan
+        env:
+          # Both library and test binaries are compiled with the same
+          # sanitizer flags so the runtime loaded by the test binary
+          # services the .so as well. -fno-sanitize-recover=undefined
+          # turns UBSan findings into hard failures.
+          SAN_FLAGS: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1"
+          SDL_VIDEODRIVER: dummy
+          # SDL2's dummy driver retains pools across XCloseDisplay, so
+          # leak detection produces unrelated noise. Keep memory-error
+          # detection on; revisit leaks separately.
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" -j"$(nproc)"
+          make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" check
