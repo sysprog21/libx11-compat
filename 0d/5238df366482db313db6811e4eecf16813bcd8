@@ -1,0 +1,47 @@
+src/xshm.c
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-107
+src/display.c
+  s_9c70ab608fee0a::t_34f31f33305ea2 263
+tests/symbol_coverage.c
+  s_9c70ab608fee0a::t_81bf1634780404 176-196
+  s_9c70ab608fee0a::t_b1339b9f9ef7dc 7-9
+src/xrm.c
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-699
+tests/check.c
+  s_9c70ab608fee0a::t_4e3696b50564b1 1439-1440
+  s_9c70ab608fee0a::t_a0089c8f19c556 4-6
+  s_9c70ab608fee0a::t_592b3308982df4 1069-1237
+src/missing.c
+  s_9c70ab608fee0a::t_89a13ee5c38aac 31
+  s_9c70ab608fee0a::t_9a1d30164deb97 1134
+src/xsync.c
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-202
+src/xshape.c
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-182
+src/events.h
+  s_9c70ab608fee0a::t_93dfac421f4d27 16
+include/X11/extensions/sync.h
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-109
+include/X11/extensions/XShm.h
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-80
+src/selection.c
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-210
+include/X11/extensions/shape.h
+  s_9c70ab608fee0a::t_93dfac421f4d27 1-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0d5238df366482db313db6811e4eecf16813bcd8",
+  "prompts": {},
+  "sessions": {
+    "s_9c70ab608fee0a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccb385c3-456e-41f3-b65b-eb7bf9e0889f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
