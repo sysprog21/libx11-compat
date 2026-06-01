@@ -1,0 +1,38 @@
+.editorconfig
+  s_4ae3a30c2feeb9::t_36fac67ff06976 12-21
+.github/workflows/ci.yml
+  s_4ae3a30c2feeb9::t_4807a189de094b 34,36-39,48-52
+  s_4ae3a30c2feeb9::t_b0a2233b227bc1 58-62
+  s_4ae3a30c2feeb9::t_4eabe01e381f61 1-33,35,40-47,53-57,63-124
+mk/format.mk
+  s_4ae3a30c2feeb9::t_ec1c5a57f99061 11-26,41,54
+  s_4ae3a30c2feeb9::t_04e732d162a3d7 5,9,28-40,47-50,52-53,60-62
+.ci/check-security.sh
+  s_4ae3a30c2feeb9::t_3c97da00abd584 1-45
+mk/toolchain.mk
+  s_4ae3a30c2feeb9::t_fb2102d0ed1370 16
+  s_4ae3a30c2feeb9::t_ef5f9ec281cd77 17-37
+.ci/check-newline.sh
+  s_4ae3a30c2feeb9::t_b95e3aee1588c1 1-9,11-17
+  s_4ae3a30c2feeb9::t_4cdd12a923739c 10
+.ci/check-cppcheck.sh
+  s_4ae3a30c2feeb9::t_df1e8e49f934a6 1-31
+.ci/check-format.sh
+  s_4ae3a30c2feeb9::t_5364abc9a43d1d 1-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ca84f5cb89562d2e785ccd2df25e35624def8d96",
+  "prompts": {},
+  "sessions": {
+    "s_4ae3a30c2feeb9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1c4bda8-5ae7-4446-ab5b-184d25743784",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}
