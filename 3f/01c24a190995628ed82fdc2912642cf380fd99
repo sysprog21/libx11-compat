@@ -1,0 +1,126 @@
+src/display-macros.c
+  s_3d22e9d3597227::t_17862a8d044fe7 3
+src/font.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 12
+tests/api-symbols.txt
+  s_3d22e9d3597227::t_59f3d00c885aaf 176
+scripts/update-std-colors.py
+  s_3d22e9d3597227::t_6200a8a40e3c13 5
+src/window.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 11
+src/input-method.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 1-539
+src/display.c
+  s_3d22e9d3597227::t_299dd5980a475d 22-26
+src/window-internal.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 1-759
+mk/common.mk
+  s_3d22e9d3597227::t_7bf21bdd0837c3 25-28,32
+  s_3d22e9d3597227::t_3ac867c007f8e7 19-22,29-31,33
+  s_3d22e9d3597227::t_6f673e4652a1ae 23-24
+mk/config.mk
+  s_3d22e9d3597227::t_6e1e19031c0508 18-20,29-30
+  s_3d22e9d3597227::t_1a6244872f0344 25
+  s_3d22e9d3597227::t_cea330ae225a7b 21-24,27-28
+src/atoms.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 5
+src/pixmap.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 7
+scripts/check-spec-rules.py
+  s_3d22e9d3597227::t_6200a8a40e3c13 42,267
+  s_3d22e9d3597227::t_b3703f850b6655 212-218
+src/image.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 6
+tests/check.c
+  s_14221ee79fdfae::t_dcdc7d82eebd9b 2205-2210
+mk/sources.mk
+  s_3d22e9d3597227::t_16497899e832a3 3,19
+  s_3d22e9d3597227::t_8237352d7e915a 1,5-9
+  s_3d22e9d3597227::t_86fff482e0a8d7 4,17-18,20
+  s_3d22e9d3597227::t_13fe686ea6a47b 10-16
+src/cursor.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 9
+src/window-debug.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 1-162
+src/missing.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 220
+src/atom-list.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 1-141
+src/xrm.c
+  s_3d22e9d3597227::t_92d424cb361866 115-125
+  s_3d22e9d3597227::t_a3c45849d8690c 126,128-129,131-132,134
+  s_14221ee79fdfae::t_b0043b97db2dcb 173,175-176
+  s_3d22e9d3597227::t_9155d5ce3d33ca 111-114,127,130,133,135-172,174,177-186
+scripts/sync-upstream-headers.py
+  s_3d22e9d3597227::t_dbcc482ea01ed9 74,89-90
+  s_3d22e9d3597227::t_6b6db800683b81 91-95,142-154
+  s_3d22e9d3597227::t_8b571bfea300be 101-104,106-139
+  s_3d22e9d3597227::t_815d6ad5681e56 70-73
+  s_3d22e9d3597227::t_38c76ee2935ef1 2,13-15
+  s_3d22e9d3597227::t_2c8904a1a5b8b5 4-8
+  s_70b08283666a59::t_36ccd2dd4bb13c 96-100,105,140-141
+  s_3d22e9d3597227::t_00b480f46e6c2a 75-88
+  s_3d22e9d3597227::t_72672fa53421d5 217-220,233,247-268,288-314,339-340
+  s_3d22e9d3597227::t_62b108b130068b 318-332,335
+  s_3d22e9d3597227::t_0f1e235152707d 366,377-378,393-401,408-412
+  s_3d22e9d3597227::t_6c88a392d08260 402
+src/display.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 5
+src/drawing.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 5
+src/errors.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 7
+mk/upstream-headers.mk
+  s_3d22e9d3597227::t_aadcc3b0d199a9 1-3,6,11,14-17
+src/xlibint-stubs.c
+  s_3d22e9d3597227::t_509d8890dcdef7 8-14
+  s_3d22e9d3597227::t_fb6b6af45262b4 1-7,15-24,28-31,35-46
+  s_3d22e9d3597227::t_592343c219924b 25-27,32-34
+  s_3d22e9d3597227::t_1f9484514f9635 47-60
+src/atoms.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 6
+src/events.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 10,15
+src/region.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 9
+src/drawing.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 6
+src/gc.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 5
+src/colors.c
+  s_3d22e9d3597227::t_6200a8a40e3c13 5,8,158
+src/window.h
+  s_3d22e9d3597227::t_6200a8a40e3c13 5-6,79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3f01c24a190995628ed82fdc2912642cf380fd99",
+  "prompts": {},
+  "sessions": {
+    "s_14221ee79fdfae": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8377-3398-7683-9102-d421eb1e61d1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_3d22e9d3597227": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24b1fb54-e6d4-487f-a412-4900135a066a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_70b08283666a59": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e834b-0d5d-7562-b0bb-be7c4af46d43",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
