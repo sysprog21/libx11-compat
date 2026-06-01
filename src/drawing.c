@@ -11,6 +11,7 @@
 #include "colors.h"
 #include "events.h"
 #include <math.h>
+#include <stdlib.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -476,6 +477,86 @@ void colorClipped(SDL_Surface *surface,
     UNLOCK_SURFACE(clipSurface);
 }
 
+typedef struct {
+    double x;
+    int winding;
+} PolygonCrossing;
+
+static int compareCrossings(const void *left, const void *right)
+{
+    const PolygonCrossing *a = left;
+    const PolygonCrossing *b = right;
+    return (a->x > b->x) - (a->x < b->x);
+}
+
+static void invertRendererRect(SDL_Renderer *renderer, const SDL_Rect *rect)
+{
+    if (!renderer || !rect || rect->w <= 0 || rect->h <= 0)
+        return;
+
+    SDL_Rect viewport;
+    SDL_RenderGetViewport(renderer, &viewport);
+    SDL_Rect bounds = {0, 0, viewport.w, viewport.h};
+    SDL_Rect clipped;
+    if (!SDL_IntersectRect(rect, &bounds, &clipped))
+        return;
+
+    size_t pitch = (size_t) clipped.w * 4u;
+    unsigned char *pixels = malloc(pitch * (size_t) clipped.h);
+    if (!pixels)
+        return;
+
+    if (SDL_RenderReadPixels(renderer, &clipped, SDL_PIXELFORMAT_ARGB8888,
+                             pixels, (int) pitch) == 0) {
+        /* Invert R/G/B while preserving alpha. Operate on the packed Uint32
+         * so byte order doesn't matter: 0x00FFFFFF masks the RGB channels for
+         * ARGB8888 regardless of host endianness. */
+        for (int py = 0; py < clipped.h; py++) {
+            Uint32 *row = (Uint32 *) (pixels + (size_t) py * pitch);
+            for (int px = 0; px < clipped.w; px++) {
+                row[px] = (row[px] & 0xFF000000u) | ((~row[px]) & 0x00FFFFFFu);
+            }
+        }
+        SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
+            pixels, clipped.w, clipped.h, 32, (int) pitch,
+            SDL_PIXELFORMAT_ARGB8888);
+        if (surface) {
+            SDL_Texture *texture =
+                SDL_CreateTextureFromSurface(renderer, surface);
+            if (texture) {
+                if (SDL_RenderCopy(renderer, texture, NULL, &clipped) != 0) {
+                    LOG("SDL_RenderCopy failed in %s: %s\n", __func__,
+                        SDL_GetError());
+                }
+                SDL_DestroyTexture(texture);
+            }
+            SDL_FreeSurface(surface);
+        }
+    }
+
+    free(pixels);
+}
+
+static void drawFilledSpan(SDL_Renderer *renderer,
+                           const GraphicContext *gContext,
+                           int x1,
+                           int y,
+                           int x2)
+{
+    if (x1 > x2)
+        return;
+
+    if (gContext->fillStyle == FillSolid && gContext->function == GXinvert) {
+        SDL_Rect span = {x1, y, x2 - x1 + 1, 1};
+        invertRendererRect(renderer, &span);
+        return;
+    }
+
+    if (SDL_RenderDrawLine(renderer, x1, y, x2, y) != 0) {
+        LOG("SDL_RenderDrawLine failed in %s: %s\n", __func__, SDL_GetError());
+    }
+}
+
 int XFillPolygon(Display *display,
                  Drawable d,
                  GC gc,
@@ -486,7 +567,138 @@ int XFillPolygon(Display *display,
 {
     // https://tronche.com/gui/x/xlib/graphics/filling-areas/XFillPolygon.html
     SET_X_SERVER_REQUEST(display, X_FillPoly);
-    WARN_UNIMPLEMENTED;
+    TYPE_CHECK(d, DRAWABLE, display, 0);
+    if (!gc) {
+        handleError(0, display, None, 0, BadGC, 0);
+        return 0;
+    }
+    if (shape != Complex && shape != Nonconvex && shape != Convex) {
+        handleError(0, display, None, 0, BadValue, 0);
+        return 0;
+    }
+    if (mode != CoordModeOrigin && mode != CoordModePrevious) {
+        handleError(0, display, None, 0, BadValue, 0);
+        return 0;
+    }
+    if (npoints < 3) {
+        return 1;
+    }
+
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(d, renderer);
+    if (!renderer) {
+        handleError(0, display, d, 0, BadDrawable, 0);
+        return 0;
+    }
+
+    enum { POINT_INLINE_BUDGET = 128 };
+    SDL_Point inlinePoints[POINT_INLINE_BUDGET];
+    SDL_Point *heapPoints = NULL;
+    SDL_Point *poly = inlinePoints;
+    if (npoints > POINT_INLINE_BUDGET) {
+        heapPoints = malloc((size_t) npoints * sizeof(SDL_Point));
+        if (!heapPoints) {
+            handleOutOfMemory(0, display, 0, 0);
+            return 0;
+        }
+        poly = heapPoints;
+    }
+
+    poly[0].x = points[0].x;
+    poly[0].y = points[0].y;
+    int minY = poly[0].y;
+    int maxY = poly[0].y;
+    for (int i = 1; i < npoints; i++) {
+        poly[i].x = points[i].x;
+        poly[i].y = points[i].y;
+        if (mode == CoordModePrevious) {
+            poly[i].x += poly[i - 1].x;
+            poly[i].y += poly[i - 1].y;
+        }
+        if (poly[i].y < minY)
+            minY = poly[i].y;
+        if (poly[i].y > maxY)
+            maxY = poly[i].y;
+    }
+
+    PolygonCrossing *crossings =
+        malloc((size_t) npoints * sizeof(PolygonCrossing));
+    if (!crossings) {
+        free(heapPoints);
+        handleOutOfMemory(0, display, 0, 0);
+        return 0;
+    }
+
+    GraphicContext *gContext = GET_GC(gc);
+    if (gContext->fillStyle == FillSolid) {
+        LOG("Fill_style is %s\n", "FillSolid");
+        if (gContext->function != GXinvert) {
+            applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
+                              gContext->foreground);
+        }
+    } else if (gContext->fillStyle == FillOpaqueStippled) {
+        LOG("Fill_style is %s\n", "FillOpaqueStippled");
+        applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
+                          gContext->background);
+    } else {
+        LOG("Fill_style is unsupported in %s: %d\n", __func__,
+            gContext->fillStyle);
+        free(crossings);
+        free(heapPoints);
+        return 1;
+    }
+
+    int clipCount = getGcClipIterationCount(gc);
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(renderer, gc, clip))
+            continue;
+        for (int y = minY; y <= maxY; y++) {
+            double scanY = y + 0.5;
+            int crossingCount = 0;
+            for (int i = 0; i < npoints; i++) {
+                SDL_Point a = poly[i];
+                SDL_Point b = poly[(i + 1) % npoints];
+                if (a.y == b.y)
+                    continue;
+                int edgeMinY = a.y < b.y ? a.y : b.y;
+                int edgeMaxY = a.y > b.y ? a.y : b.y;
+                if (scanY < edgeMinY || scanY >= edgeMaxY)
+                    continue;
+                crossings[crossingCount].x = a.x + (scanY - a.y) *
+                                                       (double) (b.x - a.x) /
+                                                       (double) (b.y - a.y);
+                crossings[crossingCount].winding = b.y > a.y ? 1 : -1;
+                crossingCount++;
+            }
+            if (crossingCount < 2)
+                continue;
+            qsort(crossings, (size_t) crossingCount, sizeof(PolygonCrossing),
+                  compareCrossings);
+            if (gContext->fillRule == WindingRule) {
+                int winding = 0;
+                int x1 = 0;
+                for (int i = 0; i < crossingCount; i++) {
+                    int oldWinding = winding;
+                    winding += crossings[i].winding;
+                    if (oldWinding == 0 && winding != 0) {
+                        x1 = (int) ceil(crossings[i].x);
+                    } else if (oldWinding != 0 && winding == 0) {
+                        int x2 = (int) ceil(crossings[i].x) - 1;
+                        drawFilledSpan(renderer, gContext, x1, y, x2);
+                    }
+                }
+            } else {
+                for (int i = 0; i + 1 < crossingCount; i += 2) {
+                    int x1 = (int) ceil(crossings[i].x);
+                    int x2 = (int) ceil(crossings[i + 1].x) - 1;
+                    drawFilledSpan(renderer, gContext, x1, y, x2);
+                }
+            }
+        }
+    }
+    clearRendererClip(renderer);
+    free(crossings);
+    free(heapPoints);
     return 1;
 }
 
@@ -1254,42 +1466,7 @@ int XFillRectangles(Display *display,
                     continue;
                 for (int r = 0; r < nrectangles; r++) {
                     SDL_Rect rr = sdlRectangles[r];
-                    if (rr.w <= 0 || rr.h <= 0)
-                        continue;
-                    size_t pitch = (size_t) rr.w * 4u;
-                    unsigned char *pixels = malloc(pitch * (size_t) rr.h);
-                    if (!pixels)
-                        continue;
-                    if (SDL_RenderReadPixels(renderer, &rr,
-                                             SDL_PIXELFORMAT_ARGB8888, pixels,
-                                             (int) pitch) == 0) {
-                        /* Invert R/G/B while preserving alpha. Operate on
-                         * the packed Uint32 so byte order doesn't matter:
-                         * 0x00FFFFFF masks the RGB channels for
-                         * ARGB8888 regardless of host endianness. */
-                        for (int py = 0; py < rr.h; py++) {
-                            Uint32 *row =
-                                (Uint32 *) (pixels + (size_t) py * pitch);
-                            for (int px = 0; px < rr.w; px++) {
-                                row[px] = (row[px] & 0xFF000000u) |
-                                          ((~row[px]) & 0x00FFFFFFu);
-                            }
-                        }
-                        SDL_Surface *surface =
-                            SDL_CreateRGBSurfaceWithFormatFrom(
-                                pixels, rr.w, rr.h, 32, (int) pitch,
-                                SDL_PIXELFORMAT_ARGB8888);
-                        if (surface) {
-                            SDL_Texture *tex =
-                                SDL_CreateTextureFromSurface(renderer, surface);
-                            if (tex) {
-                                SDL_RenderCopy(renderer, tex, NULL, &rr);
-                                SDL_DestroyTexture(tex);
-                            }
-                            SDL_FreeSurface(surface);
-                        }
-                    }
-                    free(pixels);
+                    invertRendererRect(renderer, &rr);
                 }
             }
             clearRendererClip(renderer);

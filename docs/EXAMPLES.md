@@ -17,6 +17,7 @@ SDL_VIDEODRIVER=dummy build/examples/2048   # omit env var for a visible window
 | `life`   | [`examples/life.c`](../examples/life.c)     | Conway's Game of Life (MIT, in-tree). Pixmap double buffering (`XCreatePixmap` + `XCopyArea`), bulk `XFillRectangle`, `select()`-driven timed redraws via `ConnectionNumber`, `WM_DELETE_WINDOW`. |
 | `clock`  | [`examples/clock.c`](../examples/clock.c)   | Analog clock (MIT, in-tree). `XDrawArc` / `XFillArc`, multiple GCs with `XSetLineAttributes`, one-second redraw cadence driven by `gettimeofday`. |
 | `mandel` | [`examples/mandel.c`](../examples/mandel.c) | Interactive Mandelbrot viewer (MIT, in-tree). `XCreateImage` + `XPutImage` with a 32-bit ZPixmap raster (buffer ownership transferred to the `XImage`), `ButtonPress` dispatch. |
+| `processing` | [`examples/processing.c`](../examples/processing.c) | Standalone Processing-like showcase (MIT, in-tree). Exercises Xlib polygons, arcs, lines, strings, pointer input, key input, and timed redraws. |
 | `x11perf` | [`examples/x11perf/`](../examples/x11perf/README.md) | Upstream X.Org `x11perf` benchmark. Imported from `0c3597b6` with only local build glue (a `config.h` shim and one cosmetic output tweak). Self-contained performance harness for the SDL2-backed paths. |
 
 The short regression loop used during performance work:
