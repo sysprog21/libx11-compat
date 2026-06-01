@@ -1,0 +1,25 @@
+tests/check.c
+  ai_agent 1-2802
+tests/api-symbols.txt
+  ai_agent 1-618
+tests/symbol-coverage.c
+  s_5c0733399388d4::t_b4d15391d5148d 10-211
+tests/check-api-symbols.py
+  ai_agent 1-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "288d23ef767c9455f98a59b36baafa9280caa5dc",
+  "prompts": {},
+  "sessions": {
+    "s_5c0733399388d4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e81cf-9361-7ea3-9a80-51f4d01fc086",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
