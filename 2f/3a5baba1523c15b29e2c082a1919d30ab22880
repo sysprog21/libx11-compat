@@ -1,0 +1,19 @@
+mk/config.mk
+  s_4ae3a30c2feeb9::t_2e7fc4b6fdd0c4 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2f3a5baba1523c15b29e2c082a1919d30ab22880",
+  "prompts": {},
+  "sessions": {
+    "s_4ae3a30c2feeb9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f1c4bda8-5ae7-4446-ab5b-184d25743784",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
