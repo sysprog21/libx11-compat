@@ -1,0 +1,41 @@
+src/xsync.c
+  ai_agent 1-202
+src/xshape.c
+  ai_agent 1-182
+src/extension.h
+  ai_agent 1-8
+src/extension.c
+  ai_agent 1-221
+include/X11/extensions/sync.h
+  ai_agent 1-109
+src/selection.c
+  ai_agent 1-267
+include/X11/extensions/Xrandr.h
+  ai_agent 1-10
+include/X11/xcms/Xcmsint.h
+  ai_agent 1-256
+include/X11/extensions/shape.h
+  ai_agent 1-87
+src/selection.h
+  ai_agent 1-8
+src/xrender.c
+  ai_agent 1-222
+include/X11/extensions/Xrender.h
+  ai_agent 1-163
+include/X11/extensions/XShm.h
+  ai_agent 1-81
+src/xrm.c
+  ai_agent 1-773
+include/X11/extensions/Xfixes.h
+  ai_agent 1-10
+src/xshm.c
+  ai_agent 1-156
+include/X11/extensions/Xdamage.h
+  ai_agent 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6eac741cd00a0ef4f1083c8cf8922be97bcbd637",
+  "prompts": {}
+}
