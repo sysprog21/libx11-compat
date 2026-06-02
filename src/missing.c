@@ -2771,17 +2771,6 @@ Status XcmsCIExyYToCIEXYZ(XcmsCCC ccc,
 XcmsColorSpace XcmsCIELabColorSpace = {};
 XcmsColorSpace XcmsCIEXYZColorSpace = {};
 
-int XIfEvent(register Display *dpy,
-             register XEvent *event,
-             Bool (*predicate)(Display * /* display */,
-                               XEvent * /* event */,
-                               char * /* arg */
-                               ),     /* function to call */
-             char *arg)
-{
-    return 0;
-}
-
 int XPeekIfEvent(register Display *dpy,
                  register XEvent *event,
                  Bool (*predicate)(Display * /* display */,

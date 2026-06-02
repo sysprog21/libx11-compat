@@ -109,20 +109,41 @@ void freeSelectionStorage(Display *display)
     free(t);
 }
 
+/* Atom IDs come from the global atom table in atoms.c. That table is
+ * destroyed by freeAtomStorage() when the last Display closes, so any
+ * cached ID becomes stale across XCloseDisplay+XOpenDisplay cycles.
+ * resetSelectionAtomCache() is invoked from XCloseDisplay alongside
+ * freeAtomStorage() to keep these in sync. */
+static Atom cachedClipboardAtom = None;
+static Atom cachedUtf8StringAtom = None;
+static Atom cachedTargetsAtom = None;
+
 static Atom clipboardAtom(Display *display)
 {
-    static Atom cached = None;
-    if (cached == None && display)
-        cached = XInternAtom(display, "CLIPBOARD", False);
-    return cached;
+    if (cachedClipboardAtom == None && display)
+        cachedClipboardAtom = XInternAtom(display, "CLIPBOARD", False);
+    return cachedClipboardAtom;
 }
 
 static Atom utf8StringAtom(Display *display)
 {
-    static Atom cached = None;
-    if (cached == None && display)
-        cached = XInternAtom(display, "UTF8_STRING", False);
-    return cached;
+    if (cachedUtf8StringAtom == None && display)
+        cachedUtf8StringAtom = XInternAtom(display, "UTF8_STRING", False);
+    return cachedUtf8StringAtom;
+}
+
+static Atom targetsAtom(Display *display)
+{
+    if (cachedTargetsAtom == None && display)
+        cachedTargetsAtom = XInternAtom(display, "TARGETS", False);
+    return cachedTargetsAtom;
+}
+
+void resetSelectionAtomCache(void)
+{
+    cachedClipboardAtom = None;
+    cachedUtf8StringAtom = None;
+    cachedTargetsAtom = None;
 }
 
 static Bool postSelectionClear(Display *display,
@@ -244,6 +265,23 @@ int XConvertSelection(Display *display,
          * configurations. */
         char *text = SDL_GetClipboardText();
         Atom utf8 = utf8StringAtom(display);
+        Atom targets = targetsAtom(display);
+        /* Only advertise TARGETS once we know SDL actually has retrievable
+         * text. SDL_HasClipboardText() above can disagree with a follow-up
+         * SDL_GetClipboardText() returning NULL (race, OOM), and a TARGETS
+         * reply listing UTF8_STRING/STRING when no text exists would lie
+         * to the requestor. Fall through to the no-data path instead. */
+        if (target == targets && text) {
+            Atom supportedTargets[] = {targets, utf8, XA_STRING};
+            XChangeProperty(
+                display, requestor, effectiveProperty, XA_ATOM, 32,
+                PropModeReplace, (unsigned char *) supportedTargets,
+                (int) (sizeof(supportedTargets) / sizeof(supportedTargets[0])));
+            postSelectionNotify(display, requestor, selection, target,
+                                effectiveProperty, time);
+            SDL_free(text);
+            return 1;
+        }
         if (text && (target == XA_STRING || target == utf8)) {
             XChangeProperty(display, requestor, effectiveProperty, target, 8,
                             PropModeReplace, (unsigned char *) text,

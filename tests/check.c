@@ -3057,6 +3057,7 @@ static int test_selection(Display *display)
                  PropertyChangeMask | SubstructureNotifyMask | NoEventMask);
     Atom clipboard = XInternAtom(display, "CLIPBOARD", False);
     Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
+    Atom targets = XInternAtom(display, "TARGETS", False);
     Atom prop = XInternAtom(display, "SDL2X11_SEL_TEST", False);
 
     /* No owner: XConvertSelection emits SelectionNotify with property=None. */
@@ -3097,6 +3098,29 @@ static int test_selection(Display *display)
           "missing SelectionNotify for default property conversion");
     CHECK(ev.xselection.property == utf8,
           "property=None conversion did not default to target atom");
+
+    XConvertSelection(display, clipboard, targets, prop, window, CurrentTime);
+    CHECK(XCheckTypedEvent(display, SelectionNotify, &ev),
+          "missing SelectionNotify for SDL-backed TARGETS conversion");
+    CHECK(ev.xselection.property == prop,
+          "SDL-backed TARGETS SelectionNotify wrong property");
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long nItems = 0;
+    unsigned long bytesAfter = 0;
+    unsigned char *data = NULL;
+    CHECK(XGetWindowProperty(display, window, prop, 0, 3, False, XA_ATOM,
+                             &actualType, &actualFormat, &nItems, &bytesAfter,
+                             &data) == Success,
+          "XGetWindowProperty for SDL-backed TARGETS failed");
+    CHECK(actualType == XA_ATOM && actualFormat == 32 && nItems == 3 &&
+              bytesAfter == 0,
+          "SDL-backed TARGETS property had wrong shape");
+    CHECK(data != NULL, "SDL-backed TARGETS property data missing");
+    Atom *atoms = (Atom *) data;
+    CHECK(atoms[0] == targets && atoms[1] == utf8 && atoms[2] == XA_STRING,
+          "SDL-backed TARGETS atom list was incorrect");
+    XFree(data);
 
     XDestroyWindow(display, owner1);
     XDestroyWindow(display, owner2);

@@ -45,7 +45,8 @@ SDL_VIDEODRIVER=dummy build/examples/2048   # omit env var for a visible window
 
 The bundle covers a 2048 game, a paint demo, Conway's Game of Life, an
 analog clock, an interactive Mandelbrot viewer, a single-runner Processing-style
-showcase, and the upstream X.Org `x11perf` benchmark. See
+showcase, an SDL-backed clipboard `TARGETS` probe, and the upstream X.Org
+`x11perf` benchmark. See
 [`docs/EXAMPLES.md`](docs/EXAMPLES.md) for the API
 each example exercises.
 

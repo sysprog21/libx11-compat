@@ -65,6 +65,7 @@ int XCloseDisplay(Display *display)
         freeImageStorage();
         destroyScreenWindow(display);
         freeAtomStorage();
+        resetSelectionAtomCache();
         freeFontStorage();
         freeColorStorage();
         freeVisuals();

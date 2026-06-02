@@ -775,6 +775,10 @@ int XChangeProperty(Display *display,
         handleError(0, display, property, 0, BadAtom, 0);
         return 0;
     }
+    if (!isValidAtom(type)) {
+        handleError(0, display, type, 0, BadAtom, 0);
+        return 0;
+    }
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     WindowProperty *windowProperty =
         findProperty(&windowStruct->properties, property, NULL);
@@ -788,10 +792,6 @@ int XChangeProperty(Display *display,
     if (!propertyIsNew) {
         previousDataLength = windowProperty->dataLength;
         previousData = windowProperty->data;
-        if (windowProperty->type != type) {
-            handleError(0, display, type, 0, BadMatch, 0);
-            return 0;
-        }
     } else {
         windowProperty = malloc(sizeof(WindowProperty));
         if (!windowProperty) {
