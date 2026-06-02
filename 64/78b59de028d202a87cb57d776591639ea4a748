@@ -1,0 +1,20 @@
+examples/clipboard.c
+  s_9823e7bd93045d::t_3e323956b01e0b 13,22-24
+  s_9823e7bd93045d::t_de0bf48322567a 68-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6478b59de028d202a87cb57d776591639ea4a748",
+  "prompts": {},
+  "sessions": {
+    "s_9823e7bd93045d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4241362-fdc1-4562-b358-9a0d72299375",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
