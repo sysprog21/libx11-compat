@@ -1,0 +1,103 @@
+tests/test_libxt_link.c
+  s_d069c7882ad956::t_afe1af71b1ca5f 1-73,79-96
+  s_d069c7882ad956::t_eb12986d049ad2 74-78
+mk/tests.mk
+  s_d069c7882ad956::t_fe06408fb35ec5 1,26-35
+  s_d069c7882ad956::t_d96f8e5aa370c7 2
+mk/libxt.mk
+  s_d069c7882ad956::t_aae8cd15a5bf71 79,83-86,90-91
+  s_88d80f485df6d5::t_16fbd33d74f73e 141-144
+  s_88d80f485df6d5::t_205ea96909189e 35,106-110,113-115,118,124-126
+  s_d069c7882ad956::t_b7f8ce7c84b6ee 127-130
+  s_d069c7882ad956::t_b175c6ad4256b0 96
+  s_88d80f485df6d5::t_368e861e2ebcdb 102-104,116,145-147,149
+  s_88d80f485df6d5::t_52fd601c2e520b 22-27
+  s_d069c7882ad956::t_f53b2747a327d8 1-21,28-34,36-78,80-82,87-89,92-95,97-101,105,111-112,117,119-123,131-140,148,150-171
+tests/api-symbols.txt
+  s_d069c7882ad956::t_b7c13b8dcabd87 241
+  s_d069c7882ad956::t_7fcaf0d9363cf0 55
+  s_d069c7882ad956::t_9e7694e1cfa1d9 5
+  s_d069c7882ad956::t_9fda38088867d3 318
+  s_d069c7882ad956::t_91dea7df44611d 289
+src/keysym-case.c
+  s_d069c7882ad956::t_1244a44e2d1173 1-2,4-487
+include/X11/Xmu/Editres.h
+  s_d069c7882ad956::t_11efe0d8629106 1-35
+tests/test_libxt_micro.c
+  s_d069c7882ad956::t_bcca942b9c0abd 172-176,178,182,188,194-196
+  s_d069c7882ad956::t_276229dd4e2fc4 226-233,236
+  s_d069c7882ad956::t_a69f05c2818222 1-171,177,179-181,183-187,189-193,197-225,234-235,237-248,250-261
+  s_d069c7882ad956::t_ae62ebea38a38e 249
+tests/check.c
+  s_5e8e628261a842::t_3e1f64f8a6ef09 3150-3174
+  s_5e8e628261a842::t_1ba80e5a061c4a 3183
+  s_5e8e628261a842::t_d623d85ea8afc9 3175-3182,3184-3190
+include/X11/SM/SMlib.h
+  s_d069c7882ad956::t_7be040321b9a6e 1-38,98-115
+  s_d069c7882ad956::t_6c4a66c122baf7 39-97
+TODO.md
+  s_d069c7882ad956::t_e306aaa40efa9f 249-466
+Makefile
+  s_d069c7882ad956::t_fee689657dd7b0 9
+scripts/sync-upstream-headers.py
+  s_d069c7882ad956::t_66e7c231a8e0b9 313,316-317,344-360
+  s_d069c7882ad956::t_9dd4a937f6613d 175-215
+  s_d069c7882ad956::t_67cb434d5d7e56 310-312,314-315,325,327-343,361-364
+  s_d069c7882ad956::t_f9c6994d1f0530 388-389,392-396,398,400,402-435,438,440,443-444,449-451,454
+  s_d069c7882ad956::t_cecc81688c171d 64-76,81-83,85
+  s_d069c7882ad956::t_350c5ba2c4e9ff 515-525,551,562-565,591-596,598
+  s_d069c7882ad956::t_fe43a8b464afb2 526-548
+  s_d069c7882ad956::t_e402483201c721 580-585
+  s_d069c7882ad956::t_c5d81d42001aee 477,483-491
+  s_d069c7882ad956::t_32078aba1c43bf 77-80,84
+include/X11/ICE/ICElib.h
+  s_d069c7882ad956::t_ae54393eead630 1-17,24-28,30-31
+  s_d069c7882ad956::t_36017623ca122f 18-23,29
+include/libxt-build/config.h
+  s_d069c7882ad956::t_c7d24bda9dd91b 1-42,50-55
+  s_d069c7882ad956::t_497561583039d5 43-49
+src/xrm.c
+  s_d069c7882ad956::t_01b015f9a7edf2 824,834
+  s_d069c7882ad956::t_29ae85090929bf 704,708-711
+  s_d069c7882ad956::t_796eaa204365cb 792-798,814-817,822-823,826-833,852-853,855,857-872
+  s_d069c7882ad956::t_d070b622b9c89a 6
+  s_d069c7882ad956::t_af5b37237372f4 678-682,705-707,712-713,765-768,778-780,786-789,825,849-851,854,856
+  s_d069c7882ad956::t_24847cc6eac8d6 683-702
+  s_5e8e628261a842::t_2a3403b12018c9 714-715,726,734-740,748-751,769-777,781-785
+  s_5e8e628261a842::t_ee61f799c0ecfe 807-813,818-821
+  s_d069c7882ad956::t_a337db51f5b772 716-725,727-733,741-747
+src/missing.c
+  s_d069c7882ad956::t_fd516b9020fc33 2798-2833
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2960f94bac32e9f2421d9cf95938737e6714d2b6",
+  "prompts": {},
+  "sessions": {
+    "s_5e8e628261a842": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8996-e9a1-78e1-a0ff-2c644798499b",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_88d80f485df6d5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8981-881b-7272-ad3d-ed73326ac255",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_d069c7882ad956": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "133a7095-bc86-4e22-b82b-06ff8cb82603",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
