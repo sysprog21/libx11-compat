@@ -1,0 +1,63 @@
+src/display.c
+  s_9823e7bd93045d::t_4edb503b68509e 68
+mk/examples.mk
+  s_43b22ac6cf0162::t_b7e4361f4a2017 1
+src/events.c
+  s_9823e7bd93045d::t_da4449d5b4b4e1 2199-2213
+docs/EXAMPLES.md
+  s_43b22ac6cf0162::t_3381e57f7f979f 21
+examples/clipboard.c
+  s_43b22ac6cf0162::t_331975734a1d91 1-8,11,17,41-55,57,59-61,63-71,86,88-106,111-113,120,128-130,134-135,137-140,142-150,153-162,170-172,175-177,179-191,193-219,223-228,230-234,239,244-247,253-254,257-265,267,270-277,280-291,294-297
+  s_9823e7bd93045d::t_163236ccfc6460 25-32
+  s_43b22ac6cf0162::t_188d2ca4096856 9-10,12,15-16,56,58,62,87,107-108,114-119,131-133,136,141,173-174,178,192,303
+  s_9823e7bd93045d::t_f9c9b5f17f2e96 109-110,121-127
+  s_9823e7bd93045d::t_5eac2e1f5dcf55 151-152,163-169
+  s_9823e7bd93045d::t_887ccfaa73171d 220-222,229,235-238,240-243,248-252,255-256,266,268-269,278-279,292-293,298-302
+  s_9823e7bd93045d::t_06d7ca2b1757e3 14,19,24
+  s_9823e7bd93045d::t_8813ff9b0f4db6 72-85
+  s_9823e7bd93045d::t_8da0f81ac546ad 13,18,20-23,33-40
+src/selection.c
+  s_9823e7bd93045d::t_5a83c41891ae45 269-274,282
+  s_9823e7bd93045d::t_ba33210c5acd2c 112-120,123-125,130-132,136-142,144-146
+  s_43b22ac6cf0162::t_88059c8871ff39 135,143,268,275-281,283-284
+src/selection.h
+  s_9823e7bd93045d::t_2f699c819b4789 7
+README.md
+  s_43b22ac6cf0162::t_79dc5fcbe4661a 48-49
+src/window.c
+  s_24d38ad475950f::t_29db8cd656d1c7 778-781
+tests/check.c
+  s_43b22ac6cf0162::t_f298edc6324d62 3060,3102-3123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9aac76bb59f85f83738b55a52704663cb4c31818",
+  "prompts": {},
+  "sessions": {
+    "s_24d38ad475950f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e862e-0cc9-7492-986c-1632407f686f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_43b22ac6cf0162": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e85ff-9377-74c0-9174-daee2c02ecb5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_9823e7bd93045d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4241362-fdc1-4562-b358-9a0d72299375",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
