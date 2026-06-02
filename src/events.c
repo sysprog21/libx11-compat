@@ -2196,6 +2196,21 @@ Bool XCheckIfEvent(register Display *display,
     return checkIfEvent(display, event, predicate, arg);
 }
 
+int XIfEvent(register Display *display,
+             register XEvent *event,
+             Bool (*predicate)(Display * /* display */,
+                               XEvent * /* event */,
+                               char * /* arg */
+                               ),
+             char *arg)
+{
+    while (!checkIfEvent(display, event, predicate, arg)) {
+        pumpEventsSafe();
+        SDL_Delay(1);
+    }
+    return 0;
+}
+
 Bool XCheckTypedEvent(Display *display, int type, XEvent *event)
 {
     return checkTypedEvent(display, 0, type, 0, event, &checkTypedPredicate);

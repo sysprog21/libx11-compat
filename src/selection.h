@@ -4,5 +4,6 @@
 #include <X11/Xlib.h>
 
 void freeSelectionStorage(Display *display);
+void resetSelectionAtomCache(void);
 
 #endif /* SELECTION_H */
