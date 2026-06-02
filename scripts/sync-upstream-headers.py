@@ -61,6 +61,28 @@ SOURCES = [
         "url": "https://www.x.org/releases/individual/proto/xorgproto-2025.1.tar.xz",
         "sha256": "56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8",
     },
+    {
+        "name": "libXt",
+        "version": "libXt-1.3.1",
+        "url": "https://www.x.org/releases/individual/lib/libXt-1.3.1.tar.xz",
+        "sha256": "e0a774b33324f4d4c05b199ea45050f87206586d81655f8bef4dba434d931288",
+        # libXt's src/ goes to its own staging dir so it does not collide
+        # with the libX11 src/ slice (different headers, different build
+        # flags). All .c files in src/ are taken so the Makefile picks them
+        # up without a hand-maintained whitelist.
+        "src_subdir": "src-libXt",
+        "src_take_all": True,
+        # makestrs (compiled host-side) and string.list together regenerate
+        # StringDefs.c / StringDefs.h at build time. The .ct/.ht templates
+        # live alongside string.list and are consumed by makestrs. The
+        # nested ``util'' segment matches the path strings hard-coded in
+        # string.list (``#ctmpl util/StrDefs.ct'', etc.) so makestrs can
+        # find the templates with the topdir-libXt directory as its base.
+        "util_files": frozenset(
+            {"makestrs.c", "string.list", "StrDefs.ct", "StrDefs.ht", "Shell.ht"}
+        ),
+        "util_subdir": "topdir-libXt/util",
+    },
 ]
 
 # Build-system noise that we never want to extract.
@@ -148,6 +170,47 @@ SRC_PATCHES: dict[str, tuple[tuple[str, str], ...]] = {
             "#define xmalloc(s) Xmalloc(s)\n#define xfree(s) Xfree(s)\n",
             "#undef xmalloc\n#undef xfree\n"
             "#define xmalloc(s) Xmalloc(s)\n#define xfree(s) Xfree(s)\n",
+        ),
+    ),
+    # libXt 1.3.1's SessionSetValues closes its `#ifndef XT_NO_SM` block
+    # halfway through the function, then keeps using the cw/nw widget
+    # casts declared inside that block. When we build with -DXT_NO_SM the
+    # declarations vanish and the tail-end SM_CLIENT_ID property update
+    # references undeclared identifiers. Extend the conditional to the
+    # function's `return False;` so the whole body becomes a no-op without
+    # session management. Anchors carry enough surrounding text (the
+    # StopManagingSession call and the strlen line that hands the session
+    # id to XChangeProperty) to remain unique within Shell.c.
+    "Shell.c": (
+        (
+            "        StopManagingSession(nw, nw->session.connection);\n"
+            "#endif                          /* !XT_NO_SM */\n"
+            "\n"
+            "    if (cw->wm.client_leader != nw->wm.client_leader ||\n",
+            "        StopManagingSession(nw, nw->session.connection);\n"
+            "\n"
+            "    if (cw->wm.client_leader != nw->wm.client_leader ||\n",
+        ),
+        (
+            "                                (unsigned char *) nw->session.session_id,\n"
+            "                                (int) strlen(nw->session.session_id));\n"
+            "        }\n"
+            "    }\n"
+            "    return False;\n"
+            "}\n"
+            "\n"
+            "void\n"
+            "_XtShellGetCoordinates(Widget widget, Position *x, Position *y)\n",
+            "                                (unsigned char *) nw->session.session_id,\n"
+            "                                (int) strlen(nw->session.session_id));\n"
+            "        }\n"
+            "    }\n"
+            "#endif                          /* !XT_NO_SM */\n"
+            "    return False;\n"
+            "}\n"
+            "\n"
+            "void\n"
+            "_XtShellGetCoordinates(Widget widget, Position *x, Position *y)\n",
         ),
     ),
 }
@@ -244,11 +307,14 @@ def relevant_member(member: tarfile.TarInfo) -> str | None:
     return rel
 
 
-def relevant_src_member(
-    member: tarfile.TarInfo, whitelist: frozenset[str]
-) -> str | None:
-    """Return the basename if ``member`` is a whitelisted libX11 src/ file."""
-    if not member.isreg() or not whitelist:
+def _direct_child_basename(member: tarfile.TarInfo, dir_name: str) -> str | None:
+    """Return the basename if ``member`` is a regular file at
+    ``<topdir>/<dir_name>/<basename>`` (no deeper nesting), else None.
+
+    Rejects absolute paths and ``..`` segments so a malicious tar cannot
+    escape the staging directory.
+    """
+    if not member.isreg():
         return None
     posix = PurePosixPath(member.name)
     if posix.is_absolute():
@@ -256,12 +322,46 @@ def relevant_src_member(
     parts = posix.parts
     if not _is_safe(parts):
         return None
-    # Expected layout: <topdir>/src/<basename> (we only take direct children
-    # of src/ to avoid pulling in nested helper directories like src/xcms/).
-    if len(parts) != 3 or parts[1] != "src":
+    if len(parts) != 3 or parts[1] != dir_name:
         return None
-    base = parts[-1]
-    if base not in whitelist:
+    return parts[-1]
+
+
+def relevant_src_member(
+    member: tarfile.TarInfo,
+    whitelist: frozenset[str],
+    take_all: bool = False,
+) -> str | None:
+    """Return the basename if ``member`` is a wanted src/ file.
+
+    Only direct children of src/ are returned, to avoid pulling in nested
+    helper directories like src/xcms/. When ``take_all`` is true (libXt),
+    every .c child is returned regardless of whitelist contents; otherwise
+    the whitelist is consulted in the original libX11 sense.
+    """
+    base = _direct_child_basename(member, "src")
+    if base is None:
+        return None
+    if take_all:
+        return base if base.endswith(".c") else None
+    if not whitelist or base not in whitelist:
+        return None
+    return base
+
+
+def relevant_util_member(
+    member: tarfile.TarInfo, whitelist: frozenset[str]
+) -> str | None:
+    """Return the basename if ``member`` is a wanted util/ file.
+
+    libXt's util/ holds the host-side makestrs generator plus the
+    string.list / .ct / .ht templates it consumes. The Makefile compiles
+    makestrs and runs it to emit StringDefs.c before the library link.
+    """
+    if not whitelist:
+        return None
+    base = _direct_child_basename(member, "util")
+    if base is None or base not in whitelist:
         return None
     return base
 
@@ -285,31 +385,73 @@ def upstream_index() -> dict[str, tuple[str, bytes]]:
     return index
 
 
-def upstream_src_index() -> dict[str, tuple[str, bytes]]:
-    """Return ``{basename: (source_name, content)}`` for whitelisted src files.
+def upstream_src_index() -> dict[tuple[str, str], tuple[str, bytes]]:
+    """Return ``{(subdir, basename): (source_name, content)}`` for src/ files.
 
     Iterates per-source so a file's whitelist entry only matches inside the
-    tarball it was registered under (currently libX11 only).
+    tarball it was registered under. libX11 uses the SRC_WHITELIST set;
+    libXt sets ``src_take_all`` and pulls every direct .c child of src/.
+    Keying by ``(subdir, basename)`` keeps libX11 and libXt staged into
+    separate directories under ``$(OUT)/upstream/`` so each library builds
+    against its own include-path layering without name collisions.
     """
-    index: dict[str, tuple[str, bytes]] = {}
+    index: dict[tuple[str, str], tuple[str, bytes]] = {}
     for source in SOURCES:
+        take_all = source.get("src_take_all", False)
         whitelist = SRC_WHITELIST.get(source["name"], frozenset())
-        if not whitelist:
+        if not take_all and not whitelist:
             continue
+        subdir = source.get("src_subdir", "src")
         tarball = download(source["url"], source["sha256"])
+        seen: set[str] = set()
         with tarfile.open(tarball, "r:xz") as tar:
             for member in tar:
-                rel = relevant_src_member(member, whitelist)
-                if rel is None or rel in index:
+                rel = relevant_src_member(member, whitelist, take_all)
+                if rel is None or rel in seen:
                     continue
                 fh = tar.extractfile(member)
                 if fh is None:
                     continue
-                index[rel] = (source["name"], fh.read())
-        missing = whitelist - set(index)
+                seen.add(rel)
+                index[(subdir, rel)] = (source["name"], fh.read())
+        if not take_all:
+            missing = whitelist - seen
+            if missing:
+                raise SystemExit(
+                    f"{source['name']}: whitelisted src/ files missing "
+                    f"from tarball: " + ", ".join(sorted(missing))
+                )
+    return index
+
+
+def upstream_util_index() -> dict[tuple[str, str], tuple[str, bytes]]:
+    """Return ``{(subdir, basename): (source_name, content)}`` for util/ files.
+
+    Currently only libXt declares util files (makestrs.c and the string
+    templates). Other sources skip this step.
+    """
+    index: dict[tuple[str, str], tuple[str, bytes]] = {}
+    for source in SOURCES:
+        whitelist = source.get("util_files")
+        if not whitelist:
+            continue
+        subdir = source.get("util_subdir", "util")
+        tarball = download(source["url"], source["sha256"])
+        seen: set[str] = set()
+        with tarfile.open(tarball, "r:xz") as tar:
+            for member in tar:
+                rel = relevant_util_member(member, whitelist)
+                if rel is None or rel in seen:
+                    continue
+                fh = tar.extractfile(member)
+                if fh is None:
+                    continue
+                seen.add(rel)
+                index[(subdir, rel)] = (source["name"], fh.read())
+        missing = whitelist - seen
         if missing:
             raise SystemExit(
-                f"{source['name']}: whitelisted src/ files missing from tarball: "
+                f"{source['name']}: util/ files missing from tarball: "
                 + ", ".join(sorted(missing))
             )
     return index
@@ -332,12 +474,21 @@ def _apply_patch(rel: str, content: bytes) -> bytes:
 
 def stamp_token() -> str:
     lines = [
-        "stamp-format=4",
+        "stamp-format=5",
         f"sync-script-sha256={sha256_of(Path(__file__).resolve())}",
     ]
     lines.extend(f"{src['name']}={src['version']}#{src['sha256']}" for src in SOURCES)
     for src_name, basenames in sorted(SRC_WHITELIST.items()):
         lines.append(f"{src_name}-src={','.join(sorted(basenames))}")
+    for src in SOURCES:
+        if src.get("src_take_all"):
+            lines.append(f"{src['name']}-src=*->{src.get('src_subdir', 'src')}")
+        util = src.get("util_files")
+        if util:
+            lines.append(
+                f"{src['name']}-util="
+                f"{','.join(sorted(util))}->{src.get('util_subdir', 'util')}"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -361,9 +512,43 @@ def _validate_dest(dest: Path) -> Path:
     return resolved
 
 
+def _collect_staging_subdirs() -> list[str]:
+    """All staging subdirs that ``cmd_fetch`` may write under ``dest.parent``."""
+    subs = {"src"}
+    for source in SOURCES:
+        if source.get("src_take_all") or SRC_WHITELIST.get(source["name"]):
+            subs.add(source.get("src_subdir", "src"))
+        if source.get("util_files"):
+            subs.add(source.get("util_subdir", "util"))
+    return sorted(subs)
+
+
+def _stage_indexed(
+    staging_root: Path,
+    index: dict[tuple[str, str], tuple[str, bytes]],
+    patch: bool,
+) -> dict[str, int]:
+    """Write each ``(subdir, rel) -> content`` entry under ``staging_root``
+    and return a per-subdir count. Applies SRC_PATCHES when ``patch`` is
+    True; passes content through unchanged otherwise.
+    """
+    counts: dict[str, int] = {}
+    for (subdir, rel), (_source, content) in index.items():
+        sub_dir = staging_root / subdir
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        out_path = sub_dir / rel
+        try:
+            out_path.resolve().relative_to(sub_dir)
+        except ValueError:
+            raise SystemExit(f"refusing unsafe tar path: {subdir}/{rel}")
+        out_path.write_bytes(_apply_patch(rel, content) if patch else content)
+        counts[subdir] = counts.get(subdir, 0) + 1
+    return counts
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     dest = _validate_dest(Path(args.dest))
-    src_dest = _validate_dest(dest.parent / "src")
+    staging_root = _validate_dest(dest.parent)
     stamp = dest / STAMP_NAME
     token = stamp_token()
     if not args.force and stamp.exists() and stamp.read_text() == token:
@@ -374,8 +559,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     x11_root = dest / "X11"
     if x11_root.exists():
         shutil.rmtree(x11_root)
-    if src_dest.exists():
-        shutil.rmtree(src_dest)
+    for sub in _collect_staging_subdirs():
+        sub_dir = staging_root / sub
+        if sub_dir.exists():
+            shutil.rmtree(sub_dir)
     if stamp.exists():
         stamp.unlink()
     dest.mkdir(parents=True, exist_ok=True)
@@ -390,24 +577,21 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             raise SystemExit(f"refusing unsafe tar path: {rel}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(content)
-    src_index = upstream_src_index()
-    if src_index:
-        src_dest.mkdir(parents=True, exist_ok=True)
-        for rel, (_source, content) in src_index.items():
-            out_path = src_dest / rel
-            try:
-                out_path.resolve().relative_to(src_dest)
-            except ValueError:
-                raise SystemExit(f"refusing unsafe tar path: src/{rel}")
-            out_path.write_bytes(_apply_patch(rel, content))
+    src_counts = _stage_indexed(staging_root, upstream_src_index(), patch=True)
+    util_counts = _stage_indexed(staging_root, upstream_util_index(), patch=False)
     stamp.write_text(token)
     print(
         f"  STAGE   {len(index)} upstream header(s) -> {dest}",
         file=sys.stderr,
     )
-    if src_index:
+    for subdir, count in sorted(src_counts.items()):
         print(
-            f"  STAGE   {len(src_index)} upstream source(s) -> {src_dest}",
+            f"  STAGE   {count} upstream source(s) -> {staging_root / subdir}",
+            file=sys.stderr,
+        )
+    for subdir, count in sorted(util_counts.items()):
+        print(
+            f"  STAGE   {count} upstream util file(s) -> {staging_root / subdir}",
             file=sys.stderr,
         )
     return 0

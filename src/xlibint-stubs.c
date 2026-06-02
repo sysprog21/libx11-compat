@@ -1,7 +1,7 @@
 /* Definitions for symbols upstream libX11 expects from XlibInt.c and
  * the lcWrap/lcConv i18n helpers, which libx11-compat does not compile.
  *
- * Copyright 2025 libx11-compat contributors
+ * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
  */
 

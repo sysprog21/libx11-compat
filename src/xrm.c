@@ -3,6 +3,7 @@
 #include <X11/Xresource.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <ctype.h>
 
@@ -594,6 +595,7 @@ void XrmParseCommand(XrmDatabase *pdb,
         prefix = "";
 
     int kept = 1; /* argv[0] always survives. */
+    int original_argc = *argc;
     for (int i = 1; i < *argc;) {
         char *arg = argv[i];
         int matched = 0;
@@ -665,7 +667,13 @@ void XrmParseCommand(XrmDatabase *pdb,
         }
     }
     *argc = kept;
-    argv[kept] = NULL;
+    /* Mirror upstream libX11 ParseCmd.c: only NULL-terminate when
+     * compression actually freed a slot. libXt's _XtAppInit passes a
+     * heap-allocated argv sized exactly to *argc, so writing argv[*argc]
+     * unconditionally smashes the byte past the allocation (caught by
+     * AddressSanitizer in CI). */
+    if (kept < original_argc)
+        argv[kept] = NULL;
 }
 
 const char *XrmLocaleOfDatabase(XrmDatabase db)
@@ -674,8 +682,83 @@ const char *XrmLocaleOfDatabase(XrmDatabase db)
     return "C";
 }
 
-/* Stubs kept harmless until their bucket-based callers actually need
- * traversal. */
+/* The bucket-based quark API (XrmQGetSearchList, XrmQGetSearchResource,
+ * XrmQGetResource) is libXt's primary path into the resource database --
+ * every widget Set/GetValues, every _XtDisplayInitialize boot probe, and
+ * Motif's giant resource cascade all funnel through it. The local
+ * database is a flat linked list of (pattern, type, value) strings rather
+ * than the bucketed quark tree libX11 ships, so we bridge by encoding
+ * the database pointer *and* the widget prefix arrays into the search
+ * list slots, then reassembling the full name/class path inside
+ * XrmQGetSearchResource. Skipping the prefix and looking up the leaf
+ * alone misses every hierarchical Motif resource and can false-hit
+ * unrelated same-leaf entries, so the encoding is load-bearing.
+ *
+ * Search-list layout:
+ *
+ *     [0]                  -> (XrmHashTable) db
+ *     [1]                  -> n      (number of prefix components)
+ *     [2 .. 2 + n - 1]     -> name quarks
+ *     [2 + n .. 2 + 2n -1] -> class quarks
+ *     [2 + 2n]             -> NULL terminator
+ *
+ * The caller-supplied list_length must hold 3 + 2 * n slots or we return
+ * False so libXt's doubling loop in _XtDisplayInitialize widens the
+ * buffer and retries. */
+
+/* Xlib documents resource paths up to 100 components; round to 128 so we
+ * accept the entire spec range without forcing libXt's _XtDisplayInitialize
+ * doubling loop to give up on a legitimate deep widget tree. */
+#define XRM_PREFIX_MAX 128
+
+static char *quarkToCString(XrmQuark q)
+{
+    /* XrmQuarkToString returns NULL for NULLQUARK. Callers prefer an
+     * empty string for "wildcard / unspecified" since XrmGetResource
+     * handles a "" class as "any class". The String typedef is libXt's,
+     * not libX11's, so spell out char * here. */
+    char *s = XrmQuarkToString(q);
+    return s ? s : (char *) "";
+}
+
+static char *quarkListToCString(const XrmQuark *quarks)
+{
+    if (!quarks) {
+        char *empty = malloc(1);
+        if (empty)
+            empty[0] = '\0';
+        return empty;
+    }
+
+    /* Two-pass: first measure the joined length (with overflow guards on
+     * each addition so a pathological quark table cannot wrap size_t),
+     * then allocate and fill. */
+    size_t total = 1;
+    for (int i = 0; quarks[i] != NULLQUARK; i++) {
+        const char *segment = quarkToCString(quarks[i]);
+        size_t len = strlen(segment);
+        size_t sep = (i > 0) ? 1 : 0;
+        if (sep > SIZE_MAX - total || len > SIZE_MAX - total - sep)
+            return NULL;
+        total += sep + len;
+    }
+
+    char *path = malloc(total);
+    if (!path)
+        return NULL;
+
+    size_t off = 0;
+    for (int i = 0; quarks[i] != NULLQUARK; i++) {
+        const char *segment = quarkToCString(quarks[i]);
+        size_t len = strlen(segment);
+        if (i > 0)
+            path[off++] = '.';
+        memcpy(path + off, segment, len);
+        off += len;
+    }
+    path[off] = '\0';
+    return path;
+}
 
 Bool XrmQGetResource(XrmDatabase db,
                      XrmNameList quark_name,
@@ -683,16 +766,46 @@ Bool XrmQGetResource(XrmDatabase db,
                      XrmRepresentation *quark_type_return,
                      XrmValuePtr value_return)
 {
-    (void) db;
-    (void) quark_name;
-    (void) quark_class;
     if (quark_type_return)
         *quark_type_return = 0;
     if (value_return) {
         value_return->addr = NULL;
         value_return->size = 0;
     }
-    return False;
+    if (!db || !quark_name)
+        return False;
+
+    /* Concatenate the quark lists back into the dotted strings the
+     * pattern matcher in XrmGetResource expects. Resource paths and Xt
+     * widget names are not byte-limited, so size these buffers from the
+     * quark strings rather than imposing a fixed stack cap. */
+    char *name_buf = quarkListToCString(quark_name);
+    char *class_buf = quarkListToCString(quark_class);
+    if (!name_buf || !class_buf) {
+        free(name_buf);
+        free(class_buf);
+        return False;
+    }
+
+    char *type_str = NULL;
+    Bool found =
+        XrmGetResource(db, name_buf, class_buf, &type_str, value_return);
+    free(name_buf);
+    free(class_buf);
+    if (!found)
+        return False;
+    if (quark_type_return)
+        *quark_type_return = type_str ? XrmStringToQuark(type_str) : 0;
+    return True;
+}
+
+static int countQuarkList(const XrmQuark *q)
+{
+    int n = 0;
+    if (q)
+        while (q[n] != NULLQUARK)
+            n++;
+    return n;
 }
 
 Bool XrmQGetSearchList(XrmDatabase db,
@@ -701,12 +814,34 @@ Bool XrmQGetSearchList(XrmDatabase db,
                        XrmSearchList list_return,
                        int list_length)
 {
-    (void) db;
-    (void) names;
-    (void) classes;
-    (void) list_return;
-    (void) list_length;
-    return False;
+    /* libXt callers interpret False as "buffer too small" and retry with
+     * larger storage. Pack the database pointer plus the prefix arrays
+     * into the caller's slots so XrmQGetSearchResource can reconstruct
+     * the full path; the layout is documented above. For unsupported
+     * over-deep prefixes, return a valid empty list so callers stop
+     * retrying and the follow-up resource lookup simply fails. */
+    if (!list_return || list_length <= 0)
+        return False;
+    int n_names = countQuarkList(names);
+    int n_classes = countQuarkList(classes);
+    int n = n_names > n_classes ? n_names : n_classes;
+    if (n > XRM_PREFIX_MAX) {
+        list_return[0] = NULL;
+        return True;
+    }
+    int needed = 3 + 2 * n;
+    if (list_length < needed)
+        return False;
+    list_return[0] = (XrmHashTable) db;
+    list_return[1] = (XrmHashTable) (uintptr_t) n;
+    for (int i = 0; i < n; i++) {
+        XrmQuark nq = (i < n_names) ? names[i] : NULLQUARK;
+        XrmQuark cq = (i < n_classes) ? classes[i] : NULLQUARK;
+        list_return[2 + i] = (XrmHashTable) (uintptr_t) nq;
+        list_return[2 + n + i] = (XrmHashTable) (uintptr_t) cq;
+    }
+    list_return[2 + 2 * n] = NULL;
+    return True;
 }
 
 Bool XrmQGetSearchResource(XrmSearchList searchList,
@@ -715,16 +850,36 @@ Bool XrmQGetSearchResource(XrmSearchList searchList,
                            XrmRepresentation *pType,
                            XrmValue *pValue)
 {
-    (void) searchList;
-    (void) name;
-    (void) class;
     if (pType)
         *pType = 0;
     if (pValue) {
         pValue->addr = NULL;
         pValue->size = 0;
     }
-    return False;
+    if (!searchList || !searchList[0])
+        return False;
+    XrmDatabase db = (XrmDatabase) searchList[0];
+    int n = (int) (uintptr_t) searchList[1];
+    if (n < 0 || n > XRM_PREFIX_MAX)
+        return False;
+    if (name == NULLQUARK)
+        return False;
+
+    /* Rebuild the full path: <prefix names...> + leaf name + NULLQUARK,
+     * matched by <prefix classes...> + leaf class + NULLQUARK. +2 for
+     * the leaf slot plus the terminator. */
+    XrmQuark full_names[XRM_PREFIX_MAX + 2];
+    XrmQuark full_classes[XRM_PREFIX_MAX + 2];
+    for (int i = 0; i < n; i++) {
+        full_names[i] = (XrmQuark) (uintptr_t) searchList[2 + i];
+        full_classes[i] = (XrmQuark) (uintptr_t) searchList[2 + n + i];
+    }
+    full_names[n] = name;
+    full_classes[n] = class;
+    full_names[n + 1] = NULLQUARK;
+    full_classes[n + 1] = NULLQUARK;
+
+    return XrmQGetResource(db, full_names, full_classes, pType, pValue);
 }
 
 void XrmQPutResource(XrmDatabase *pdb,

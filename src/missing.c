@@ -2795,3 +2795,45 @@ XModifierKeymap *XDeleteModifiermapEntry(XModifierKeymap *map,
 {
     return NULL;
 }
+
+/* Internal-connection plumbing used by libXt and IM clients to fold extra
+ * descriptors into the Xlib event loop. The SDL-backed display owns no
+ * auxiliary sockets, so there is nothing to watch and nothing to drain:
+ * report an empty fd set and acknowledge watcher registration without
+ * recording the callback. */
+Status XInternalConnectionNumbers(Display *dpy,
+                                  int **fd_return,
+                                  int *count_return)
+{
+    (void) dpy;
+    if (fd_return)
+        *fd_return = NULL;
+    if (count_return)
+        *count_return = 0;
+    return 1;
+}
+
+void XProcessInternalConnection(Display *dpy, int fd)
+{
+    (void) dpy;
+    (void) fd;
+}
+
+Status XAddConnectionWatch(Display *dpy,
+                           XConnectionWatchProc proc,
+                           XPointer data)
+{
+    (void) dpy;
+    (void) proc;
+    (void) data;
+    return 1;
+}
+
+void XRemoveConnectionWatch(Display *dpy,
+                            XConnectionWatchProc proc,
+                            XPointer data)
+{
+    (void) dpy;
+    (void) proc;
+    (void) data;
+}
