@@ -19,6 +19,9 @@
 #include "drawing.h"
 #include "gc.h"
 #include "image.h"
+#include "path/compose.h"
+#include "path/edges.h"
+#include "path/path.h"
 #include "util.h"
 
 int convertEvent(Display *display,
@@ -28,11 +31,16 @@ int convertEvent(Display *display,
 extern Bool mouseFrozen;
 
 #include <dirent.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 static int failures = 0;
 
@@ -117,6 +125,13 @@ static int pixel_is_rgb(SDL_Surface *surface,
                         Uint8 red,
                         Uint8 green,
                         Uint8 blue);
+static int pixel_is_rgba(SDL_Surface *surface,
+                         int x,
+                         int y,
+                         Uint8 red,
+                         Uint8 green,
+                         Uint8 blue,
+                         Uint8 alpha);
 
 static int count_open_file_descriptors(void)
 {
@@ -635,13 +650,25 @@ static int pixel_is_rgb(SDL_Surface *surface,
                         Uint8 green,
                         Uint8 blue)
 {
+    return pixel_is_rgba(surface, x, y, red, green, blue, 255);
+}
+
+static int pixel_is_rgba(SDL_Surface *surface,
+                         int x,
+                         int y,
+                         Uint8 red,
+                         Uint8 green,
+                         Uint8 blue,
+                         Uint8 alpha)
+{
     Uint8 gotRed = 0;
     Uint8 gotGreen = 0;
     Uint8 gotBlue = 0;
     Uint8 gotAlpha = 0;
     SDL_GetRGBA(getPixel(surface, (unsigned int) x, (unsigned int) y),
                 surface->format, &gotRed, &gotGreen, &gotBlue, &gotAlpha);
-    return gotRed == red && gotGreen == green && gotBlue == blue;
+    return gotRed == red && gotGreen == green && gotBlue == blue &&
+           gotAlpha == alpha;
 }
 
 static int test_pixmaps(Display *display)
@@ -830,6 +857,562 @@ static int test_pixmaps(Display *display)
     return 1;
 }
 
+static int test_drawables_and_gcs(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Pixmap pixmap =
+        XCreatePixmap(display, root, 32, 32, DefaultDepth(display, 0));
+    CHECK(pixmap != None, "drawables pixmap creation failed");
+    GC gc = XCreateGC(display, pixmap, 0, NULL);
+    CHECK(gc, "drawables GC creation failed");
+
+    CHECK(XSetForeground(display, gc, 0xFF000000), "set black failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 32, 32),
+          "clear drawable failed");
+
+    XPoint triangle[] = {{2, 2}, {14, 2}, {2, 14}};
+    CHECK(XSetForeground(display, gc, 0xFFFF0000), "set red failed");
+    CHECK(
+        XFillPolygon(display, pixmap, gc, triangle, 3, Convex, CoordModeOrigin),
+        "XFillPolygon convex triangle failed");
+
+    XPoint previousTriangle[] = {{18, 2}, {12, 0}, {-12, 12}};
+    CHECK(XSetForeground(display, gc, 0xFF0000FF), "set blue failed");
+    CHECK(XFillPolygon(display, pixmap, gc, previousTriangle, 3, Convex,
+                       CoordModePrevious),
+          "XFillPolygon CoordModePrevious failed");
+
+    XPoint bowtie[] = {{4, 18}, {14, 30}, {14, 18}, {4, 30}};
+    CHECK(XSetFillRule(display, gc, EvenOddRule), "set even-odd failed");
+    CHECK(XSetForeground(display, gc, 0xFFFFFF00), "set yellow failed");
+    CHECK(
+        XFillPolygon(display, pixmap, gc, bowtie, 4, Complex, CoordModeOrigin),
+        "XFillPolygon bowtie failed");
+
+    XRectangle clip = {.x = 24, .y = 24, .width = 4, .height = 4};
+    CHECK(XSetClipRectangles(display, gc, 0, 0, &clip, 1, Unsorted),
+          "set polygon clip failed");
+    XPoint clippedPoly[] = {{22, 22}, {31, 22}, {31, 31}, {22, 31}};
+    CHECK(XSetForeground(display, gc, 0xFF00FF00), "set green failed");
+    CHECK(XFillPolygon(display, pixmap, gc, clippedPoly, 4, Convex,
+                       CoordModeOrigin),
+          "XFillPolygon clipped square failed");
+    CHECK(XSetClipMask(display, gc, None), "clear polygon clip failed");
+
+    XArc fillArcs[] = {
+        {.x = 18,
+         .y = 18,
+         .width = 8,
+         .height = 8,
+         .angle1 = 0,
+         .angle2 = 360 * 64},
+        {.x = 24,
+         .y = 2,
+         .width = 6,
+         .height = 6,
+         .angle1 = 0,
+         .angle2 = 360 * 64},
+    };
+    CHECK(XSetForeground(display, gc, 0xFFFF00FF), "set magenta failed");
+    CHECK(XFillArcs(display, pixmap, gc, fillArcs, 2), "XFillArcs failed");
+    XArc drawArcs[] = {
+        {.x = 2,
+         .y = 22,
+         .width = 8,
+         .height = 8,
+         .angle1 = 0,
+         .angle2 = 90 * 64},
+        {.x = 16,
+         .y = 2,
+         .width = 8,
+         .height = 8,
+         .angle1 = 0,
+         .angle2 = 90 * 64},
+    };
+    CHECK(XSetForeground(display, gc, 0xFFFFFFFF), "set white failed");
+    CHECK(XDrawArcs(display, pixmap, gc, drawArcs, 2), "XDrawArcs failed");
+
+    CHECK(XSetForeground(display, gc, 0xFF112233), "set base failed");
+    CHECK(XSetFunction(display, gc, GXcopy), "set GXcopy failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 3, 3),
+          "raster base fill failed");
+    CHECK(XSetForeground(display, gc, 0xFF010203), "set xor source failed");
+    CHECK(XSetFunction(display, gc, GXxor), "set GXxor failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 1, 1),
+          "GXxor fill rectangle failed");
+    CHECK(XDrawPoint(display, pixmap, gc, 1, 0), "GXxor draw point failed");
+    CHECK(XDrawLine(display, pixmap, gc, 0, 1, 2, 1), "GXxor draw line failed");
+    CHECK(XSetFunction(display, gc, GXnoop), "set GXnoop failed");
+    CHECK(XSetForeground(display, gc, 0xFFFFFFFF), "set noop source failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 2, 2, 1, 1),
+          "GXnoop fill rectangle failed");
+    CHECK(XSetFunction(display, gc, GXcopy), "set mask base copy failed");
+    CHECK(XSetForeground(display, gc, 0xFF112233), "set mask base failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 3, 0, 1, 1),
+          "plane-mask base fill failed");
+    CHECK(XSetPlaneMask(display, gc, 0x000000FF), "set plane mask failed");
+    CHECK(XSetForeground(display, gc, 0xFF010203),
+          "set mask xor source failed");
+    CHECK(XSetFunction(display, gc, GXxor), "set masked GXxor failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 3, 0, 1, 1),
+          "plane-masked GXxor fill rectangle failed");
+    CHECK(XSetPlaneMask(display, gc, 0xFFFFFFFF), "reset plane mask failed");
+    CHECK(XSetFunction(display, gc, GXcopy), "reset GXcopy failed");
+    XPoint alphaPoly[] = {{4, 0}, {8, 0}, {4, 4}};
+    CHECK(XSetForeground(display, gc, 0x80112233), "set alpha polygon failed");
+    CHECK(XFillPolygon(display, pixmap, gc, alphaPoly, 3, Convex,
+                       CoordModeOrigin),
+          "alpha XFillPolygon failed");
+    CHECK(XSetForeground(display, gc, 0x80667788), "set alpha arc failed");
+    CHECK(XFillArc(display, pixmap, gc, 10, 0, 6, 6, 0, 360 * 64),
+          "alpha XFillArc failed");
+
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(pixmap, renderer);
+    SDL_Surface *surface = getRenderSurface(renderer);
+    CHECK(surface, "getRenderSurface for drawables failed");
+    int bowtieYellowPixels = 0;
+    for (int by = 18; by < 31; by++) {
+        for (int bx = 4; bx < 15; bx++) {
+            if (pixel_is_rgb(surface, bx, by, 255, 255, 0))
+                bowtieYellowPixels++;
+        }
+    }
+    CHECK(pixel_is_rgb(surface, 4, 4, 255, 0, 0),
+          "convex triangle did not fill expected pixel");
+    CHECK(pixel_is_rgb(surface, 22, 4, 0, 0, 255),
+          "CoordModePrevious polygon did not fill expected pixel");
+    CHECK(bowtieYellowPixels > 0, "even-odd bowtie produced no filled pixels");
+    CHECK(pixel_is_rgb(surface, 25, 25, 0, 255, 0),
+          "clipped polygon did not fill inside clip");
+    CHECK(pixel_is_rgb(surface, 28, 28, 0, 0, 0),
+          "clipped polygon wrote outside clip");
+    CHECK(pixel_is_rgb(surface, 22, 22, 255, 0, 255),
+          "first XFillArcs arc did not land");
+    CHECK(pixel_is_rgb(surface, 27, 5, 255, 0, 255),
+          "second XFillArcs arc did not land");
+    CHECK(pixel_is_rgb(surface, 10, 26, 255, 255, 255),
+          "first XDrawArcs arc did not land");
+    CHECK(pixel_is_rgb(surface, 24, 6, 255, 255, 255),
+          "second XDrawArcs arc did not land");
+    CHECK(pixel_is_rgb(surface, 0, 0, 0x10, 0x20, 0x30),
+          "GXxor fill rectangle produced wrong pixel");
+    CHECK(pixel_is_rgb(surface, 1, 0, 0x10, 0x20, 0x30),
+          "GXxor draw point produced wrong pixel");
+    CHECK(pixel_is_rgb(surface, 2, 1, 0x10, 0x20, 0x30),
+          "GXxor draw line produced wrong pixel");
+    CHECK(pixel_is_rgba(surface, 0, 0, 0x10, 0x20, 0x30, 255),
+          "GXxor fill rectangle did not preserve alpha");
+    CHECK(pixel_is_rgba(surface, 1, 0, 0x10, 0x20, 0x30, 255),
+          "GXxor draw point did not preserve alpha");
+    CHECK(pixel_is_rgb(surface, 2, 2, 0x11, 0x22, 0x33),
+          "GXnoop changed the destination pixel");
+    CHECK(pixel_is_rgba(surface, 3, 0, 0x11, 0x22, 0x30, 255),
+          "GXxor ignored the GC plane mask");
+    CHECK(pixel_is_rgba(surface, 5, 1, 0x11, 0x22, 0x33, 0x80),
+          "GXcopy polygon fill blended instead of replacing");
+    CHECK(pixel_is_rgba(surface, 13, 3, 0x66, 0x77, 0x88, 0x80),
+          "GXcopy arc fill blended instead of replacing");
+    SDL_FreeSurface(surface);
+
+    Pixmap pathArcPixmap =
+        XCreatePixmap(display, root, 40, 40, DefaultDepth(display, 0));
+    CHECK(pathArcPixmap != None, "path arc pixmap creation failed");
+    GC pathArcGc = XCreateGC(display, pathArcPixmap, 0, NULL);
+    CHECK(pathArcGc, "path arc GC creation failed");
+    CHECK(XSetForeground(display, pathArcGc, 0xFF000000),
+          "path arc black failed");
+    CHECK(XFillRectangle(display, pathArcPixmap, pathArcGc, 0, 0, 40, 40),
+          "path arc clear failed");
+    CHECK(XSetForeground(display, pathArcGc, 0xFF00FFFF),
+          "path arc cyan failed");
+    CHECK(
+        XFillArc(display, pathArcPixmap, pathArcGc, 8, 8, 24, 24, 0, 360 * 64),
+        "large path XFillArc failed");
+    CHECK(XSetForeground(display, pathArcGc, 0xFFFFFFFF),
+          "path arc white failed");
+    CHECK(XDrawArc(display, pathArcPixmap, pathArcGc, 2, 2, 24, 24, 0, 90 * 64),
+          "large path XDrawArc failed");
+    XArc overlappingArcs[] = {
+        {.x = 4,
+         .y = 16,
+         .width = 20,
+         .height = 20,
+         .angle1 = 0,
+         .angle2 = 360 * 64},
+        {.x = 14,
+         .y = 16,
+         .width = 20,
+         .height = 20,
+         .angle1 = 0,
+         .angle2 = 360 * 64},
+    };
+    CHECK(XSetForeground(display, pathArcGc, 0xFFFFAA00),
+          "path arc orange failed");
+    CHECK(XFillArcs(display, pathArcPixmap, pathArcGc, overlappingArcs, 2),
+          "overlapping path XFillArcs failed");
+    GET_RENDERER(pathArcPixmap, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface, "getRenderSurface for path arcs failed");
+    CHECK(pixel_is_rgb(surface, 20, 12, 0, 255, 255),
+          "path XFillArc did not fill center");
+    CHECK(pixel_is_rgb(surface, 26, 14, 255, 255, 255),
+          "path XDrawArc did not draw expected point");
+    CHECK(pixel_is_rgb(surface, 19, 26, 255, 170, 0),
+          "overlapping XFillArcs canceled the overlap");
+    SDL_FreeSurface(surface);
+    XFreeGC(display, pathArcGc);
+    XFreePixmap(display, pathArcPixmap);
+
+    Pixmap widePixmap =
+        XCreatePixmap(display, root, 48, 48, DefaultDepth(display, 0));
+    CHECK(widePixmap != None, "wide stroke pixmap creation failed");
+    GC wideGc = XCreateGC(display, widePixmap, 0, NULL);
+    CHECK(wideGc, "wide stroke GC creation failed");
+    CHECK(XSetForeground(display, wideGc, 0xFF000000), "wide black failed");
+    CHECK(XFillRectangle(display, widePixmap, wideGc, 0, 0, 48, 48),
+          "wide clear failed");
+    CHECK(XSetForeground(display, wideGc, 0xFFFF0000), "wide red failed");
+    CHECK(XSetLineAttributes(display, wideGc, 6, LineSolid, CapButt, JoinMiter),
+          "wide line attributes failed");
+    CHECK(XDrawLine(display, widePixmap, wideGc, 4, 8, 28, 8),
+          "wide XDrawLine failed");
+    CHECK(XSetForeground(display, wideGc, 0xFF00FF00), "wide green failed");
+    CHECK(
+        XSetLineAttributes(display, wideGc, 6, LineSolid, CapRound, JoinRound),
+        "round line attributes failed");
+    XPoint widePoints[] = {{8, 20}, {20, 32}, {32, 20}};
+    CHECK(
+        XDrawLines(display, widePixmap, wideGc, widePoints, 3, CoordModeOrigin),
+        "wide XDrawLines failed");
+    CHECK(XSetForeground(display, wideGc, 0xFF0000FF), "wide blue failed");
+    CHECK(XSetLineAttributes(display, wideGc, 6, LineSolid, CapProjecting,
+                             JoinBevel),
+          "projecting line attributes failed");
+    CHECK(XDrawRectangle(display, widePixmap, wideGc, 34, 4, 8, 8),
+          "wide XDrawRectangle failed");
+    CHECK(XSetForeground(display, wideGc, 0xFFFFFF00), "wide yellow failed");
+    CHECK(
+        XSetLineAttributes(display, wideGc, 6, LineSolid, CapRound, JoinRound),
+        "zero-length round attributes failed");
+    CHECK(XDrawLine(display, widePixmap, wideGc, 8, 40, 8, 40),
+          "zero-length round XDrawLine failed");
+    CHECK(XSetForeground(display, wideGc, 0xFFFF00FF), "wide magenta failed");
+    CHECK(XSetLineAttributes(display, wideGc, 6, LineSolid, CapProjecting,
+                             JoinBevel),
+          "zero-length projecting attributes failed");
+    XSegment zeroSegment = {28, 40, 28, 40};
+    CHECK(XDrawSegments(display, widePixmap, wideGc, &zeroSegment, 1),
+          "zero-length projecting XDrawSegments failed");
+    char zeroDash[] = {4, 4};
+    CHECK(XSetDashes(display, wideGc, 0, zeroDash, 2),
+          "zero-length dash setup failed");
+    CHECK(XSetForeground(display, wideGc, 0xFF00FFFF), "wide cyan failed");
+    CHECK(XSetLineAttributes(display, wideGc, 6, LineOnOffDash, CapRound,
+                             JoinRound),
+          "zero-length dashed round attributes failed");
+    CHECK(XDrawLine(display, widePixmap, wideGc, 40, 40, 40, 40),
+          "zero-length dashed round XDrawLine failed");
+    GET_RENDERER(widePixmap, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface, "getRenderSurface for wide strokes failed");
+    CHECK(pixel_is_rgb(surface, 12, 8, 255, 0, 0),
+          "wide butt line missed center");
+    CHECK(pixel_is_rgb(surface, 12, 10, 255, 0, 0),
+          "wide butt line missed half-width pixel");
+    CHECK(pixel_is_rgb(surface, 20, 28, 0, 255, 0),
+          "wide round join missed interior");
+    CHECK(pixel_is_rgb(surface, 42, 8, 0, 0, 255),
+          "wide rectangle missed right edge");
+    CHECK(pixel_is_rgb(surface, 8, 40, 255, 255, 0),
+          "zero-length round line was dropped");
+    CHECK(pixel_is_rgb(surface, 28, 40, 255, 0, 255),
+          "zero-length projecting segment was dropped");
+    CHECK(pixel_is_rgb(surface, 40, 40, 0, 255, 255),
+          "zero-length dashed round line was dropped");
+    SDL_FreeSurface(surface);
+    XFreeGC(display, wideGc);
+    XFreePixmap(display, widePixmap);
+
+    Pixmap dashPixmap =
+        XCreatePixmap(display, root, 32, 20, DefaultDepth(display, 0));
+    CHECK(dashPixmap != None, "dash pixmap creation failed");
+    GC dashGc = XCreateGC(display, dashPixmap, 0, NULL);
+    CHECK(dashGc, "dash GC creation failed");
+    CHECK(XSetForeground(display, dashGc, 0xFF000000), "dash black failed");
+    CHECK(XFillRectangle(display, dashPixmap, dashGc, 0, 0, 32, 20),
+          "dash clear failed");
+    char dashList[] = {4, 4};
+    CHECK(XSetDashes(display, dashGc, 0, dashList, 2), "XSetDashes failed");
+    CHECK(XSetForeground(display, dashGc, 0xFFFF0000), "dash red failed");
+    CHECK(XSetLineAttributes(display, dashGc, 1, LineOnOffDash, CapButt,
+                             JoinMiter),
+          "on-off dash attributes failed");
+    CHECK(XDrawLine(display, dashPixmap, dashGc, 2, 4, 24, 4),
+          "LineOnOffDash draw failed");
+    CHECK(XSetForeground(display, dashGc, 0xFF00FF00), "dash green failed");
+    CHECK(XSetBackground(display, dashGc, 0xFF0000FF), "dash blue failed");
+    CHECK(XSetLineAttributes(display, dashGc, 1, LineDoubleDash, CapButt,
+                             JoinMiter),
+          "double dash attributes failed");
+    CHECK(XDrawLine(display, dashPixmap, dashGc, 2, 12, 24, 12),
+          "LineDoubleDash draw failed");
+    GET_RENDERER(dashPixmap, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface, "getRenderSurface for dashed strokes failed");
+    CHECK(pixel_is_rgb(surface, 3, 4, 255, 0, 0),
+          "LineOnOffDash missed on dash");
+    CHECK(pixel_is_rgb(surface, 7, 4, 0, 0, 0), "LineOnOffDash drew off dash");
+    CHECK(pixel_is_rgb(surface, 3, 12, 0, 255, 0),
+          "LineDoubleDash missed foreground dash");
+    CHECK(pixel_is_rgb(surface, 7, 12, 0, 0, 255),
+          "LineDoubleDash missed background dash");
+    SDL_FreeSurface(surface);
+    XFreeGC(display, dashGc);
+    XFreePixmap(display, dashPixmap);
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, pixmap);
+    return 1;
+}
+
+/* Regression coverage for the fixes that closed out the Drawables / Pixmaps /
+ * GC review pass: small-arc ArcChord routing, batched point and rectangle
+ * primitives, non-GXcopy line batches, and dashed small arcs. */
+static int test_drawing_coverage(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+
+    Pixmap arcPx =
+        XCreatePixmap(display, root, 24, 12, DefaultDepth(display, 0));
+    CHECK(arcPx != None, "arc-mode pixmap creation failed");
+    GC arcGc = XCreateGC(display, arcPx, 0, NULL);
+    CHECK(arcGc, "arc-mode GC creation failed");
+    CHECK(XSetForeground(display, arcGc, 0xFF000000), "arc-mode black failed");
+    CHECK(XFillRectangle(display, arcPx, arcGc, 0, 0, 24, 12),
+          "arc-mode clear failed");
+    CHECK(XSetForeground(display, arcGc, 0xFFFF0000), "arc-mode red failed");
+    /* Width 10 keeps us under the legacy 16-pixel cutoff. Before the fix,
+     * the small-arc fallback always rendered as ArcPieSlice and would have
+     * filled the center pixel for both modes. After the fix the path
+     * accelerator handles ArcChord regardless of size, so the center pixel
+     * stays unfilled for chord but stays filled for pie. */
+    CHECK(XSetArcMode(display, arcGc, ArcChord), "set ArcChord failed");
+    CHECK(XFillArc(display, arcPx, arcGc, 0, 1, 10, 10, 0, 90 * 64),
+          "small ArcChord fill failed");
+    CHECK(XSetArcMode(display, arcGc, ArcPieSlice), "set ArcPieSlice failed");
+    CHECK(XFillArc(display, arcPx, arcGc, 12, 1, 10, 10, 0, 90 * 64),
+          "small ArcPieSlice fill failed");
+    SDL_Renderer *arcRenderer;
+    GET_RENDERER(arcPx, arcRenderer);
+    SDL_Surface *arcSurface = getRenderSurface(arcRenderer);
+    CHECK(arcSurface, "arc-mode getRenderSurface failed");
+    /* Pixel (cx+2, cy-1) relative to each arc lies inside the pie wedge
+     * triangle but on the center side of the chord, i.e. inside pie and
+     * outside chord. Chord arc is at (0,1); pie arc is at (12,1). */
+    CHECK(pixel_is_rgb(arcSurface, 7, 5, 0, 0, 0),
+          "small ArcChord still filled the triangle (legacy pie fallback?)");
+    CHECK(pixel_is_rgb(arcSurface, 19, 5, 255, 0, 0),
+          "small ArcPieSlice failed to fill the wedge triangle");
+    SDL_FreeSurface(arcSurface);
+    XFreeGC(display, arcGc);
+    XFreePixmap(display, arcPx);
+
+    /* XDrawPoints / XDrawRectangles were previously WARN_UNIMPLEMENTED
+     * stubs in missing.c. Exercise both batched forms and verify the
+     * pixels actually land. */
+    Pixmap batchPx =
+        XCreatePixmap(display, root, 16, 16, DefaultDepth(display, 0));
+    CHECK(batchPx != None, "batch pixmap creation failed");
+    GC batchGc = XCreateGC(display, batchPx, 0, NULL);
+    CHECK(batchGc, "batch GC creation failed");
+    CHECK(XSetForeground(display, batchGc, 0xFF000000), "batch black failed");
+    CHECK(XFillRectangle(display, batchPx, batchGc, 0, 0, 16, 16),
+          "batch clear failed");
+    CHECK(XSetForeground(display, batchGc, 0xFFFFFFFF), "batch white failed");
+    XPoint originPts[] = {{1, 1}, {2, 2}, {3, 3}};
+    CHECK(XDrawPoints(display, batchPx, batchGc, originPts, 3, CoordModeOrigin),
+          "XDrawPoints CoordModeOrigin failed");
+    XPoint prevPts[] = {{10, 1}, {1, 1}, {1, 1}};
+    CHECK(XDrawPoints(display, batchPx, batchGc, prevPts, 3, CoordModePrevious),
+          "XDrawPoints CoordModePrevious failed");
+    CHECK(XSetForeground(display, batchGc, 0xFF0000FF), "batch blue failed");
+    XRectangle rects[] = {{5, 8, 3, 3}, {10, 10, 4, 4}};
+    CHECK(XDrawRectangles(display, batchPx, batchGc, rects, 2),
+          "XDrawRectangles failed");
+    SDL_Renderer *batchRenderer;
+    GET_RENDERER(batchPx, batchRenderer);
+    SDL_Surface *batchSurface = getRenderSurface(batchRenderer);
+    CHECK(batchSurface, "batch getRenderSurface failed");
+    CHECK(pixel_is_rgb(batchSurface, 1, 1, 255, 255, 255),
+          "XDrawPoints origin point 0 missing");
+    CHECK(pixel_is_rgb(batchSurface, 3, 3, 255, 255, 255),
+          "XDrawPoints origin point 2 missing");
+    CHECK(pixel_is_rgb(batchSurface, 10, 1, 255, 255, 255),
+          "XDrawPoints previous start point missing");
+    CHECK(pixel_is_rgb(batchSurface, 11, 2, 255, 255, 255),
+          "XDrawPoints CoordModePrevious accumulation broke");
+    CHECK(pixel_is_rgb(batchSurface, 12, 3, 255, 255, 255),
+          "XDrawPoints CoordModePrevious second accumulation broke");
+    /* XDrawRectangles per X11 spec outlines (w+1)x(h+1): rect {5,8,3,3}
+     * has corners (5,8) and (8,11); rect {10,10,4,4} has corners
+     * (10,10) and (14,14). The far corner check would fail under the
+     * old SDL w-by-h behavior, which only reached (13,13). */
+    CHECK(pixel_is_rgb(batchSurface, 5, 8, 0, 0, 255),
+          "XDrawRectangles first rect missing top-left corner");
+    CHECK(pixel_is_rgb(batchSurface, 8, 11, 0, 0, 255),
+          "XDrawRectangles first rect missing bottom-right corner");
+    CHECK(pixel_is_rgb(batchSurface, 14, 14, 0, 0, 255),
+          "XDrawRectangles second rect missing X11-spec bottom-right corner");
+    /* Interior must stay background to confirm the call outlined, not filled.
+     */
+    CHECK(pixel_is_rgb(batchSurface, 6, 9, 0, 0, 0),
+          "XDrawRectangles filled instead of outlined");
+    CHECK(pixel_is_rgb(batchSurface, 12, 12, 0, 0, 0),
+          "XDrawRectangles filled second rect instead of outlining");
+    SDL_FreeSurface(batchSurface);
+    XFreeGC(display, batchGc);
+    XFreePixmap(display, batchPx);
+
+    /* Non-GXcopy XDrawSegments and XDrawLines: before the fix, batched
+     * line primitives fell through to plain SDL blending and silently
+     * dropped the GC function. With the software walker the XOR pattern
+     * applies to every span pixel. */
+    Pixmap xorPx =
+        XCreatePixmap(display, root, 16, 16, DefaultDepth(display, 0));
+    CHECK(xorPx != None, "xor pixmap creation failed");
+    GC xorGc = XCreateGC(display, xorPx, 0, NULL);
+    CHECK(xorGc, "xor GC creation failed");
+    CHECK(XSetForeground(display, xorGc, 0xFF112233), "xor base failed");
+    CHECK(XFillRectangle(display, xorPx, xorGc, 0, 0, 16, 16),
+          "xor clear failed");
+    CHECK(XSetForeground(display, xorGc, 0xFF010203), "xor source failed");
+    CHECK(XSetFunction(display, xorGc, GXxor), "xor set GXxor failed");
+    XSegment segments[] = {{0, 4, 5, 4}, {8, 4, 12, 4}};
+    CHECK(XDrawSegments(display, xorPx, xorGc, segments, 2),
+          "GXxor XDrawSegments failed");
+    XPoint linePts[] = {{0, 8}, {5, 8}, {10, 8}};
+    CHECK(XDrawLines(display, xorPx, xorGc, linePts, 3, CoordModeOrigin),
+          "GXxor XDrawLines failed");
+    SDL_Renderer *xorRenderer;
+    GET_RENDERER(xorPx, xorRenderer);
+    SDL_Surface *xorSurface = getRenderSurface(xorRenderer);
+    CHECK(xorSurface, "xor getRenderSurface failed");
+    /* 0x11^0x01=0x10, 0x22^0x02=0x20, 0x33^0x03=0x30. */
+    CHECK(pixel_is_rgb(xorSurface, 0, 4, 0x10, 0x20, 0x30),
+          "GXxor XDrawSegments left endpoint not XORed");
+    CHECK(pixel_is_rgb(xorSurface, 12, 4, 0x10, 0x20, 0x30),
+          "GXxor XDrawSegments right endpoint not XORed");
+    /* Gap between the two segments stays at the base color. */
+    CHECK(pixel_is_rgb(xorSurface, 6, 4, 0x11, 0x22, 0x33),
+          "GXxor XDrawSegments filled the gap between disjoint segments");
+    CHECK(pixel_is_rgb(xorSurface, 0, 8, 0x10, 0x20, 0x30),
+          "GXxor XDrawLines start not XORed");
+    CHECK(pixel_is_rgb(xorSurface, 5, 8, 0x10, 0x20, 0x30),
+          "GXxor XDrawLines join was XORed twice");
+    CHECK(pixel_is_rgb(xorSurface, 10, 8, 0x10, 0x20, 0x30),
+          "GXxor XDrawLines end not XORed");
+    SDL_FreeSurface(xorSurface);
+    XFreeGC(display, xorGc);
+    XFreePixmap(display, xorPx);
+
+    Pixmap dashSegPx =
+        XCreatePixmap(display, root, 16, 16, DefaultDepth(display, 0));
+    CHECK(dashSegPx != None, "dash segment pixmap creation failed");
+    GC dashSegGc = XCreateGC(display, dashSegPx, 0, NULL);
+    CHECK(dashSegGc, "dash segment GC creation failed");
+    CHECK(XSetForeground(display, dashSegGc, 0xFF000000),
+          "dash segment black failed");
+    CHECK(XFillRectangle(display, dashSegPx, dashSegGc, 0, 0, 16, 16),
+          "dash segment clear failed");
+    /* Pattern {2, 2} with length-8 segments gives a verifiable on/off/on/off
+     * sequence. The off-dash pixels (3 and 7 along each segment) must be
+     * background; pass a length where only an end-pixel check would pass
+     * trivially even if dashes were ignored. */
+    char dashSegmentsPattern[] = {2, 2};
+    CHECK(XSetDashes(display, dashSegGc, 0, dashSegmentsPattern, 2),
+          "dash segment XSetDashes failed");
+    CHECK(XSetForeground(display, dashSegGc, 0xFFFFFFFF),
+          "dash segment white failed");
+    CHECK(XSetLineAttributes(display, dashSegGc, 1, LineOnOffDash, CapButt,
+                             JoinMiter),
+          "dash segment attributes failed");
+    XSegment dashSegments[] = {{0, 12, 8, 12}, {0, 14, 8, 14}};
+    CHECK(XDrawSegments(display, dashSegPx, dashSegGc, dashSegments, 2),
+          "dashed XDrawSegments failed");
+    SDL_Renderer *dashSegRenderer;
+    GET_RENDERER(dashSegPx, dashSegRenderer);
+    SDL_Surface *dashSegSurface = getRenderSurface(dashSegRenderer);
+    CHECK(dashSegSurface, "dash segment getRenderSurface failed");
+    CHECK(pixel_is_rgb(dashSegSurface, 0, 12, 255, 255, 255),
+          "dashed XDrawSegments first segment did not start on");
+    CHECK(pixel_is_rgb(dashSegSurface, 3, 12, 0, 0, 0),
+          "dashed XDrawSegments off-gap pixel was drawn");
+    CHECK(pixel_is_rgb(dashSegSurface, 4, 12, 255, 255, 255),
+          "dashed XDrawSegments second on-dash missing");
+    /* Segment 2 must restart the dash pattern — same gap at the same
+     * relative offset confirms the per-segment phase reset. */
+    CHECK(pixel_is_rgb(dashSegSurface, 0, 14, 255, 255, 255),
+          "dashed XDrawSegments did not reset dash phase");
+    CHECK(pixel_is_rgb(dashSegSurface, 3, 14, 0, 0, 0),
+          "dashed XDrawSegments reset broke off-dash on segment 2");
+    SDL_FreeSurface(dashSegSurface);
+    XFreeGC(display, dashSegGc);
+    XFreePixmap(display, dashSegPx);
+
+    /* Dashed small arcs: before shouldUsePathArc gated on lineStyle, a
+     * sub-16 arc with LineOnOffDash routed to the legacy point spray
+     * which ignores the dash list entirely. Now the dashed arc must
+     * leave visible gaps. We compare against the same arc drawn solid
+     * and require the dashed pixel count to be strictly smaller. */
+    Pixmap dashArcPx =
+        XCreatePixmap(display, root, 32, 14, DefaultDepth(display, 0));
+    CHECK(dashArcPx != None, "dash-arc pixmap creation failed");
+    GC dashArcGc = XCreateGC(display, dashArcPx, 0, NULL);
+    CHECK(dashArcGc, "dash-arc GC creation failed");
+    CHECK(XSetForeground(display, dashArcGc, 0xFF000000),
+          "dash-arc black failed");
+    CHECK(XFillRectangle(display, dashArcPx, dashArcGc, 0, 0, 32, 14),
+          "dash-arc clear failed");
+    CHECK(XSetForeground(display, dashArcGc, 0xFFFFFFFF),
+          "dash-arc white failed");
+    CHECK(XDrawArc(display, dashArcPx, dashArcGc, 1, 1, 12, 12, 0, 360 * 64),
+          "solid small XDrawArc failed");
+    char dashPattern[] = {2, 2};
+    CHECK(XSetDashes(display, dashArcGc, 0, dashPattern, 2),
+          "dash-arc XSetDashes failed");
+    CHECK(XSetLineAttributes(display, dashArcGc, 1, LineOnOffDash, CapButt,
+                             JoinMiter),
+          "dash-arc XSetLineAttributes failed");
+    CHECK(XDrawArc(display, dashArcPx, dashArcGc, 17, 1, 12, 12, 0, 360 * 64),
+          "dashed small XDrawArc failed");
+    SDL_Renderer *dashArcRenderer;
+    GET_RENDERER(dashArcPx, dashArcRenderer);
+    SDL_Surface *dashArcSurface = getRenderSurface(dashArcRenderer);
+    CHECK(dashArcSurface, "dash-arc getRenderSurface failed");
+    int solidCount = 0;
+    int dashedCount = 0;
+    for (int yy = 0; yy < 14; yy++) {
+        for (int xx = 0; xx < 16; xx++) {
+            if (pixel_is_rgb(dashArcSurface, xx, yy, 255, 255, 255))
+                solidCount++;
+        }
+        for (int xx = 16; xx < 32; xx++) {
+            if (pixel_is_rgb(dashArcSurface, xx, yy, 255, 255, 255))
+                dashedCount++;
+        }
+    }
+    CHECK(solidCount > 0, "solid small XDrawArc rendered nothing");
+    CHECK(dashedCount > 0, "dashed small XDrawArc rendered nothing");
+    CHECK(dashedCount < solidCount,
+          "dashed XDrawArc covered as many pixels as solid (legacy fallback?)");
+    SDL_FreeSurface(dashArcSurface);
+    XFreeGC(display, dashArcGc);
+    XFreePixmap(display, dashArcPx);
+
+    return 1;
+}
+
 static int test_images(Display *display)
 {
     CHECK(XImageByteOrder(display) == ImageByteOrder(display),
@@ -1001,6 +1584,117 @@ static int test_images(Display *display)
     XDestroyImage(cacheImage);
     XFreeGC(display, imageGc);
     XDestroyWindow(display, secondWindow);
+    return 1;
+}
+
+static int test_path_accelerator(Display *display)
+{
+    (void) display;
+
+    Path cubic;
+    CHECK(pathInit(&cubic), "pathInit failed");
+    CHECK(pathMoveTo(&cubic, 0.0, 0.0), "pathMoveTo failed");
+    CHECK(pathCubicTo(&cubic, 0.0, 10.0, 10.0, 10.0, 10.0, 0.0),
+          "pathCubicTo failed");
+    PathPoint *points = NULL;
+    size_t count = 0;
+    CHECK(pathFlatten(&cubic, 0.25, &points, &count), "pathFlatten failed");
+    CHECK(count > 2, "cubic flattened to too few points");
+    for (size_t i = 0; i < count; i++) {
+        CHECK(points[i].x >= -0.001 && points[i].x <= 10.001,
+              "flattened x left expected bounds");
+        CHECK(points[i].y >= -0.001 && points[i].y <= 10.001,
+              "flattened y left expected bounds");
+    }
+    free(points);
+    pathFree(&cubic);
+
+    Path cusp;
+    CHECK(pathInit(&cusp), "cusp pathInit failed");
+    CHECK(pathMoveTo(&cusp, 0.0, 0.0), "cusp pathMoveTo failed");
+    CHECK(pathCubicTo(&cusp, 1000.0, 0.001, -1000.0, -0.001, 1.0, 0.0),
+          "cusp pathCubicTo failed");
+    points = NULL;
+    count = 0;
+    CHECK(pathFlatten(&cusp, 0.25, &points, &count),
+          "near-cusp cubic should flatten with default tolerance");
+    CHECK(count < 65536, "near-cusp cubic exceeded output cap");
+    free(points);
+    pathFree(&cusp);
+
+    Path overdeep;
+    CHECK(pathInit(&overdeep), "overdeep pathInit failed");
+    CHECK(pathMoveTo(&overdeep, 0.0, 0.0), "overdeep pathMoveTo failed");
+    CHECK(pathCubicTo(&overdeep, 0.0, 100.0, 100.0, -100.0, 100.0, 0.0),
+          "overdeep pathCubicTo failed");
+    points = NULL;
+    count = 0;
+    CHECK(!pathFlatten(&overdeep, 1e-30, &points, &count),
+          "overdeep flatten unexpectedly succeeded");
+    CHECK(points == NULL && count == 0, "failed flatten returned output");
+    pathFree(&overdeep);
+
+    Path pie;
+    CHECK(pathInit(&pie), "pie pathInit failed");
+    CHECK(pathAddArc(&pie, 10.0, 10.0, 5.0, 5.0, 0.0, M_PI / 2.0, ArcPieSlice),
+          "pie pathAddArc failed");
+    CHECK(pie.commandCount >= 4, "pie arc emitted too few commands");
+    CHECK(pie.commands[0] == PATH_CMD_MOVE && pie.commands[1] == PATH_CMD_LINE,
+          "pie arc did not start through center");
+    CHECK(pie.commands[pie.commandCount - 1] == PATH_CMD_CLOSE,
+          "pie arc did not close");
+    pathFree(&pie);
+
+    Path chord;
+    CHECK(pathInit(&chord), "chord pathInit failed");
+    CHECK(pathAddArc(&chord, 10.0, 10.0, 5.0, 5.0, 0.0, M_PI / 2.0, ArcChord),
+          "chord pathAddArc failed");
+    CHECK(chord.commandCount >= 3, "chord arc emitted too few commands");
+    CHECK(chord.commands[0] == PATH_CMD_MOVE &&
+              chord.commands[1] == PATH_CMD_CUBIC,
+          "chord arc should connect endpoints directly");
+    CHECK(chord.commands[chord.commandCount - 1] == PATH_CMD_CLOSE,
+          "chord arc did not close");
+    pathFree(&chord);
+
+    Uint32 buffer[4] = {0};
+    PathSpan composeSpans[] = {
+        {.y = 0, .xStart = 0, .xEnd = 1, .coverage = 255},
+        {.y = 1, .xStart = 1, .xEnd = 1, .coverage = 255},
+    };
+    PathSpanList composeList = {
+        .spans = composeSpans,
+        .count = 2,
+        .capacity = 2,
+    };
+    CHECK(pathComposeSpansToBuffer(buffer, 2, 2, &composeList, 0xFF112233),
+          "pathComposeSpansToBuffer failed");
+    CHECK(buffer[0] == 0x112233FF && buffer[1] == 0x112233FF,
+          "compose did not write RGBA8888 pixels");
+    CHECK(buffer[2] == 0 && buffer[3] == 0x112233FF,
+          "compose wrote the wrong span locations");
+
+    PathPoint huge[] = {
+        {.x = 0.0, .y = 0.0},
+        {.x = 100000000000.0, .y = 1.0},
+    };
+    PathEdgeList edges;
+    CHECK(!pathBuildEdges(huge, 2, &edges),
+          "pathBuildEdges accepted out-of-range fixed coordinates");
+    CHECK(edges.edges == NULL && edges.count == 0,
+          "failed edge build leaked partial storage");
+
+    Uint32 pixel = 0;
+    PathSpan singleSpan = {.y = 0, .xStart = 0, .xEnd = 0, .coverage = 255};
+    PathSpanList singleSpanList = {
+        .spans = &singleSpan,
+        .count = 1,
+        .capacity = 1,
+    };
+    CHECK(!pathComposeSpansToBuffer(&pixel, -1, 1, &singleSpanList, 0xFFFFFFFF),
+          "compose accepted negative width");
+    CHECK(!pathComposeSpansToBuffer(NULL, 1, 1, &singleSpanList, 0xFFFFFFFF),
+          "compose accepted NULL buffer");
     return 1;
 }
 
@@ -2788,7 +3482,10 @@ int main(void)
     run_test("compat_stubs", test_compat_stubs);
     run_test("colors", test_colors);
     run_test("pixmaps", test_pixmaps);
+    run_test("drawables_and_gcs", test_drawables_and_gcs);
+    run_test("drawing_coverage", test_drawing_coverage);
     run_test("images", test_images);
+    run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);
     run_test("events", test_events);
     run_test("windows", test_windows);

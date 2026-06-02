@@ -135,8 +135,7 @@ because they have no in-process analogue:
 - GLX or any OpenGL-via-X11 surface creation.
 - A real, conformant XIM input method server.
 - ICC color-managed output through Xcms conversions.
-- Wide polygon and multi-arc rendering (`XFillPolygon`, `XDrawArcs`,
-  `XFillArcs`) until those entry points are implemented.
+- Advanced path rendering beyond the current polygon and arc primitives.
 
 For those cases the library is best used as a stepping stone: it keeps the
 application running on the new platform while the affected subsystem is

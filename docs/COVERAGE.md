@@ -18,7 +18,7 @@ The status column uses three buckets:
 |--------------------------|------------|-------|
 | Display lifecycle        | Functional | `XOpenDisplay`, default screen and visual, `ConnectionNumber` for `select()` integration. |
 | Windows                  | Functional | Creation, mapping, hierarchy, attribute queries, destruction, debug introspection. |
-| Drawables and GCs        | Partial    | Lines, points, rectangles, single-arc `XDrawArc`/`XFillArc`, text, line attributes, foreground/background, clip rectangles. `XFillPolygon`, `XDrawArcs`, and `XFillArcs` are stubs. |
+| Drawables and GCs        | Functional | Lines, points, rectangles, polygons, single and batched arcs, text, line attributes, foreground/background, clip rectangles, and GC raster functions for solid point/line/rectangle/polygon draws. |
 | Pixmaps                  | Functional | `XCreatePixmap`, `XCopyArea`, double-buffering patterns. |
 | Images                   | Functional | `XCreateImage` / `XPutImage` / `XGetImage` for ZPixmap and bitmap formats. |
 | Events                   | Functional | Expose, key, button, motion, configure, enter/leave, focus, client message, mapping notify. |
@@ -50,10 +50,23 @@ The status column uses three buckets:
 - Mouse wheel input surfaces as `Button4` / `Button5` (vertical) and
   `Button6` / `Button7` (horizontal) `ButtonPress` events with the current
   modifier state, matching Xorg server convention.
-- `GXinvert` is supported on filled rectangles through a read-back, invert,
-  and blit path. Other raster ops (`GXxor`, `GXand`, ...) silently fall back
-  to `GXcopy`; `XSetFunction` stores the requested value but the drawing
-  paths only act on `GXinvert`.
+- GC raster functions (`GXclear` through `GXset`) are supported for solid
+  `XDrawPoint` / `XDrawPoints`, `XDrawLine` / `XDrawLines` / `XDrawSegments`,
+  `XFillRectangle` / `XFillRectangles`, and `XFillPolygon` through a software
+  read-back, mutate, and blit path when SDL has no direct renderer equivalent.
+- Large solid `XDrawArc` / `XFillArc` calls route through the in-tree
+  arc-to-cubic path accelerator and scanline raster path. Small `LineSolid`
+  one-pixel arcs stay on the legacy point renderer to avoid regressing tiny
+  primitive overhead, but `ArcChord` fills, dashed line styles, and any
+  `lineWidth > 1` are always routed through the path accelerator so the
+  legacy pie-only / dotty fallbacks never run. Wide solid strokes and
+  `LineOnOffDash` / `LineDoubleDash` use the path stroke expansion for line,
+  segment, rectangle, polyline, and large arc drawing. The stroke outline
+  builder honors `JoinMiter` (with the X11 default miter-limit of 10),
+  `JoinBevel`, `JoinRound`, and `CapButt` / `CapRound` / `CapProjecting`.
+  Polygon region creation shares the same path edge/span builder and uses
+  pixman region union for final storage. Tile, stipple, non-solid fill,
+  and non-copy raster ops still use the pre-accelerator drawing paths.
 
 ## Compatibility limits
 

@@ -1,4 +1,4 @@
-SRCS := $(wildcard src/*.c)
+SRCS := $(wildcard src/*.c) $(wildcard src/path/*.c)
 
 # Upstream libX11 translation units staged by mk/upstream-headers.mk via
 # scripts/sync-upstream-headers.py. The Makefile compiles them in place so
