@@ -1,0 +1,23 @@
+mk/tests.mk
+  s_d069c7882ad956::t_76c84e7fbce70d 2
+  s_d069c7882ad956::t_674c79c97b2368 39
+  s_d069c7882ad956::t_3883d00bb9810f 30-38,43
+mk/libxt.mk
+  s_d069c7882ad956::t_bb804b1255fa49 162-177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b9b90ed17c8367bf2c3f47d795c33bd205121147",
+  "prompts": {},
+  "sessions": {
+    "s_d069c7882ad956": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "133a7095-bc86-4e22-b82b-06ff8cb82603",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}
