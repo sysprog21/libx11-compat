@@ -1,9 +1,7 @@
 # Bundled Examples
 
-`examples/` ships real Xlib clients built against the local
-`libX11-compat.so` so behavior can be exercised end-to-end without a system
-Xlib. They double as concrete porting references for the steps in
-[`PORTING.md`](PORTING.md).
+`examples/` ships real Xlib clients built against the local `libX11-compat.so` so behavior can be exercised end-to-end without a system Xlib.
+They double as concrete porting references for the steps in [`PORTING.md`](PORTING.md).
 
 ```sh
 make examples
@@ -27,5 +25,5 @@ The short regression loop used during performance work:
 SDL_VIDEODRIVER=dummy build/examples/x11perf -all -repeat 1 -reps 1
 ```
 
-A full `x11perf -all` pass auto-calibrates against the default timing
-window and takes several minutes; it is not a quick check.
+A full `x11perf -all` pass auto-calibrates against the default timing window and takes several minutes;
+it is not a quick check.
