@@ -6,6 +6,7 @@ include mk/config.mk
 include mk/sources.mk
 include mk/common.mk
 include mk/library.mk
+include mk/libxt.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/upstream-headers.mk

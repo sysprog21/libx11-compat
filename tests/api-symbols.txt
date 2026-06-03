@@ -2,6 +2,7 @@
 # Keep this manifest in sync with intentional API surface changes.
 
 XActivateScreenSaver
+XAddConnectionWatch
 XAddExtension
 XAddHost
 XAddHosts
@@ -51,6 +52,7 @@ XCloseIM
 XConfigureWindow
 XConnectionNumber
 XContextDependentDrawing
+XConvertCase
 XConvertSelection
 XCopyArea
 XCopyColormapAndFree
@@ -236,6 +238,7 @@ XInsertModifiermapEntry
 XInstallColormap
 XInternAtom
 XInternAtoms
+XInternalConnectionNumbers
 XIntersectRegion
 XKeycodeToKeysym
 XKeysymToKeycode
@@ -283,6 +286,7 @@ XPending
 XPlanesOfScreen
 XPointInRegion
 XPolygonRegion
+XProcessInternalConnection
 XProtocolRevision
 XProtocolVersion
 XPutBackEvent
@@ -311,6 +315,7 @@ XReconfigureWMWindow
 XRectInRegion
 XRefreshKeyboardMapping
 XRegisterIMInstantiateCallback
+XRemoveConnectionWatch
 XRemoveFromSaveSet
 XRemoveHost
 XRemoveHosts

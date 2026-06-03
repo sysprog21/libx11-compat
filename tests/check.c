@@ -3147,6 +3147,57 @@ static int test_xrm(Display *display)
     CHECK(value.addr != NULL && strcmp((char *) value.addr, "Hello") == 0,
           "XrmGetResource returned wrong value");
 
+    char longName[301];
+    memset(longName, 'a', sizeof(longName) - 1);
+    longName[sizeof(longName) - 1] = '\0';
+    char longSpec[sizeof("App.") + sizeof(longName) + sizeof(": QLong")];
+    snprintf(longSpec, sizeof(longSpec), "App.%s: QLong", longName);
+    XrmPutLineResource(&db, longSpec);
+    XrmName qLongNames[] = {
+        XrmStringToQuark("App"),
+        XrmStringToQuark(longName),
+        NULLQUARK,
+    };
+    XrmClass qLongClasses[] = {
+        XrmStringToQuark("Application"),
+        XrmStringToQuark("LongName"),
+        NULLQUARK,
+    };
+    XrmRepresentation qLongType = 0;
+    XrmValue qLongValue = {.size = 0, .addr = NULL};
+    CHECK(
+        XrmQGetResource(db, qLongNames, qLongClasses, &qLongType, &qLongValue),
+        "XrmQGetResource missed long quark resource path");
+    CHECK(qLongValue.addr != NULL &&
+              strcmp((char *) qLongValue.addr, "QLong") == 0,
+          "XrmQGetResource returned wrong value for long path");
+
+    XrmName deepNames[66];
+    XrmClass deepClasses[66];
+    for (size_t i = 0; i < ARRAY_LENGTH(deepNames) - 1; i++) {
+        deepNames[i] = XrmStringToQuark("deepName");
+        deepClasses[i] = XrmStringToQuark("DeepClass");
+    }
+    deepNames[ARRAY_LENGTH(deepNames) - 1] = NULLQUARK;
+    deepClasses[ARRAY_LENGTH(deepClasses) - 1] = NULLQUARK;
+    /* The prefix-encoding bridge needs 3 + 2 * n slots (db + count + name
+     * quarks + class quarks + NULL terminator). A list_length too small for
+     * that layout must return False so libXt's _XtDisplayInitialize doubling
+     * loop can enlarge the buffer and retry; an adequate buffer encodes the
+     * prefix and returns True. Verify both branches so neither alloca-
+     * smashes the stack (always-False regression) nor lies about contents
+     * (always-True regression). */
+    XrmHashTable tinySearch[1];
+    CHECK(!XrmQGetSearchList(db, deepNames, deepClasses, tinySearch, 1),
+          "XrmQGetSearchList should signal buffer-too-small with False");
+    XrmHashTable deepSearch[200];
+    CHECK(XrmQGetSearchList(db, deepNames, deepClasses, deepSearch, 200),
+          "XrmQGetSearchList should encode 65-component prefix in 200 slots");
+    CHECK(!XrmQGetSearchResource(deepSearch, XrmStringToQuark("leaf"),
+                                 XrmStringToQuark("Leaf"), &qLongType,
+                                 &qLongValue),
+          "deep no-match search list should not resolve resources");
+
     /* Loose binding via '*'. */
     value.addr = NULL;
     CHECK(XrmGetResource(db, "App.window.background", "App.Window.Background",

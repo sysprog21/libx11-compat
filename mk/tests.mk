@@ -1,4 +1,5 @@
-CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage
+CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
+              $(OUT)/tests/test-libxt-link $(OUT)/tests/test-libxt-micro
 BENCH_BINS := $(OUT)/tests/bench-paths
 
 .PHONY: check symbol-coverage api-symbol-coverage bench-paths
@@ -21,6 +22,25 @@ api-symbol-coverage: $(TARGET) tests/api-symbols.txt tests/check-api-symbols.py
 
 bench-paths: $(BENCH_BINS)
 	SDL_VIDEODRIVER=dummy $(OUT)/tests/bench-paths
+
+# libXt-aware tests need both the upstream libXt headers (staged under
+# $(OUT)/upstream/include) and a link line that pulls in libXt-compat.so
+# *and* libX11-compat.so. They are compiled with the libxt-build config.h
+# the same way the libXt translation units are, so XT_NO_SM stays defined
+# and the public Xt headers see consistent feature flags. -rpath-link
+# silences a Linux-only warning where ld walks libXt-compat.so's
+# DT_NEEDED entries while linking the test and cannot find the sibling
+# libX11-compat.so on a default -L path.
+LIBXT_TEST_LDFLAGS :=
+ifeq ($(UNAME_S),Linux)
+  LIBXT_TEST_LDFLAGS += -Wl,-rpath-link,$(OUT)
+endif
+
+$(OUT)/tests/test-libxt-%: tests/test-libxt-%.c $(LIBXT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(LIBXT_TARGET) $(TARGET) $(LDLIBS) $(LIBXT_TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)
