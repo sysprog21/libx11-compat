@@ -217,7 +217,7 @@ InitImage(XParms xp, Parms p, int64_t reps, long pm)
 
     /* Create image to stuff bits into */
     image = XGetImage(xp->d, xp->w, 0, 0, WIDTH, HEIGHT, pm,
-		      p->font==NULL ? ZPixmap : (strcmp(p->font, "XY") == 0? XYPixmap : ZPixmap));
+		      p->font==NULL ? ZPixmap : (!strcmp(p->font, "XY")? XYPixmap : ZPixmap));
     if(image==NULL){
 	printf("XGetImage failed\n");
 	return False;

@@ -22,6 +22,21 @@
 #define ShapeNotifyMask (1L << 0)
 #define ShapeNotify 0
 
+typedef struct {
+    int type;
+    unsigned long serial;
+    Bool send_event;
+    Display *display;
+    Window window;
+    int kind;
+    int x;
+    int y;
+    unsigned int width;
+    unsigned int height;
+    Time time;
+    Bool shaped;
+} XShapeEvent;
+
 extern Bool XShapeQueryExtension(Display *dpy,
                                  int *event_basep,
                                  int *error_basep);

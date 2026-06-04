@@ -3,10 +3,29 @@
 #include "drawing.h"
 #include "events.h"
 #include "display.h"
+#include "font.h"
 #include "image.h"
 #include "colors.h"
 
 Window SCREEN_WINDOW = None;
+
+static void ensureMappingListLock(void);
+
+static unsigned long resolvedWindowBackgroundColor(Window window)
+{
+    unsigned long color = 0;
+    Window current = window;
+    while (current != None && IS_TYPE(current, WINDOW)) {
+        WindowStruct *windowStruct = GET_WINDOW_STRUCT(current);
+        color = windowStruct->backgroundColor;
+        if (windowStruct->background != (Pixmap) ParentRelative)
+            break;
+        current = GET_PARENT(current);
+    }
+    if ((color & (0xFFul << ALPHA_SHIFT)) == 0)
+        color |= 0xFFul << ALPHA_SHIFT;
+    return color;
+}
 
 void initWindowStruct(WindowStruct *windowStruct,
                       int x,
@@ -30,6 +49,9 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->visual = visual;
     windowStruct->sdlTexture = NULL;
     windowStruct->sdlWindow = NULL;
+    windowStruct->needsPresent = False;
+    windowStruct->hasPresented = False;
+    windowStruct->contentsMergedToParent = False;
     windowStruct->sdlRenderer = NULL;
     windowStruct->backgroundColor = backgroundColor;
     windowStruct->background = backgroundPixmap;
@@ -48,6 +70,12 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->mapState = UnMapped;
     windowStruct->eventMask = NoEventMask;
     windowStruct->overrideRedirect = False;
+    windowStruct->shapeBoundingMask = NULL;
+    windowStruct->shapeBoundingOffsetX = 0;
+    windowStruct->shapeBoundingOffsetY = 0;
+    windowStruct->shapeClipMask = NULL;
+    windowStruct->shapeClipOffsetX = 0;
+    windowStruct->shapeClipOffsetY = 0;
 #ifdef DEBUG_WINDOWS
     windowStruct->debugId = ((unsigned long) rand() << 16) | rand();
 #endif /* DEBUG_WINDOWS */
@@ -57,6 +85,7 @@ void initWindowStruct(WindowStruct *windowStruct,
 
 Bool initScreenWindow(Display *display)
 {
+    ensureMappingListLock();
     if (SCREEN_WINDOW == None) {
         SCREEN_WINDOW = ALLOC_XID();
         if (SCREEN_WINDOW == None) {
@@ -106,6 +135,7 @@ void destroyScreenWindow(Display *display)
             destroyWindow(display, children[i], False);
         }
         invalidatePutImageStagingTexture(windowStruct->sdlRenderer);
+        invalidateTextCacheForRenderer(windowStruct->sdlRenderer);
         SDL_DestroyRenderer(windowStruct->sdlRenderer);
         windowStruct->sdlRenderer = NULL;
         SDL_DestroyWindow(windowStruct->sdlWindow);
@@ -124,13 +154,33 @@ WindowSdlIdMapper *mappingListStart = NULL;
  * insert/unlink races, and a concurrent malloc/free corrupts the chain. */
 static SDL_mutex *mappingListLock = NULL;
 
+/* initScreenWindow primes the mutex on the single-threaded XOpenDisplay
+ * path before SDL_Window / event-pump threads can reach the register /
+ * lookup helpers; subsequent callers are harmless no-ops. If
+ * SDL_CreateMutex fails we leave the lock NULL and the lock/unlock
+ * wrappers below skip the SDL call — better than crashing on an
+ * unrecoverable allocator fail. */
 static void ensureMappingListLock(void)
 {
-    /* XOpenDisplay is single-threaded by spec, and the first call here
-     * comes from there before any other thread touches the mapping list,
-     * so lazy initialization without synchronization is safe. */
-    if (!mappingListLock)
+    if (!mappingListLock) {
         mappingListLock = SDL_CreateMutex();
+        if (!mappingListLock)
+            LOG("%s: SDL_CreateMutex failed; mapping list will run "
+                "unsynchronized: %s\n",
+                __func__, SDL_GetError());
+    }
+}
+
+static void lockMappingList(void)
+{
+    if (mappingListLock)
+        SDL_LockMutex(mappingListLock);
+}
+
+static void unlockMappingList(void)
+{
+    if (mappingListLock)
+        SDL_UnlockMutex(mappingListLock);
 }
 
 static WindowSdlIdMapper *findMapperByIdLocked(Uint32 sdlWindowId)
@@ -147,7 +197,7 @@ static WindowSdlIdMapper *findMapperByIdLocked(Uint32 sdlWindowId)
 void deleteWindowMapping(Window window)
 {
     ensureMappingListLock();
-    SDL_LockMutex(mappingListLock);
+    lockMappingList();
     /* Indirect pointer walk: link points at the slot that references the
      * current node, so unlinking the head needs no special case. */
     WindowSdlIdMapper **link = &mappingListStart;
@@ -160,18 +210,18 @@ void deleteWindowMapping(Window window)
         }
         link = &(*link)->next;
     }
-    SDL_UnlockMutex(mappingListLock);
+    unlockMappingList();
 }
 
 void registerWindowMapping(Window window, Uint32 sdlWindowId)
 {
     ensureMappingListLock();
-    SDL_LockMutex(mappingListLock);
+    lockMappingList();
     WindowSdlIdMapper *mapper = findMapperByIdLocked(sdlWindowId);
     if (!mapper) {
         mapper = malloc(sizeof(WindowSdlIdMapper));
         if (!mapper) {
-            SDL_UnlockMutex(mappingListLock);
+            unlockMappingList();
             LOG("Failed to allocate mapping object to map xWindow to SDL "
                 "window ID!\n");
             return;
@@ -181,7 +231,7 @@ void registerWindowMapping(Window window, Uint32 sdlWindowId)
         mapper->sdlWindowId = sdlWindowId;
     }
     mapper->window = window;
-    SDL_UnlockMutex(mappingListLock);
+    unlockMappingList();
 }
 
 Window getWindowFromId(Uint32 sdlWindowId)
@@ -190,10 +240,10 @@ Window getWindowFromId(Uint32 sdlWindowId)
      * pointer would expose a use-after-free window if another thread
      * unlinked and freed the node between unlock and dereference. */
     ensureMappingListLock();
-    SDL_LockMutex(mappingListLock);
+    lockMappingList();
     WindowSdlIdMapper *mapper = findMapperByIdLocked(sdlWindowId);
     Window result = mapper ? mapper->window : None;
-    SDL_UnlockMutex(mappingListLock);
+    unlockMappingList();
     LOG("Got window %lu for id %u\n", result, sdlWindowId);
     return result;
 }
@@ -253,8 +303,8 @@ Window getContainingWindow(Window window, int x, int y)
     for (i = GET_WINDOW_STRUCT(window)->children.length - 1; i >= 0; i--) {
         GET_WINDOW_POS(children[i], child_x, child_y);
         GET_WINDOW_DIMS(children[i], child_w, child_h);
-        if (x >= child_x && x <= child_x + child_w && y >= child_y &&
-            y <= child_y + child_h) {
+        if (x >= child_x && x < child_x + child_w && y >= child_y &&
+            y < child_y + child_h) {
             return getContainingWindow(children[i], x - child_x, y - child_y);
         }
     }
@@ -281,10 +331,6 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
 {
     size_t i;
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    WARN_UNIMPLEMENTED;
-    // if (windowStruct->mapState == Mapped) {
-    //     XUnmapWindow(display, window);
-    // }
     Window *children = GET_CHILDREN(window);
     for (i = 0; i < windowStruct->children.length; i++) {
         destroyWindow(display, children[i], False);
@@ -301,9 +347,14 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     if (windowStruct->icon) {
         SDL_FreeSurface(windowStruct->icon);
     }
+    if (windowStruct->shapeBoundingMask)
+        SDL_FreeSurface(windowStruct->shapeBoundingMask);
+    if (windowStruct->shapeClipMask)
+        SDL_FreeSurface(windowStruct->shapeClipMask);
     free(windowStruct->colormapWindows);
     if (windowStruct->sdlRenderer) {
         invalidatePutImageStagingTexture(windowStruct->sdlRenderer);
+        invalidateTextCacheForRenderer(windowStruct->sdlRenderer);
         SDL_DestroyRenderer(windowStruct->sdlRenderer);
     }
     if (windowStruct->sdlTexture) {
@@ -312,6 +363,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     if (windowStruct->sdlWindow) {
         SDL_DestroyWindow(windowStruct->sdlWindow);
     }
+    discardQueuedEventsForWindow(display, window);
     deleteWindowMapping(window);
     postEvent(display, window, DestroyNotify);
     if (freeParentData) {
@@ -529,6 +581,40 @@ static void postParentExposureForOldArea(Display *display,
     postExposeEvent(display, parent, &exposed, 1);
 }
 
+static void postMovedWindowExposure(Display *display, Window window)
+{
+    Window parent = GET_PARENT(window);
+    if (parent == None || GET_WINDOW_STRUCT(window)->mapState == UnMapped ||
+        GET_WINDOW_STRUCT(parent)->mapState == UnMapped) {
+        return;
+    }
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    int x, y;
+    GET_WINDOW_POS(window, x, y);
+    SDL_Rect parentBounds = {0, 0, 0, 0};
+    GET_WINDOW_DIMS(parent, parentBounds.w, parentBounds.h);
+    SDL_Rect windowBounds = {
+        .x = x,
+        .y = y,
+        .w = (int) windowStruct->w,
+        .h = (int) windowStruct->h,
+    };
+    SDL_Rect visible;
+    if (!SDL_IntersectRect(&windowBounds, &parentBounds, &visible))
+        return;
+
+    SDL_Rect expose = {
+        .x = visible.x - x,
+        .y = visible.y - y,
+        .w = visible.w,
+        .h = visible.h,
+    };
+    XClearArea(display, window, expose.x, expose.y, (unsigned int) expose.w,
+               (unsigned int) expose.h, False);
+    postExposeEvent(display, window, &expose, 1);
+}
+
 static void postResizeExpose(Display *display,
                              Window window,
                              int oldWidth,
@@ -591,13 +677,14 @@ void resizeWindowTexture(Window window)
         SDL_DestroyTexture(newTexture);
         return;
     }
-    unsigned long bg = windowStruct->backgroundColor;
+    unsigned long bg = resolvedWindowBackgroundColor(window);
     SDL_SetRenderDrawColor(windowRenderer, GET_RED_FROM_COLOR(bg),
                            GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(windowRenderer);
     SDL_RenderCopy(windowRenderer, oldTexture, NULL, &destRect);
     windowStruct->sdlTexture = newTexture;
+    windowStruct->needsPresent = True;
     SDL_SetRenderTarget(windowRenderer,
                         prevTarget == oldTexture ? newTexture : prevTarget);
     SDL_DestroyTexture(oldTexture);
@@ -623,8 +710,10 @@ Bool mergeWindowDrawables(Window parent, Window child)
     }
     SDL_DestroyTexture(childWindowStruct->sdlTexture);
     childWindowStruct->sdlTexture = NULL;
+    childWindowStruct->contentsMergedToParent = True;
     if (childWindowStruct->sdlRenderer) {
         invalidatePutImageStagingTexture(childWindowStruct->sdlRenderer);
+        invalidateTextCacheForRenderer(childWindowStruct->sdlRenderer);
         SDL_DestroyRenderer(childWindowStruct->sdlRenderer);
         childWindowStruct->sdlRenderer = NULL;
     }
@@ -636,15 +725,27 @@ void mapRequestedChildren(Display *display, Window window)
     Window *children = GET_CHILDREN(window);
     size_t i;
     for (i = 0; i < GET_WINDOW_STRUCT(window)->children.length; i++) {
-        if (children[i] != None &&
-            GET_WINDOW_STRUCT(children[i])->mapState == MapRequested) {
+        if (children[i] == None)
+            continue;
+
+        if (GET_WINDOW_STRUCT(children[i])->mapState == Mapped) {
+            mapRequestedChildren(display, children[i]);
+        } else if (GET_WINDOW_STRUCT(children[i])->mapState == MapRequested) {
             if (!mergeWindowDrawables(window, children[i])) {
                 LOG("Failed to merge the window drawables in %s\n", __func__);
                 return;
             }
+            WindowStruct *childStruct = GET_WINDOW_STRUCT(children[i]);
             GET_WINDOW_STRUCT(children[i])->mapState = Mapped;
+            if (childStruct->contentsMergedToParent) {
+                childStruct->contentsMergedToParent = False;
+            } else {
+                XClearArea(display, children[i], 0, 0, 0, 0, False);
+            }
             postEvent(display, children[i], MapNotify);
             postEvent(display, children[i], VisibilityNotify);
+            SDL_Rect exposeRect = {0, 0, childStruct->w, childStruct->h};
+            postExposeEvent(display, children[i], &exposeRect, 1);
             mapRequestedChildren(display, children[i]);
         }
     }
@@ -659,10 +760,9 @@ Bool configureWindow(Display *display,
         return True;
     Bool hasChanged = False;
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    if (!windowStruct->overrideRedirect &&
-        HAS_EVENT_MASK(GET_PARENT(window), SubstructureRedirectMask)) {
-        return postEvent(display, window, ConfigureRequest, value_mask, values);
-    }
+    /* There is no external window-manager client in the SDL-backed
+     * compatibility model. Honor the configure directly even if a toolkit
+     * selected SubstructureRedirectMask internally. */
     Bool isMappedTopLevelWindow = IS_MAPPED_TOP_LEVEL_WINDOW(window);
     int oldX, oldY, oldWidth, oldHeight;
     GET_WINDOW_POS(window, oldX, oldY);
@@ -712,11 +812,23 @@ Bool configureWindow(Display *display,
 #ifdef DEBUG_WINDOWS
         printWindowsHierarchy();
 #endif
-        LOG("(NOT) Resizing window %lu to (%ux%u)\n", window, width, height);
+        LOG("configureWindow: window=%lu old=(%ux%u) new=(%ux%u) "
+            "mappedTopLevel=%d\n",
+            window, (unsigned) oldWidth, (unsigned) oldHeight, (unsigned) width,
+            (unsigned) height, isMappedTopLevelWindow);
         if ((unsigned int) width != windowStruct->w ||
             (unsigned int) height != windowStruct->h) {
+            if (isMappedTopLevelWindow) {
+                SDL_SetWindowSize(windowStruct->sdlWindow, width, height);
+                SDL_GetWindowSize(windowStruct->sdlWindow, &width, &height);
+                LOG("configureWindow: SDL reports actual=(%ux%u)\n",
+                    (unsigned) width, (unsigned) height);
+            }
             windowStruct->w = (unsigned int) width;
             windowStruct->h = (unsigned int) height;
+            if (isMappedTopLevelWindow) {
+                resizeWindowTexture(window);
+            }
             hasChanged = True;
             Window *children = GET_CHILDREN(window);
             for (size_t i = 0; i < windowStruct->children.length; i++) {
@@ -746,8 +858,18 @@ Bool configureWindow(Display *display,
         if (oldX != windowStruct->x || oldY != windowStruct->y) {
             postParentExposureForOldArea(display, window, oldX, oldY, oldWidth,
                                          oldHeight);
+            postMovedWindowExposure(display, window);
         } else {
             postResizeExpose(display, window, oldWidth, oldHeight);
+            if (isMappedTopLevelWindow) {
+                SDL_Rect fullWindow = {
+                    0,
+                    0,
+                    (int) windowStruct->w,
+                    (int) windowStruct->h,
+                };
+                postExposeEvent(display, window, &fullWindow, 1);
+            }
             if ((unsigned int) oldWidth > windowStruct->w ||
                 (unsigned int) oldHeight > windowStruct->h) {
                 postParentExposureForOldArea(display, window, oldX, oldY,

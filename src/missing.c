@@ -17,8 +17,18 @@
 #include "display.h"
 #include "errors.h"
 #include "events.h"
+#include "font.h"
+#include "input-method.h"
 #include "window.h"
 #include "atoms.h"
+
+static void fillTextExtents(XFontStruct *fs,
+                            int width,
+                            int *dir,
+                            int *font_ascent,
+                            int *font_descent,
+                            XCharStruct *overall);
+static void freeQueriedFontStruct(XFontStruct *fs);
 
 /*
  * Compatibility stub triage:
@@ -37,6 +47,43 @@
 #endif
 
 /* XGetSelectionOwner lives in src/selection.c. */
+
+static Bool useFontSetFontForGC(GC gc, XFontSet font_set, Font *oldFontReturn)
+{
+    if (oldFontReturn)
+        *oldFontReturn = None;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    if (!gc || !set || !set->font || set->font->fid == None)
+        return False;
+    GraphicContext *gContext = GET_GC(gc);
+    Font newFont = set->font->fid;
+    Font oldFont = gContext->font;
+    if (oldFont == newFont)
+        return False;
+    if (!compatFontRetainForGC(newFont))
+        return False;
+    compatFontReleaseForGC(oldFont);
+    gContext->font = newFont;
+    GC_BUMP_GENERATION(gContext);
+    if (oldFontReturn)
+        *oldFontReturn = oldFont;
+    return True;
+}
+
+static void restoreGCFontAfterFontSet(GC gc, Font oldFont)
+{
+    if (!gc)
+        return;
+    GraphicContext *gContext = GET_GC(gc);
+    Font current = gContext->font;
+    if (current == oldFont)
+        return;
+    if (oldFont != None && !compatFontRetainForGC(oldFont))
+        return;
+    compatFontReleaseForGC(current);
+    gContext->font = oldFont;
+    GC_BUMP_GENERATION(gContext);
+}
 
 void XSetTextProperty(Display *dpy, Window w, XTextProperty *tp, Atom property)
 {
@@ -241,8 +288,41 @@ int XmbTextListToTextProperty(Display *dpy,
                               XICCEncodingStyle style,
                               XTextProperty *text_prop)
 {
-    WARN_UNIMPLEMENTED;
-    return 1;
+    if (!text_prop || count < 0)
+        return XNoMemory;
+
+    if (!XStringListToTextProperty(list, count, text_prop))
+        return XNoMemory;
+
+    switch (style) {
+    case XStringStyle:
+    case XStdICCTextStyle:
+        text_prop->encoding = XA_STRING;
+        break;
+    case XCompoundTextStyle:
+        text_prop->encoding = XInternAtom(dpy, "COMPOUND_TEXT", False);
+        break;
+    case XTextStyle:
+        text_prop->encoding = XInternAtom(dpy, "TEXT", False);
+        break;
+    case XUTF8StringStyle:
+        text_prop->encoding = XInternAtom(dpy, "UTF8_STRING", False);
+        break;
+    default:
+        text_prop->encoding = XA_STRING;
+        break;
+    }
+    text_prop->format = 8;
+    return Success;
+}
+
+int Xutf8TextListToTextProperty(Display *dpy,
+                                char **list,
+                                int count,
+                                XICCEncodingStyle style,
+                                XTextProperty *text_prop)
+{
+    return XmbTextListToTextProperty(dpy, list, count, style, text_prop);
 }
 
 int XSetClipRectangles(register Display *dpy,
@@ -303,15 +383,26 @@ Bool XkbSetDetectableAutoRepeat(Display *dpy, Bool detectable, Bool *supported)
     return True;
 }
 
+/* Synthetic XKB extension codes. We do not implement a real XKB protocol,
+ * but Motif / GTK / xfreerdp probe XkbUseExtension and XkbQueryExtension
+ * before any keyboard work. Reporting "available" with consistent base
+ * codes from both probes keeps the downstream dispatch logic happy; the
+ * actual XKB requests are still WARN_UNIMPLEMENTED stubs.
+ *
+ * The opcode/event/error bases are chosen above the core-protocol ranges
+ * so a caller doing event.type - eventBase math doesn't collide with X
+ * core events (0..34). */
+#define XKB_SYNTHETIC_OPCODE 135
+#define XKB_SYNTHETIC_EVENT_BASE 85
+#define XKB_SYNTHETIC_ERROR_BASE 137
+
 Bool XkbUseExtension(Display *dpy, int *major_rtrn, int *minor_rtrn)
 {
     (void) dpy;
-    if (major_rtrn) {
+    if (major_rtrn)
         *major_rtrn = XkbMajorVersion;
-    }
-    if (minor_rtrn) {
+    if (minor_rtrn)
         *minor_rtrn = XkbMinorVersion;
-    }
     return True;
 }
 
@@ -324,16 +415,16 @@ Bool XkbQueryExtension(Display *dpy,
 {
     (void) dpy;
     if (opcodeReturn)
-        *opcodeReturn = 0;
+        *opcodeReturn = XKB_SYNTHETIC_OPCODE;
     if (eventBaseReturn)
-        *eventBaseReturn = 0;
+        *eventBaseReturn = XKB_SYNTHETIC_EVENT_BASE;
     if (errorBaseReturn)
-        *errorBaseReturn = 0;
+        *errorBaseReturn = XKB_SYNTHETIC_ERROR_BASE;
     if (majorRtrn)
         *majorRtrn = XkbMajorVersion;
     if (minorRtrn)
         *minorRtrn = XkbMinorVersion;
-    return False;
+    return True;
 }
 
 int XkbTranslateKeySym(Display *dpy,
@@ -532,30 +623,8 @@ int XPending(Display *dpy)
 
 int XUnloadFont(register Display *dpy, Font font)
 {
-    (void) dpy;
-    (void) font;
-    /* Fonts are process-wide cached resources in src/font.c, and GCs keep
-     * only the XID. Treat unload as releasing the caller's interest without
-     * destroying cached storage that another GC may still reference. */
-    return 1;
+    return compatFontClose(dpy, font);
 }
-
-
-Bool XCheckMaskEvent(
-    register Display *dpy,
-    long mask,
-    /* Selected event mask. */ register XEvent *event) /* XEvent to be filled
-                                                          in. */
-{
-    /* Quiet probe: we do not track mask bits per pending event yet, so
-     * report no match without logging. Callers fall back to XPending /
-     * XNextEvent. */
-    (void) dpy;
-    (void) mask;
-    (void) event;
-    return False;
-}
-
 
 
 int XGetErrorText(register Display *dpy,
@@ -1007,8 +1076,16 @@ int XQueryTextExtents(register Display *dpy,
                       int *font_descent,
                       register XCharStruct *overall)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    XFontStruct *fs = XQueryFont(dpy, fid);
+    if (!fs)
+        return 0;
+    int width = string && nchars > 0 ? XTextWidth(fs, string, nchars) : 0;
+    fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
+    freeQueriedFontStruct(fs);
+    /* Spec: Status nonzero on success. Returning 0 here made Motif and Xt
+     * widget measurement paths treat the filled metrics as invalid and
+     * fall back to zero-width text. */
+    return 1;
 }
 
 int XChangeKeyboardControl(register Display *dpy,
@@ -1090,8 +1167,41 @@ int XDrawText16(register Display *dpy,
                 XTextItem16 *items,
                 int nitems)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    if (!items || nitems <= 0)
+        return 1;
+    if (!gc) {
+        handleError(0, dpy, None, 0, BadGC, 0);
+        return 0;
+    }
+    GraphicContext *gContext = GET_GC(gc);
+    Font oldFont = gContext->font;
+    int cursor = x;
+    for (int i = 0; i < nitems; i++) {
+        cursor += items[i].delta;
+        if (items[i].font != None) {
+            gContext->font = items[i].font;
+            GC_BUMP_GENERATION(gContext);
+        }
+        if (items[i].chars && items[i].nchars > 0) {
+            if (!XDrawString16(dpy, d, gc, cursor, y, items[i].chars,
+                               items[i].nchars)) {
+                gContext->font = oldFont;
+                GC_BUMP_GENERATION(gContext);
+                return 0;
+            }
+            XFontStruct *fontStruct = XQueryFont(dpy, gContext->font);
+            if (fontStruct) {
+                cursor +=
+                    XTextWidth16(fontStruct, items[i].chars, items[i].nchars);
+                XFreeFontInfo(NULL, fontStruct, 1);
+            }
+        }
+    }
+    if (gContext->font != oldFont) {
+        gContext->font = oldFont;
+        GC_BUMP_GENERATION(gContext);
+    }
+    return 1;
 }
 
 int XEnableAccessControl(register Display *dpy)
@@ -1182,6 +1292,38 @@ int XStoreNamedColor(register Display *dpy,
     return 0;
 }
 
+static void fillTextExtents(XFontStruct *fs,
+                            int width,
+                            int *dir,
+                            int *font_ascent,
+                            int *font_descent,
+                            XCharStruct *overall)
+{
+    if (dir)
+        *dir = FontLeftToRight;
+    if (font_ascent)
+        *font_ascent = fs ? fs->ascent : 0;
+    if (font_descent)
+        *font_descent = fs ? fs->descent : 0;
+    if (overall) {
+        memset(overall, 0, sizeof(*overall));
+        overall->lbearing = 0;
+        overall->rbearing = (short) width;
+        overall->width = (short) width;
+        overall->ascent = fs ? (short) fs->ascent : 0;
+        overall->descent = fs ? (short) fs->descent : 0;
+    }
+}
+
+static void freeQueriedFontStruct(XFontStruct *fs)
+{
+    if (!fs)
+        return;
+    free(fs->properties);
+    free(fs->per_char);
+    free(fs);
+}
+
 int XTextExtents16(
     XFontStruct *fs,
     _Xconst XChar2b *string,
@@ -1192,9 +1334,11 @@ int XTextExtents16(
     /* RETURN font information */ register XCharStruct *overall) /* RETURN
                                                                     character
                                                                     information
-                                                                  */
+                                                                      */
 {
-    WARN_UNIMPLEMENTED;
+    int width =
+        fs && string && nchars > 0 ? XTextWidth16(fs, string, nchars) : 0;
+    fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
     return 0;
 }
 
@@ -1206,8 +1350,41 @@ int XDrawText(register Display *dpy,
               XTextItem *items,
               int nitems)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    if (!items || nitems <= 0)
+        return 1;
+    if (!gc) {
+        handleError(0, dpy, None, 0, BadGC, 0);
+        return 0;
+    }
+    GraphicContext *gContext = GET_GC(gc);
+    Font oldFont = gContext->font;
+    int cursor = x;
+    for (int i = 0; i < nitems; i++) {
+        cursor += items[i].delta;
+        if (items[i].font != None) {
+            gContext->font = items[i].font;
+            GC_BUMP_GENERATION(gContext);
+        }
+        if (items[i].chars && items[i].nchars > 0) {
+            if (!XDrawString(dpy, d, gc, cursor, y, items[i].chars,
+                             items[i].nchars)) {
+                gContext->font = oldFont;
+                GC_BUMP_GENERATION(gContext);
+                return 0;
+            }
+            XFontStruct *fontStruct = XQueryFont(dpy, gContext->font);
+            if (fontStruct) {
+                cursor +=
+                    XTextWidth(fontStruct, items[i].chars, items[i].nchars);
+                XFreeFontInfo(NULL, fontStruct, 1);
+            }
+        }
+    }
+    if (gContext->font != oldFont) {
+        gContext->font = oldFont;
+        GC_BUMP_GENERATION(gContext);
+    }
+    return 1;
 }
 
 int XTextExtents(
@@ -1222,7 +1399,8 @@ int XTextExtents(
                                                                     information
                                                                   */
 {
-    WARN_UNIMPLEMENTED;
+    int width = string && nchars > 0 ? XTextWidth(fs, string, nchars) : 0;
+    fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
     return 0;
 }
 
@@ -1244,8 +1422,14 @@ int XQueryTextExtents16(register Display *dpy,
                         int *font_descent,
                         register XCharStruct *overall)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    XFontStruct *fs = XQueryFont(dpy, fid);
+    if (!fs)
+        return 0;
+    int width = string && nchars > 0 ? XTextWidth16(fs, string, nchars) : 0;
+    fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
+    freeQueriedFontStruct(fs);
+    /* See XQueryTextExtents — Status must be nonzero on success. */
+    return 1;
 }
 
 
@@ -1305,16 +1489,6 @@ int XAddHosts(register Display *dpy, XHostAddress *hosts, int n)
     return 0;
 }
 
-int XMaskEvent(
-    register Display *dpy,
-    long mask,
-    /* Selected event mask. */ register XEvent *event) /* XEvent to be filled
-                                                          in. */
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
 int XSetModifierMapping(register Display *dpy,
                         register XModifierKeymap *modifier_map)
 {
@@ -1367,23 +1541,9 @@ int XUninstallColormap(register Display *dpy, Colormap cmap)
     return 1;
 }
 
-int XPeekEvent(register Display *dpy, register XEvent *event)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
-int XGrabKey(register Display *dpy,
-             int key,
-             unsigned int modifiers,
-             Window grab_window,
-             Bool owner_events,
-             int pointer_mode,
-             int keyboard_mode)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
+/* XGrabKey / XUngrabKey live in src/input.c next to the rest of the
+ * keyboard surface so the grab table and findKeyGrabWindow helper can
+ * share state. */
 
 int XDisableAccessControl(register Display *dpy)
 {
@@ -1431,14 +1591,7 @@ Bool XContextDependentDrawing(XFontSet font_set)
     return False;
 }
 
-int XUngrabKey(register Display *dpy,
-               int key,
-               unsigned int modifiers,
-               Window grab_window)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
+/* XUngrabKey is defined alongside XGrabKey in src/input.c. */
 
 void XwcDrawText(Display *dpy,
                  Drawable d,
@@ -1544,8 +1697,13 @@ void XmbDrawText(Display *dpy,
     for (int i = 0; i < nitems; i++) {
         cursor += text_items[i].delta;
         if (text_items[i].chars && text_items[i].nchars > 0) {
+            Font oldFont = None;
+            Bool changed =
+                useFontSetFontForGC(gc, text_items[i].font_set, &oldFont);
             XDrawString(dpy, d, gc, cursor, y, text_items[i].chars,
                         text_items[i].nchars);
+            if (changed)
+                restoreGCFontAfterFontSet(gc, oldFont);
             cursor +=
                 XmbTextEscapement(text_items[i].font_set, text_items[i].chars,
                                   text_items[i].nchars);
@@ -1562,10 +1720,11 @@ void XmbDrawString(Display *dpy,
                    _Xconst char *text,
                    int text_len)
 {
-    /* Assume the locale encoding is UTF-8 (or close enough) and dispatch
-     * to XDrawString. xlibe takes the same shortcut in Locale.cpp. */
-    (void) font_set;
+    Font oldFont = None;
+    Bool changed = useFontSetFontForGC(gc, font_set, &oldFont);
     XDrawString(dpy, d, gc, x, y, text, text_len);
+    if (changed)
+        restoreGCFontAfterFontSet(gc, oldFont);
 }
 
 void XmbDrawImageString(Display *dpy,
@@ -1577,8 +1736,11 @@ void XmbDrawImageString(Display *dpy,
                         _Xconst char *text,
                         int text_len)
 {
-    (void) font_set;
+    Font oldFont = None;
+    Bool changed = useFontSetFontForGC(gc, font_set, &oldFont);
     XDrawImageString(dpy, d, gc, x, y, text, text_len);
+    if (changed)
+        restoreGCFontAfterFontSet(gc, oldFont);
 }
 
 void Xutf8DrawString(Display *dpy,
@@ -1590,8 +1752,11 @@ void Xutf8DrawString(Display *dpy,
                      _Xconst char *text,
                      int text_len)
 {
-    (void) font_set;
+    Font oldFont = None;
+    Bool changed = useFontSetFontForGC(gc, font_set, &oldFont);
     XDrawString(dpy, d, gc, x, y, text, text_len);
+    if (changed)
+        restoreGCFontAfterFontSet(gc, oldFont);
 }
 
 void Xutf8DrawImageString(Display *dpy,
@@ -1603,24 +1768,32 @@ void Xutf8DrawImageString(Display *dpy,
                           _Xconst char *text,
                           int text_len)
 {
-    (void) font_set;
+    Font oldFont = None;
+    Bool changed = useFontSetFontForGC(gc, font_set, &oldFont);
     XDrawImageString(dpy, d, gc, x, y, text, text_len);
+    if (changed)
+        restoreGCFontAfterFontSet(gc, oldFont);
 }
 
 int XmbTextEscapement(XFontSet font_set, _Xconst char *text, int text_len)
 {
-    (void) font_set;
     if (!text || text_len <= 0)
         return 0;
-    return text_len * 8;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    int w =
+        set && set->font ? XTextWidth(set->font, text, text_len) : text_len * 8;
+    LOG("XmbTextEscapement: text_len=%d (preview='%.20s') -> %d\n", text_len,
+        text, w);
+    return w;
 }
 
 int Xutf8TextEscapement(XFontSet font_set, _Xconst char *text, int text_len)
 {
-    (void) font_set;
     if (!text || text_len <= 0)
         return 0;
-    return text_len * 8;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    return set && set->font ? XTextWidth(set->font, text, text_len)
+                            : text_len * 8;
 }
 
 XIM XIMOfIC(XIC ic)
@@ -1681,8 +1854,14 @@ int XFontsOfFontSet(XFontSet font_set,
                     XFontStruct ***font_struct_list,
                     char ***font_name_list)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    if (!set)
+        return 0;
+    if (font_struct_list)
+        *font_struct_list = set->fontStructList;
+    if (font_name_list)
+        *font_name_list = set->fontNameList;
+    return 1;
 }
 
 /* Xrm database APIs live in src/xrm.c. */
@@ -1741,8 +1920,107 @@ int XWMGeometry(
     /* size of window */ int *height_return,
     /* size of window */ int *gravity_return) /* gravity of window */
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    int ux = 0, uy = 0;
+    unsigned int uwidth = 0, uheight = 0;
+    int dx = 0, dy = 0;
+    unsigned int dwidth = 0, dheight = 0;
+    int umask = XParseGeometry(user_geom, &ux, &uy, &uwidth, &uheight);
+    int dmask = XParseGeometry(def_geom, &dx, &dy, &dwidth, &dheight);
+    int rmask = umask;
+
+    int baseWidth = 0;
+    int baseHeight = 0;
+    int minWidth = 0;
+    int minHeight = 0;
+    int widthInc = 1;
+    int heightInc = 1;
+    if (hints) {
+        baseWidth = (hints->flags & PBaseSize)
+                        ? hints->base_width
+                        : ((hints->flags & PMinSize) ? hints->min_width : 0);
+        baseHeight = (hints->flags & PBaseSize)
+                         ? hints->base_height
+                         : ((hints->flags & PMinSize) ? hints->min_height : 0);
+        minWidth = (hints->flags & PMinSize) ? hints->min_width : baseWidth;
+        minHeight = (hints->flags & PMinSize) ? hints->min_height : baseHeight;
+        if ((hints->flags & PResizeInc) && hints->width_inc > 0)
+            widthInc = hints->width_inc;
+        if ((hints->flags & PResizeInc) && hints->height_inc > 0)
+            heightInc = hints->height_inc;
+    }
+
+    int widthUnits = (umask & WidthValue)
+                         ? (int) uwidth
+                         : ((dmask & WidthValue) ? (int) dwidth : 1);
+    int heightUnits = (umask & HeightValue)
+                          ? (int) uheight
+                          : ((dmask & HeightValue) ? (int) dheight : 1);
+    int width = widthUnits * widthInc + baseWidth;
+    int height = heightUnits * heightInc + baseHeight;
+    if (width < minWidth)
+        width = minWidth;
+    if (height < minHeight)
+        height = minHeight;
+    if (hints && (hints->flags & PMaxSize)) {
+        if (width > hints->max_width)
+            width = hints->max_width;
+        if (height > hints->max_height)
+            height = hints->max_height;
+    }
+
+    int x = 0;
+    if (umask & XValue) {
+        x = (umask & XNegative)
+                ? DisplayWidth(dpy, screen) + ux - width - 2 * (int) bwidth
+                : ux;
+    } else if (dmask & XValue) {
+        if (dmask & XNegative) {
+            x = DisplayWidth(dpy, screen) + dx - width - 2 * (int) bwidth;
+            rmask |= XNegative;
+        } else {
+            x = dx;
+        }
+    }
+
+    int y = 0;
+    if (umask & YValue) {
+        y = (umask & YNegative)
+                ? DisplayHeight(dpy, screen) + uy - height - 2 * (int) bwidth
+                : uy;
+    } else if (dmask & YValue) {
+        if (dmask & YNegative) {
+            y = DisplayHeight(dpy, screen) + dy - height - 2 * (int) bwidth;
+            rmask |= YNegative;
+        } else {
+            y = dy;
+        }
+    }
+
+    if (x_return)
+        *x_return = x;
+    if (y_return)
+        *y_return = y;
+    if (width_return)
+        *width_return = width;
+    if (height_return)
+        *height_return = height;
+    if (gravity_return) {
+        switch (rmask & (XNegative | YNegative)) {
+        case 0:
+            *gravity_return = NorthWestGravity;
+            break;
+        case XNegative:
+            *gravity_return = NorthEastGravity;
+            break;
+        case YNegative:
+            *gravity_return = SouthWestGravity;
+            break;
+        default:
+            *gravity_return = SouthEastGravity;
+            break;
+        }
+    }
+    return rmask;
 }
 
 Status XGetIconSizes(
@@ -1899,13 +2177,43 @@ void XwcFreeStringList(wchar_t **list)
     WARN_UNIMPLEMENTED;
 }
 
+/* Per ICCCM section 6.4, the RGB_COLOR_MAP family of properties stores
+ * a list of XStandardColormap entries serialized as ten CARD32 fields
+ * each in this fixed order: visualid, killid, colormap, red_max,
+ * red_mult, green_max, green_mult, blue_max, blue_mult, base_pixel.
+ * The C struct's field order is different from the wire order, so the
+ * Get/Set helpers translate explicitly. */
+#define XRGB_CMAP_FIELDS 10
+
 void XSetRGBColormaps(Display *dpy,
                       Window w,
                       XStandardColormap *cmaps,
                       int count,
                       Atom property) /* XA_RGB_BEST_MAP, etc. */
 {
-    WARN_UNIMPLEMENTED;
+    if (!dpy || !cmaps || count <= 0 || property == None)
+        return;
+    int nitems = count * XRGB_CMAP_FIELDS;
+    long *data = malloc(sizeof(long) * (size_t) nitems);
+    if (!data)
+        return;
+    for (int i = 0; i < count; i++) {
+        XStandardColormap *c = &cmaps[i];
+        long *p = &data[i * XRGB_CMAP_FIELDS];
+        p[0] = (long) c->visualid;
+        p[1] = (long) c->killid;
+        p[2] = (long) c->colormap;
+        p[3] = (long) c->red_max;
+        p[4] = (long) c->red_mult;
+        p[5] = (long) c->green_max;
+        p[6] = (long) c->green_mult;
+        p[7] = (long) c->blue_max;
+        p[8] = (long) c->blue_mult;
+        p[9] = (long) c->base_pixel;
+    }
+    XChangeProperty(dpy, w, property, XA_RGB_COLOR_MAP, 32, PropModeReplace,
+                    (unsigned char *) data, nitems);
+    free(data);
 }
 
 Status XGetWMProtocols(Display *dpy,
@@ -2105,6 +2413,93 @@ int XReadBitmapFile(Display *display,
     return BitmapSuccess;
 }
 
+int XReadBitmapFileData(_Xconst char *filename,
+                        unsigned int *width,
+                        unsigned int *height,
+                        unsigned char **data,
+                        int *x_hot,
+                        int *y_hot)
+{
+    if (!filename || !width || !height || !data)
+        return BitmapOpenFailed;
+    FILE *f = fopen(filename, "r");
+    if (!f)
+        return BitmapOpenFailed;
+    unsigned int w = 0, h = 0;
+    int xh = -1, yh = -1;
+    char line[512];
+    long bitsOffset = -1;
+    while (fgets(line, sizeof(line), f)) {
+        unsigned int v;
+        char *p;
+        if ((p = strstr(line, "width")) && sscanf(p, "width %u", &v) == 1) {
+            w = v;
+        } else if ((p = strstr(line, "height")) &&
+                   sscanf(p, "height %u", &v) == 1) {
+            h = v;
+        } else if ((p = strstr(line, "x_hot")) &&
+                   sscanf(p, "x_hot %u", &v) == 1) {
+            xh = (int) v;
+        } else if ((p = strstr(line, "y_hot")) &&
+                   sscanf(p, "y_hot %u", &v) == 1) {
+            yh = (int) v;
+        } else if (strstr(line, "_bits[]") || strstr(line, "bits[]")) {
+            char *brace = strchr(line, '{');
+            if (brace) {
+                bitsOffset =
+                    ftell(f) - (long) strlen(line) + (long) (brace - line + 1);
+                fseek(f, bitsOffset, SEEK_SET);
+                break;
+            }
+            bitsOffset = ftell(f);
+            break;
+        }
+    }
+    if (bitsOffset < 0 || w == 0 || h == 0) {
+        fclose(f);
+        return BitmapFileInvalid;
+    }
+    if (w > UINT_MAX - 7u) {
+        fclose(f);
+        return BitmapNoMemory;
+    }
+    size_t bytesPerRow = (w + 7u) / 8u;
+    if (bytesPerRow != 0 && (size_t) h > SIZE_MAX / bytesPerRow) {
+        fclose(f);
+        return BitmapNoMemory;
+    }
+    size_t total = bytesPerRow * (size_t) h;
+    unsigned char *bits = calloc(total, 1);
+    if (!bits) {
+        fclose(f);
+        return BitmapNoMemory;
+    }
+    size_t read = 0;
+    for (size_t i = 0; i < total; i++) {
+        int byte = 0;
+        if (!readBitmapHex(f, &byte))
+            break;
+        bits[i] = (unsigned char) byte;
+        read = i + 1;
+    }
+    fclose(f);
+    if (read < total) {
+        /* Short data: the file declared an X-by-Y bitmap but ran out of
+         * hex bytes before filling it. Reporting BitmapSuccess here would
+         * leave the caller drawing uninitialized regions. */
+        free(bits);
+        return BitmapFileInvalid;
+    }
+    *width = w;
+    *height = h;
+    *data = bits;
+    if (x_hot)
+        *x_hot = xh;
+    if (y_hot)
+        *y_hot = yh;
+    return BitmapSuccess;
+}
+
 Status XTextPropertyToStringList(XTextProperty *tp,
                                  char ***list_return,
                                  int *count_return)
@@ -2119,8 +2514,48 @@ Status XGetRGBColormaps(Display *dpy,
                         /* RETURN */ int *count,
                         /* RETURN */ Atom property) /* XA_RGB_BEST_MAP, etc. */
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    if (!dpy || !stdcmap || !count || property == None)
+        return 0;
+    *stdcmap = NULL;
+    *count = 0;
+    Atom actual_type = None;
+    int actual_format = 0;
+    unsigned long nitems = 0, bytes_after = 0;
+    unsigned char *raw = NULL;
+    if (XGetWindowProperty(dpy, w, property, 0, LONG_MAX, False,
+                           XA_RGB_COLOR_MAP, &actual_type, &actual_format,
+                           &nitems, &bytes_after, &raw) != Success)
+        return 0;
+    if (actual_type != XA_RGB_COLOR_MAP || actual_format != 32 || nitems == 0 ||
+        nitems % XRGB_CMAP_FIELDS != 0) {
+        XFree(raw);
+        return 0;
+    }
+    int n = (int) (nitems / XRGB_CMAP_FIELDS);
+    XStandardColormap *arr = calloc((size_t) n, sizeof(XStandardColormap));
+    if (!arr) {
+        XFree(raw);
+        return 0;
+    }
+    long *src = (long *) raw;
+    for (int i = 0; i < n; i++) {
+        XStandardColormap *c = &arr[i];
+        long *p = &src[i * XRGB_CMAP_FIELDS];
+        c->visualid = (VisualID) p[0];
+        c->killid = (XID) p[1];
+        c->colormap = (Colormap) p[2];
+        c->red_max = (unsigned long) p[3];
+        c->red_mult = (unsigned long) p[4];
+        c->green_max = (unsigned long) p[5];
+        c->green_mult = (unsigned long) p[6];
+        c->blue_max = (unsigned long) p[7];
+        c->blue_mult = (unsigned long) p[8];
+        c->base_pixel = (unsigned long) p[9];
+    }
+    XFree(raw);
+    *stdcmap = arr;
+    *count = n;
+    return 1;
 }
 
 int XStoreBytes(register Display *dpy, _Xconst char *bytes, int nbytes)
@@ -2157,8 +2592,9 @@ Atom *XListProperties(register Display *dpy,
 
 char *XScreenResourceString(Screen *screen)
 {
-    WARN_UNIMPLEMENTED;
-    return NULL;
+    if (!screen || !screen->display)
+        return NULL;
+    return screen->display->xdefaults;
 }
 
 
@@ -2176,8 +2612,7 @@ char *XFetchBytes(register Display *dpy, int *nbytes)
 
 char *XResourceManagerString(Display *dpy)
 {
-    WARN_UNIMPLEMENTED;
-    return NULL;
+    return dpy ? dpy->xdefaults : NULL;
 }
 
 Colormap *XListInstalledColormaps(register Display *dpy,
@@ -2455,6 +2890,59 @@ Status XcmsAllocNamedColor(Display *dpy,
     return 0;
 }
 
+/* Convert a plain C string into an XTextProperty. The encoding picks
+ * UTF8_STRING when isUtf8 is True, XA_STRING otherwise. Returns True on
+ * success and stores a heap-allocated value the caller must free with
+ * Xfree(tp.value). */
+static Bool textPropertyFromString(Display *dpy,
+                                   _Xconst char *str,
+                                   Bool isUtf8,
+                                   XTextProperty *tp)
+{
+    if (!str)
+        return False;
+    size_t len = strlen(str);
+    char *copy = Xmalloc(len + 1);
+    if (!copy)
+        return False;
+    memcpy(copy, str, len + 1);
+    tp->value = (unsigned char *) copy;
+    tp->nitems = (unsigned long) len;
+    tp->format = 8;
+    tp->encoding = isUtf8 ? XInternAtom(dpy, "UTF8_STRING", False) : XA_STRING;
+    return True;
+}
+
+static void setWMPropertiesCommon(Display *dpy,
+                                  Window w,
+                                  _Xconst char *windowName,
+                                  _Xconst char *iconName,
+                                  char **argv,
+                                  int argc,
+                                  XSizeHints *sizeHints,
+                                  XWMHints *wmHints,
+                                  XClassHint *classHints,
+                                  Bool isUtf8)
+{
+    XTextProperty winProp;
+    XTextProperty iconProp;
+    Bool haveWin = False;
+    Bool haveIcon = False;
+    if (windowName) {
+        haveWin = textPropertyFromString(dpy, windowName, isUtf8, &winProp);
+    }
+    if (iconName) {
+        haveIcon = textPropertyFromString(dpy, iconName, isUtf8, &iconProp);
+    }
+    XSetWMProperties(dpy, w, haveWin ? &winProp : NULL,
+                     haveIcon ? &iconProp : NULL, argv, argc, sizeHints,
+                     wmHints, classHints);
+    if (haveWin)
+        Xfree(winProp.value);
+    if (haveIcon)
+        Xfree(iconProp.value);
+}
+
 void XmbSetWMProperties(Display *dpy,
                         Window w,
                         _Xconst char *windowName,
@@ -2465,7 +2953,46 @@ void XmbSetWMProperties(Display *dpy,
                         XWMHints *wmHints,
                         XClassHint *classHints)
 {
-    WARN_UNIMPLEMENTED;
+    setWMPropertiesCommon(dpy, w, windowName, iconName, argv, argc, sizeHints,
+                          wmHints, classHints, False);
+}
+
+void Xutf8SetWMProperties(Display *dpy,
+                          Window w,
+                          _Xconst char *windowName,
+                          _Xconst char *iconName,
+                          char **argv,
+                          int argc,
+                          XSizeHints *sizeHints,
+                          XWMHints *wmHints,
+                          XClassHint *classHints)
+{
+    setWMPropertiesCommon(dpy, w, windowName, iconName, argv, argc, sizeHints,
+                          wmHints, classHints, True);
+}
+
+char *XGetOMValues(XOM om, ...)
+{
+    (void) om;
+    return NULL;
+}
+
+XOM XOMOfOC(XOC oc)
+{
+    (void) oc;
+    return NULL;
+}
+
+char *XSetOCValues(XOC oc, ...)
+{
+    (void) oc;
+    return NULL;
+}
+
+char *XGetOCValues(XOC oc, ...)
+{
+    (void) oc;
+    return NULL;
 }
 
 Status XcmsQueryGreen(XcmsCCC ccc,
@@ -2680,20 +3207,20 @@ XcmsColor *XcmsClientWhitePointOfCCC(XcmsCCC ccc)
 
 char *XBaseFontNameListOfFontSet(XFontSet font_set)
 {
-    WARN_UNIMPLEMENTED;
-    return NULL;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    return set ? set->baseName : NULL;
 }
 
 char *XLocaleOfFontSet(XFontSet font_set)
 {
-    WARN_UNIMPLEMENTED;
-    return NULL;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    return set ? set->locale : NULL;
 }
 
 XFontSetExtents *XExtentsOfFontSet(XFontSet font_set)
 {
-    WARN_UNIMPLEMENTED;
-    return NULL;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    return set ? &set->extents : NULL;
 }
 
 int XwcTextEscapement(XFontSet font_set, _Xconst wchar_t *text, int text_len)
@@ -2732,8 +3259,29 @@ int XmbTextExtents(XFontSet font_set,
                    XRectangle *overall_ink_extents,
                    XRectangle *overall_logical_extents)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    int width = set && set->font && text && text_len > 0
+                    ? XTextWidth(set->font, text, text_len)
+                    : 0;
+    int height = set && set->font ? set->font->ascent + set->font->descent : 0;
+    LOG("XmbTextExtents: set=%p font=%p text_len=%d (preview='%.20s') "
+        "-> w=%d h=%d\n",
+        (void *) set, set ? (void *) set->font : NULL, text_len,
+        text && text_len > 0 ? text : "(empty)", width, height);
+    int ascent = set && set->font ? set->font->ascent : 0;
+    if (overall_ink_extents) {
+        overall_ink_extents->x = 0;
+        overall_ink_extents->y = (short) -ascent;
+        overall_ink_extents->width = (unsigned short) width;
+        overall_ink_extents->height = (unsigned short) height;
+    }
+    if (overall_logical_extents) {
+        overall_logical_extents->x = 0;
+        overall_logical_extents->y = (short) -ascent;
+        overall_logical_extents->width = (unsigned short) width;
+        overall_logical_extents->height = (unsigned short) height;
+    }
+    return width;
 }
 
 Status XmbTextPerCharExtents(XFontSet font_set,
@@ -2746,8 +3294,65 @@ Status XmbTextPerCharExtents(XFontSet font_set,
                              XRectangle *max_ink_extents,
                              XRectangle *max_logical_extents)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    CompatFontSet *set = GET_FONT_SET(font_set);
+    int count = text_len > 0 ? text_len : 0;
+    if (count > buffer_size)
+        count = buffer_size;
+    int charWidth = set && set->font ? set->font->max_bounds.width : 8;
+    int height = set && set->font ? set->font->ascent + set->font->descent : 0;
+    int ascent = set && set->font ? set->font->ascent : 0;
+    for (int i = 0; i < count; i++) {
+        XRectangle rect = {
+            .x = (short) (i * charWidth),
+            .y = (short) -ascent,
+            .width = (unsigned short) charWidth,
+            .height = (unsigned short) height,
+        };
+        if (ink_extents_buffer)
+            ink_extents_buffer[i] = rect;
+        if (logical_extents_buffer)
+            logical_extents_buffer[i] = rect;
+    }
+    if (num_chars)
+        *num_chars = count;
+    if (max_ink_extents) {
+        max_ink_extents->x = 0;
+        max_ink_extents->y = (short) -ascent;
+        max_ink_extents->width = (unsigned short) charWidth;
+        max_ink_extents->height = (unsigned short) height;
+    }
+    if (max_logical_extents) {
+        max_logical_extents->x = 0;
+        max_logical_extents->y = (short) -ascent;
+        max_logical_extents->width = (unsigned short) charWidth;
+        max_logical_extents->height = (unsigned short) height;
+    }
+    return count == text_len ? Success : 0;
+}
+
+int Xutf8TextExtents(XFontSet font_set,
+                     _Xconst char *text,
+                     int text_len,
+                     XRectangle *overall_ink_extents,
+                     XRectangle *overall_logical_extents)
+{
+    return XmbTextExtents(font_set, text, text_len, overall_ink_extents,
+                          overall_logical_extents);
+}
+
+Status Xutf8TextPerCharExtents(XFontSet font_set,
+                               _Xconst char *text,
+                               int text_len,
+                               XRectangle *ink_extents_buffer,
+                               XRectangle *logical_extents_buffer,
+                               int buffer_size,
+                               int *num_chars,
+                               XRectangle *max_ink_extents,
+                               XRectangle *max_logical_extents)
+{
+    return XmbTextPerCharExtents(font_set, text, text_len, ink_extents_buffer,
+                                 logical_extents_buffer, buffer_size, num_chars,
+                                 max_ink_extents, max_logical_extents);
 }
 
 Status XcmsCIEuvYToCIELuv(XcmsCCC ccc,
@@ -2770,17 +3375,6 @@ Status XcmsCIExyYToCIEXYZ(XcmsCCC ccc,
 
 XcmsColorSpace XcmsCIELabColorSpace = {};
 XcmsColorSpace XcmsCIEXYZColorSpace = {};
-
-int XPeekIfEvent(register Display *dpy,
-                 register XEvent *event,
-                 Bool (*predicate)(Display * /* display */,
-                                   XEvent * /* event */,
-                                   char * /* arg */
-                                   ),
-                 char *arg)
-{
-    return 0;
-}
 
 XModifierKeymap *XInsertModifiermapEntry(XModifierKeymap *map,
                                          KeyCode keycode,

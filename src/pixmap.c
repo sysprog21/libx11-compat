@@ -43,9 +43,10 @@ static Bool bitmapBitIsSet(const char *data,
 static Pixmap createPixmapFromPixels(Display *display,
                                      unsigned int width,
                                      unsigned int height,
-                                     const Uint32 *pixels)
+                                     const Uint32 *pixels,
+                                     unsigned int depth)
 {
-    Pixmap pixmap = XCreatePixmap(display, SCREEN_WINDOW, width, height, 32);
+    Pixmap pixmap = XCreatePixmap(display, SCREEN_WINDOW, width, height, depth);
     if (pixmap == None) {
         return None;
     }
@@ -194,7 +195,8 @@ Pixmap XCreatePixmapFromBitmapData(Display *display,
         }
     }
 
-    Pixmap pixmap = createPixmapFromPixels(display, width, height, pixels);
+    Pixmap pixmap =
+        createPixmapFromPixels(display, width, height, pixels, depth);
     free(pixels);
     SDL_FreeFormat(format);
     return pixmap;

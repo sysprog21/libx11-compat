@@ -20,6 +20,7 @@ Bool postReparentUnmapNotify(Display *display,
                              Window eventWindow,
                              Window oldParent);
 Bool enqueueEvent(Display *display, Window eventWindow, void *event);
+void discardQueuedEventsForWindow(Display *display, Window window);
 Bool postCrossingEvent(Display *display,
                        Window window,
                        int type,
@@ -30,5 +31,9 @@ void postExposeEvent(Display *display,
                      Window window,
                      const SDL_Rect *damagedAreaList,
                      size_t numAreas);
+void postExposeEventsForMappedChildren(Display *display,
+                                       Window window,
+                                       const SDL_Rect *damagedAreaList,
+                                       size_t numAreas);
 
 #endif /* _EVENTS_H_ */

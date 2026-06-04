@@ -108,6 +108,31 @@ After wiring up the build, run `make check` to confirm the library and its in-tr
 For end-to-end validation, build the examples and run them:
 they cover window, GC, event, pixmap, image, and ICCCM paths in combinations that mirror common application structure.
 
+## 9. Build autotools clients with the compatibility pkg-config files
+
+The build generates pkg-config metadata under `build/pkgconfig` for the
+compatibility stack:
+
+```sh
+make
+PKG_CONFIG_PATH=$PWD/build/pkgconfig pkg-config --libs --cflags x11 xpm xt xmu xext
+```
+
+Autotools clients that probe `x11`, `xt`, `xpm`, `xmu`, or `xext` should run
+configure with `PKG_CONFIG_PATH=$PWD/build/pkgconfig` so they resolve the local
+compatibility libraries instead of the host X11 installation.
+
+For the pinned thentenaar/motif fork, use:
+
+```sh
+make motif
+```
+
+That target builds `lib/Xm` and `lib/Mrm` against `libX11-compat`,
+`libXt-compat`, `libXpm-compat`, and the minimal `libXext` / `libXmu` shims.
+It intentionally skips GLw, demos, tests, Xft, image codec extras, and mwm for
+the first Motif validation surface.
+
 ## When porting is not enough
 
 Some applications depend on facilities that this library does not provide because they have no in-process analogue:

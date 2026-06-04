@@ -218,7 +218,16 @@ int main(void)
     REF(XwcDrawString);
     REF(XmbTextEscapement);
     REF(Xutf8TextEscapement);
+    REF(Xutf8TextExtents);
+    REF(Xutf8TextPerCharExtents);
+    REF(Xutf8TextListToTextProperty);
+    REF(Xutf8SetWMProperties);
     REF(XReadBitmapFile);
+    REF(XReadBitmapFileData);
+    REF(XGetOCValues);
+    REF(XGetOMValues);
+    REF(XOMOfOC);
+    REF(XSetOCValues);
     REF(XWriteBitmapFile);
     REF(XParseGeometry);
     REF(XrmGetStringDatabase);

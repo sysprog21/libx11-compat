@@ -8,7 +8,8 @@ typedef enum {
     GRAPHICS_CONTEXT = 4,
     FONT = 5,
     CURSOR = 6,
-    COLORMAP = 7
+    COLORMAP = 7,
+    CLOSED_FONT = 8
 } XResourceType;
 
 typedef struct {

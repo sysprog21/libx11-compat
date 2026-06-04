@@ -37,6 +37,15 @@ typedef struct {
      * Only set if this window is a mapped top level window.
      */
     SDL_Window *sdlWindow;
+    /* True when a top-level window's backing texture must be copied to its
+     * SDL_Window surface on the next flush/sync.
+     */
+    Bool needsPresent;
+    /* True after a mapped top-level window has completed at least one
+     * successful update to its SDL_Window surface.
+     */
+    Bool hasPresented;
+    Bool contentsMergedToParent;
     /* The renderer of this window. Only set if sdlWindow or sdlTexture is set.
      */
     SDL_Renderer *sdlRenderer;
@@ -70,6 +79,12 @@ typedef struct {
     MapState mapState;
     long eventMask;
     Bool overrideRedirect;
+    SDL_Surface *shapeBoundingMask;
+    int shapeBoundingOffsetX;
+    int shapeBoundingOffsetY;
+    SDL_Surface *shapeClipMask;
+    int shapeClipOffsetX;
+    int shapeClipOffsetY;
 #ifdef DEBUG_WINDOWS
     /* Random id used for debugging. */
     unsigned long debugId;

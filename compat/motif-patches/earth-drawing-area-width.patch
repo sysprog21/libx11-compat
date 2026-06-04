@@ -1,0 +1,15 @@
+diff --git a/demos/programs/earth/earth.c b/demos/programs/earth/earth.c
+index d4d89fed..c3d6ffc6 100644
+--- a/demos/programs/earth/earth.c
++++ b/demos/programs/earth/earth.c
+@@ -254,8 +254,8 @@ int main(int argc, char *argv[])
+ 
+     /* create a fixed size drawing area + callback for dialog popup */
+     nx = 0 ;
+-    XtSetArg(args[n], XmNwidth, 64);  nx++ ;
+-    XtSetArg(args[n], XmNheight, 64); nx++ ;
++    XtSetArg(args[nx], XmNwidth, 64);  nx++ ;
++    XtSetArg(args[nx], XmNheight, 64); nx++ ;
+     draw = XmCreateDrawingArea (toplevel, "draw", args, nx);
+     XtManageChild(draw);
+     XtAddCallback(draw,XmNinputCallback,(XtCallbackProc)input_callback,NULL);

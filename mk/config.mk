@@ -1,6 +1,6 @@
 OUT ?= build
 TARGET ?= $(OUT)/libX11-compat.so
-PYTHON ?= python3
+# PYTHON is set in mk/toolchain.mk; do not redefine here.
 
 SDL2_CFLAGS := $(shell $(SDL2_CONFIG) --cflags 2>/dev/null)
 SDL2_PREFIX := $(shell $(SDL2_CONFIG) --prefix 2>/dev/null)
@@ -33,10 +33,10 @@ CPPFLAGS += -Iinclude -Isrc \
             $(SDL2_CFLAGS) $(SDL2_TTF_CFLAGS) $(PIXMAN_CFLAGS) \
             -DNARROWPROTO -DXTHREADS -D_GNU_SOURCE
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC
-LDLIBS += $(SDL2_LIBS) \
-          $(if $(SDL2_TTF_PREFIX),-L$(SDL2_TTF_PREFIX)/lib) \
-          $(if $(SDL2_TTF_LIBS),$(filter-out -lSDL2,$(SDL2_TTF_LIBS)),-lSDL2_ttf) \
-          $(PIXMAN_LIBS) -lm -pthread
+SDL_COMPAT_LIBS := -L$(abspath $(OUT)) -lSDL2-x11compat \
+                   -lSDL2_ttf-x11compat
+LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm -pthread \
+          $(if $(filter Linux,$(UNAME_S)),-ldl)
 
 GREEN  := \033[0;32m
 BLUE   := \033[0;34m

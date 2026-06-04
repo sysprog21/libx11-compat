@@ -51,21 +51,21 @@ STAMP_NAME = ".upstream-stamp"
 SOURCES = [
     {
         "name": "libX11",
-        "version": "libX11-1.8.9",
-        "url": "https://www.x.org/releases/individual/lib/libX11-1.8.9.tar.xz",
-        "sha256": "779d8f111d144ef93e2daa5f23a762ce9555affc99592844e71c4243d3bd3262",
+        "version": "libX11-1.8.13",
+        "url": "https://gitlab.freedesktop.org/xorg/lib/libx11/-/archive/libX11-1.8.13/libx11-libX11-1.8.13.tar.gz",
+        "sha256": "d210291f5cd974e5029cce4bde0fc1b8bfc0ce88b8530ea6ba4b1fcf141506ab",
     },
     {
         "name": "xorgproto",
         "version": "xorgproto-2025.1",
-        "url": "https://www.x.org/releases/individual/proto/xorgproto-2025.1.tar.xz",
-        "sha256": "56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8",
+        "url": "https://gitlab.freedesktop.org/xorg/proto/xorgproto/-/archive/xorgproto-2025.1/xorgproto-xorgproto-2025.1.tar.gz",
+        "sha256": "473e9d4608d9c1c3f42346746deb06b3e0d440349422d0857ef0989e17d7e03d",
     },
     {
         "name": "libXt",
         "version": "libXt-1.3.1",
-        "url": "https://www.x.org/releases/individual/lib/libXt-1.3.1.tar.xz",
-        "sha256": "e0a774b33324f4d4c05b199ea45050f87206586d81655f8bef4dba434d931288",
+        "url": "https://gitlab.freedesktop.org/xorg/lib/libxt/-/archive/libXt-1.3.1/libxt-libXt-1.3.1.tar.gz",
+        "sha256": "07f71c105a979fe570e5b985dfc58ad512973aaa923c29f11b5009c302f9a76e",
         # libXt's src/ goes to its own staging dir so it does not collide
         # with the libX11 src/ slice (different headers, different build
         # flags). All .c files in src/ are taken so the Makefile picks them
@@ -82,6 +82,27 @@ SOURCES = [
             {"makestrs.c", "string.list", "StrDefs.ct", "StrDefs.ht", "Shell.ht"}
         ),
         "util_subdir": "topdir-libXt/util",
+    },
+    {
+        "name": "libXpm",
+        "version": "libXpm-3.5.19",
+        "url": "https://gitlab.freedesktop.org/xorg/lib/libxpm/-/archive/libXpm-3.5.19/libxpm-libXpm-3.5.19.tar.gz",
+        "sha256": "cccff8ec2210476c698d746743aa75504263ce7727089fb832efaeb971ebefa7",
+        "src_subdir": "src-libXpm",
+        "src_take_all": True,
+    },
+    {
+        "name": "libXmu",
+        "version": "libXmu-1.3.1",
+        "url": "https://gitlab.freedesktop.org/xorg/lib/libxmu/-/archive/libXmu-1.3.1/libxmu-libXmu-1.3.1.tar.gz",
+        "sha256": "a38bff41f609e2ea887c05fb4a31e926a03ba1d69ddda9423682e198839f2355",
+        # Pulled in for clients/mwm and Motif's clients/ tree. The
+        # tarball ships its public surface under include/X11/Xmu/ which
+        # the existing extractor already routes into the staged X11
+        # tree, so the prefix-stub headers we ship in
+        # include/X11/Xmu/Editres.h get overwritten by the real ones.
+        "src_subdir": "src-libXmu",
+        "src_take_all": True,
     },
 ]
 
@@ -343,7 +364,7 @@ def relevant_src_member(
     if base is None:
         return None
     if take_all:
-        return base if base.endswith(".c") else None
+        return base if base.endswith((".c", ".h")) else None
     if not whitelist or base not in whitelist:
         return None
     return base
@@ -371,7 +392,7 @@ def upstream_index() -> dict[str, tuple[str, bytes]]:
     index: dict[str, tuple[str, bytes]] = {}
     for source in SOURCES:
         tarball = download(source["url"], source["sha256"])
-        with tarfile.open(tarball, "r:xz") as tar:
+        with tarfile.open(tarball, "r:*") as tar:
             for member in tar:
                 rel = relevant_member(member)
                 if rel is None:
@@ -404,7 +425,7 @@ def upstream_src_index() -> dict[tuple[str, str], tuple[str, bytes]]:
         subdir = source.get("src_subdir", "src")
         tarball = download(source["url"], source["sha256"])
         seen: set[str] = set()
-        with tarfile.open(tarball, "r:xz") as tar:
+        with tarfile.open(tarball, "r:*") as tar:
             for member in tar:
                 rel = relevant_src_member(member, whitelist, take_all)
                 if rel is None or rel in seen:
@@ -438,7 +459,7 @@ def upstream_util_index() -> dict[tuple[str, str], tuple[str, bytes]]:
         subdir = source.get("util_subdir", "util")
         tarball = download(source["url"], source["sha256"])
         seen: set[str] = set()
-        with tarfile.open(tarball, "r:xz") as tar:
+        with tarfile.open(tarball, "r:*") as tar:
             for member in tar:
                 rel = relevant_util_member(member, whitelist)
                 if rel is None or rel in seen:

@@ -1,11 +1,13 @@
 #include <X11/Xlib.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include "atoms.h"
 #include "display.h"
 #include "drawing.h"
 #include "errors.h"
 #include "events.h"
+#include "font.h"
 #include "image.h"
 #include "input.h"
 #include "net-atoms.h"
@@ -72,10 +74,17 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     if (windowStruct->borderWidth == 0) {
         flags |= SDL_WINDOW_BORDERLESS;
     }
+    if (windowStruct->overrideRedirect) {
+        flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+    }
     if (windowStruct->eventMask & KeyPressMask ||
         windowStruct->eventMask & KeyReleaseMask) {
         flags |= SDL_WINDOW_INPUT_FOCUS;
     }
+    LOG("realizeTopLevelWindow: window=%lu pos=(%d,%d) size=(%ux%u) "
+        "borderless=%d\n",
+        window, windowStruct->x, windowStruct->y, windowStruct->w,
+        windowStruct->h, (flags & SDL_WINDOW_BORDERLESS) != 0);
     SDL_Window *sdlWindow = SDL_CreateWindow(
         windowStruct->windowName, windowStruct->x, windowStruct->y,
         windowStruct->w, windowStruct->h, flags);
@@ -86,6 +95,13 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     }
     registerWindowMapping(window, SDL_GetWindowID(sdlWindow));
     windowStruct->sdlWindow = sdlWindow;
+    if (windowStruct->overrideRedirect) {
+#if SDL_VERSION_ATLEAST(2, 0, 16)
+        SDL_SetWindowAlwaysOnTop(sdlWindow, SDL_TRUE);
+#endif
+    }
+    windowStruct->needsPresent = True;
+    windowStruct->hasPresented = False;
     if (windowStruct->cursor != None) {
         XDefineCursor(display, window, windowStruct->cursor);
     }
@@ -100,9 +116,12 @@ static void unrealizeTopLevelWindow(Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (!windowStruct->sdlWindow)
         return;
+
     deleteWindowMapping(window);
     SDL_DestroyWindow(windowStruct->sdlWindow);
     windowStruct->sdlWindow = NULL;
+    windowStruct->needsPresent = False;
+    windowStruct->hasPresented = False;
 }
 
 Window XCreateSimpleWindow(Display *display,
@@ -143,6 +162,7 @@ Window XCreateWindow(Display *display,
         handleError(0, display, None, 0, BadValue, 0);
         return None;
     }
+
     Bool inputOnly = (clazz == InputOnly ||
                       (clazz == CopyFromParent && IS_INPUT_ONLY(parent)));
     if (inputOnly && border_width != 0) {
@@ -151,6 +171,7 @@ Window XCreateWindow(Display *display,
         handleError(0, display, None, 0, BadMatch, 0);
         return None;
     }
+
     Window windowID = ALLOC_XID();
     if (windowID == None) {
         LOG("Out of memory: Could not allocate the window id in "
@@ -158,6 +179,7 @@ Window XCreateWindow(Display *display,
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
+
     WindowStruct *windowStruct = malloc(sizeof(WindowStruct));
     if (!windowStruct) {
         LOG("Out of memory: Could not allocate the window struct in "
@@ -166,6 +188,7 @@ Window XCreateWindow(Display *display,
         FREE_XID(windowID);
         return None;
     }
+
     SET_XID_TYPE(windowID, WINDOW);
     SET_XID_VALUE(windowID, windowStruct);
     initWindowStruct(windowStruct, x, y, width, height, visual, None, inputOnly,
@@ -180,9 +203,8 @@ Window XCreateWindow(Display *display,
         FREE_XID(windowID);
         return None;
     }
-    if (visual == CopyFromParent) {
+    if (visual == CopyFromParent)
         visual = getDefaultVisual(0);
-    }
     if (!visual) {
         handleError(0, display, None, 0, BadMatch, 0);
         removeChildFromParent(windowID);
@@ -190,6 +212,7 @@ Window XCreateWindow(Display *display,
         FREE_XID(windowID);
         return None;
     }
+
     int visualClass = visual->CLASS_ATTRIBUTE;
     windowStruct->colormap = (Colormap) XCreateColormap(
         display, windowID, visual,
@@ -207,8 +230,10 @@ Window XCreateWindow(Display *display,
         FREE_XID(windowID);
         return None;
     }
+
     /* Register event masks before CreateNotify so interested clients can
-     * observe the window with its initial selection state. */
+     * observe the window with its initial selection state.
+     */
     if (HAS_VALUE(valueMask, CWEventMask))
         windowStruct->eventMask = attributes->event_mask;
     postEvent(display, windowID, CreateNotify);
@@ -277,6 +302,7 @@ Status XSetWMColormapWindows(Display *display,
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
     }
+
     for (int i = 0; i < count; i++)
         TYPE_CHECK(colormap_windows[i], WINDOW, display, 0);
     Window *copy = NULL;
@@ -288,6 +314,7 @@ Status XSetWMColormapWindows(Display *display,
         }
         memcpy(copy, colormap_windows, sizeof(Window) * (size_t) count);
     }
+
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     free(windowStruct->colormapWindows);
     windowStruct->colormapWindowsCount = count;
@@ -345,35 +372,38 @@ int XMapWindow(Display *display, Window window)
     // https://tronche.com/gui/x/xlib/window/XMapWindow.html
     SET_X_SERVER_REQUEST(display, X_MapWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (GET_WINDOW_STRUCT(window)->mapState == Mapped ||
-        GET_WINDOW_STRUCT(window)->mapState == MapRequested) {
+    if (GET_WINDOW_STRUCT(window)->mapState == Mapped) {
         return 1;
     }
-    if (!GET_WINDOW_STRUCT(window)->overrideRedirect &&
-        HAS_EVENT_MASK(GET_PARENT(window), SubstructureRedirectMask)) {
-        postEvent(display, window, MapRequest);
-        return 1;
-    }
+
+    /* libx11-compat has no separate window-manager client to service
+     * SubstructureRedirect requests. Some Motif paths select redirect-style
+     * masks internally; if we stop at MapRequest, top-level shells never become
+     * SDL windows. Keep mapping in-process.
+     */
     if (IS_TOP_LEVEL(window)) {
-        if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+        if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
             return 1;
-        }
+
         LOG("Mapping Window %lu\n", window);
         WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-        if (!realizeTopLevelWindow(display, window)) {
+        if (!realizeTopLevelWindow(display, window))
             return 0;
-        }
-        /* Every window draws on the SCREEN renderer with a per-window
-         * backing texture as render target. The unmapped state already
-         * holds that texture in windowStruct->sdlTexture, so transitioning
-         * to mapped is just associating the SDL_Window; the texture is
-         * unchanged and stays on the same renderer. Presentation to the
-         * actual SDL_Window happens later in drawWindowDataToScreen. */
+
+        /* Every window draws on the SCREEN renderer with a per-window backing
+         * texture as render target. The unmapped state already holds that
+         * texture in windowStruct->sdlTexture, so transitioning to mapped is
+         * just associating the SDL_Window; the texture is unchanged and stays
+         * on the same renderer. Presentation to the actual SDL_Window happens
+         * later in drawWindowDataToScreen.
+         * */
         windowStruct->mapState = Mapped;
-        /* On macOS a command-line launched SDL app does not get keyboard
-         * focus by default even with SDL_WINDOW_INPUT_FOCUS requested, so
-         * keystrokes stay in the terminal. Real X11's MapWindow puts the
-         * window on screen; raising it here matches user expectation. */
+
+        /* On macOS a command-line launched SDL app does not get keyboard focus
+         * by default even with SDL_WINDOW_INPUT_FOCUS requested, so keystrokes
+         * stay in the terminal. Real X11's MapWindow puts the window on screen;
+         * raising it here matches user expectation.
+         */
         SDL_RaiseWindow(windowStruct->sdlWindow);
         if (windowStruct->windowName) {
             free(windowStruct->windowName);
@@ -381,10 +411,12 @@ int XMapWindow(Display *display, Window window)
         }
         if (windowStruct->eventMask & KeyPressMask ||
             windowStruct->eventMask & KeyReleaseMask) {
-            /* See XSelectInput: keep SDL text input off so KeyPress events
-             * are not doubled by SDL_TEXTINPUT. */
+            /* Keep SDL text input off so KeyPress events are not doubled
+             * by SDL_TEXTINPUT. No setKeyboardFocus here: focus is owned
+             * by XSetInputFocus and its callers; XMapWindow auto-focus
+             * stole focus from the active Motif dialog and prevented
+             * popup shells from finishing their map sequence. */
             SDL_StopTextInput();
-            setKeyboardFocus(window);
         }
     } else { /* Mapping a window that is not a top level window  */
         Window parent = GET_PARENT(window);
@@ -395,25 +427,22 @@ int XMapWindow(Display *display, Window window)
                 return 0;
             }
             GET_WINDOW_STRUCT(window)->mapState = Mapped;
+            XClearArea(display, window, 0, 0, 0, 0, False);
+            GET_WINDOW_STRUCT(window)->contentsMergedToParent = False;
         } else { /* Parent not mapped */
-            if (!mergeWindowDrawables(GET_PARENT(window), window)) {
-                LOG("Parent not mapped fail");
-                LOG("Failed to merge the window renderer in %s: %s\n", __func__,
-                    SDL_GetError());
-                return 0;
-            }
             GET_WINDOW_STRUCT(window)->mapState = MapRequested;
             return 1;
         }
     }
+
     postEvent(display, window, MapNotify);
     postVisibilityForWindowAndSiblings(display, window);
     mapRequestedChildren(display, window);
 
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    SDL_Rect exposeRect = {windowStruct->x, windowStruct->y, windowStruct->w,
-                           windowStruct->h};
+    SDL_Rect exposeRect = {0, 0, windowStruct->w, windowStruct->h};
     postExposeEvent(display, window, &exposeRect, 1);
+    drawWindowDataToScreen();
 
     // SDL_UpdateWindowSurface(GET_WINDOW_STRUCT(window)->sdlWindow);
 
@@ -435,6 +464,7 @@ int XUnmapWindow(Display *display, Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (windowStruct->mapState == UnMapped)
         return 1;
+
     windowStruct->mapState = UnMapped;
     postVisibilityForWindowAndSiblings(display, window);
     if (windowStruct->sdlWindow) {
@@ -442,8 +472,10 @@ int XUnmapWindow(Display *display, Window window)
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
         windowStruct->sdlWindow = NULL;
         windowStruct->sdlRenderer = NULL;
+        windowStruct->needsPresent = False;
         if (sdlRenderer) {
             invalidatePutImageStagingTexture(sdlRenderer);
+            invalidateTextCacheForRenderer(sdlRenderer);
             SDL_DestroyRenderer(sdlRenderer);
         }
         SDL_DestroyWindow(sdlWindow);
@@ -468,7 +500,7 @@ int XMapSubwindows(Display *display, Window window)
     }
     memcpy(children, GET_CHILDREN(window), sizeof(Window) * count);
     for (size_t i = 0; i < count; i++) {
-        if (GET_WINDOW_STRUCT(children[i])->mapState == UnMapped) {
+        if (GET_WINDOW_STRUCT(children[i])->mapState != Mapped) {
             XMapWindow(display, children[i]);
         }
     }
@@ -585,15 +617,16 @@ int XReparentWindow(Display *display,
         handleError(0, display, window, 0, BadMatch, 0);
         return 0;
     }
+
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     MapState mapState = windowStruct->mapState;
     Window oldParent = GET_PARENT(window);
     Bool wasTopLevel = IS_TOP_LEVEL(window);
-    /* Snapshot pre-mutation geometry so every failure path can restore
-     * the window to its original parent, position, and map state.
-     * removeArray shrinks length but never reduces capacity, so the
-     * subsequent addChildToWindow(oldParent, window) reuses the slot
-     * we just vacated and cannot fail under OOM.
+    /* Snapshot pre-mutation geometry so every failure path can restore the
+     * window to its original parent, position, and map state. removeArray
+     * shrinks length but never reduces capacity, so the subsequent
+     * addChildToWindow(oldParent, window) reuses the slot we just vacated and
+     * cannot fail under OOM.
      */
     int oldX = windowStruct->x;
     int oldY = windowStruct->y;
@@ -648,6 +681,22 @@ int indexInWindowList(Window *windowList, int numWindows, Window window)
     return -1;
 }
 
+static void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn)
+{
+    int x = 0;
+    int y = 0;
+    while (window != None && window != SCREEN_WINDOW) {
+        int wx = 0;
+        int wy = 0;
+        GET_WINDOW_POS(window, wx, wy);
+        x += wx;
+        y += wy;
+        window = GET_PARENT(window);
+    }
+    *xReturn = x;
+    *yReturn = y;
+}
+
 Bool XTranslateCoordinates(Display *display,
                            Window sourceWindow,
                            Window destinationWindow,
@@ -661,62 +710,15 @@ Bool XTranslateCoordinates(Display *display,
     SET_X_SERVER_REQUEST(display, X_TranslateCoords);
     TYPE_CHECK(sourceWindow, WINDOW, display, False);
     TYPE_CHECK(destinationWindow, WINDOW, display, False);
-    int currX = sourceX;
-    int currY = sourceY;
-    int parentIndex = -1;
     int x, y, width, height;
-    int numDestParents;
-    Window destParents[256];
-    *destinationXReturn = 0;
-    *destinationYReturn = 0;
-    // Get all parents of destinationWindow
-    if (destinationWindow == SCREEN_WINDOW) {
-        destParents[0] = None;
-        numDestParents = 0;
-    } else {
-        Window nextParent = GET_PARENT(destinationWindow);
-        numDestParents = 0;
-        while (nextParent != SCREEN_WINDOW) {
-            destParents[numDestParents++] = nextParent;
-            if (nextParent == sourceWindow) {
-                break;  // sourceWindow is a parent of destinationWindow
-            }
-            nextParent = GET_PARENT(nextParent);
-            if (numDestParents > 255) {
-                LOG("Error: Unable to calculate common parent. "
-                    "Number of parents exceeds 255 in "
-                    "XTranslateCoordinates!\n");
-                return False;
-            }
-        }
-        destParents[numDestParents] = None;
-    }
-    // Find the first common parent and translate sourceWindow's x and y to it's
-    // coordinate system
-    while (sourceWindow != SCREEN_WINDOW) {
-        parentIndex =
-            indexInWindowList(&destParents[0], numDestParents, sourceWindow);
-        if (parentIndex != -1) {
-            break;  // We got the first common parent
-        }
-        GET_WINDOW_POS(sourceWindow, x, y);
-        currX += x;
-        currY += y;
-        sourceWindow = GET_PARENT(sourceWindow);
-    }
-    if (parentIndex == -1) {
-        parentIndex =
-            numDestParents;  // SCREEN_WINDOW is the only common parent
-    }
-    // Translate x and y into destinationWindow's coordinate system
-    while (--parentIndex > 0) {
-        GET_WINDOW_POS(destParents[parentIndex], x, y);
-        currX -= x;
-        currY -= y;
-    }
-    GET_WINDOW_POS(destinationWindow, x, y);
-    currX -= x;
-    currY -= y;
+    int sourceAbsX = 0;
+    int sourceAbsY = 0;
+    int destAbsX = 0;
+    int destAbsY = 0;
+    windowAbsoluteOrigin(sourceWindow, &sourceAbsX, &sourceAbsY);
+    windowAbsoluteOrigin(destinationWindow, &destAbsX, &destAbsY);
+    int currX = sourceAbsX + sourceX - destAbsX;
+    int currY = sourceAbsY + sourceY - destAbsY;
     *destinationXReturn = currX;
     *destinationYReturn = currY;
     if (childReturn) {
@@ -728,7 +730,8 @@ Bool XTranslateCoordinates(Display *display,
              i++) {
             GET_WINDOW_POS(children[i], x, y);
             GET_WINDOW_DIMS(children[i], width, height);
-            if (x < currX && x + width > currX && y < currY && y + height > y) {
+            if (x <= currX && x + width > currX && y <= currY &&
+                y + height > currY) {
                 *childReturn = children[i];
                 break;
             }
@@ -760,10 +763,18 @@ int XChangeProperty(Display *display,
     SET_X_SERVER_REQUEST(display, X_ChangeProperty);
     TYPE_CHECK(window, WINDOW, display, 0);
     if (numberOfElements < 0) {
+        LOG("Bad parameter: XChangeProperty got negative element count %d "
+            "for property %lu (%s), type %lu (%s), format %d, mode %d.\n",
+            numberOfElements, property, getAtomName(display, property), type,
+            getAtomName(display, type), format, mode);
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
     }
     if (format != 8 && format != 16 && format != 32) {
+        LOG("Bad parameter: XChangeProperty got invalid format %d for "
+            "property %lu (%s), type %lu (%s), elements %d, mode %d.\n",
+            format, property, getAtomName(display, property), type,
+            getAtomName(display, type), numberOfElements, mode);
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
     }
@@ -822,6 +833,7 @@ int XChangeProperty(Display *display,
             handleError(0, display, None, 0, BadMatch, 0);
             return 0;
         }
+
         /* Checked add then checked multiply: a malicious caller can craft
          * previousDataLength + numberOfElements to wrap u32, undersizing
          * the allocation before the memcpy of dataTypeSize bytes per
@@ -873,46 +885,47 @@ int XChangeProperty(Display *display,
         windowProperty->data = combinedData;
         windowProperty->dataLength = numberOfElements + previousDataLength;
         break;
-    case PropModeReplace:
+    case PropModeReplace: {
         /* Same overflow surface as the append/prepend path: a large
          * numberOfElements times dataTypeSize (up to 8 for format == 32)
          * can wrap size_t before malloc, and would then drive memcpy past
          * the undersized buffer.
-         */
-        if (numberOfElements > 0 &&
-            (size_t) numberOfElements > SIZE_MAX / dataTypeSize) {
-            if (propertyIsNew) {
-                removeArray(&windowStruct->properties,
-                            windowStruct->properties.length - 1, False);
-                free(windowProperty);
-            }
-            handleError(0, display, None, 0, BadAlloc, 0);
-            return 0;
-        }
-        windowProperty->data =
-            numberOfElements > 0
-                ? malloc(dataTypeSize * (size_t) numberOfElements)
-                : NULL;
-        if (numberOfElements > 0 && !windowProperty->data) {
-            if (propertyIsNew) {
-                removeArray(&windowStruct->properties,
-                            windowStruct->properties.length - 1, False);
-                free(windowProperty);
-            }
-            LOG("Out of memory: Failed to allocate space for data in "
-                "XChangeProperty!\n");
-            handleOutOfMemory(0, display, 0, 0);
-            return 0;
-        }
+         *
+         * Allocate into a temporary so an OOM here leaves the original
+         * windowProperty->data intact instead of orphaning it with the
+         * pointer overwritten to NULL. */
+        unsigned char *newData = NULL;
         if (numberOfElements > 0) {
-            memcpy(windowProperty->data, data,
-                   dataTypeSize * (size_t) numberOfElements);
+            if ((size_t) numberOfElements > SIZE_MAX / dataTypeSize) {
+                if (propertyIsNew) {
+                    removeArray(&windowStruct->properties,
+                                windowStruct->properties.length - 1, False);
+                    free(windowProperty);
+                }
+                handleError(0, display, None, 0, BadAlloc, 0);
+                return 0;
+            }
+            newData = malloc(dataTypeSize * (size_t) numberOfElements);
+            if (!newData) {
+                if (propertyIsNew) {
+                    removeArray(&windowStruct->properties,
+                                windowStruct->properties.length - 1, False);
+                    free(windowProperty);
+                }
+                LOG("Out of memory: Failed to allocate space for data in "
+                    "XChangeProperty!\n");
+                handleOutOfMemory(0, display, 0, 0);
+                return 0;
+            }
+            memcpy(newData, data, dataTypeSize * (size_t) numberOfElements);
         }
+        windowProperty->data = newData;
         windowProperty->dataLength = (unsigned int) numberOfElements;
         windowProperty->property = property;
         windowProperty->type = type;
         windowProperty->dataFormat = format;
         break;
+    }
     default:
         if (propertyIsNew) {
             removeArray(&windowStruct->properties,
@@ -1001,6 +1014,32 @@ int XChangeProperty(Display *display,
         }
         if (wantBorderless) {
             SDL_SetWindowBordered(windowStruct->sdlWindow, SDL_FALSE);
+        }
+    }
+    /* Motif, GTK, and Qt set their window titles via XChangeProperty on
+     * WM_NAME / _NET_WM_NAME rather than calling XStoreName. Route any
+     * format-8 string-encoded write through XStoreName so SDL's window
+     * title reflects what the client just asked for. Non-string property
+     * types (e.g. atom lists) pass through untouched. */
+    if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME)) {
+        static Atom cachedUtf8 = None;
+        static Atom cachedCompound = None;
+        if (cachedUtf8 == None)
+            cachedUtf8 = XInternAtom(display, "UTF8_STRING", False);
+        if (cachedCompound == None)
+            cachedCompound = XInternAtom(display, "COMPOUND_TEXT", False);
+        if (type == XA_STRING || type == cachedUtf8 || type == cachedCompound) {
+            /* Property bytes are not required to be NUL-terminated. */
+            size_t copyLen = (size_t) numberOfElements;
+            char *titleBuf = malloc(copyLen + 1);
+            if (titleBuf) {
+                if (copyLen > 0 && windowProperty->data) {
+                    memcpy(titleBuf, windowProperty->data, copyLen);
+                }
+                titleBuf[copyLen] = '\0';
+                XStoreName(display, window, titleBuf);
+                free(titleBuf);
+            }
         }
     }
     postEvent(display, window, PropertyNotify, property, PropertyNewValue);
@@ -1450,8 +1489,12 @@ int XChangeWindowAttributes(Display *display,
             XSetWindowColormap(display, window, attributes->colormap);
         }
         if (HAS_VALUE(valueMask, CWEventMask)) {
-            LOG("Change window attributes event: %ld\n",
-                attributes->event_mask & SubstructureRedirectMask);
+            LOG("Change window attributes event: window=%lu mask=0x%lx "
+                "exposure=0x%lx structure=0x%lx substructure=0x%lx\n",
+                window, attributes->event_mask,
+                attributes->event_mask & ExposureMask,
+                attributes->event_mask & StructureNotifyMask,
+                attributes->event_mask & SubstructureNotifyMask);
             GET_WINDOW_STRUCT(window)->eventMask = attributes->event_mask;
         }
         if (HAS_VALUE(valueMask, CWOverrideRedirect)) {

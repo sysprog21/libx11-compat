@@ -41,14 +41,14 @@ static Bool resourceMatches(const char *specifier,
     size_t nameLength = strlen(name);
     size_t specifierLength = strlen(specifier);
 
-    return strcmp(specifier, name) == 0 || strcmp(specifier, exact) == 0 ||
-           strcmp(specifier, loose) == 0 ||
+    return !strcmp(specifier, name) || !strcmp(specifier, exact) ||
+           !strcmp(specifier, loose) ||
            (specifierLength == nameLength + 1 && specifier[0] == '*' &&
-            strcmp(specifier + 1, name) == 0) ||
+            !strcmp(specifier + 1, name)) ||
            (specifierLength > nameLength &&
             (specifier[specifierLength - nameLength - 1] == '.' ||
              specifier[specifierLength - nameLength - 1] == '*') &&
-            strcmp(specifier + specifierLength - nameLength, name) == 0);
+            !strcmp(specifier + specifierLength - nameLength, name));
 }
 
 static char *lookupDefaultsText(const char *data,
@@ -141,11 +141,18 @@ static char *lookupBuiltInDefault(const char *name)
         const char *name;
         char *value;
     } builtIns[] = {
-        {"font", "fixed"}, {"Font", "fixed"}, {"dpi", "96"},     {"DPI", "96"},
-        {"Dpi", "96"},     {"Xft.dpi", "96"}, {"xft.dpi", "96"},
+        {"font", "fixed"},
+        {"Font", "fixed"},
+        {"background", "#c4c4c4"},
+        {"Background", "#c4c4c4"},
+        {"dpi", "96"},
+        {"DPI", "96"},
+        {"Dpi", "96"},
+        {"Xft.dpi", "96"},
+        {"xft.dpi", "96"},
     };
     for (size_t i = 0; i < sizeof(builtIns) / sizeof(builtIns[0]); i++) {
-        if (strcmp(name, builtIns[i].name) == 0)
+        if (!strcmp(name, builtIns[i].name))
             return builtIns[i].value;
     }
     return NULL;

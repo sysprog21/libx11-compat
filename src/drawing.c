@@ -18,6 +18,62 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+static SDL_atomic_t presentWakePending = {False};
+static SDL_atomic_t presentWakeTimerPending = {False};
+static SDL_atomic_t presentWakeEventType = {-1};
+
+static unsigned long opaqueColorIfAlphaUnset(unsigned long color);
+static void resolveWindowBackground(Window window,
+                                    Pixmap *backgroundPixmap,
+                                    unsigned long *backgroundColor);
+/* Forward-defined here so callers earlier in the file (the shape-mask
+ * snapshot/composite helpers) can stack-allocate a ShapeMaskView. The
+ * resolve/sample helpers themselves live next to the rest of the shape
+ * code further down. */
+typedef struct ShapeMaskView {
+    SDL_Surface *boundingMask;
+    int boundingOffsetX;
+    int boundingOffsetY;
+    SDL_Surface *clipMask;
+    int clipOffsetX;
+    int clipOffsetY;
+} ShapeMaskView;
+static Bool resolveShapeMasks(const WindowStruct *window, ShapeMaskView *out);
+static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy);
+
+static Uint32 presentWakeTimerCallback(Uint32 interval, void *param)
+{
+    (void) interval;
+    (void) param;
+    SDL_AtomicSet(&presentWakeTimerPending, False);
+    int eventType = SDL_AtomicGet(&presentWakeEventType);
+    if (SDL_AtomicGet(&presentWakePending) || eventType == -1)
+        return 0;
+
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = (Uint32) eventType;
+    if (SDL_PushEvent(&event) == 1)
+        SDL_AtomicSet(&presentWakePending, True);
+    return 0;
+}
+
+static void schedulePresentWake(void)
+{
+    if (SDL_AtomicGet(&presentWakePending) ||
+        SDL_AtomicGet(&presentWakeTimerPending))
+        return;
+    if (SDL_AtomicGet(&presentWakeEventType) == -1) {
+        Uint32 eventType = SDL_RegisterEvents(1);
+        if (eventType == ((Uint32) -1))
+            return;
+        SDL_AtomicSet(&presentWakeEventType, (int) eventType);
+    }
+    SDL_AtomicSet(&presentWakeTimerPending, True);
+    if (SDL_AddTimer(8, presentWakeTimerCallback, NULL) == 0)
+        SDL_AtomicSet(&presentWakeTimerPending, False);
+}
+
 void drawWindowDataToScreen()
 {
     SDL_Renderer *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
@@ -44,6 +100,8 @@ void drawWindowDataToScreen()
             if (!child->sdlTexture)
                 continue;
         }
+        if (!child->needsPresent)
+            continue;
 
         SDL_Surface *winSurface = SDL_GetWindowSurface(child->sdlWindow);
         if (!winSurface) {
@@ -74,7 +132,16 @@ void drawWindowDataToScreen()
                 SDL_GetError());
             continue;
         }
-
+        if (SDL_RenderSetViewport(screen, NULL) != 0) {
+            LOG("SDL_RenderSetViewport(NULL) failed in %s: %s\n", __func__,
+                SDL_GetError());
+            continue;
+        }
+        if (SDL_RenderSetClipRect(screen, NULL) != 0) {
+            LOG("SDL_RenderSetClipRect(NULL) failed in %s: %s\n", __func__,
+                SDL_GetError());
+            continue;
+        }
         screenTargetMutated = True;
         Uint32 winFmt = winSurface->format->format;
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
@@ -108,6 +175,8 @@ void drawWindowDataToScreen()
         }
         if (readRc == 0) {
             SDL_UpdateWindowSurface(child->sdlWindow);
+            child->needsPresent = False;
+            child->hasPresented = True;
         } else {
             LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -117,29 +186,79 @@ void drawWindowDataToScreen()
         SDL_SetRenderTarget(screen, prevTarget);
         invalidateSdlDrawStateCache();
     }
+    SDL_AtomicSet(&presentWakePending, False);
 #ifdef DEBUG_WINDOWS
     printWindowsHierarchy();
 #endif
 }
 
+void markWindowNeedsPresent(Window window)
+{
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+
+    GET_WINDOW_STRUCT(window)->needsPresent = True;
+    schedulePresentWake();
+}
+
+void presentDrawableIfVisible(Drawable drawable)
+{
+    if (!IS_TYPE(drawable, WINDOW))
+        return;
+
+    Window window = (Window) drawable;
+    while (window != None && window != SCREEN_WINDOW) {
+        if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+            WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+            Bool firstPresent = !windowStruct->hasPresented;
+            markWindowNeedsPresent(window);
+            if (firstPresent)
+                drawWindowDataToScreen();
+            return;
+        }
+        window = GET_PARENT(window);
+    }
+}
+
+static struct {
+    SDL_Renderer *renderer;
+    SDL_Rect clip;
+    Bool valid;
+} rendererDrawableClip;
+
 SDL_Renderer *getWindowRenderer(Window window)
 {
     Window drawWindow = window;
     SDL_Rect viewPort;
+    SDL_Rect clipAbs;
     SDL_Renderer *renderer = NULL;
     int x = 0, y = 0;
     viewPort.x = 0;
     viewPort.y = 0;
 
     GET_WINDOW_DIMS(window, viewPort.w, viewPort.h);
+    clipAbs.x = 0;
+    clipAbs.y = 0;
+    clipAbs.w = viewPort.w;
+    clipAbs.h = viewPort.h;
     while (GET_PARENT(window) != None &&
            !GET_WINDOW_STRUCT(window)->sdlWindow &&
            GET_WINDOW_STRUCT(window)->mapState != UnMapped) {
         GET_WINDOW_POS(window, x, y);
         viewPort.x += x;
         viewPort.y += y;
+        clipAbs.x += x;
+        clipAbs.y += y;
         drawWindow = GET_PARENT(drawWindow);
         window = drawWindow;
+        SDL_Rect parentBounds;
+        parentBounds.x = 0;
+        parentBounds.y = 0;
+        GET_WINDOW_DIMS(window, parentBounds.w, parentBounds.h);
+        if (!SDL_IntersectRect(&clipAbs, &parentBounds, &clipAbs)) {
+            clipAbs.w = 0;
+            clipAbs.h = 0;
+        }
     }
 
     renderer = GET_WINDOW_STRUCT(drawWindow)->sdlRenderer;
@@ -170,6 +289,8 @@ SDL_Renderer *getWindowRenderer(Window window)
             } else {
                 GET_WINDOW_STRUCT(drawWindow)->sdlTexture = texture;
                 justCreatedRenderer = True;
+                GET_WINDOW_STRUCT(drawWindow)->needsPresent = True;
+                schedulePresentWake();
             }
         }
     }
@@ -182,7 +303,9 @@ SDL_Renderer *getWindowRenderer(Window window)
         SDL_Texture *prevTarget = SDL_GetRenderTarget(renderer);
         SDL_Texture *initTarget = GET_WINDOW_STRUCT(drawWindow)->sdlTexture;
         SDL_SetRenderTarget(renderer, initTarget);
-        unsigned long bg = GET_WINDOW_STRUCT(drawWindow)->backgroundColor;
+        Pixmap backgroundPixmap = None;
+        unsigned long bg = 0;
+        resolveWindowBackground(drawWindow, &backgroundPixmap, &bg);
         SDL_SetRenderDrawColor(
             renderer, GET_RED_FROM_COLOR(bg), GET_GREEN_FROM_COLOR(bg),
             GET_BLUE_FROM_COLOR(bg), GET_ALPHA_FROM_COLOR(bg));
@@ -214,6 +337,17 @@ SDL_Renderer *getWindowRenderer(Window window)
     if (SDL_RenderSetViewport(renderer, &viewPort)) {
         LOG("SDL_RenderSetViewport failed in %s: %s\n", __func__,
             SDL_GetError());
+    }
+    SDL_Rect drawableClip = {
+        .x = clipAbs.x - viewPort.x,
+        .y = clipAbs.y - viewPort.y,
+        .w = clipAbs.w,
+        .h = clipAbs.h,
+    };
+    setRendererDrawableClip(renderer, &drawableClip);
+    if (drawWindow != SCREEN_WINDOW) {
+        GET_WINDOW_STRUCT(drawWindow)->needsPresent = True;
+        schedulePresentWake();
     }
     return renderer;
 }
@@ -299,6 +433,114 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
     return surface;
 }
 
+/* Clip a caller-supplied draw rect to the window's own bounds before
+ * snapshotting. Pathological coordinates would otherwise ask the SDL
+ * renderer to read back far outside the visible surface; the underlying
+ * getRenderSurfaceRect already clips, but pre-clipping here avoids
+ * allocating a multi-megabyte surface just to have most of it discarded. */
+static Bool clipRectToWindow(WindowStruct *window,
+                             const SDL_Rect *in,
+                             SDL_Rect *out)
+{
+    if (!window || !in)
+        return False;
+    SDL_Rect win = {
+        .x = 0,
+        .y = 0,
+        .w = clampToInt((int64_t) window->w),
+        .h = clampToInt((int64_t) window->h),
+    };
+    if (win.w <= 0 || win.h <= 0)
+        return False;
+    return SDL_IntersectRect(in, &win, out) == SDL_TRUE;
+}
+
+SDL_Surface *captureShapeMaskBaseline(Drawable d,
+                                      SDL_Renderer *renderer,
+                                      const SDL_Rect *rect)
+{
+    if (!renderer || !rect || rect->w <= 0 || rect->h <= 0)
+        return NULL;
+    if (!IS_TYPE(d, WINDOW))
+        return NULL;
+    WindowStruct *window = GET_WINDOW_STRUCT(d);
+    ShapeMaskView view;
+    if (!resolveShapeMasks(window, &view))
+        return NULL;
+    SDL_Rect clipped;
+    if (!clipRectToWindow(window, rect, &clipped))
+        return NULL;
+    return getRenderSurfaceRect(renderer, &clipped);
+}
+
+Bool applyShapeMaskOverDrawnRect(Drawable d,
+                                 SDL_Renderer *renderer,
+                                 SDL_Surface *baseline,
+                                 const SDL_Rect *rect)
+{
+    if (!baseline || !renderer || !rect || rect->w <= 0 || rect->h <= 0)
+        return True;
+    if (!IS_TYPE(d, WINDOW))
+        return True;
+    WindowStruct *window = GET_WINDOW_STRUCT(d);
+    ShapeMaskView view;
+    if (!resolveShapeMasks(window, &view))
+        return True;
+    /* Match the clipping captureShapeMaskBaseline did so the composite
+     * surface is the same size as the baseline. */
+    SDL_Rect clipped;
+    if (!clipRectToWindow(window, rect, &clipped))
+        return True;
+    SDL_Surface *postDraw = getRenderSurfaceRect(renderer, &clipped);
+    if (!postDraw) {
+        LOG("%s: readback failed; mask post-process skipped: %s\n", __func__,
+            SDL_GetError());
+        return False;
+    }
+
+    /* Composite: pixels that fall outside the combined shape (i.e. either
+     * mask excludes them) are restored from the baseline; pixels inside
+     * keep the freshly drawn value. Iterate in 64-bit so window
+     * coordinates near INT_MAX can't wrap. */
+    Bool anyChange = False;
+    for (int row = 0; row < clipped.h; row++) {
+        int64_t wy = (int64_t) clipped.y + row;
+        for (int col = 0; col < clipped.w; col++) {
+            int64_t wx = (int64_t) clipped.x + col;
+            if (pixelInsideShape(&view, wx, wy))
+                continue;
+            Uint32 keep =
+                getPixel(baseline, (unsigned int) col, (unsigned int) row);
+            putPixel(postDraw, (unsigned int) col, (unsigned int) row, keep);
+            anyChange = True;
+        }
+    }
+    if (!anyChange) {
+        SDL_FreeSurface(postDraw);
+        return True;
+    }
+
+    Bool ok = True;
+    SDL_Texture *upload = SDL_CreateTextureFromSurface(renderer, postDraw);
+    if (!upload) {
+        LOG("%s: CreateTextureFromSurface failed; masked pixels left visible: "
+            "%s\n",
+            __func__, SDL_GetError());
+        ok = False;
+    } else {
+        SDL_SetTextureBlendMode(upload, SDL_BLENDMODE_NONE);
+        if (SDL_RenderCopy(renderer, upload, NULL, &clipped) != 0) {
+            LOG("%s: RenderCopy failed; masked pixels left visible: %s\n",
+                __func__, SDL_GetError());
+            ok = False;
+        }
+        SDL_DestroyTexture(upload);
+    }
+    SDL_FreeSurface(postDraw);
+    invalidateSdlDrawStateCache();
+    return ok;
+}
+
 int getGcClipIterationCount(GC gc)
 {
     if (!gc)
@@ -311,17 +553,34 @@ int getGcClipIterationCount(GC gc)
     return gContext->clipRectCount;
 }
 
+void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip)
+{
+    if (!renderer || !clip) {
+        if (!renderer || rendererDrawableClip.renderer == renderer) {
+            rendererDrawableClip.renderer = NULL;
+            rendererDrawableClip.valid = False;
+        }
+        if (renderer)
+            SDL_RenderSetClipRect(renderer, NULL);
+        return;
+    }
+    rendererDrawableClip.renderer = renderer;
+    rendererDrawableClip.clip = *clip;
+    rendererDrawableClip.valid = True;
+    SDL_RenderSetClipRect(renderer, clip);
+}
+
 Bool setGcClipForIteration(SDL_Renderer *renderer, GC gc, int iteration)
 {
     if (!renderer)
         return False;
     if (!gc) {
-        SDL_RenderSetClipRect(renderer, NULL);
+        clearRendererClip(renderer);
         return True;
     }
     GraphicContext *gContext = GET_GC(gc);
     if (!gContext || !gContext->clipRectanglesSet) {
-        SDL_RenderSetClipRect(renderer, NULL);
+        clearRendererClip(renderer);
         return True;
     }
     if (gContext->clipRectCount <= 0)
@@ -337,12 +596,21 @@ Bool setGcClipForIteration(SDL_Renderer *renderer, GC gc, int iteration)
         .w = source->width,
         .h = source->height,
     };
+    if (rendererDrawableClip.valid &&
+        rendererDrawableClip.renderer == renderer) {
+        if (!SDL_IntersectRect(&clip, &rendererDrawableClip.clip, &clip))
+            return False;
+    }
     return SDL_RenderSetClipRect(renderer, &clip) == 0 ? True : False;
 }
 
 void clearRendererClip(SDL_Renderer *renderer)
 {
-    if (renderer)
+    if (!renderer)
+        return;
+    if (rendererDrawableClip.valid && rendererDrawableClip.renderer == renderer)
+        SDL_RenderSetClipRect(renderer, &rendererDrawableClip.clip);
+    else
         SDL_RenderSetClipRect(renderer, NULL);
 }
 
@@ -393,6 +661,195 @@ void invalidateGcStateCache(GC gc)
 void invalidateSdlDrawStateCache(void)
 {
     lastDrawState.valid = False;
+}
+
+static void repaintMappedChildrenInRect(Display *display,
+                                        Drawable drawable,
+                                        const SDL_Rect *rect)
+{
+    if (rect && IS_TYPE(drawable, WINDOW))
+        postExposeEventsForMappedChildren(display, drawable, rect, 1);
+    presentDrawableIfVisible(drawable);
+}
+
+/* Cap per-side stroke padding so the bbox arithmetic can't overflow signed
+ * int when an X client passes an extreme lineWidth. SDL_Rect is signed int
+ * wide; values larger than this practically can't draw anyway. */
+#define DAMAGE_PAD_CAP 16384
+
+static int64_t arcStrokePad(GC gc)
+{
+    GraphicContext *gContext = GET_GC(gc);
+    int64_t pad = gContext->lineWidth <= 1 ? 1 : (int64_t) gContext->lineWidth;
+    if (pad > DAMAGE_PAD_CAP)
+        pad = DAMAGE_PAD_CAP;
+    return pad;
+}
+
+static SDL_Rect arcDamageRect(int x,
+                              int y,
+                              unsigned int width,
+                              unsigned int height,
+                              int64_t strokePad)
+{
+    SDL_Rect rect = {
+        .x = clampToInt((int64_t) x - strokePad),
+        .y = clampToInt((int64_t) y - strokePad),
+        .w = clampToInt((int64_t) width + 1 + 2 * strokePad),
+        .h = clampToInt((int64_t) height + 1 + 2 * strokePad),
+    };
+    return rect;
+}
+
+static SDL_Rect arcsUnionBbox(const XArc *arcs, int n_arcs, int64_t strokePad)
+{
+    SDL_Rect bbox = arcDamageRect(arcs[0].x, arcs[0].y, arcs[0].width,
+                                  arcs[0].height, strokePad);
+    for (int i = 1; i < n_arcs; i++) {
+        SDL_Rect a = arcDamageRect(arcs[i].x, arcs[i].y, arcs[i].width,
+                                   arcs[i].height, strokePad);
+        unionRect(&bbox, &a, &bbox);
+    }
+    return bbox;
+}
+
+static SDL_Rect lineDamageRect(int x1, int y1, int x2, int y2, int lineWidth)
+{
+    int64_t minX = x1 < x2 ? x1 : x2;
+    int64_t minY = y1 < y2 ? y1 : y2;
+    int64_t maxX = x1 > x2 ? x1 : x2;
+    int64_t maxY = y1 > y2 ? y1 : y2;
+    int64_t pad = lineWidth > 1 ? ((int64_t) lineWidth + 1) / 2 : 1;
+    if (pad > DAMAGE_PAD_CAP)
+        pad = DAMAGE_PAD_CAP;
+    int64_t outX = minX - pad;
+    int64_t outY = minY - pad;
+    int64_t w = (maxX + pad) - outX + 1;
+    int64_t h = (maxY + pad) - outY + 1;
+    SDL_Rect rect = {
+        .x = clampToInt(outX),
+        .y = clampToInt(outY),
+        .w = clampToInt(w < 0 ? 0 : w),
+        .h = clampToInt(h < 0 ? 0 : h),
+    };
+    return rect;
+}
+
+static SDL_Rect polylineDamageRect(const SDL_Point *points,
+                                   int npoints,
+                                   int lineWidth)
+{
+    SDL_Rect rect = lineDamageRect(points[0].x, points[0].y, points[1].x,
+                                   points[1].y, lineWidth);
+    for (int i = 2; i < npoints; i++) {
+        SDL_Rect segment = lineDamageRect(points[i - 1].x, points[i - 1].y,
+                                          points[i].x, points[i].y, lineWidth);
+        unionRect(&rect, &segment, &rect);
+    }
+    return rect;
+}
+
+static void repaintSegmentDamage(Display *display,
+                                 Drawable d,
+                                 const XSegment *segments,
+                                 int nsegments,
+                                 int lineWidth)
+{
+    for (int i = 0; i < nsegments; i++) {
+        SDL_Rect damage =
+            lineDamageRect(segments[i].x1, segments[i].y1, segments[i].x2,
+                           segments[i].y2, lineWidth);
+        repaintMappedChildrenInRect(display, d, &damage);
+    }
+}
+
+static SDL_Rect segmentsUnionBbox(const XSegment *segments,
+                                  int nsegments,
+                                  int lineWidth)
+{
+    SDL_Rect bbox = lineDamageRect(segments[0].x1, segments[0].y1,
+                                   segments[0].x2, segments[0].y2, lineWidth);
+    for (int i = 1; i < nsegments; i++) {
+        SDL_Rect d_i =
+            lineDamageRect(segments[i].x1, segments[i].y1, segments[i].x2,
+                           segments[i].y2, lineWidth);
+        unionRect(&bbox, &d_i, &bbox);
+    }
+    return bbox;
+}
+
+static unsigned long opaqueColorIfAlphaUnset(unsigned long color)
+{
+    if ((color & (0xFFul << ALPHA_SHIFT)) == 0)
+        return color | (0xFFul << ALPHA_SHIFT);
+    return color;
+}
+
+static void resolveWindowBackground(Window window,
+                                    Pixmap *backgroundPixmap,
+                                    unsigned long *backgroundColor)
+{
+    Pixmap pixmap = None;
+    unsigned long color = 0;
+    Window current = window;
+    while (current != None && IS_TYPE(current, WINDOW)) {
+        WindowStruct *windowStruct = GET_WINDOW_STRUCT(current);
+        pixmap = windowStruct->background;
+        color = windowStruct->backgroundColor;
+        if (pixmap != (Pixmap) ParentRelative)
+            break;
+        current = GET_PARENT(current);
+    }
+    if (backgroundPixmap)
+        *backgroundPixmap = pixmap;
+    if (backgroundColor)
+        *backgroundColor = opaqueColorIfAlphaUnset(color);
+}
+
+/* X Shape semantics intersect the two masks: a pixel is "inside" the
+ * window iff it is inside both the bounding region (defaults to all-ones
+ * when no bounding mask is installed) and the clip region (same default).
+ * resolveShapeMasks loads both pointers + their offsets once;
+ * pixelInsideShape samples each non-NULL mask in mask-local coordinates
+ * and ANDs the results. */
+static Bool resolveShapeMasks(const WindowStruct *window, ShapeMaskView *out)
+{
+    if (!window || !out)
+        return False;
+    out->boundingMask = window->shapeBoundingMask;
+    out->boundingOffsetX = window->shapeBoundingOffsetX;
+    out->boundingOffsetY = window->shapeBoundingOffsetY;
+    out->clipMask = window->shapeClipMask;
+    out->clipOffsetX = window->shapeClipOffsetX;
+    out->clipOffsetY = window->shapeClipOffsetY;
+    return out->boundingMask != NULL || out->clipMask != NULL;
+}
+
+/* True when (wx, wy) is "inside" the combined shape: present in every
+ * installed mask (a pixel outside a mask's rect, or hitting a black mask
+ * pixel, counts as excluded). With no masks installed the caller has no
+ * work to do (resolveShapeMasks returns False); callers must consult
+ * that first. */
+static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy)
+{
+    SDL_Surface *masks[2] = {view->boundingMask, view->clipMask};
+    int offX[2] = {view->boundingOffsetX, view->clipOffsetX};
+    int offY[2] = {view->boundingOffsetY, view->clipOffsetY};
+    for (int i = 0; i < 2; i++) {
+        SDL_Surface *mask = masks[i];
+        if (!mask)
+            continue;
+        int64_t mx = wx - (int64_t) offX[i];
+        int64_t my = wy - (int64_t) offY[i];
+        if (mx < 0 || my < 0 || mx >= mask->w || my >= mask->h)
+            return False;
+        Uint32 mp = getPixel(mask, (unsigned int) mx, (unsigned int) my);
+        Uint8 r = 0, g = 0, b = 0;
+        SDL_GetRGB(mp, mask->format, &r, &g, &b);
+        if (!(r || g || b))
+            return False;
+    }
+    return True;
 }
 
 void putPixel(SDL_Surface *surface,
@@ -942,22 +1399,41 @@ int XFillPolygon(Display *display,
         poly = heapPoints;
     }
 
-    poly[0].x = points[0].x;
-    poly[0].y = points[0].y;
-    int minY = poly[0].y;
-    int maxY = poly[0].y;
+    /* Accumulate CoordModePrevious in int64 so a hostile delta sequence
+     * can't signed-overflow before the bbox math sees the point. SDL_Point
+     * fields are int; clampToInt saturates so an out-of-range running sum
+     * degrades to the boundary instead of wrapping into bogus geometry. */
+    int64_t accX = points[0].x;
+    int64_t accY = points[0].y;
+    poly[0].x = clampToInt(accX);
+    poly[0].y = clampToInt(accY);
+    int minX = poly[0].x, maxX = poly[0].x;
+    int minY = poly[0].y, maxY = poly[0].y;
     for (int i = 1; i < npoints; i++) {
-        poly[i].x = points[i].x;
-        poly[i].y = points[i].y;
         if (mode == CoordModePrevious) {
-            poly[i].x += poly[i - 1].x;
-            poly[i].y += poly[i - 1].y;
+            accX += points[i].x;
+            accY += points[i].y;
+        } else {
+            accX = points[i].x;
+            accY = points[i].y;
         }
+        poly[i].x = clampToInt(accX);
+        poly[i].y = clampToInt(accY);
+        if (poly[i].x < minX)
+            minX = poly[i].x;
+        if (poly[i].x > maxX)
+            maxX = poly[i].x;
         if (poly[i].y < minY)
             minY = poly[i].y;
         if (poly[i].y > maxY)
             maxY = poly[i].y;
     }
+    SDL_Rect polyBbox = {
+        .x = minX,
+        .y = minY,
+        .w = clampToInt((int64_t) maxX - minX + 1),
+        .h = clampToInt((int64_t) maxY - minY + 1),
+    };
 
     PolygonCrossing *crossings =
         malloc((size_t) npoints * sizeof(PolygonCrossing));
@@ -966,6 +1442,11 @@ int XFillPolygon(Display *display,
         handleOutOfMemory(0, display, 0, 0);
         return 0;
     }
+
+    /* Open the shape guard only after both allocations have succeeded so
+     * the OOM paths above don't leak the captured baseline. */
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &polyBbox);
 
     GraphicContext *gContext = GET_GC(gc);
     Bool useConvexFastPath = shape == Convex && isConvexPolygon(poly, npoints);
@@ -982,6 +1463,7 @@ int XFillPolygon(Display *display,
     } else {
         LOG("Fill_style is unsupported in %s: %d\n", __func__,
             gContext->fillStyle);
+        shapeGuardEnd(&sg);
         free(crossings);
         free(heapPoints);
         return 1;
@@ -1050,6 +1532,7 @@ int XFillPolygon(Display *display,
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
     free(crossings);
     free(heapPoints);
     return 1;
@@ -1137,7 +1620,15 @@ int XFillArc(Display *display,
         handleError(0, display, d, 0, BadDrawable, 0);
         return 0;
     }
-    return fillArcOnRenderer(renderer, gc, x, y, width, height, angle1, angle2);
+    SDL_Rect arcBbox = arcDamageRect(x, y, width, height, 0);
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &arcBbox);
+    int result =
+        fillArcOnRenderer(renderer, gc, x, y, width, height, angle1, angle2);
+    shapeGuardEnd(&sg);
+    if (result)
+        presentDrawableIfVisible(d);
+    return result;
 }
 
 static int drawArcOnRenderer(SDL_Renderer *renderer,
@@ -1219,7 +1710,15 @@ int XDrawArc(Display *display,
         handleError(0, display, d, 0, BadDrawable, 0);
         return 0;
     }
-    return drawArcOnRenderer(renderer, gc, x, y, width, height, angle1, angle2);
+    SDL_Rect arcBbox = arcDamageRect(x, y, width, height, arcStrokePad(gc));
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &arcBbox);
+    int result =
+        drawArcOnRenderer(renderer, gc, x, y, width, height, angle1, angle2);
+    shapeGuardEnd(&sg);
+    if (result)
+        presentDrawableIfVisible(d);
+    return result;
 }
 
 int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
@@ -1239,6 +1738,9 @@ int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
         handleError(0, display, d, 0, BadDrawable, 0);
         return 0;
     }
+    SDL_Rect arcsBbox = arcsUnionBbox(arcs, n_arcs, arcStrokePad(gc));
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &arcsBbox);
     Bool canBatchPath = True;
     for (int i = 0; i < n_arcs; i++) {
         if (!shouldUsePathArc(gc, arcs[i].width, arcs[i].height, False)) {
@@ -1258,17 +1760,23 @@ int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
             if (ok)
                 ok = rasterStrokePathOnRenderer(renderer, gc, &path);
             pathFree(&path);
-            if (ok)
+            if (ok) {
+                shapeGuardEnd(&sg);
+                presentDrawableIfVisible(d);
                 return 1;
+            }
         }
     }
     for (int i = 0; i < n_arcs; i++) {
         if (!drawArcOnRenderer(renderer, gc, arcs[i].x, arcs[i].y,
                                arcs[i].width, arcs[i].height, arcs[i].angle1,
                                arcs[i].angle2)) {
+            shapeGuardEnd(&sg);
             return 0;
         }
     }
+    shapeGuardEnd(&sg);
+    presentDrawableIfVisible(d);
     return 1;
 }
 
@@ -1289,13 +1797,19 @@ int XFillArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
         handleError(0, display, d, 0, BadDrawable, 0);
         return 0;
     }
+    SDL_Rect fillBbox = arcsUnionBbox(arcs, n_arcs, 0);
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &fillBbox);
     for (int i = 0; i < n_arcs; i++) {
         if (!fillArcOnRenderer(renderer, gc, arcs[i].x, arcs[i].y,
                                arcs[i].width, arcs[i].height, arcs[i].angle1,
                                arcs[i].angle2)) {
+            shapeGuardEnd(&sg);
             return 0;
         }
     }
+    shapeGuardEnd(&sg);
+    presentDrawableIfVisible(d);
     return 1;
 }
 
@@ -1315,6 +1829,10 @@ int XCopyPlane(Display *display,
     SET_X_SERVER_REQUEST(display, X_CopyPlane);
     TYPE_CHECK(src, DRAWABLE, display, 0);
     TYPE_CHECK(dest, DRAWABLE, display, 0);
+    if (!gc) {
+        handleError(0, display, None, 0, BadGC, 0);
+        return 0;
+    }
     if (plane == 0 || (plane & (plane - 1)) != 0) {
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
@@ -1366,24 +1884,50 @@ int XCopyPlane(Display *display,
     }
 
     GraphicContext *gContext = GET_GC(gc);
+    unsigned long foregroundColor =
+        opaqueColorIfAlphaUnset(gContext->foreground);
+    unsigned long backgroundColor =
+        opaqueColorIfAlphaUnset(gContext->background);
     SDL_PixelFormat *format = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
     if (!format) {
         SDL_FreeSurface(srcSurface);
         handleOutOfMemory(0, display, 0, 0);
         return 0;
     }
-    Uint32 foreground =
-        SDL_MapRGBA(format, GET_RED_FROM_COLOR(gContext->foreground),
-                    GET_GREEN_FROM_COLOR(gContext->foreground),
-                    GET_BLUE_FROM_COLOR(gContext->foreground),
-                    GET_ALPHA_FROM_COLOR(gContext->foreground));
-    Uint32 background =
-        SDL_MapRGBA(format, GET_RED_FROM_COLOR(gContext->background),
-                    GET_GREEN_FROM_COLOR(gContext->background),
-                    GET_BLUE_FROM_COLOR(gContext->background),
-                    GET_ALPHA_FROM_COLOR(gContext->background));
+    Uint32 foreground = SDL_MapRGBA(format, GET_RED_FROM_COLOR(foregroundColor),
+                                    GET_GREEN_FROM_COLOR(foregroundColor),
+                                    GET_BLUE_FROM_COLOR(foregroundColor),
+                                    GET_ALPHA_FROM_COLOR(foregroundColor));
+    Uint32 background = SDL_MapRGBA(format, GET_RED_FROM_COLOR(backgroundColor),
+                                    GET_GREEN_FROM_COLOR(backgroundColor),
+                                    GET_BLUE_FROM_COLOR(backgroundColor),
+                                    GET_ALPHA_FROM_COLOR(backgroundColor));
+    SDL_Rect destRect = {
+        .x = dest_x,
+        .y = dest_y,
+        .w = (int) width,
+        .h = (int) height,
+    };
+    SDL_Surface *destSurface = NULL;
+    WindowStruct *destWindow =
+        IS_TYPE(dest, WINDOW) ? GET_WINDOW_STRUCT(dest) : NULL;
+    ShapeMaskView shapeView;
+    Bool hasShape = resolveShapeMasks(destWindow, &shapeView);
+    if (hasShape) {
+        /* Shape composite needs the destination's prior pixels for
+         * mask-excluded positions. Fail rather than mix synthetic GC
+         * background into preserved pixels. */
+        destSurface = getRenderSurfaceRect(destRenderer, &destRect);
+        if (!destSurface) {
+            SDL_FreeFormat(format);
+            SDL_FreeSurface(srcSurface);
+            handleError(0, display, dest, 0, BadMatch, 0);
+            return 0;
+        }
+    }
     Uint32 *pixels = malloc((size_t) width * (size_t) height * sizeof(Uint32));
     if (!pixels) {
+        SDL_FreeSurface(destSurface);
         SDL_FreeFormat(format);
         SDL_FreeSurface(srcSurface);
         handleOutOfMemory(0, display, 0, 0);
@@ -1391,6 +1935,17 @@ int XCopyPlane(Display *display,
     }
     for (unsigned int y = 0; y < height; y++) {
         for (unsigned int x = 0; x < width; x++) {
+            if (hasShape) {
+                /* 64-bit math avoids signed overflow when dest_x/dest_y
+                 * are near INT_MAX. */
+                int64_t wx = (int64_t) dest_x + (int64_t) x;
+                int64_t wy = (int64_t) dest_y + (int64_t) y;
+                if (!pixelInsideShape(&shapeView, wx, wy)) {
+                    pixels[y * width + x] =
+                        destSurface ? getPixel(destSurface, x, y) : background;
+                    continue;
+                }
+            }
             Uint32 srcPixel = getPixel(srcSurface, x, y);
             Uint8 red = 0, green = 0, blue = 0;
             SDL_GetRGB(srcPixel, srcSurface->format, &red, &green, &blue);
@@ -1399,6 +1954,7 @@ int XCopyPlane(Display *display,
             pixels[y * width + x] = bitSet ? foreground : background;
         }
     }
+    SDL_FreeSurface(destSurface);
     SDL_FreeFormat(format);
     SDL_FreeSurface(srcSurface);
 
@@ -1419,12 +1975,6 @@ int XCopyPlane(Display *display,
     }
     free(pixels);
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
-    SDL_Rect destRect = {
-        .x = dest_x,
-        .y = dest_y,
-        .w = (int) width,
-        .h = (int) height,
-    };
     int clipCount = getGcClipIterationCount(gc);
     int rcCopy = 0;
     for (int clip = 0; clip < clipCount; clip++) {
@@ -1443,6 +1993,7 @@ int XCopyPlane(Display *display,
     }
     if (gContext->graphicsExposures)
         postEvent(display, dest, NoExpose, X_CopyPlane, 0);
+    presentDrawableIfVisible(dest);
     return 1;
 }
 
@@ -1467,6 +2018,9 @@ int XDrawPoint(Display *display, Drawable d, GC gc, int x, int y)
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
                           gContext->foreground);
     }
+    SDL_Rect pointRect = {.x = x, .y = y, .w = 1, .h = 1};
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &pointRect);
     int clipCount = getGcClipIterationCount(gc);
     for (int clip = 0; clip < clipCount; clip++) {
         if (!setGcClipForIteration(renderer, gc, clip))
@@ -1476,6 +2030,7 @@ int XDrawPoint(Display *display, Drawable d, GC gc, int x, int y)
                                   gContext->planeMask, gContext->foreground);
         } else if (SDL_RenderDrawPoint(renderer, x, y) != 0) {
             clearRendererClip(renderer);
+            shapeGuardEnd(&sg);
             LOG("SDL_RenderDrawPoint failed in %s: %s\n", __func__,
                 SDL_GetError());
             handleError(0, display, d, 0, BadDrawable, 0);
@@ -1483,6 +2038,7 @@ int XDrawPoint(Display *display, Drawable d, GC gc, int x, int y)
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
     return 1;
 }
 
@@ -1517,6 +2073,48 @@ int XDrawPoints(Display *display,
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
                           gContext->foreground);
     }
+    /* Compute the bbox of all points (post-CoordMode resolution) so the
+     * shape guard can capture once. An empty/degenerate bbox (no in-range
+     * points) yields w/h == 0; shapeGuardBegin treats that as a no-op. */
+    SDL_Rect pointsBbox = {0, 0, 0, 0};
+    int64_t px = 0, py = 0;
+    int minX = 0, maxX = 0, minY = 0, maxY = 0;
+    Bool haveBbox = False;
+    for (int i = 0; i < n_points; i++) {
+        if (mode == CoordModePrevious && i > 0) {
+            px += points[i].x;
+            py += points[i].y;
+        } else {
+            px = points[i].x;
+            py = points[i].y;
+        }
+        if (px < INT_MIN || px > INT_MAX || py < INT_MIN || py > INT_MAX)
+            continue;
+        int ix = (int) px;
+        int iy = (int) py;
+        if (!haveBbox) {
+            minX = maxX = ix;
+            minY = maxY = iy;
+            haveBbox = True;
+        } else {
+            if (ix < minX)
+                minX = ix;
+            if (ix > maxX)
+                maxX = ix;
+            if (iy < minY)
+                minY = iy;
+            if (iy > maxY)
+                maxY = iy;
+        }
+    }
+    if (haveBbox) {
+        pointsBbox.x = minX;
+        pointsBbox.y = minY;
+        pointsBbox.w = clampToInt((int64_t) maxX - minX + 1);
+        pointsBbox.h = clampToInt((int64_t) maxY - minY + 1);
+    }
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &pointsBbox);
     int clipCount = getGcClipIterationCount(gc);
     for (int clip = 0; clip < clipCount; clip++) {
         if (!setGcClipForIteration(renderer, gc, clip))
@@ -1544,6 +2142,7 @@ int XDrawPoints(Display *display,
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
     return 1;
 }
 
@@ -1570,14 +2169,22 @@ int XDrawSegments(Display *display,
         return 0;
     }
     GraphicContext *gContext = GET_GC(gc);
+    SDL_Rect segUnion =
+        segmentsUnionBbox(segments, nsegments, gContext->lineWidth);
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &segUnion);
     if (gContext->function == GXcopy && gContext->lineStyle != LineSolid) {
         Bool ok = True;
         for (int i = 0; ok && i < nsegments; i++)
             ok = strokeLineOnRenderer(renderer, gc, segments[i].x1,
                                       segments[i].y1, segments[i].x2,
                                       segments[i].y2);
-        if (ok)
+        shapeGuardEnd(&sg);
+        if (ok) {
+            repaintSegmentDamage(display, d, segments, nsegments,
+                                 gContext->lineWidth);
             return 1;
+        }
         return 0;
     }
     if (gContext->function == GXcopy && gContext->lineWidth > 1) {
@@ -1591,9 +2198,19 @@ int XDrawSegments(Display *display,
             if (ok)
                 ok = rasterStrokePathOnRenderer(renderer, gc, &path);
             pathFree(&path);
-            if (ok)
+            if (ok) {
+                shapeGuardEnd(&sg);
+                repaintSegmentDamage(display, d, segments, nsegments,
+                                     gContext->lineWidth);
                 return 1;
+            }
         }
+        /* Wide-stroke path failed (most likely pathInit OOM). The fallback
+         * below renders each segment with SDL_RenderDrawLine, which is
+         * single-pixel only; flag the silent lineWidth downgrade. */
+        LOG("%s: wide-stroke rasterizer failed; falling back to 1-pixel "
+            "lines (lineWidth=%d)\n",
+            __func__, gContext->lineWidth);
     }
     if (gContext->function != GXcopy) {
         int clipCount = getGcClipIterationCount(gc);
@@ -1608,6 +2225,9 @@ int XDrawSegments(Display *display,
             }
         }
         clearRendererClip(renderer);
+        shapeGuardEnd(&sg);
+        repaintSegmentDamage(display, d, segments, nsegments,
+                             gContext->lineWidth);
         return 1;
     }
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, gContext->foreground);
@@ -1625,6 +2245,8 @@ int XDrawSegments(Display *display,
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
+    repaintSegmentDamage(display, d, segments, nsegments, gContext->lineWidth);
     return 1;
 }
 
@@ -1646,11 +2268,26 @@ int XDrawLine(Display *display,
         return 0;
     }
     GraphicContext *gContext = GET_GC(gc);
-    if (gContext->function == GXcopy &&
-        (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid) &&
+    SDL_Rect damage = lineDamageRect(x1, y1, x2, y2, gContext->lineWidth);
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &damage);
+    Bool wideStrokeWanted =
+        gContext->function == GXcopy &&
+        (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid);
+    if (wideStrokeWanted &&
         strokeLineOnRenderer(renderer, gc, x1, y1, x2, y2)) {
+        shapeGuardEnd(&sg);
+        repaintMappedChildrenInRect(display, d, &damage);
         return 1;
     }
+    /* Wide / non-solid stroke wanted but the path rasterizer failed
+     * (typically pathInit OOM). The fallback below uses SDL_RenderDrawLine
+     * which is single-pixel only; flag the silent lineWidth downgrade so
+     * a regression in the path rasterizer isn't invisible. */
+    if (wideStrokeWanted)
+        LOG("%s: wide-stroke rasterizer failed; falling back to 1-pixel "
+            "line (lineWidth=%d, style=%d)\n",
+            __func__, gContext->lineWidth, gContext->lineStyle);
     if (gContext->function == GXcopy) {
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND,
                           gContext->foreground);
@@ -1669,6 +2306,8 @@ int XDrawLine(Display *display,
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
+    repaintMappedChildrenInRect(display, d, &damage);
     return 1;
 }
 
@@ -1716,17 +2355,29 @@ int XDrawLines(Display *display,
         }
         sdlPoints = heapPoints;
     }
-    sdlPoints[0].x = (int) points[0].x;
-    sdlPoints[0].y = (int) points[0].y;
+    /* CoordModePrevious accumulates relative deltas in int64 so a hostile
+     * delta sequence can't signed-overflow into bogus coordinates fed to
+     * polylineDamageRect; clampToInt saturates back to the SDL_Point int. */
+    int64_t accX = points[0].x;
+    int64_t accY = points[0].y;
+    sdlPoints[0].x = clampToInt(accX);
+    sdlPoints[0].y = clampToInt(accY);
     for (int i = 1; i < npoints; i++) {
-        sdlPoints[i].x = (int) points[i].x;
-        sdlPoints[i].y = (int) points[i].y;
         if (mode == CoordModePrevious) {
-            sdlPoints[i].x += sdlPoints[i - 1].x;
-            sdlPoints[i].y += sdlPoints[i - 1].y;
+            accX += points[i].x;
+            accY += points[i].y;
+        } else {
+            accX = points[i].x;
+            accY = points[i].y;
         }
+        sdlPoints[i].x = clampToInt(accX);
+        sdlPoints[i].y = clampToInt(accY);
     }
     GraphicContext *gContext = GET_GC(gc);
+    SDL_Rect lineDamage =
+        polylineDamageRect(sdlPoints, npoints, gContext->lineWidth);
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &lineDamage);
     if (gContext->function == GXcopy &&
         (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid)) {
         Path path;
@@ -1738,6 +2389,8 @@ int XDrawLines(Display *display,
                 ok = rasterStrokePathOnRenderer(renderer, gc, &path);
             pathFree(&path);
             if (ok) {
+                shapeGuardEnd(&sg);
+                repaintMappedChildrenInRect(display, d, &lineDamage);
                 free(heapPoints);
                 return 1;
             }
@@ -1756,6 +2409,8 @@ int XDrawLines(Display *display,
             }
         }
         clearRendererClip(renderer);
+        shapeGuardEnd(&sg);
+        repaintMappedChildrenInRect(display, d, &lineDamage);
         free(heapPoints);
         return 1;
     }
@@ -1770,6 +2425,8 @@ int XDrawLines(Display *display,
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
+    repaintMappedChildrenInRect(display, d, &lineDamage);
     free(heapPoints);
     return 1;
 }
@@ -1785,7 +2442,6 @@ int XClearArea(register Display *dpy,
     // https://tronche.com/gui/x/xlib/graphics/XClearArea.html
     SET_X_SERVER_REQUEST(dpy, X_ClearArea);
     TYPE_CHECK(w, WINDOW, dpy, 0);
-    WindowStruct *windowStruct = GET_WINDOW_STRUCT(w);
     if (IS_INPUT_ONLY(w)) {
         handleError(0, dpy, w, 0, BadMatch, 0);
         return 0;
@@ -1830,12 +2486,11 @@ int XClearArea(register Display *dpy,
         .w = clearWidth,
         .h = clearHeight,
     };
-    Pixmap backgroundPixmap = windowStruct->background;
-    unsigned long backgroundColor = windowStruct->backgroundColor;
-    if (backgroundPixmap == (Pixmap) ParentRelative && GET_PARENT(w) != None) {
-        backgroundPixmap = GET_WINDOW_STRUCT(GET_PARENT(w))->background;
-        backgroundColor = GET_WINDOW_STRUCT(GET_PARENT(w))->backgroundColor;
-    }
+    Pixmap backgroundPixmap = None;
+    unsigned long backgroundColor = 0;
+    resolveWindowBackground(w, &backgroundPixmap, &backgroundColor);
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, w, renderer, &clearRect);
     if (backgroundPixmap != None &&
         backgroundPixmap != (Pixmap) ParentRelative &&
         IS_TYPE(backgroundPixmap, PIXMAP)) {
@@ -1871,6 +2526,8 @@ int XClearArea(register Display *dpy,
         applySdlDrawState(renderer, NULL, SDL_BLENDMODE_NONE, backgroundColor);
         SDL_RenderFillRect(renderer, &clearRect);
     }
+    shapeGuardEnd(&sg);
+    repaintMappedChildrenInRect(dpy, w, &clearRect);
 
     if (exposures) {
         SDL_Rect exposeRect = {
@@ -1948,6 +2605,8 @@ int XCopyArea(Display *display,
                     .h = (int) height,
                 };
                 SDL_SetTextureBlendMode(pixmapTexture, SDL_BLENDMODE_NONE);
+                ShapeGuard fastSg;
+                shapeGuardBegin(&fastSg, dest, destRenderer, &fastDest);
                 int fastClipCount = getGcClipIterationCount(gc);
                 int fastRcCopy = 0;
                 for (int clip = 0; clip < fastClipCount; clip++) {
@@ -1962,6 +2621,7 @@ int XCopyArea(Display *display,
                     }
                 }
                 clearRendererClip(destRenderer);
+                Bool fastShapeOk = shapeGuardEnd(&fastSg);
                 if (fastRcCopy != 0) {
                     handleError(0, display, src, 0, BadMatch, 0);
                     return 0;
@@ -1969,6 +2629,8 @@ int XCopyArea(Display *display,
                 if (GET_GC(gc)->graphicsExposures) {
                     postEvent(display, dest, NoExpose, X_CopyArea, 0);
                 }
+                if (fastShapeOk)
+                    presentDrawableIfVisible(dest);
                 return 1;
             }
         }
@@ -2004,12 +2666,20 @@ int XCopyArea(Display *display,
             handleError(0, display, src, 0, BadMatch, 0);
             return 0;
         }
+        destRenderer = getWindowRenderer(dest);
+        if (!destRenderer) {
+            SDL_DestroyTexture(srcTexture);
+            handleError(0, display, dest, 0, BadDrawable, 0);
+            return 0;
+        }
         /* XCopyArea is GXcopy: destination pixels are replaced, not
          * blended. SDL_RenderCopy ignores renderer draw color/blend
          * state, so only the texture blend mode matters here. */
         SDL_SetTextureBlendMode(srcTexture, SDL_BLENDMODE_NONE);
         srcRect.x = 0;
         srcRect.y = 0;
+        ShapeGuard sg;
+        shapeGuardBegin(&sg, dest, destRenderer, &destRect);
         int clipCount = getGcClipIterationCount(gc);
         int rcCopy = 0;
         for (int clip = 0; clip < clipCount; clip++) {
@@ -2024,12 +2694,19 @@ int XCopyArea(Display *display,
             }
         }
         clearRendererClip(destRenderer);
+        Bool slowShapeOk = shapeGuardEnd(&sg);
         if (rcCopy != 0) {
             handleError(0, display, src, 0, BadMatch, 0);
             SDL_DestroyTexture(srcTexture);
             return 0;
         }
         SDL_DestroyTexture(srcTexture);
+        if (GET_GC(gc)->graphicsExposures) {
+            postEvent(display, dest, NoExpose, X_CopyArea, 0);
+        }
+        if (slowShapeOk)
+            presentDrawableIfVisible(dest);
+        return 1;
     } else {
         LOG("Hit unimplemented type in %s: %d\n", __func__, GET_XID_TYPE(dest));
     }
@@ -2037,6 +2714,7 @@ int XCopyArea(Display *display,
     if (GET_GC(gc)->graphicsExposures) {
         postEvent(display, dest, NoExpose, X_CopyArea, 0);
     }
+    presentDrawableIfVisible(dest);
     return 1;
 }
 
@@ -2060,22 +2738,38 @@ int XDrawRectangle(Display *display,
         return 0;
     }
     GraphicContext *gContext = GET_GC(gc);
+    /* SDL_RenderDrawRect outlines a w-by-h pixel rect; the X11 spec is
+     * (w+1) by (h+1). Clamp in int64 so an unsigned width near UINT_MAX
+     * can't wrap into a negative SDL_Rect.w or wrap the path corners. */
+    SDL_Rect rectDamage = {
+        .x = x,
+        .y = y,
+        .w = clampToInt((int64_t) width + 1),
+        .h = clampToInt((int64_t) height + 1),
+    };
+    int rightX = clampToInt((int64_t) x + width);
+    int bottomY = clampToInt((int64_t) y + height);
     if (gContext->function == GXcopy &&
         (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid)) {
         Path path;
         if (pathInit(&path)) {
-            Bool ok = pathMoveTo(&path, x, y) &&
-                      pathLineTo(&path, x + (int) width, y) &&
-                      pathLineTo(&path, x + (int) width, y + (int) height) &&
-                      pathLineTo(&path, x, y + (int) height) &&
-                      pathLineTo(&path, x, y);
+            ShapeGuard sg;
+            shapeGuardBegin(&sg, d, renderer, &rectDamage);
+            Bool ok = pathMoveTo(&path, x, y) && pathLineTo(&path, rightX, y) &&
+                      pathLineTo(&path, rightX, bottomY) &&
+                      pathLineTo(&path, x, bottomY) && pathLineTo(&path, x, y);
             if (ok)
                 ok = rasterStrokePathOnRenderer(renderer, gc, &path);
             pathFree(&path);
-            if (ok)
+            shapeGuardEnd(&sg);
+            if (ok) {
+                repaintMappedChildrenInRect(display, d, &rectDamage);
                 return 1;
+            }
         }
     }
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, d, renderer, &rectDamage);
     if (gContext->function != GXcopy) {
         int clipCount = getGcClipIterationCount(gc);
         for (int clip = 0; clip < clipCount; clip++) {
@@ -2085,28 +2779,22 @@ int XDrawRectangle(Display *display,
                                         gContext->function, gContext->planeMask,
                                         gContext->foreground);
         }
-        clearRendererClip(renderer);
-        return 1;
-    }
-    /* SDL_RenderDrawRect outlines a w-by-h pixel rect; the X11 spec is
-     * (w+1) by (h+1) (matches what the wide-stroke path emits). */
-    SDL_Rect sdlRect = {
-        .x = x,
-        .y = y,
-        .w = (int) width + 1,
-        .h = (int) height + 1,
-    };
-    applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, gContext->foreground);
-    int clipCount = getGcClipIterationCount(gc);
-    for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
-            continue;
-        if (SDL_RenderDrawRect(renderer, &sdlRect)) {
-            LOG("SDL_RenderDrawRect failed in %s: %s\n", __func__,
-                SDL_GetError());
+    } else {
+        applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND,
+                          gContext->foreground);
+        int clipCount = getGcClipIterationCount(gc);
+        for (int clip = 0; clip < clipCount; clip++) {
+            if (!setGcClipForIteration(renderer, gc, clip))
+                continue;
+            if (SDL_RenderDrawRect(renderer, &rectDamage)) {
+                LOG("SDL_RenderDrawRect failed in %s: %s\n", __func__,
+                    SDL_GetError());
+            }
         }
     }
     clearRendererClip(renderer);
+    shapeGuardEnd(&sg);
+    repaintMappedChildrenInRect(display, d, &rectDamage);
     return 1;
 }
 
@@ -2160,11 +2848,13 @@ int XFillRectangles(Display *display,
     SET_X_SERVER_REQUEST(display, X_PolyFillRectangle);
     TYPE_CHECK(d, DRAWABLE, display, 0);
     LOG("%s: Drawing on 0x%08lx\n", __func__, d);
-    if (nrectangles < 1) {
+    if (nrectangles < 0) {
         LOG("Invalid number of rectangles in %s: %d\n", __func__, nrectangles);
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
     }
+    if (nrectangles == 0)
+        return 1;
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(d, renderer);
     if (!renderer) {
@@ -2188,17 +2878,32 @@ int XFillRectangles(Display *display,
         sdlRectangles = heapRectangles;
     }
     int i;
+    int validRectangles = 0;
     for (i = 0; i < nrectangles; i++) {
-        sdlRectangles[i].x = (int) rectangles[i].x;
-        sdlRectangles[i].y = (int) rectangles[i].y;
-        sdlRectangles[i].w = (int) rectangles[i].width;
-        sdlRectangles[i].h = (int) rectangles[i].height;
-        LOG("{x = %d, y = %d, w = %d, h = %d}\n", sdlRectangles[i].x,
-            sdlRectangles[i].y, sdlRectangles[i].w, sdlRectangles[i].h);
+        if (rectangles[i].width == 0 || rectangles[i].height == 0)
+            continue;
+        sdlRectangles[validRectangles].x = (int) rectangles[i].x;
+        sdlRectangles[validRectangles].y = (int) rectangles[i].y;
+        sdlRectangles[validRectangles].w = (int) rectangles[i].width;
+        sdlRectangles[validRectangles].h = (int) rectangles[i].height;
+        LOG("{x = %d, y = %d, w = %d, h = %d}\n",
+            sdlRectangles[validRectangles].x, sdlRectangles[validRectangles].y,
+            sdlRectangles[validRectangles].w, sdlRectangles[validRectangles].h);
+        validRectangles++;
+    }
+    if (validRectangles == 0) {
+        free(heapRectangles);
+        return 1;
     }
     GraphicContext *gContext = GET_GC(gc);
     LOG("bgColor: 0x%08lx, fgColor: 0x%08lx\n", gContext->background,
         gContext->foreground);
+    /* Snapshot the union of all rectangles before drawing so shape-mask
+     * post-processing can restore mask-excluded pixels in one pass. */
+    SDL_Rect shapeUnion = sdlRectangles[0];
+    for (int r = 1; r < validRectangles; r++)
+        unionRect(&shapeUnion, &sdlRectangles[r], &shapeUnion);
+    SDL_Surface *shapeBase = captureShapeMaskBaseline(d, renderer, &shapeUnion);
     if (gContext->fillStyle == FillSolid) {
         LOG("Fill_style is %s\n", "FillSolid");
         if (gContext->function != GXcopy) {
@@ -2210,7 +2915,7 @@ int XFillRectangles(Display *display,
             for (int clip = 0; clip < clipCount; clip++) {
                 if (!setGcClipForIteration(renderer, gc, clip))
                     continue;
-                for (int r = 0; r < nrectangles; r++) {
+                for (int r = 0; r < validRectangles; r++) {
                     SDL_Rect rr = sdlRectangles[r];
                     rasterOpRendererRect(renderer, &rr, gContext->function,
                                          gContext->planeMask,
@@ -2226,7 +2931,7 @@ int XFillRectangles(Display *display,
                 if (!setGcClipForIteration(renderer, gc, clip))
                     continue;
                 if (SDL_RenderFillRects(renderer, &sdlRectangles[0],
-                                        nrectangles)) {
+                                        validRectangles)) {
                     LOG("SDL_RenderFillRects failed in %s: %s\n", __func__,
                         SDL_GetError());
                 }
@@ -2243,7 +2948,8 @@ int XFillRectangles(Display *display,
         for (int clip = 0; clip < clipCount; clip++) {
             if (!setGcClipForIteration(renderer, gc, clip))
                 continue;
-            if (SDL_RenderFillRects(renderer, &sdlRectangles[0], nrectangles)) {
+            if (SDL_RenderFillRects(renderer, &sdlRectangles[0],
+                                    validRectangles)) {
                 LOG("SDL_RenderFillRects failed in %s: %s\n", __func__,
                     SDL_GetError());
             }
@@ -2251,6 +2957,16 @@ int XFillRectangles(Display *display,
         clearRendererClip(renderer);
     } else if (gContext->fillStyle == FillStippled) {
         LOG("Fill_style is %s\n", "FillStippled");
+    }
+    Bool shapeOk = True;
+    if (shapeBase) {
+        shapeOk =
+            applyShapeMaskOverDrawnRect(d, renderer, shapeBase, &shapeUnion);
+        SDL_FreeSurface(shapeBase);
+    }
+    if (shapeOk) {
+        for (int r = 0; r < validRectangles; r++)
+            repaintMappedChildrenInRect(display, d, &sdlRectangles[r]);
     }
     free(heapRectangles);
     return 1;

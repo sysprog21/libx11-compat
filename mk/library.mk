@@ -20,9 +20,16 @@ all: $(TARGET)
 # on Linux only.
 LDFLAGS_LIB :=
 ifeq ($(UNAME_S),Linux)
-  LDFLAGS_LIB += -Wl,-Bsymbolic
+  LDFLAGS_LIB += -Wl,-Bsymbolic $(call shared_lib_rpath_ldflags,$(notdir $(TARGET)))
+endif
+ifeq ($(UNAME_S),Darwin)
+  # @loader_path lets the dylib find sibling compat shared libraries
+  # (libXt-compat, libXpm-compat, etc.) at the same directory level
+  # without requiring the consumer to bake in an absolute rpath.
+  LDFLAGS_LIB += -Wl,-install_name,@rpath/$(notdir $(TARGET)) \
+                 -Wl,-rpath,@loader_path
 endif
 
-$(TARGET): $(OBJS) | $(OUT)
+$(TARGET): $(OBJS) $(SDL_WRAPPER_TARGETS) | $(OUT)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) $(LDFLAGS_LIB) -shared -o $@ $(OBJS) $(LDLIBS)

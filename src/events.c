@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
 #include <SDL2/SDL.h>
@@ -18,10 +19,8 @@
 int eventFds[2];
 #define READ_EVENT_FD eventFds[0]
 #define WRITE_EVENT_FD eventFds[1]
-SDL_Event waitingEvent;
-Bool eventWaiting = False;
-Bool tmpVar = False;
 unsigned long lastEventSerial = 1;
+static SDL_mutex *eventQueueLengthLock = NULL;
 
 /* SDL_PumpEvents is only safe on the thread that owns SDL windows. XOpenDisplay
  * captures that owner before client threads can issue Xlib requests. */
@@ -67,19 +66,93 @@ typedef struct PutBackEvent {
 static PutBackEvent *putBackEvents = NULL;
 
 static void updateWindowRenderTargets(Display *display);
+int convertEvent(Display *display,
+                 SDL_Event *sdlEvent,
+                 XEvent *xEvent,
+                 Bool freeInternalEvents);
 
-#define ENQUEUE_EVENT_IN_PIPE(display)                  \
-    {                                                   \
-        char buffer = 'e';                              \
-        write(WRITE_EVENT_FD, &buffer, sizeof(buffer)); \
-        GET_DISPLAY(display)->qlen++;                   \
+/* Pipe write/read are best-effort wake-up signals; the authoritative
+ * "event ready" tracker is GET_DISPLAY(display)->qlen plus the
+ * putBackEvents linked list. Both file descriptors are non-blocking
+ * after initEventPipe so a full or empty pipe never stalls the event
+ * loop on a slow client or a phantom qlen. */
+static void incrementDisplayEventQueueLength(Display *display)
+{
+    if (eventQueueLengthLock)
+        SDL_LockMutex(eventQueueLengthLock);
+    GET_DISPLAY(display)->qlen++;
+    if (eventQueueLengthLock)
+        SDL_UnlockMutex(eventQueueLengthLock);
+}
+
+static void decrementDisplayEventQueueLength(Display *display)
+{
+    if (eventQueueLengthLock)
+        SDL_LockMutex(eventQueueLengthLock);
+    if (GET_DISPLAY(display)->qlen > 0)
+        GET_DISPLAY(display)->qlen--;
+    if (eventQueueLengthLock)
+        SDL_UnlockMutex(eventQueueLengthLock);
+}
+
+static int displayEventQueueLength(Display *display)
+{
+    if (eventQueueLengthLock)
+        SDL_LockMutex(eventQueueLengthLock);
+    int qlen = GET_DISPLAY(display)->qlen;
+    if (eventQueueLengthLock)
+        SDL_UnlockMutex(eventQueueLengthLock);
+    return qlen;
+}
+
+static void setDisplayEventQueueLength(Display *display, int qlen)
+{
+    if (eventQueueLengthLock)
+        SDL_LockMutex(eventQueueLengthLock);
+    GET_DISPLAY(display)->qlen = qlen < 0 ? 0 : qlen;
+    if (eventQueueLengthLock)
+        SDL_UnlockMutex(eventQueueLengthLock);
+}
+
+static void discardPipeWakeups(void)
+{
+    char buffer[64];
+    while (read(READ_EVENT_FD, buffer, sizeof(buffer)) > 0) {
     }
-#define READ_EVENT_IN_PIPE(display)                   \
-    if (GET_DISPLAY(display)->qlen > 0) {             \
-        char buffer;                                  \
-        read(READ_EVENT_FD, &buffer, sizeof(buffer)); \
-        GET_DISPLAY(display)->qlen--;                 \
+}
+
+static void resetEventWakeups(Display *display, int qlen)
+{
+    char buffer[64];
+    memset(buffer, 'e', sizeof(buffer));
+    discardPipeWakeups();
+    int remaining = qlen;
+    while (remaining > 0) {
+        size_t chunk = (size_t) remaining;
+        if (chunk > sizeof(buffer))
+            chunk = sizeof(buffer);
+        ssize_t written = write(WRITE_EVENT_FD, buffer, chunk);
+        if (written <= 0)
+            break;
+        remaining -= (int) written;
     }
+    setDisplayEventQueueLength(display, qlen);
+}
+
+#define ENQUEUE_EVENT_IN_PIPE(display)                               \
+    do {                                                             \
+        char buffer = 'e';                                           \
+        ssize_t _w = write(WRITE_EVENT_FD, &buffer, sizeof(buffer)); \
+        (void) _w;                                                   \
+        incrementDisplayEventQueueLength(display);                   \
+    } while (0)
+#define READ_EVENT_IN_PIPE(display)                                \
+    do {                                                           \
+        char buffer;                                               \
+        ssize_t _r = read(READ_EVENT_FD, &buffer, sizeof(buffer)); \
+        (void) _r;                                                 \
+        decrementDisplayEventQueueLength(display);                 \
+    } while (0)
 
 static Bool getRectIntersection(const SDL_Rect *rect1,
                                 const SDL_Rect *rect2,
@@ -132,8 +205,52 @@ void postExposeEvent(Display *display,
     free(childDamagedAreaList);
 }
 
+void postExposeEventsForMappedChildren(Display *display,
+                                       Window window,
+                                       const SDL_Rect *damagedAreaList,
+                                       size_t numAreas)
+{
+    if (numAreas == 0 || !damagedAreaList || !IS_TYPE(window, WINDOW))
+        return;
+
+    SDL_Rect *childDamagedAreaList = malloc(sizeof(SDL_Rect) * numAreas);
+    if (!childDamagedAreaList)
+        return;
+
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = 0; i < GET_WINDOW_STRUCT(window)->children.length; i++) {
+        if (IS_INPUT_ONLY(children[i]) ||
+            GET_WINDOW_STRUCT(children[i])->mapState != Mapped) {
+            continue;
+        }
+
+        WindowStruct *childWindowStruct = GET_WINDOW_STRUCT(children[i]);
+        SDL_Rect childWindowRect = {
+            childWindowStruct->x,
+            childWindowStruct->y,
+            childWindowStruct->w,
+            childWindowStruct->h,
+        };
+        size_t numChildAreas = 0;
+        for (size_t j = 0; j < numAreas; j++) {
+            if (getRectIntersection(&damagedAreaList[j], &childWindowRect,
+                                    &childDamagedAreaList[numChildAreas])) {
+                numChildAreas++;
+            }
+        }
+        if (numChildAreas > 0) {
+            postExposeEvent(display, children[i], childDamagedAreaList,
+                            numChildAreas);
+        }
+    }
+    free(childDamagedAreaList);
+}
+
 static int onSdlEvent(void *userdata, SDL_Event *event)
 {
+    if (SCREEN_WINDOW == None || !IS_TYPE(SCREEN_WINDOW, WINDOW))
+        return 0;
+
     switch (event->type) {
         //        case SDL_QUIT:
     case SDL_WINDOWEVENT:
@@ -151,9 +268,18 @@ static int onSdlEvent(void *userdata, SDL_Event *event)
 
 static Bool getEventQueueLength(int *qlen)
 {
-    SDL_Event tmp[25];
-    *qlen = SDL_PeepEvents((SDL_Event *) &tmp, 25, SDL_PEEKEVENT,
-                           SDL_FIRSTEVENT, SDL_LASTEVENT);
+    /* Motif expose/configure bursts and resize-driven repaints routinely
+     * push the queue past 25 entries in a single SDL_PumpEvents tick;
+     * callers used the returned length both to size a follow-up GETEVENT
+     * drain and to feed XEventsQueued, so undercounting throttled Xt's
+     * main loop and dropped events behind a quiet 25-event ceiling.
+     *
+     * The cap is just a peek buffer; size it large enough for realistic
+     * bursts but bounded so a runaway SDL queue can't blow the stack. */
+    enum { PEEK_CAP = 256 };
+    SDL_Event tmp[PEEK_CAP];
+    *qlen = SDL_PeepEvents(tmp, PEEK_CAP, SDL_PEEKEVENT, SDL_FIRSTEVENT,
+                           SDL_LASTEVENT);
     if (*qlen < 0) {
         LOG("Failed to get the length of the input queue: %s\n",
             SDL_GetError());
@@ -173,7 +299,28 @@ static Bool enqueuePutBackEvent(Display *display, const XEvent *event)
     memcpy(&node->event, event, sizeof(XEvent));
     node->next = putBackEvents;
     putBackEvents = node;
-    GET_DISPLAY(display)->qlen++;
+    /* Match the SDL filter's pipe-byte accounting so that clients
+     * select()ing on ConnectionNumber actually wake up for put-backs. */
+    ENQUEUE_EVENT_IN_PIPE(display);
+    return True;
+}
+
+static Bool appendPutBackEvent(Display *display, const XEvent *event)
+{
+    PutBackEvent *node = malloc(sizeof(PutBackEvent));
+    if (!node) {
+        handleOutOfMemory(0, display, 0, 0);
+        return False;
+    }
+    node->display = display;
+    memcpy(&node->event, event, sizeof(XEvent));
+    node->next = NULL;
+
+    PutBackEvent **link = &putBackEvents;
+    while (*link)
+        link = &(*link)->next;
+    *link = node;
+    ENQUEUE_EVENT_IN_PIPE(display);
     return True;
 }
 
@@ -186,14 +333,69 @@ static Bool popPutBackEvent(Display *display, XEvent *event)
             *link = node->next;
             memcpy(event, &node->event, sizeof(XEvent));
             free(node);
-            if (GET_DISPLAY(display)->qlen > 0) {
-                GET_DISPLAY(display)->qlen--;
-            }
+            /* Match the pipe byte enqueuePutBackEvent wrote so the wake-up
+             * accounting stays consistent. */
+            READ_EVENT_IN_PIPE(display);
             return True;
         }
         link = &node->next;
     }
     return False;
+}
+
+static int countPutBackEvents(Display *display)
+{
+    int count = 0;
+    for (PutBackEvent *node = putBackEvents; node; node = node->next) {
+        if (node->display == display)
+            count++;
+    }
+    return count;
+}
+
+static int drainSdlEventsToPutBack(Display *display)
+{
+    int qlen = 0;
+    getEventQueueLength(&qlen);
+    if (qlen <= 0) {
+        int putBackCount = countPutBackEvents(display);
+        if (displayEventQueueLength(display) > putBackCount) {
+            resetEventWakeups(display, putBackCount);
+        }
+        return putBackCount;
+    }
+
+    SDL_Event *events = calloc((size_t) qlen, sizeof(SDL_Event));
+    if (!events) {
+        handleOutOfMemory(0, display, 0, 0);
+        return countPutBackEvents(display);
+    }
+
+    qlen = SDL_PeepEvents(events, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
+                          SDL_LASTEVENT);
+    if (qlen < 0) {
+        LOG("Unable to read event queue: %s\n", SDL_GetError());
+        free(events);
+        return countPutBackEvents(display);
+    }
+
+    for (int i = 0; i < qlen; i++) {
+        READ_EVENT_IN_PIPE(display);
+    }
+    for (int i = 0; i < qlen; i++) {
+        XEvent converted;
+        if (convertEvent(display, &events[i], &converted, True) == 0)
+            appendPutBackEvent(display, &converted);
+    }
+    int remainingSdlEvents = 0;
+    if (getEventQueueLength(&remainingSdlEvents)) {
+        int desiredQlen = countPutBackEvents(display) + remainingSdlEvents;
+        if (displayEventQueueLength(display) != desiredQlen)
+            resetEventWakeups(display, desiredQlen);
+    }
+
+    free(events);
+    return countPutBackEvents(display);
 }
 
 static Bool enqueuePutBackExpose(Display *display, Window window)
@@ -254,6 +456,91 @@ static void fillCrossingEvent(Display *display,
     event->state = state;
 }
 
+static void translateRootPointToWindow(Display *display,
+                                       Window root,
+                                       Window window,
+                                       int rootX,
+                                       int rootY,
+                                       int *windowX,
+                                       int *windowY)
+{
+    *windowX = rootX;
+    *windowY = rootY;
+    if (window != None && window != root && IS_TYPE(window, WINDOW)) {
+        Window child = None;
+        XTranslateCoordinates(display, root, window, rootX, rootY, windowX,
+                              windowY, &child);
+    }
+}
+
+static void translateSdlPointToRoot(Display *display,
+                                    Window sdlWindow,
+                                    int localX,
+                                    int localY,
+                                    int *rootX,
+                                    int *rootY)
+{
+    *rootX = localX;
+    *rootY = localY;
+    if (sdlWindow != None && sdlWindow != SCREEN_WINDOW &&
+        IS_TYPE(sdlWindow, WINDOW)) {
+        Window child = None;
+        XTranslateCoordinates(display, sdlWindow, SCREEN_WINDOW, localX, localY,
+                              rootX, rootY, &child);
+    }
+}
+
+static Bool windowSelectsAny(Window window, long mask)
+{
+    return IS_TYPE(window, WINDOW) &&
+           (GET_WINDOW_STRUCT(window)->eventMask & mask) != 0;
+}
+
+static Window directChildContainingPoint(Window window, int x, int y)
+{
+    if (!IS_TYPE(window, WINDOW))
+        return None;
+
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = GET_WINDOW_STRUCT(window)->children.length; i > 0; i--) {
+        Window child = children[i - 1];
+        int childX, childY, childW, childH;
+        GET_WINDOW_POS(child, childX, childY);
+        GET_WINDOW_DIMS(child, childW, childH);
+        if (x >= childX && x < childX + childW && y >= childY &&
+            y < childY + childH) {
+            return child;
+        }
+    }
+    return None;
+}
+
+static Window selectPointerEventWindow(Display *display,
+                                       Window root,
+                                       int rootX,
+                                       int rootY,
+                                       long mask,
+                                       Window *subwindowReturn,
+                                       int *eventXReturn,
+                                       int *eventYReturn)
+{
+    Window deepest = getContainingWindow(root, rootX, rootY);
+    Window eventWindow = deepest;
+    while (eventWindow != None && eventWindow != SCREEN_WINDOW &&
+           !windowSelectsAny(eventWindow, mask)) {
+        eventWindow = GET_PARENT(eventWindow);
+    }
+    if (eventWindow == None || !windowSelectsAny(eventWindow, mask))
+        return None;
+
+    translateRootPointToWindow(display, root, eventWindow, rootX, rootY,
+                               eventXReturn, eventYReturn);
+    if (subwindowReturn)
+        *subwindowReturn = directChildContainingPoint(
+            eventWindow, *eventXReturn, *eventYReturn);
+    return eventWindow;
+}
+
 Bool postCrossingEvent(Display *display,
                        Window window,
                        int type,
@@ -307,9 +594,7 @@ static Bool removeMatchingPutBackEvent(
             *link = node->next;
             memcpy(event, &node->event, sizeof(XEvent));
             free(node);
-            if (GET_DISPLAY(display)->qlen > 0) {
-                GET_DISPLAY(display)->qlen--;
-            }
+            READ_EVENT_IN_PIPE(display);
             return True;
         }
         link = &node->next;
@@ -331,14 +616,64 @@ static Bool removeMatchingPutBackIfEvent(Display *display,
             *link = node->next;
             memcpy(event, &node->event, sizeof(XEvent));
             free(node);
-            if (GET_DISPLAY(display)->qlen > 0) {
-                GET_DISPLAY(display)->qlen--;
-            }
+            READ_EVENT_IN_PIPE(display);
             return True;
         }
         link = &node->next;
     }
     return False;
+}
+
+void discardQueuedEventsForWindow(Display *display, Window window)
+{
+    PutBackEvent **link = &putBackEvents;
+    while (*link) {
+        PutBackEvent *node = *link;
+        if (node->display == display && node->event.xany.window == window) {
+            *link = node->next;
+            free(node);
+            READ_EVENT_IN_PIPE(display);
+            continue;
+        }
+        link = &node->next;
+    }
+
+    int qlen = 0;
+    getEventQueueLength(&qlen);
+    if (qlen <= 0)
+        return;
+
+    SDL_Event *events = calloc((size_t) qlen, sizeof(SDL_Event));
+    if (!events) {
+        handleOutOfMemory(0, display, 0, 0);
+        return;
+    }
+    qlen = SDL_PeepEvents(events, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
+                          SDL_LASTEVENT);
+    if (qlen < 0) {
+        LOG("Unable to read event queue: %s\n", SDL_GetError());
+        free(events);
+        return;
+    }
+
+    for (int i = 0; i < qlen; i++) {
+        READ_EVENT_IN_PIPE(display);
+    }
+    for (int i = 0; i < qlen; i++) {
+        XEvent converted;
+        if (convertEvent(display, &events[i], &converted, True) != 0)
+            continue;
+        if (converted.xany.window == window)
+            continue;
+        appendPutBackEvent(display, &converted);
+    }
+    int remainingSdlEvents = 0;
+    if (getEventQueueLength(&remainingSdlEvents)) {
+        int desiredQlen = countPutBackEvents(display) + remainingSdlEvents;
+        if (displayEventQueueLength(display) != desiredQlen)
+            resetEventWakeups(display, desiredQlen);
+    }
+    free(events);
 }
 
 /* SDL_SetEventFilter only stores one (callback, userdata) pair, so we
@@ -378,13 +713,29 @@ int initEventPipe(Display *display)
 {
     captureMainEventThreadIfUnset();
     lastEventSerial = 1;
+    if (!eventQueueLengthLock) {
+        eventQueueLengthLock = SDL_CreateMutex();
+        if (!eventQueueLengthLock) {
+            LOG("Could not create the event queue lock: %s", SDL_GetError());
+            return -1;
+        }
+    }
     int flags;
     if (pipe(eventFds) == -1) {
         LOG("Could not create the event pipe: %s", strerror(errno));
         return -1;
     }
+    /* Real X11 clients select() / poll() on the connection FD then call
+     * XNextEvent in a non-blocking mode. The pipe is just a wake-up
+     * signal; reads happen inside XNextEvent itself, so make the FD
+     * non-blocking so a desynced qlen does not stall the whole event
+     * loop on a missing byte. The original spelling used F_SETFD
+     * (FD_CLOEXEC) instead of F_SETFL (O_NONBLOCK), silently leaving the
+     * FD in blocking mode. */
     flags = fcntl(READ_EVENT_FD, F_GETFL);
-    fcntl(READ_EVENT_FD, F_SETFD, flags | O_NONBLOCK);
+    fcntl(READ_EVENT_FD, F_SETFL, flags | O_NONBLOCK);
+    flags = fcntl(WRITE_EVENT_FD, F_GETFL);
+    fcntl(WRITE_EVENT_FD, F_SETFL, flags | O_NONBLOCK);
     FILE *event_write = fdopen(WRITE_EVENT_FD, "w");
     if (!event_write) {
         LOG("Could not create the write input of the event pipe: %s",
@@ -426,6 +777,10 @@ void closeEventPipe(Display *display)
     void *currentUserdata = NULL;
     SDL_GetEventFilter(&currentFilter, &currentUserdata);
     if (currentFilter != onSdlEvent || currentUserdata != display) {
+        if (trackedDisplays.length == 0 && eventQueueLengthLock) {
+            SDL_DestroyMutex(eventQueueLengthLock);
+            eventQueueLengthLock = NULL;
+        }
         return;
     }
     if (trackedDisplays.length > 0) {
@@ -433,6 +788,10 @@ void closeEventPipe(Display *display)
                            trackedDisplays.array[trackedDisplays.length - 1]);
     } else {
         SDL_SetEventFilter(NULL, NULL);
+        if (eventQueueLengthLock) {
+            SDL_DestroyMutex(eventQueueLengthLock);
+            eventQueueLengthLock = NULL;
+        }
     }
 }
 
@@ -448,10 +807,51 @@ unsigned int convertModifierState(Uint16 mod)
     if (HAS_VALUE(mod, KMOD_CAPS)) {
         state |= LockMask;
     }
-    if (HAS_VALUE(mod, KMOD_NUM)) {
+    /* X11 convention: Mod1Mask is Alt, Mod2Mask is NumLock. Motif
+     * accelerators (Alt-F for File, Alt-E for Edit, etc.) test for
+     * Mod1; without this, accelerators silently never fire. The previous
+     * mapping put NumLock on Mod1, leaving Alt unreachable. */
+    if (HAS_VALUE(mod, KMOD_ALT)) {
         state |= Mod1Mask;
     }
+    if (HAS_VALUE(mod, KMOD_NUM)) {
+        state |= Mod2Mask;
+    }
     return state;
+}
+
+static unsigned int pointerButtonState = 0;
+static Window activePointerWindow = None;
+
+static unsigned int convertSdlMouseButton(Uint8 button)
+{
+    if (button == SDL_BUTTON_LEFT)
+        return Button1;
+    if (button == SDL_BUTTON_MIDDLE)
+        return Button2;
+    if (button == SDL_BUTTON_RIGHT)
+        return Button3;
+    if (button == SDL_BUTTON_X1)
+        return Button4;
+    return Button5;
+}
+
+static unsigned int buttonMaskForXButton(unsigned int button)
+{
+    switch (button) {
+    case Button1:
+        return Button1Mask;
+    case Button2:
+        return Button2Mask;
+    case Button3:
+        return Button3Mask;
+    case Button4:
+        return Button4Mask;
+    case Button5:
+        return Button5Mask;
+    default:
+        return 0;
+    }
 }
 
 int convertEvent(Display *display,
@@ -462,10 +862,11 @@ int convertEvent(Display *display,
     Bool sendEvent = False;
     Window eventWindow = None;
     int type = -1;
-#define FILL_STANDARD_VALUES(eventStruct)         \
-    xEvent->eventStruct.type = type;              \
-    xEvent->eventStruct.serial = lastEventSerial; \
-    xEvent->eventStruct.send_event = sendEvent;   \
+    unsigned long serial = lastEventSerial;
+#define FILL_STANDARD_VALUES(eventStruct)       \
+    xEvent->eventStruct.type = type;            \
+    xEvent->eventStruct.serial = serial;        \
+    xEvent->eventStruct.send_event = sendEvent; \
     xEvent->eventStruct.display = display
     switch (sdlEvent->type) {
     case SDL_KEYDOWN:
@@ -478,8 +879,26 @@ int convertEvent(Display *display,
         }
         FILL_STANDARD_VALUES(xkey);
         xEvent->xkey.root = getWindowFromId(sdlEvent->key.windowID);
-        eventWindow = getKeyboardFocus();
-        eventWindow = eventWindow == None ? xEvent->xkey.root : eventWindow;
+        xEvent->xkey.state = convertModifierState(sdlEvent->key.keysym.mod);
+        xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.sym & 0xFF;
+        /* Route priority for key events:
+         *  1. Active XGrabKeyboard (modal dialogs like Motif's Help popup)
+         *  2. Passive XGrabKey match (Motif accelerators)
+         *  3. The keyboard-focus window
+         *  4. The event's root window as a last resort.
+         * Items 1 and 2 are independent of focus; item 3 is the normal
+         * path. */
+        Window keyboardGrabWindow = getGrabbedKeyboardWindow();
+        Window passiveGrabWindow =
+            findKeyGrabWindow((int) xEvent->xkey.keycode, xEvent->xkey.state);
+        if (keyboardGrabWindow != None) {
+            eventWindow = keyboardGrabWindow;
+        } else if (passiveGrabWindow != None) {
+            eventWindow = passiveGrabWindow;
+        } else {
+            eventWindow = getKeyboardFocus();
+            eventWindow = eventWindow == None ? xEvent->xkey.root : eventWindow;
+        }
         xEvent->xkey.window = eventWindow;
         xEvent->xkey.subwindow = None;
         xEvent->xkey.time = sdlEvent->key.timestamp;
@@ -487,93 +906,104 @@ int convertEvent(Display *display,
         xEvent->xkey.x_root =
             xEvent->xkey.x;  // Because root and window are the same.
         xEvent->xkey.y_root = xEvent->xkey.y;
-        xEvent->xkey.state = convertModifierState(sdlEvent->key.keysym.mod);
-        xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.sym & 0xFF;
         // xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.scancode;
         xEvent->xkey.same_screen = True;
         break;
     case SDL_MOUSEBUTTONDOWN:
         LOG("SDL_MOUSEBUTTONDOWN\n");
         type = ButtonPress;
-        if (!tmpVar) {
-            ENQUEUE_EVENT_IN_PIPE(display);
-            eventWaiting = True;
-            memcpy(&waitingEvent, sdlEvent, sizeof(SDL_Event));
-            type = EnterNotify;
-            Window root = getWindowFromId(sdlEvent->button.windowID);
-            if (root == None)
-                root = SCREEN_WINDOW;
-            eventWindow = getContainingWindow(root, sdlEvent->button.x,
-                                              sdlEvent->button.y);
-            fillCrossingEvent(display, &xEvent->xcrossing, eventWindow, type,
-                              NotifyNormal, NotifyAncestor,
-                              convertModifierState(SDL_GetModState()));
-            xEvent->xcrossing.time = sdlEvent->button.timestamp;
-            break;
-        }
+        /* Previously this case synthesized an EnterNotify from the first
+         * mouse-down to compensate for environments that never delivered
+         * SDL_WINDOWEVENT_ENTER. The hack double-fired Motif arm/focus
+         * callbacks (one for the fake EnterNotify, one for the actual
+         * ButtonPress) and reorganized the event stream out of X11 spec.
+         * SDL_WINDOWEVENT_ENTER already drives EnterNotify cleanly in
+         * convertEvent below; let SDL handle it. */
     case SDL_MOUSEBUTTONUP:
         if (sdlEvent->type == SDL_MOUSEBUTTONUP) {
             LOG("SDL_MOUSEBUTTONUP\n");
             type = ButtonRelease;
         }
         FILL_STANDARD_VALUES(xbutton);
-        xEvent->xbutton.root = getWindowFromId(sdlEvent->button.windowID);
-        if (xEvent->xbutton.root == None) {
-            xEvent->xbutton.root = SCREEN_WINDOW;
-        }
-        xEvent->xbutton.subwindow = getContainingWindow(
-            xEvent->xbutton.root, sdlEvent->button.x,
-            sdlEvent->button.y);  // The event window is always the SDL Window.
-        eventWindow = xEvent->xbutton.subwindow;
-        //            while (eventWindow != SCREEN_WINDOW && 0 &&
-        //            !HAS_VALUE(GET_WINDOW_STRUCT(eventWindow)->eventMask,
-        //            ButtonPressMask)) {
-        //                eventWindow = GET_PARENT(eventWindow);
-        //            }
-        xEvent->xbutton.window = eventWindow;
+        Window sdlButtonWindow = getWindowFromId(sdlEvent->button.windowID);
+        xEvent->xbutton.root = SCREEN_WINDOW;
         xEvent->xbutton.time = sdlEvent->button.timestamp;
-        xEvent->xbutton.x = sdlEvent->button.x;
-        xEvent->xbutton.y = sdlEvent->button.y;
-        xEvent->xbutton.x_root =
-            xEvent->xbutton.x;  // Because root and window are the same.
-        xEvent->xbutton.y_root = xEvent->xbutton.y;
-        xEvent->xbutton.state = convertModifierState(SDL_GetModState());
-        if (sdlEvent->button.button == SDL_BUTTON_LEFT) {
-            xEvent->xbutton.button = Button1;
-        } else if (sdlEvent->button.button == SDL_BUTTON_MIDDLE) {
-            xEvent->xbutton.button = Button2;
-        } else if (sdlEvent->button.button == SDL_BUTTON_RIGHT) {
-            xEvent->xbutton.button = Button3;
-        } else if (sdlEvent->button.button == SDL_BUTTON_X1) {
-            xEvent->xbutton.button = Button4;
-        } else {
-            xEvent->xbutton.button = Button5;
+        translateSdlPointToRoot(display, sdlButtonWindow, sdlEvent->button.x,
+                                sdlEvent->button.y, &xEvent->xbutton.x_root,
+                                &xEvent->xbutton.y_root);
+        xEvent->xbutton.button = convertSdlMouseButton(sdlEvent->button.button);
+        unsigned int buttonState = buttonMaskForXButton(xEvent->xbutton.button);
+        unsigned int previousButtonState = pointerButtonState;
+        xEvent->xbutton.state =
+            convertModifierState(SDL_GetModState()) | previousButtonState;
+        if (freeInternalEvents) {
+            if (type == ButtonPress)
+                pointerButtonState |= buttonState;
+            else
+                pointerButtonState &= ~buttonState;
         }
+        long buttonMask =
+            type == ButtonPress ? ButtonPressMask : ButtonReleaseMask;
+        if (type == ButtonRelease && activePointerWindow != None &&
+            windowSelectsAny(activePointerWindow, buttonMask)) {
+            eventWindow = activePointerWindow;
+            translateRootPointToWindow(display, xEvent->xbutton.root,
+                                       eventWindow, xEvent->xbutton.x_root,
+                                       xEvent->xbutton.y_root,
+                                       &xEvent->xbutton.x, &xEvent->xbutton.y);
+            xEvent->xbutton.subwindow = directChildContainingPoint(
+                eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
+        } else {
+            eventWindow = selectPointerEventWindow(
+                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root, buttonMask, &xEvent->xbutton.subwindow,
+                &xEvent->xbutton.x, &xEvent->xbutton.y);
+        }
+        if (freeInternalEvents && type == ButtonPress &&
+            previousButtonState == 0 && eventWindow != None) {
+            activePointerWindow = eventWindow;
+        }
+        if (freeInternalEvents && pointerButtonState == 0)
+            activePointerWindow = None;
+        if (eventWindow == None)
+            return -1;
+        xEvent->xbutton.window = eventWindow;
         xEvent->xbutton.same_screen = True;
         break;
     case SDL_MOUSEMOTION:
         LOG("SDL_MOUSEMOTION\n");
         type = MotionNotify;
         FILL_STANDARD_VALUES(xmotion);
-        xEvent->xmotion.root = getWindowFromId(sdlEvent->motion.windowID);
-        if (xEvent->xbutton.root == None) {
-            xEvent->xbutton.root = SCREEN_WINDOW;
-        }
-        eventWindow = getContainingWindow(
-            xEvent->xbutton.root, sdlEvent->motion.x, sdlEvent->motion.y);
-        xEvent->xmotion.window = eventWindow;  // The event window is always the
-                                               // window the mouse is in.
-        if (xEvent->xmotion.window == None) {
-            xEvent->xmotion.window = SCREEN_WINDOW;
-        }
-        xEvent->xmotion.subwindow = None;
+        Window sdlMotionWindow = getWindowFromId(sdlEvent->motion.windowID);
+        xEvent->xmotion.root = SCREEN_WINDOW;
         xEvent->xmotion.time = sdlEvent->motion.timestamp;
-        xEvent->xmotion.x = sdlEvent->motion.x;
-        xEvent->xmotion.y = sdlEvent->motion.y;
-        xEvent->xmotion.x_root =
-            xEvent->xbutton.x;  // Because root and window are the same.
-        xEvent->xmotion.y_root = xEvent->xbutton.y;
-        xEvent->xmotion.state = convertModifierState(SDL_GetModState());
+        translateSdlPointToRoot(display, sdlMotionWindow, sdlEvent->motion.x,
+                                sdlEvent->motion.y, &xEvent->xmotion.x_root,
+                                &xEvent->xmotion.y_root);
+        long motionMask = PointerMotionMask | ButtonMotionMask |
+                          Button1MotionMask | Button2MotionMask |
+                          Button3MotionMask | Button4MotionMask |
+                          Button5MotionMask | PointerMotionHintMask;
+        if (activePointerWindow != None &&
+            windowSelectsAny(activePointerWindow, motionMask)) {
+            eventWindow = activePointerWindow;
+            translateRootPointToWindow(display, xEvent->xmotion.root,
+                                       eventWindow, xEvent->xmotion.x_root,
+                                       xEvent->xmotion.y_root,
+                                       &xEvent->xmotion.x, &xEvent->xmotion.y);
+            xEvent->xmotion.subwindow = directChildContainingPoint(
+                eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
+        } else {
+            eventWindow = selectPointerEventWindow(
+                display, xEvent->xmotion.root, xEvent->xmotion.x_root,
+                xEvent->xmotion.y_root, motionMask, &xEvent->xmotion.subwindow,
+                &xEvent->xmotion.x, &xEvent->xmotion.y);
+        }
+        if (eventWindow == None)
+            return -1;
+        xEvent->xmotion.window = eventWindow;
+        xEvent->xmotion.state =
+            convertModifierState(SDL_GetModState()) | pointerButtonState;
         xEvent->xmotion.is_hint =
             HAS_EVENT_MASK(eventWindow, PointerMotionHintMask) ? NotifyHint
                                                                : NotifyNormal;
@@ -584,8 +1014,10 @@ int convertEvent(Display *display,
         switch (sdlEvent->window.event) {
         case SDL_WINDOWEVENT_SHOWN:
             LOG("Window %d shown\n", sdlEvent->window.windowID);
-            if (eventWindow != None)
+            if (eventWindow != None) {
                 GET_WINDOW_STRUCT(eventWindow)->mapState = Mapped;
+                markWindowNeedsPresent(eventWindow);
+            }
             type = MapNotify;
             FILL_STANDARD_VALUES(xmap);
             xEvent->xmap.window = eventWindow;
@@ -607,6 +1039,8 @@ int convertEvent(Display *display,
             break;
         case SDL_WINDOWEVENT_EXPOSED:
             LOG("Window %d exposed\n", sdlEvent->window.windowID);
+            if (eventWindow != None)
+                markWindowNeedsPresent(eventWindow);
             return -1;
             break;
         case SDL_WINDOWEVENT_MOVED:
@@ -683,11 +1117,13 @@ int convertEvent(Display *display,
             break;
         case SDL_WINDOWEVENT_RESTORED:
             LOG("Window %d restored\n", sdlEvent->window.windowID);
-            if (eventWindow != None)
+            if (eventWindow != None) {
                 GET_WINDOW_STRUCT(eventWindow)->mapState = Mapped;
-            SDL_Rect windowArea = {0, 0, 0, 0};
-            GET_WINDOW_DIMS(eventWindow, windowArea.w, windowArea.h);
-            postExposeEvent(display, eventWindow, &windowArea, 1);
+                markWindowNeedsPresent(eventWindow);
+                SDL_Rect windowArea = {0, 0, 0, 0};
+                GET_WINDOW_DIMS(eventWindow, windowArea.w, windowArea.h);
+                postExposeEvent(display, eventWindow, &windowArea, 1);
+            }
             return -1;
             break;
         case SDL_WINDOWEVENT_ENTER:
@@ -734,7 +1170,8 @@ int convertEvent(Display *display,
                     if (((Atom *) windowProperty->data)[i] ==
                         WM_DELETE_WINDOW) {
                         postEvent(display, eventWindow, ClientMessage, 32,
-                                  WM_PROTOCOLS, WM_DELETE_WINDOW);
+                                  WM_PROTOCOLS, WM_DELETE_WINDOW,
+                                  (Time) sdlEvent->window.timestamp);
                         clientHandlesDelete = True;
                         break;
                     }
@@ -832,23 +1269,24 @@ int convertEvent(Display *display,
                 return -1;
             type = ButtonPress;
             FILL_STANDARD_VALUES(xbutton);
-            xEvent->xbutton.root = getWindowFromId(sdlEvent->wheel.windowID);
-            if (xEvent->xbutton.root == None)
-                xEvent->xbutton.root = SCREEN_WINDOW;
+            Window sdlWheelWindow = getWindowFromId(sdlEvent->wheel.windowID);
+            xEvent->xbutton.root = SCREEN_WINDOW;
             int mx = 0, my = 0;
             SDL_GetMouseState(&mx, &my);
-            xEvent->xbutton.subwindow =
-                getContainingWindow(xEvent->xbutton.root, mx, my);
-            eventWindow = xEvent->xbutton.subwindow;
-            if (eventWindow == None)
-                eventWindow = xEvent->xbutton.root;
-            xEvent->xbutton.window = eventWindow;
             xEvent->xbutton.time = sdlEvent->wheel.timestamp;
-            xEvent->xbutton.x = mx;
-            xEvent->xbutton.y = my;
-            xEvent->xbutton.x_root = mx;
-            xEvent->xbutton.y_root = my;
-            xEvent->xbutton.state = convertModifierState(SDL_GetModState());
+            translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
+                                    &xEvent->xbutton.x_root,
+                                    &xEvent->xbutton.y_root);
+            eventWindow = selectPointerEventWindow(
+                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root, ButtonPressMask,
+                &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                &xEvent->xbutton.y);
+            if (eventWindow == None)
+                return -1;
+            xEvent->xbutton.window = eventWindow;
+            xEvent->xbutton.state =
+                convertModifierState(SDL_GetModState()) | pointerButtonState;
             xEvent->xbutton.button = wheelButton;
             xEvent->xbutton.same_screen = True;
             break;
@@ -958,7 +1396,8 @@ int convertEvent(Display *display,
                 eventWindow = (Window) sdlEvent->user.data2;
                 type = allocEvent->type;
                 sendEvent = allocEvent->send_event;
-                allocEvent->serial = lastEventSerial;
+                serial = GET_DISPLAY(display)->request;
+                allocEvent->serial = serial;
                 switch (type) {
                 case KeyRelease:
                 case KeyPress:
@@ -1178,103 +1617,49 @@ int XNextEvent(Display *display, XEvent *event_return)
 {
     // https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XNextEvent.html
     SDL_Event event;
-    Bool done = False;
-    while (!done) {
+    while (1) {
         if (popPutBackEvent(display, event_return)) {
             printEventInfo(event_return);
-            break;
+            return 0;
         }
         int qlen;
         getEventQueueLength(&qlen);
         LOG("Events in queue = %d, qlen = %d\n", qlen,
-            GET_DISPLAY(display)->qlen);
-        /* Fallback when our shim-side queue says "there's an event" but the
-         * SDL queue is empty. This used to happen when an internally-posted
-         * event (CreateNotify, Expose-on-map, etc.) bumped display->qlen
-         * without a matching SDL event. We drain one pipe byte and synthesize
-         * a no-op Expose so the client's XNextEvent doesn't block forever.
-         *
-         * Lossy: anything else queued shim-side is reported here as Expose
-         * instead of its real type. If a client misses, say, a CreateNotify
-         * after XMapWindow, this is the path to investigate. The proper fix
-         * is to retain the original event type alongside the pipe byte and
-         * dispatch from a shim-side ring buffer rather than collapsing here. */
-        if (qlen == 0 && GET_DISPLAY(display)->qlen > 0 && !eventWaiting) {
-            READ_EVENT_IN_PIPE(display);
-            event_return->type = Expose;
-            event_return->xany.serial = lastEventSerial;
-            event_return->xany.display = display;
-            event_return->xany.send_event = False;
-            event_return->xany.type = Expose;
-            event_return->xany.window =
-                *GET_CHILDREN(GET_DISPLAY(display)->screens[0].root);
-            event_return->xexpose.type = Expose;
-            event_return->xexpose.serial = 0;
-            event_return->xexpose.send_event = False;
-            event_return->xexpose.display = display;
-            event_return->xexpose.window = event_return->xany.window;
-            event_return->xexpose.x = 0;
-            event_return->xexpose.y = 0;
-            event_return->xexpose.width = 0;
-            event_return->xexpose.height = 0;
-            event_return->xexpose.count = 0;
-            break;
-        }
-        if (!eventWaiting) {
-            /* Real X11 implicitly flushes the request queue when the client
-             * blocks on input. Mirror that here so accumulated drawing reaches
-             * the screen before we go to sleep. */
-            drawWindowDataToScreen();
-        }
-        if (eventWaiting || SDL_WaitEvent(&event) == 1) {
-            tmpVar = False;
-            if (eventWaiting) {
-                event = waitingEvent;
-                eventWaiting = False;
-                tmpVar = True;
-            }
-            // Clear the event from the pipe;
-            READ_EVENT_IN_PIPE(display);
-            int convertResult =
-                convertEvent(display, &event, event_return, True);
-            if (convertResult == 0) {
-                printEventInfo(event_return);
-                done = True;
-            } else if (convertResult < 0) {
-                continue;
-            } else {
-                //                #ifdef DEBUG_WINDOWS
-                //                printWindowsHierarchy();
-                //                #endif
-                LOG("Got unknown SDL event %d!\n", event.type);
-                event_return->type = Expose;
-                event_return->xany.serial = lastEventSerial;
-                event_return->xany.display = display;
-                event_return->xany.send_event = False;
-                event_return->xany.type = Expose;
-                event_return->xany.window =
-                    *GET_CHILDREN(GET_DISPLAY(display)->screens[0].root);
-                event_return->xexpose.type = Expose;
-                event_return->xexpose.serial = 0;
-                event_return->xexpose.send_event = False;
-                event_return->xexpose.display = display;
-                event_return->xexpose.window = event_return->xany.window;
-                event_return->xexpose.x = 0;
-                event_return->xexpose.y = 0;
-                event_return->xexpose.width = 0;
-                event_return->xexpose.height = 0;
-                event_return->xexpose.count = 0;
-                done = True;
-            }
-            lastEventSerial++;
-            tmpVar = False;
-        } else {
+            displayEventQueueLength(display));
+        /* Real X11 implicitly flushes the request queue when the client
+         * blocks on input. Mirror that here so accumulated drawing
+         * reaches the screen before we go to sleep. */
+        drawWindowDataToScreen();
+        if (SDL_WaitEvent(&event) != 1) {
             LOG("SDL_WaitEvent failed: %s, retrying...\n", SDL_GetError());
+            fflush(stderr);
+            continue;
         }
-        fflush(stderr);
+        /* Drain the wake-up byte the SDL filter wrote for this event so
+         * a follow-up select(ConnectionNumber) reflects the real queue
+         * depth. With the non-blocking pipe, a stale qlen no longer
+         * forces XNextEvent to fabricate an Expose. */
+        READ_EVENT_IN_PIPE(display);
+        int convertResult = convertEvent(display, &event, event_return, True);
+        if (convertResult == 0) {
+            GET_DISPLAY(display)->last_request_read = event_return->xany.serial;
+            printEventInfo(event_return);
+            lastEventSerial++;
+            LOG("Leaving XNextEvent\n");
+            return 0;
+        }
+        if (convertResult < 0) {
+            /* Silently swallowed SDL event (e.g. exposed). */
+            lastEventSerial++;
+            continue;
+        }
+        LOG("Got unknown SDL event %d, dropping.\n", event.type);
+        lastEventSerial++;
+        /* Do NOT fabricate a fake Expose: a wrong event type confuses
+         * Motif's translation tables and Xt's event dispatcher far
+         * worse than a brief spin in this loop. Wait for the next real
+         * event instead. */
     }
-    LOG("Leaving XNextEvent\n");
-    return 0;
 }
 
 Bool enqueueEvent(Display *display, Window eventWindow, void *event)
@@ -1376,14 +1761,18 @@ int XEventsQueued(Display *display, int mode)
     // https://tronche.com/gui/x/xlib/event-handling/XEventsQueued.html
     //    SET_X_SERVER_REQUEST(display, XCB_);
     if (mode == QueuedAlready) {
-        return GET_DISPLAY(display)->qlen;
+        return displayEventQueueLength(display);
     }
     if (mode == QueuedAfterFlush) {
         XFlush(display);
     } else {
         pumpEventsSafe();
     }
-    return GET_DISPLAY(display)->qlen;
+    int putBackCount = countPutBackEvents(display);
+    int queued = displayEventQueueLength(display);
+    if (queued <= putBackCount)
+        return putBackCount;
+    return drainSdlEventsToPutBack(display);
 }
 
 int XFlush(Display *display)
@@ -1595,17 +1984,24 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         break;
     }
     case Expose: {
+        SDL_Rect *exposeRect = va_arg(args, SDL_Rect *);
         if (!HAS_EVENT_MASK(eventWindow, ExposureMask) ||
             IS_INPUT_ONLY(eventWindow) ||
-            GET_WINDOW_STRUCT(eventWindow)->mapState != Mapped)
-            SKIP XExposeEvent *event = malloc(sizeof(XExposeEvent));
+            GET_WINDOW_STRUCT(eventWindow)->mapState != Mapped) {
+            LOG("Skipping Expose for window %lu mask=0x%lx inputOnly=%d "
+                "mapState=%d\n",
+                eventWindow, GET_WINDOW_STRUCT(eventWindow)->eventMask,
+                IS_INPUT_ONLY(eventWindow),
+                GET_WINDOW_STRUCT(eventWindow)->mapState);
+            SKIP
+        }
+        XExposeEvent *event = malloc(sizeof(XExposeEvent));
         if (!event)
             break;
         event->type = eventId;
         event->send_event = False;
         event->display = display;
         event->window = eventWindow;
-        SDL_Rect *exposeRect = va_arg(args, SDL_Rect *);
         event->x = exposeRect->x;
         event->y = exposeRect->y;
         event->width = exposeRect->w;
@@ -1785,16 +2181,24 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         break;
     }
     case ClientMessage: {
-        XClientMessageEvent *event = malloc(sizeof(XClientMessageEvent));
+        /* calloc instead of malloc: the data union has five long slots
+         * and the spec lets clients consult any of them. malloc left
+         * data.l[1..4] full of heap bytes, which fed Xt's WM_DELETE_WINDOW
+         * handler garbage in the timestamp slot. send_event = True
+         * matches what real X servers stamp on synthesized ICCCM
+         * messages, so Motif's compare against e.send_event in
+         * WM_PROTOCOLS callbacks now sees the expected value. */
+        XClientMessageEvent *event = calloc(1, sizeof(XClientMessageEvent));
         if (!event)
             break;
         event->type = eventId;
-        event->send_event = False;
+        event->send_event = True;
         event->display = display;
         event->window = eventWindow;
         event->format = va_arg(args, int);
         event->message_type = va_arg(args, Atom);
         event->data.l[0] = va_arg(args, Atom);
+        event->data.l[1] = va_arg(args, Time);
         eventData = event;
         break;
     }
@@ -2011,6 +2415,13 @@ static Bool checkMaskedWindowPredicate(Window w,
     return (eventMaskForType(event->type) & mask) && event->xany.window == w;
 }
 
+static Bool checkMaskedPredicate(Window w, int type, long mask, XEvent *event)
+{
+    (void) w;
+    (void) type;
+    return (eventMaskForType(event->type) & mask) != 0;
+}
+
 static Bool checkTypedEvent(Display *display,
                             Window w,
                             int type,
@@ -2018,7 +2429,7 @@ static Bool checkTypedEvent(Display *display,
                             XEvent *event,
                             Bool(predicate)(Window, int, long, XEvent *))
 {
-    if (GET_DISPLAY(display)->qlen == 0) {
+    if (displayEventQueueLength(display) == 0) {
         pumpEventsSafe();
     }
     int qlen = 0;
@@ -2046,44 +2457,33 @@ static Bool checkTypedEvent(Display *display,
         for (int i = 0; i < qlen; i++) {
             READ_EVENT_IN_PIPE(display);
         }
-        int matchingIndex = -1;
-        Bool *requeue = calloc((size_t) qlen, sizeof(Bool));
-        if (!requeue) {
-            free(tmp);
-            UnlockDisplay(display);
-            handleOutOfMemory(0, display, 0, 0);
-            return False;
-        }
-        for (int i = 0; i < qlen; i++) {
-            requeue[i] = True;
-        }
         LOG("FOUND %d events in SDL queue\n", qlen);
+        Bool foundMatch = False;
         for (int i = 0; i < qlen; i++) {
             XEvent convertedEvent;
-            if (convertEvent(display, &tmp[i], &convertedEvent, False) != 0) {
+            if (convertEvent(display, &tmp[i], &convertedEvent, True) != 0) {
                 LOG("i = %d, SDL event_type = %d skipped\n", i, tmp[i].type);
-                requeue[i] = False;
                 continue;
             }
             LOG("i = %d, SDL event_type = %d, X event_type = %d\n", i,
                 tmp[i].type, convertedEvent.type);
-            if (predicate(w, type, mask, &convertedEvent)) {
-                matchingIndex = i;
-                requeue[i] = False;
-                break;
+            if (!foundMatch && predicate(w, type, mask, &convertedEvent)) {
+                memcpy(event, &convertedEvent, sizeof(XEvent));
+                foundMatch = True;
+            } else if (!appendPutBackEvent(display, &convertedEvent)) {
+                free(tmp);
+                UnlockDisplay(display);
+                return False;
             }
         }
-        if (matchingIndex >= 0) {
-            convertEvent(display, &tmp[matchingIndex], event, True);
+        int remainingSdlEvents = 0;
+        if (getEventQueueLength(&remainingSdlEvents)) {
+            int desiredQlen = countPutBackEvents(display) + remainingSdlEvents;
+            if (displayEventQueueLength(display) != desiredQlen)
+                resetEventWakeups(display, desiredQlen);
         }
-        for (int i = 0; i < qlen; i++) {
-            if (requeue[i]) {
-                SDL_PushEvent(&tmp[i]);
-            }
-        }
-        free(requeue);
         free(tmp);
-        if (matchingIndex >= 0) {
+        if (foundMatch) {
             UnlockDisplay(display);
             return True;
         }
@@ -2102,7 +2502,7 @@ static Bool checkIfEvent(Display *display,
                          Bool (*predicate)(Display *, XEvent *, char *),
                          char *arg)
 {
-    if (GET_DISPLAY(display)->qlen == 0) {
+    if (displayEventQueueLength(display) == 0) {
         pumpEventsSafe();
     }
     int qlen = 0;
@@ -2130,40 +2530,28 @@ static Bool checkIfEvent(Display *display,
         for (int i = 0; i < qlen; i++) {
             READ_EVENT_IN_PIPE(display);
         }
-        int matchingIndex = -1;
-        Bool *requeue = calloc((size_t) qlen, sizeof(Bool));
-        if (!requeue) {
-            free(tmp);
-            UnlockDisplay(display);
-            handleOutOfMemory(0, display, 0, 0);
-            return False;
-        }
-        for (int i = 0; i < qlen; i++) {
-            requeue[i] = True;
-        }
+        Bool foundMatch = False;
         for (int i = 0; i < qlen; i++) {
             XEvent convertedEvent;
-            if (convertEvent(display, &tmp[i], &convertedEvent, False) != 0) {
-                requeue[i] = False;
+            if (convertEvent(display, &tmp[i], &convertedEvent, True) != 0)
                 continue;
-            }
-            if (predicate(display, &convertedEvent, arg)) {
-                matchingIndex = i;
-                requeue[i] = False;
-                break;
-            }
-        }
-        if (matchingIndex >= 0) {
-            convertEvent(display, &tmp[matchingIndex], event, True);
-        }
-        for (int i = 0; i < qlen; i++) {
-            if (requeue[i]) {
-                SDL_PushEvent(&tmp[i]);
+            if (!foundMatch && predicate(display, &convertedEvent, arg)) {
+                memcpy(event, &convertedEvent, sizeof(XEvent));
+                foundMatch = True;
+            } else if (!appendPutBackEvent(display, &convertedEvent)) {
+                free(tmp);
+                UnlockDisplay(display);
+                return False;
             }
         }
-        free(requeue);
+        int remainingSdlEvents = 0;
+        if (getEventQueueLength(&remainingSdlEvents)) {
+            int desiredQlen = countPutBackEvents(display) + remainingSdlEvents;
+            if (displayEventQueueLength(display) != desiredQlen)
+                resetEventWakeups(display, desiredQlen);
+        }
         free(tmp);
-        if (matchingIndex >= 0) {
+        if (foundMatch) {
             UnlockDisplay(display);
             return True;
         }
@@ -2179,6 +2567,7 @@ static Bool checkIfEvent(Display *display,
 int XWindowEvent(Display *display, Window w, long mask, XEvent *event)
 {
     while (!XCheckWindowEvent(display, w, mask, event)) {
+        drawWindowDataToScreen();
         pumpEventsSafe();
         SDL_Delay(1);
     }
@@ -2205,6 +2594,7 @@ int XIfEvent(register Display *display,
              char *arg)
 {
     while (!checkIfEvent(display, event, predicate, arg)) {
+        drawWindowDataToScreen();
         pumpEventsSafe();
         SDL_Delay(1);
     }
@@ -2226,6 +2616,39 @@ Bool XCheckWindowEvent(Display *display, Window w, long mask, XEvent *event)
 {
     return checkTypedEvent(display, w, 0, mask, event,
                            &checkMaskedWindowPredicate);
+}
+
+Bool XCheckMaskEvent(Display *display, long mask, XEvent *event)
+{
+    return checkTypedEvent(display, None, 0, mask, event,
+                           &checkMaskedPredicate);
+}
+
+int XMaskEvent(Display *display, long mask, XEvent *event)
+{
+    while (!XCheckMaskEvent(display, mask, event)) {
+        drawWindowDataToScreen();
+        pumpEventsSafe();
+        SDL_Delay(1);
+    }
+    return 0;
+}
+
+int XPeekEvent(Display *display, XEvent *event)
+{
+    XNextEvent(display, event);
+    XPutBackEvent(display, event);
+    return 0;
+}
+
+int XPeekIfEvent(Display *display,
+                 XEvent *event,
+                 Bool (*predicate)(Display *, XEvent *, char *),
+                 char *arg)
+{
+    XIfEvent(display, event, predicate, arg);
+    XPutBackEvent(display, event);
+    return 0;
 }
 
 #undef ENQUEUE_EVENT_IN_PIPE
