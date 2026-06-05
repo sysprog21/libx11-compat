@@ -1,0 +1,45 @@
+src/error.c
+  s_eb0938053a6a88::t_874edf86bcf2fc 10-17
+scripts/profile-motif-demos.sh
+  s_eb0938053a6a88::t_9344c7fdf98c78 117-124
+src/xshape.c
+  s_eb0938053a6a88::t_abe0b07bf2eb31 180-181,183-184
+  s_eb0938053a6a88::t_3ed1884f9db000 478,481,483-488,494-495
+  s_eb0938053a6a88::t_6088c4b7ed21af 227-232,235,262-263,269,274,277
+  s_eb0938053a6a88::t_21639cdfbdb049 270-273,275-276
+  s_eb0938053a6a88::t_0ef8f77335e27d 266-268
+scripts/run-motif-differential-tests.py
+  s_eb0938053a6a88::t_bb573f0f851f49 402,414-426,428,434-435,440-441
+  s_eb0938053a6a88::t_9a03b3b6b0a494 148-150,153-157
+src/image.c
+  s_eb0938053a6a88::t_1c35d6b0b48a53 707-713
+src/wrapper/sdl-wrapper.c
+  s_eb0938053a6a88::t_0ef8f77335e27d 30-33
+  s_eb0938053a6a88::t_d471c4a95ac2ce 39-48
+src/gc.c
+  s_eb0938053a6a88::t_ae323b47ecaf46 71-77,109-119
+src/font.c
+  s_eb0938053a6a88::t_eea452eadb1b96 573-577,583-584
+src/wrapper/sdl-ttf-wrapper.c
+  s_eb0938053a6a88::t_0ef8f77335e27d 15-18
+mk/sdl-wrapper.mk
+  s_eb0938053a6a88::t_b961357532cb93 6-18
+src/input-method.c
+  s_eb0938053a6a88::t_b3333a78e4368d 670-673,675-679
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "d27706e82706cb74248fd6502eaa6f2848973a3a",
+  "prompts": {},
+  "sessions": {
+    "s_eb0938053a6a88": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c120052e-4b3b-4908-aaf1-9aee73d3f947",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
