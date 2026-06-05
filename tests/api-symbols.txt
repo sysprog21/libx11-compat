@@ -197,6 +197,8 @@ XGetInputFocus
 XGetKeyboardControl
 XGetKeyboardMapping
 XGetModifierMapping
+XGetOCValues
+XGetOMValues
 XGetMotionEvents
 XGetNormalHints
 XGetPixel
@@ -275,6 +277,7 @@ XNewModifiermap
 XNextEvent
 XNextRequest
 XNoOp
+XOMOfOC
 XOffsetRegion
 XOpenDisplay
 XOpenIM
@@ -309,6 +312,7 @@ XQueryTree
 XRRQueryExtension
 XRaiseWindow
 XReadBitmapFile
+XReadBitmapFileData
 XRebindKeysym
 XRecolorCursor
 XReconfigureWMWindow
@@ -378,6 +382,7 @@ XSetIconSizes
 XSetInputFocus
 XSetLineAttributes
 XSetLocaleModifiers
+XSetOCValues
 XSetModifierMapping
 XSetNormalHints
 XSetPlaneMask
@@ -578,6 +583,8 @@ XmbTextExtents
 XmbTextListToTextProperty
 XmbTextPerCharExtents
 XmbTextPropertyToTextList
+Xutf8SetWMProperties
+Xutf8TextListToTextProperty
 XrmCombineDatabase
 XrmCombineFileDatabase
 XrmDestroyDatabase
@@ -610,6 +617,8 @@ Xutf8DrawImageString
 Xutf8DrawString
 Xutf8LookupString
 Xutf8TextEscapement
+Xutf8TextExtents
+Xutf8TextPerCharExtents
 XwcDrawImageString
 XwcDrawString
 XwcDrawText

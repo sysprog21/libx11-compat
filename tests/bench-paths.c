@@ -67,6 +67,78 @@ static void bench_wide_line(Display *display, Pixmap pixmap, GC gc)
            elapsed * 1000000.0 / 1000.0);
 }
 
+static void bench_idle_window_flush(Display *display, Window root)
+{
+    Window window =
+        XCreateSimpleWindow(display, root, 0, 0, 400, 300, 0, 0, 0xFFFFFFFF);
+    XMapWindow(display, window);
+    GC gc = XCreateGC(display, window, 0, NULL);
+    XSetForeground(display, gc, 0xFF3366CC);
+    XFillRectangle(display, window, gc, 0, 0, 400, 300);
+    XSync(display, False);
+
+    double start = now_seconds();
+    for (int i = 0; i < 2000; i++)
+        XFlush(display);
+    double elapsed = now_seconds() - start;
+    printf("idle-window-XFlush %.6f sec %.3f usec/op\n", elapsed,
+           elapsed * 1000000.0 / 2000.0);
+
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+}
+
+static void bench_visible_window_fill_rectangles(Display *display, Window root)
+{
+    Window window =
+        XCreateSimpleWindow(display, root, 0, 0, 400, 300, 0, 0, 0xFFFFFFFF);
+    XMapWindow(display, window);
+    GC gc = XCreateGC(display, window, 0, NULL);
+    XSetForeground(display, gc, 0xFF3366CC);
+    XSync(display, False);
+
+    const int operations = 2000;
+    double start = now_seconds();
+    for (int i = 0; i < operations; i++) {
+        int x = (i * 17) % 384;
+        int y = (i * 29) % 284;
+        XFillRectangle(display, window, gc, x, y, 16, 16);
+    }
+    XSync(display, False);
+    double elapsed = now_seconds() - start;
+    printf("visible-window-XFillRectangle-burst %.6f sec %.3f usec/op\n",
+           elapsed, elapsed * 1000000.0 / operations);
+
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+}
+
+static void bench_visible_window_draw_strings(Display *display, Window root)
+{
+    Window window =
+        XCreateSimpleWindow(display, root, 0, 0, 400, 300, 0, 0, 0xFFFFFFFF);
+    XMapWindow(display, window);
+    GC gc = XCreateGC(display, window, 0, NULL);
+    XSetForeground(display, gc, 0xFF000000);
+    XSync(display, False);
+
+    const char *text = "Motif";
+    const int operations = 1000;
+    double start = now_seconds();
+    for (int i = 0; i < operations; i++) {
+        int x = (i * 19) % 340;
+        int y = 20 + ((i * 31) % 260);
+        XDrawString(display, window, gc, x, y, text, 5);
+    }
+    XSync(display, False);
+    double elapsed = now_seconds() - start;
+    printf("visible-window-XDrawString-burst %.6f sec %.3f usec/op\n", elapsed,
+           elapsed * 1000000.0 / operations);
+
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+}
+
 int main(void)
 {
     Display *display = XOpenDisplay(NULL);
@@ -84,6 +156,9 @@ int main(void)
     bench_convex_polygon(display, pixmap, gc);
     bench_self_intersecting_polygon(display, pixmap, gc);
     bench_wide_line(display, pixmap, gc);
+    bench_idle_window_flush(display, root);
+    bench_visible_window_fill_rectangles(display, root);
+    bench_visible_window_draw_strings(display, root);
     XFreeGC(display, gc);
     XFreePixmap(display, pixmap);
     XCloseDisplay(display);

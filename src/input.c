@@ -2,6 +2,7 @@
 #include "X11/Xlibint.h"
 #include "X11/Xutil.h"
 #include "X11/keysym.h"
+#include "X11/HPkeysym.h"
 #include "X11/XKBlib.h"
 #include "keysymlist.h"
 #include "errors.h"
@@ -9,6 +10,52 @@
 
 Window keyboardFocus = None;
 int revertTo = RevertToParent;
+
+static const struct {
+    KeySym keysym;
+    const char *name;
+} osfKeysyms[] = {
+    {osfXK_Copy, "osfCopy"},
+    {osfXK_Cut, "osfCut"},
+    {osfXK_Paste, "osfPaste"},
+    {osfXK_BackTab, "osfBackTab"},
+    {osfXK_BackSpace, "osfBackSpace"},
+    {osfXK_Clear, "osfClear"},
+    {osfXK_Escape, "osfEscape"},
+    {osfXK_AddMode, "osfAddMode"},
+    {osfXK_PrimaryPaste, "osfPrimaryPaste"},
+    {osfXK_QuickPaste, "osfQuickPaste"},
+    {osfXK_PageLeft, "osfPageLeft"},
+    {osfXK_PageUp, "osfPageUp"},
+    {osfXK_PageDown, "osfPageDown"},
+    {osfXK_PageRight, "osfPageRight"},
+    {osfXK_Activate, "osfActivate"},
+    {osfXK_MenuBar, "osfMenuBar"},
+    {osfXK_Left, "osfLeft"},
+    {osfXK_Up, "osfUp"},
+    {osfXK_Right, "osfRight"},
+    {osfXK_Down, "osfDown"},
+    {osfXK_EndLine, "osfEndLine"},
+    {osfXK_BeginLine, "osfBeginLine"},
+    {osfXK_EndData, "osfEndData"},
+    {osfXK_BeginData, "osfBeginData"},
+    {osfXK_PrevMenu, "osfPrevMenu"},
+    {osfXK_NextMenu, "osfNextMenu"},
+    {osfXK_PrevField, "osfPrevField"},
+    {osfXK_NextField, "osfNextField"},
+    {osfXK_Select, "osfSelect"},
+    {osfXK_Insert, "osfInsert"},
+    {osfXK_Undo, "osfUndo"},
+    {osfXK_Menu, "osfMenu"},
+    {osfXK_Cancel, "osfCancel"},
+    {osfXK_Help, "osfHelp"},
+    {osfXK_SelectAll, "osfSelectAll"},
+    {osfXK_DeselectAll, "osfDeselectAll"},
+    {osfXK_Reselect, "osfReselect"},
+    {osfXK_Extend, "osfExtend"},
+    {osfXK_Restore, "osfRestore"},
+    {osfXK_Delete, "osfDelete"},
+};
 
 Window getKeyboardFocus()
 {
@@ -25,17 +72,25 @@ void setKeyboardFocus(Window window)
 int XSelectInput(Display *display, Window window, long event_mask)
 {
     // https://tronche.com/gui/x/xlib/event-handling/XSelectInput.html
-    WARN_UNIMPLEMENTED;
     TYPE_CHECK(window, WINDOW, display, 0);
     GET_WINDOW_STRUCT(window)->eventMask = event_mask;
-    LOG("%s: %ld, %ld\n", __func__, event_mask & KeyPressMask,
-        event_mask & KeyReleaseMask);
+    LOG("%s: window=%lu mask=0x%lx keyPress=0x%lx keyRelease=0x%lx "
+        "exposure=0x%lx structure=0x%lx property=0x%lx\n",
+        __func__, window, event_mask, event_mask & KeyPressMask,
+        event_mask & KeyReleaseMask, event_mask & ExposureMask,
+        event_mask & StructureNotifyMask, event_mask & PropertyChangeMask);
     if (event_mask & KeyPressMask || event_mask & KeyReleaseMask) {
         /* Suppress SDL_TEXTINPUT so each key produces a single XKey event
          * instead of doubling up with a translated text event. */
         SDL_StopTextInput();
-        setKeyboardFocus(window);
     }
+    /* Previously this also called setKeyboardFocus(window) whenever
+     * KeyPress/Release was selected. That made every widget that called
+     * XSelectInput steal focus from whatever Motif had explicitly
+     * focused via XSetInputFocus, and the focus dance broke Motif
+     * dialogs (e.g., piano's Help popup never appeared because the
+     * focus restored to the parent before the dialog finished mapping).
+     * XSetInputFocus is now the single source of truth. */
     return 1;
 }
 
@@ -101,6 +156,8 @@ KeyCode XKeysymToKeycode(Display *display, KeySym keysym)
         return SDLK_0 + (keysym - XK_0);
     if (keysym >= XK_a && keysym <= XK_z)
         return SDLK_a + (keysym - XK_a);
+    if (keysym >= XK_A && keysym <= XK_Z)
+        return SDLK_a + (keysym - XK_A);
     for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
         if (SDLKeycodeToKeySym[i].keysym == keysym) {
             return SDLKeycodeToKeySym[i].keycode & 0xFF;
@@ -128,6 +185,10 @@ KeySym XStringToKeysym(_Xconst char *string)
             return (KeySym) ((long) chr);
         }
     }
+    for (size_t i = 0; i < sizeof(osfKeysyms) / sizeof(osfKeysyms[0]); i++) {
+        if (strcmp(osfKeysyms[i].name, string) == 0)
+            return osfKeysyms[i].keysym;
+    }
     for (size_t i = 0; i < KEY_SYM_LIST_LENGTH; i++) {
         if (strcmp(KEY_SYM_LIST[i].name, string) == 0) {
             return KEY_SYM_LIST[i].keySym;
@@ -139,6 +200,10 @@ KeySym XStringToKeysym(_Xconst char *string)
 char *XKeysymToString(KeySym keysym)
 {
     // https://tronche.com/gui/x/xlib/utilities/keyboard/XKeysymToString.html
+    for (size_t i = 0; i < sizeof(osfKeysyms) / sizeof(osfKeysyms[0]); i++) {
+        if (osfKeysyms[i].keysym == keysym)
+            return (char *) osfKeysyms[i].name;
+    }
     for (size_t i = 0; i < KEY_SYM_LIST_LENGTH; i++) {
         if (KEY_SYM_LIST[i].keySym == keysym) {
             return (char *) KEY_SYM_LIST[i].name;
@@ -191,13 +256,16 @@ unsigned int XkbKeysymToModifiers(Display *display, KeySym keysym)
     case XK_Control_R:
         return ControlMask;
     case XK_Alt_L:
+    case XK_Alt_R:
+        /* Match the standard X server convention: both Alt halves share
+         * Mod1Mask. Keeping them separate broke modmap/state consistency
+         * for clients that fold convertModifierState(KMOD_ALT) against
+         * XGetModifierMapping. */
         return Mod1Mask;
     case XK_Num_Lock:
         return Mod2Mask;
     case XK_Scroll_Lock:
         return Mod3Mask;
-    case XK_Alt_R:
-        return Mod4Mask;
     }
     return 0;
 }
@@ -251,8 +319,8 @@ XModifierKeymap *XGetModifierMapping(Display *display)
         {ShiftMapIndex, 0, XK_Shift_L},     {ShiftMapIndex, 1, XK_Shift_R},
         {LockMapIndex, 0, XK_Caps_Lock},    {ControlMapIndex, 0, XK_Control_L},
         {ControlMapIndex, 1, XK_Control_R}, {Mod1MapIndex, 0, XK_Alt_L},
-        {Mod2MapIndex, 0, XK_Num_Lock},     {Mod3MapIndex, 0, XK_Scroll_Lock},
-        {Mod4MapIndex, 0, XK_Alt_R},
+        {Mod1MapIndex, 1, XK_Alt_R},        {Mod2MapIndex, 0, XK_Num_Lock},
+        {Mod3MapIndex, 0, XK_Scroll_Lock},
     };
     XModifierKeymap *modifierKeymap = malloc(sizeof(XModifierKeymap));
     if (!modifierKeymap) {
@@ -300,10 +368,29 @@ int XSetInputFocus(Display *display, Window focus, int revert_to, Time time)
 {
     // https://tronche.com/gui/x/xlib/input/XSetInputFocus.html
     SET_X_SERVER_REQUEST(display, X_SetInputFocus);
-    WARN_UNIMPLEMENTED;
+    (void) time;
     revertTo = revert_to;
+    /* PointerRoot and None are valid Xlib targets that the X server
+     * interprets as "follow pointer" and "no focus." Both map to our
+     * keyboardFocus = None state since the SDL backend doesn't track a
+     * separate pointer-following focus. */
+    if (focus == PointerRoot || focus == None) {
+        setKeyboardFocus(None);
+    } else {
+        setKeyboardFocus(focus);
+    }
     return 1;
 }
+
+/* Active keyboard grab (XGrabKeyboard). Single slot since the X protocol
+ * allows only one keyboard grab at a time per client. Motif uses this
+ * to redirect keystrokes to modal dialogs (e.g., the Help popup); the
+ * Ungrab clears the slot so the previous focus regains routing. */
+static struct {
+    Bool active;
+    Window grab_window;
+    Bool owner_events;
+} keyboardGrab;
 
 int XGrabKeyboard(Display *display,
                   Window grab_window,
@@ -314,16 +401,113 @@ int XGrabKeyboard(Display *display,
 {
     // https://tronche.com/gui/x/xlib/input/XGrabKeyboard.html
     SET_X_SERVER_REQUEST(display, X_GrabKeyboard);
-    WARN_UNIMPLEMENTED;
-    return 1;
+    (void) pointer_mode;
+    (void) keyboard_mode;
+    (void) time;
+    keyboardGrab.active = True;
+    keyboardGrab.grab_window = grab_window;
+    keyboardGrab.owner_events = owner_events;
+    return GrabSuccess;
 }
 
 int XUngrabKeyboard(Display *display, Time time)
 {
     // https://tronche.com/gui/x/xlib/input/XUngrabKeyboard.html
     SET_X_SERVER_REQUEST(display, X_UngrabKeyboard);
-    WARN_UNIMPLEMENTED;
+    (void) time;
+    keyboardGrab.active = False;
+    keyboardGrab.grab_window = None;
+    keyboardGrab.owner_events = False;
     return 1;
+}
+
+Window getGrabbedKeyboardWindow(void)
+{
+    return keyboardGrab.active ? keyboardGrab.grab_window : None;
+}
+
+Bool getKeyboardGrabOwnerEvents(void)
+{
+    return keyboardGrab.active && keyboardGrab.owner_events;
+}
+
+/* Passive key grabs registered via XGrabKey. Motif menus install one
+ * grab per accelerator (Alt-F for File, Alt-E for Edit, etc.) on the
+ * top-level shell at widget realize time; without tracking the grabs
+ * here every key event landed at the focus window, accelerators
+ * silently failed, and DEBUG builds spammed one warning per grab call.
+ *
+ * One global list across Displays mirrors what xlibe does. Motif demos
+ * are single-display; if multi-Display threading becomes a goal the
+ * list moves under a Display pointer field. */
+typedef struct KeyGrab {
+    int key;                /* X keycode, or AnyKey for all keys */
+    unsigned int modifiers; /* modifier mask, or AnyModifier */
+    Window grab_window;
+    Bool owner_events;
+    int pointer_mode;
+    int keyboard_mode;
+    struct KeyGrab *next;
+} KeyGrab;
+
+static KeyGrab *keyGrabs = NULL;
+
+int XGrabKey(Display *display,
+             int key,
+             unsigned int modifiers,
+             Window grab_window,
+             Bool owner_events,
+             int pointer_mode,
+             int keyboard_mode)
+{
+    (void) display;
+    KeyGrab *grab = calloc(1, sizeof(*grab));
+    if (!grab)
+        return BadAlloc;
+    grab->key = key;
+    grab->modifiers = modifiers;
+    grab->grab_window = grab_window;
+    grab->owner_events = owner_events;
+    grab->pointer_mode = pointer_mode;
+    grab->keyboard_mode = keyboard_mode;
+    grab->next = keyGrabs;
+    keyGrabs = grab;
+    return Success;
+}
+
+int XUngrabKey(Display *display,
+               int key,
+               unsigned int modifiers,
+               Window grab_window)
+{
+    (void) display;
+    /* AnyKey / AnyModifier match every grab for that window per the
+     * Xlib spec, so loop without short-circuit and remove every match. */
+    KeyGrab **p = &keyGrabs;
+    while (*p) {
+        KeyGrab *g = *p;
+        Bool keyMatch = (key == AnyKey || g->key == key);
+        Bool modMatch = (modifiers == AnyModifier || g->modifiers == modifiers);
+        Bool winMatch = (g->grab_window == grab_window);
+        if (keyMatch && modMatch && winMatch) {
+            *p = g->next;
+            free(g);
+        } else {
+            p = &g->next;
+        }
+    }
+    return Success;
+}
+
+Window findKeyGrabWindow(int keycode, unsigned int modifiers)
+{
+    for (KeyGrab *g = keyGrabs; g; g = g->next) {
+        if ((g->key == AnyKey || g->key == keycode) &&
+            (g->modifiers == AnyModifier || g->modifiers == modifiers)) {
+            return g->grab_window;
+        }
+    }
+    return None;
 }
 
 int XRefreshKeyboardMapping(XMappingEvent *event_map)

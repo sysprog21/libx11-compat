@@ -9,28 +9,76 @@
 #include "path/edges.h"
 #include "path/rasterize.h"
 
-typedef struct pixman_region16 *pRegion;
-#define GET_REGION(pixmanRegion) ((Region) (void *) pixmanRegion)
-#define GET_P_REGION(region) ((pRegion) (void *) region)
+typedef struct XCompatRegion {
+    long size;
+    long numRects;
+    BOX *rects;
+    BOX extents;
+    pixman_region16_t pixman;
+} XCompatRegion;
+
+#define GET_REGION(region) ((Region) (void *) region)
+#define GET_COMPAT_REGION(region) ((XCompatRegion *) (void *) region)
+#define GET_P_REGION(region) (&GET_COMPAT_REGION(region)->pixman)
+
+static void setBoxFromPixman(BOX *dst, const pixman_box16_t *src)
+{
+    dst->x1 = src->x1;
+    dst->x2 = src->x2;
+    dst->y1 = src->y1;
+    dst->y2 = src->y2;
+}
+
+static Bool syncRegionPublicFields(Region region)
+{
+    if (!region)
+        return False;
+    XCompatRegion *compat = GET_COMPAT_REGION(region);
+    int n = 0;
+    pixman_box16_t *boxes = pixman_region_rectangles(&compat->pixman, &n);
+    if (n <= 0) {
+        compat->numRects = 0;
+        compat->extents.x1 = 0;
+        compat->extents.x2 = 0;
+        compat->extents.y1 = 0;
+        compat->extents.y2 = 0;
+        return True;
+    }
+    if (compat->size < n) {
+        BOX *newRects = realloc(compat->rects, sizeof(BOX) * (size_t) n);
+        if (!newRects)
+            return False;
+        compat->rects = newRects;
+        compat->size = n;
+    }
+    for (int i = 0; i < n; i++)
+        setBoxFromPixman(&compat->rects[i], &boxes[i]);
+    compat->numRects = n;
+    setBoxFromPixman(&compat->extents, pixman_region_extents(&compat->pixman));
+    return True;
+}
 
 int XDestroyRegion(Region region)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XDestroyRegion.html
-    pixman_region_fini(GET_P_REGION(region));
-    free(GET_P_REGION(region));
+    XCompatRegion *compat = GET_COMPAT_REGION(region);
+    pixman_region_fini(&compat->pixman);
+    free(compat->rects);
+    free(compat);
     return 1;
 }
 
 Region XCreateRegion()
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XCreateRegion.html
-    pRegion region = malloc(sizeof(struct pixman_region16));
+    XCompatRegion *region = calloc(1, sizeof(*region));
     if (!region) {
         LOG("Out of memory: Could not allocate Region structure in "
             "XCreateRegion!\n");
         return NULL;
     }
-    pixman_region_init(region);
+    pixman_region_init(&region->pixman);
+    syncRegionPublicFields(GET_REGION(region));
     return GET_REGION(region);
 }
 
@@ -78,28 +126,28 @@ int XClipBox(Region region, XRectangle *rect_return)
 int XIntersectRegion(Region sra, Region srb, Region dr_return)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XIntersectRegion.html
-    return pixman_region_intersect(GET_P_REGION(dr_return), GET_P_REGION(sra),
-                                   GET_P_REGION(srb))
-               ? 1
-               : 0;
+    Bool ok = pixman_region_intersect(GET_P_REGION(dr_return),
+                                      GET_P_REGION(sra), GET_P_REGION(srb)) &&
+              syncRegionPublicFields(dr_return);
+    return ok ? 1 : 0;
 }
 
 int XUnionRegion(Region sra, Region srb, Region dr_return)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XUnionRegion.html
-    return pixman_region_union(GET_P_REGION(dr_return), GET_P_REGION(sra),
-                               GET_P_REGION(srb))
-               ? 1
-               : 0;
+    Bool ok = pixman_region_union(GET_P_REGION(dr_return), GET_P_REGION(sra),
+                                  GET_P_REGION(srb)) &&
+              syncRegionPublicFields(dr_return);
+    return ok ? 1 : 0;
 }
 
 int XSubtractRegion(Region sra, Region srb, Region dr_return)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XSubtractRegion.html
-    return pixman_region_subtract(GET_P_REGION(dr_return), GET_P_REGION(sra),
-                                  GET_P_REGION(srb))
-               ? 1
-               : 0;
+    Bool ok = pixman_region_subtract(GET_P_REGION(dr_return), GET_P_REGION(sra),
+                                     GET_P_REGION(srb)) &&
+              syncRegionPublicFields(dr_return);
+    return ok ? 1 : 0;
 }
 
 int XXorRegion(Region sra, Region srb, Region dr_return)
@@ -109,11 +157,13 @@ int XXorRegion(Region sra, Region srb, Region dr_return)
     struct pixman_region16 bMinusA;
     pixman_region_init(&aMinusB);
     pixman_region_init(&bMinusA);
-    Bool ok = pixman_region_subtract(&aMinusB, GET_P_REGION(sra),
-                                     GET_P_REGION(srb)) &&
-              pixman_region_subtract(&bMinusA, GET_P_REGION(srb),
-                                     GET_P_REGION(sra)) &&
-              pixman_region_union(GET_P_REGION(dr_return), &aMinusB, &bMinusA);
+    Bool ok =
+        pixman_region_subtract(&aMinusB, GET_P_REGION(sra),
+                               GET_P_REGION(srb)) &&
+        pixman_region_subtract(&bMinusA, GET_P_REGION(srb),
+                               GET_P_REGION(sra)) &&
+        pixman_region_union(GET_P_REGION(dr_return), &aMinusB, &bMinusA) &&
+        syncRegionPublicFields(dr_return);
     pixman_region_fini(&aMinusB);
     pixman_region_fini(&bMinusA);
     return ok ? 1 : 0;
@@ -129,7 +179,7 @@ int XOffsetRegion(Region region, int dx, int dy)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XOffsetRegion.html
     pixman_region_translate(GET_P_REGION(region), dx, dy);
-    return 1;
+    return syncRegionPublicFields(region) ? 1 : 0;
 }
 
 Bool XPointInRegion(Region region, int x, int y)
@@ -138,34 +188,100 @@ Bool XPointInRegion(Region region, int x, int y)
     return pixman_region_contains_point(GET_P_REGION(region), x, y, NULL) != 0;
 }
 
+/* One-axis erosion: replace `target` with target ∩ translate(target, -1)
+ * ∩ translate(target, +1), repeated `n` times. Box erosion is separable
+ * so doing this horizontally then vertically gives the same answer as
+ * intersecting all 2D offsets, but in O(n) work per axis instead of
+ * O(n^2). */
+static Bool erodeAxis(struct pixman_region16 *target,
+                      int n,
+                      int dxStep,
+                      int dyStep)
+{
+    if (n <= 0)
+        return True;
+    for (int step = 0; step < n; step++) {
+        struct pixman_region16 left;
+        struct pixman_region16 right;
+        struct pixman_region16 tmp;
+        pixman_region_init(&left);
+        pixman_region_init(&right);
+        pixman_region_init(&tmp);
+        if (!pixman_region_copy(&left, target) ||
+            !pixman_region_copy(&right, target)) {
+            pixman_region_fini(&left);
+            pixman_region_fini(&right);
+            pixman_region_fini(&tmp);
+            return False;
+        }
+        pixman_region_translate(&left, -dxStep, -dyStep);
+        pixman_region_translate(&right, dxStep, dyStep);
+        if (!pixman_region_intersect(&tmp, target, &left) ||
+            !pixman_region_intersect(target, &tmp, &right)) {
+            pixman_region_fini(&left);
+            pixman_region_fini(&right);
+            pixman_region_fini(&tmp);
+            return False;
+        }
+        pixman_region_fini(&left);
+        pixman_region_fini(&right);
+        pixman_region_fini(&tmp);
+    }
+    return True;
+}
+
+/* One-axis dilation: per-rectangle expansion + union is exact for
+ * axis-aligned dilation because pixman canonicalizes overlapping rects.
+ * Used for negative dx/dy (XShrinkRegion treats negative as "make
+ * larger"). */
+static Bool dilateAxis(struct pixman_region16 *target, int dx, int dy)
+{
+    int rectCount = 0;
+    pixman_box16_t *rects = pixman_region_rectangles(target, &rectCount);
+    struct pixman_region16 grown;
+    pixman_region_init(&grown);
+    for (int i = 0; i < rectCount; i++) {
+        int x1 = rects[i].x1 - dx;
+        int y1 = rects[i].y1 - dy;
+        int x2 = rects[i].x2 + dx;
+        int y2 = rects[i].y2 + dy;
+        if (x2 <= x1 || y2 <= y1)
+            continue;
+        if (!pixman_region_union_rect(&grown, &grown, x1, y1,
+                                      (unsigned int) (x2 - x1),
+                                      (unsigned int) (y2 - y1))) {
+            pixman_region_fini(&grown);
+            return False;
+        }
+    }
+    Bool ok = pixman_region_copy(target, &grown);
+    pixman_region_fini(&grown);
+    return ok;
+}
+
 int XShrinkRegion(Region region, int dx, int dy)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XShrinkRegion.html
-    pRegion pixmanRegion = GET_P_REGION(region);
-    int rectCount = 0;
-    pixman_box16_t *rects = pixman_region_rectangles(pixmanRegion, &rectCount);
-    struct pixman_region16 result;
-    pixman_region_init(&result);
-
-    for (int i = 0; i < rectCount; i++) {
-        int x1 = rects[i].x1 + dx;
-        int y1 = rects[i].y1 + dy;
-        int x2 = rects[i].x2 - dx;
-        int y2 = rects[i].y2 - dy;
-        if (x2 <= x1 || y2 <= y1) {
-            continue;
-        }
-        if (!pixman_region_union_rect(&result, &result, x1, y1,
-                                      (unsigned int) (x2 - x1),
-                                      (unsigned int) (y2 - y1))) {
-            pixman_region_fini(&result);
-            return 0;
-        }
-    }
-
-    Bool ok = pixman_region_copy(pixmanRegion, &result);
-    pixman_region_fini(&result);
-    return ok ? 1 : 0;
+    /* Per-rectangle shrinkage carves notches out of non-convex regions
+     * (U-shapes shard at the inner joins between bands). Proper Minkowski
+     * erosion on the region as a whole keeps connected components
+     * connected; we apply it separably for the positive (shrink) case.
+     *
+     * Negative dx/dy means expand. Per-rectangle grow + union is exact
+     * for axis-aligned dilation, so reuse the simpler path there. */
+    pixman_region16_t *pixmanRegion = GET_P_REGION(region);
+    Bool ok = True;
+    if (dx > 0 && ok)
+        ok = erodeAxis(pixmanRegion, dx, 1, 0);
+    if (dy > 0 && ok)
+        ok = erodeAxis(pixmanRegion, dy, 0, 1);
+    if (dx < 0 && ok)
+        ok = dilateAxis(pixmanRegion, -dx, 0);
+    if (dy < 0 && ok)
+        ok = dilateAxis(pixmanRegion, 0, -dy);
+    if (!ok)
+        return 0;
+    return syncRegionPublicFields(region) ? 1 : 0;
 }
 
 Region XPolygonRegion(XPoint *points, int count, int fill_rule)
@@ -210,6 +326,10 @@ Region XPolygonRegion(XPoint *points, int count, int fill_rule)
         XDestroyRegion(region);
         return NULL;
     }
+    if (!syncRegionPublicFields(region)) {
+        XDestroyRegion(region);
+        return NULL;
+    }
     return region;
 }
 
@@ -218,11 +338,12 @@ int XUnionRectWithRegion(XRectangle *rectangle,
                          Region dest_region_return)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XUnionRectWithRegion.html
-    return pixman_region_union_rect(
-               GET_P_REGION(dest_region_return), GET_P_REGION(src_region),
-               rectangle->x, rectangle->y, rectangle->width, rectangle->height)
-               ? 1
-               : 0;
+    Bool ok = pixman_region_union_rect(GET_P_REGION(dest_region_return),
+                                       GET_P_REGION(src_region), rectangle->x,
+                                       rectangle->y, rectangle->width,
+                                       rectangle->height) &&
+              syncRegionPublicFields(dest_region_return);
+    return ok ? 1 : 0;
 }
 
 int XSetRegion(Display *display, GC gc, Region region)

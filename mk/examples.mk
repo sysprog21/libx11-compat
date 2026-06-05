@@ -20,6 +20,13 @@ X11PERF_SRCS := \
     $(X11PERF_DIR)/do_windows.c \
     $(X11PERF_DIR)/x11perf.c
 X11PERF_BIN := $(OUT)/examples/x11perf
+EXAMPLE_LDFLAGS :=
+ifeq ($(UNAME_S),Linux)
+  EXAMPLE_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
+endif
+ifeq ($(UNAME_S),Darwin)
+  EXAMPLE_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
+endif
 
 .PHONY: examples
 
@@ -29,7 +36,8 @@ examples: $(EXAMPLE_BINS) $(X11PERF_BIN)
 $(OUT)/examples/%: examples/%.c $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) -o $@
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
+	    $(LDLIBS) $(EXAMPLE_LDFLAGS) -o $@
 
 $(X11PERF_BIN): $(X11PERF_SRCS) $(TARGET)
 	@mkdir -p $(dir $@)
@@ -37,4 +45,4 @@ $(X11PERF_BIN): $(X11PERF_SRCS) $(TARGET)
 	$(Q)$(CC) $(CPPFLAGS) -I$(X11PERF_DIR) $(CFLAGS) $(CFLAGS_EXTRA) \
 	    -Wno-missing-field-initializers -Wno-unused-but-set-variable \
 	    -Wno-sign-compare -DHAVE_CONFIG_H=1 \
-	    $(X11PERF_SRCS) $(TARGET) $(LDLIBS) -o $@
+	    $(X11PERF_SRCS) $(TARGET) $(LDLIBS) $(EXAMPLE_LDFLAGS) -o $@

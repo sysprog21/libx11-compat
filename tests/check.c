@@ -29,6 +29,7 @@ int convertEvent(Display *display,
                  XEvent *xEvent,
                  Bool freeInternalEvents);
 extern Bool mouseFrozen;
+extern Array *fontCache;
 
 #include <dirent.h>
 #include <math.h>
@@ -151,8 +152,7 @@ static int count_open_file_descriptors(void)
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") != 0 &&
-            strcmp(entry->d_name, "..") != 0) {
+        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
             count++;
         }
     }
@@ -192,7 +192,7 @@ static int test_atoms(Display *display)
 
     char *predefinedName = XGetAtomName(display, wmName);
     CHECK(predefinedName != NULL, "XGetAtomName failed for predefined atom");
-    CHECK(strcmp(predefinedName, "WM_NAME") == 0,
+    CHECK(!strcmp(predefinedName, "WM_NAME"),
           "unexpected predefined atom name");
     XFree(predefinedName);
 
@@ -200,7 +200,7 @@ static int test_atoms(Display *display)
     CHECK(netWmIcon != None, "_NET_WM_ICON predefined atom was not found");
     char *netName = XGetAtomName(display, netWmIcon);
     CHECK(netName != NULL, "XGetAtomName failed for _NET_WM_ICON");
-    CHECK(strcmp(netName, "_NET_WM_ICON") == 0, "unexpected _NET atom name");
+    CHECK(!strcmp(netName, "_NET_WM_ICON"), "unexpected _NET atom name");
     XFree(netName);
 
     Atom dynamic = XInternAtom(display, "SDL2X11_DYNAMIC_ATOM", False);
@@ -211,7 +211,7 @@ static int test_atoms(Display *display)
 
     char *dynamicName = XGetAtomName(display, dynamic);
     CHECK(dynamicName != NULL, "XGetAtomName failed for dynamic atom");
-    CHECK(strcmp(dynamicName, "SDL2X11_DYNAMIC_ATOM") == 0,
+    CHECK(!strcmp(dynamicName, "SDL2X11_DYNAMIC_ATOM"),
           "unexpected dynamic atom name");
     XFree(dynamicName);
 
@@ -229,9 +229,9 @@ static int test_atoms(Display *display)
     char *returnedNames[2] = {NULL, NULL};
     CHECK(XGetAtomNames(display, atoms, 2, returnedNames) != 0,
           "XGetAtomNames failed");
-    CHECK(strcmp(returnedNames[0], names[0]) == 0,
+    CHECK(!strcmp(returnedNames[0], names[0]),
           "first batch atom name mismatch");
-    CHECK(strcmp(returnedNames[1], names[1]) == 0,
+    CHECK(!strcmp(returnedNames[1], names[1]),
           "second batch atom name mismatch");
     XFree(returnedNames[0]);
     XFree(returnedNames[1]);
@@ -242,6 +242,8 @@ static int test_keyboard(Display *display)
 {
     KeyCode aCode = XKeysymToKeycode(display, XK_a);
     CHECK(aCode != 0, "XKeysymToKeycode(XK_a) returned 0");
+    CHECK(XKeysymToKeycode(display, XK_A) == aCode,
+          "XKeysymToKeycode(XK_A) did not map to the A key");
 
     int keysymsPerKeycode = 0;
     KeySym *mapping =
@@ -270,6 +272,8 @@ static int test_keyboard(Display *display)
           "XkbKeysymToModifiers did not report ControlMask for XK_Control_L");
     CHECK(XkbKeysymToModifiers(display, XK_Alt_L) == Mod1Mask,
           "XkbKeysymToModifiers did not report Mod1Mask for XK_Alt_L");
+    CHECK(XkbKeysymToModifiers(display, XK_Alt_R) == Mod1Mask,
+          "XkbKeysymToModifiers did not report Mod1Mask for XK_Alt_R");
     CHECK(XkbKeysymToModifiers(display, XK_Caps_Lock) == LockMask,
           "XkbKeysymToModifiers did not report LockMask for XK_Caps_Lock");
     CHECK(XkbKeysymToModifiers(display, XK_Num_Lock) == Mod2Mask,
@@ -293,16 +297,48 @@ static int test_keyboard(Display *display)
     CHECK(modifier_slot_has(modmap, LockMapIndex,
                             XKeysymToKeycode(display, XK_Caps_Lock)),
           "modifier map missing caps lock");
+    /* Both Alt halves share Mod1 to match the standard X server
+     * convention and stay consistent with convertModifierState's
+     * KMOD_ALT -> Mod1Mask mapping. */
     CHECK(modifier_slot_has(modmap, Mod1MapIndex,
                             XKeysymToKeycode(display, XK_Alt_L)),
           "modifier map missing left alt");
+    CHECK(modifier_slot_has(modmap, Mod1MapIndex,
+                            XKeysymToKeycode(display, XK_Alt_R)),
+          "modifier map missing right alt on Mod1");
     CHECK(modifier_slot_has(modmap, Mod2MapIndex,
                             XKeysymToKeycode(display, XK_Num_Lock)),
           "modifier map missing num lock");
-    CHECK(modifier_slot_has(modmap, Mod4MapIndex,
-                            XKeysymToKeycode(display, XK_Alt_R)),
-          "modifier map missing right alt");
     CHECK(XFreeModifiermap(modmap) == 1, "XFreeModifiermap failed");
+
+    /* XSetInputFocus updates internal focus tracking; XGetInputFocus
+     * reads it back. None and PointerRoot both collapse to "no focus."
+     * Motif's modal dialog path relies on the round-trip. */
+    Window focusedBefore = None;
+    int revertBefore = 0;
+    XGetInputFocus(display, &focusedBefore, &revertBefore);
+    Window probeWindow = XCreateSimpleWindow(
+        display, DefaultRootWindow(display), 0, 0, 10, 10, 0, 0, 0);
+    CHECK(probeWindow != None, "XCreateSimpleWindow for focus probe failed");
+    XSetInputFocus(display, probeWindow, RevertToParent, CurrentTime);
+    Window focused = None;
+    int revert = 0;
+    XGetInputFocus(display, &focused, &revert);
+    CHECK(focused == probeWindow,
+          "XSetInputFocus did not update keyboard focus");
+    CHECK(revert == RevertToParent, "XSetInputFocus did not record revert_to");
+    XSetInputFocus(display, None, RevertToParent, CurrentTime);
+    XGetInputFocus(display, &focused, &revert);
+    CHECK(focused == (Window) PointerRoot,
+          "XGetInputFocus after None focus should report PointerRoot");
+    XDestroyWindow(display, probeWindow);
+    XSetInputFocus(display, focusedBefore, revertBefore, CurrentTime);
+
+    CHECK(
+        XGrabKeyboard(display, DefaultRootWindow(display), False, GrabModeAsync,
+                      GrabModeAsync, CurrentTime) == GrabSuccess,
+        "XGrabKeyboard did not report GrabSuccess");
+    CHECK(XUngrabKeyboard(display, CurrentTime) == 1, "XUngrabKeyboard failed");
 
     /* XmbLookupString decodes ASCII keysyms to UTF-8 with XLookupBoth. */
     XKeyEvent ev = {0};
@@ -435,6 +471,42 @@ static int test_gc(Display *display)
     XFreeGC(display, clipGc);
     XFreePixmap(display, clipPixmap);
 
+    Window clipTop =
+        XCreateSimpleWindow(display, root, 0, 0, 16, 24, 0, 0, 0xFF000000);
+    CHECK(clipTop != None, "ancestor clip top-level creation failed");
+    Window clipParent =
+        XCreateSimpleWindow(display, clipTop, 0, 0, 16, 10, 0, 0, 0xFF000000);
+    CHECK(clipParent != None, "ancestor clip parent creation failed");
+    Window clipOverflow = XCreateSimpleWindow(display, clipParent, 0, 0, 16, 24,
+                                              0, 0, 0xFF000000);
+    CHECK(clipOverflow != None, "ancestor clip child creation failed");
+    CHECK(XMapWindow(display, clipOverflow), "ancestor clip child map failed");
+    CHECK(XMapWindow(display, clipParent), "ancestor clip parent map failed");
+    CHECK(XMapWindow(display, clipTop), "ancestor clip top-level map failed");
+
+    GC ancestorGc = XCreateGC(display, clipTop, 0, NULL);
+    CHECK(ancestorGc != NULL, "ancestor clip GC creation failed");
+    CHECK(XSetForeground(display, ancestorGc, 0xFF000000),
+          "ancestor clip black foreground failed");
+    CHECK(XFillRectangle(display, clipTop, ancestorGc, 0, 0, 16, 24),
+          "ancestor clip top-level clear failed");
+    CHECK(XSetForeground(display, ancestorGc, 0xFFFF0000),
+          "ancestor clip red foreground failed");
+    CHECK(XFillRectangle(display, clipOverflow, ancestorGc, 0, 0, 16, 24),
+          "ancestor clip overflow draw failed");
+    SDL_Renderer *ancestorRenderer = NULL;
+    GET_RENDERER(clipTop, ancestorRenderer);
+    SDL_Surface *ancestorSurface = getRenderSurface(ancestorRenderer);
+    CHECK(ancestorSurface != NULL, "ancestor clip surface readback failed");
+    CHECK(pixel_is_rgb(ancestorSurface, 2, 8, 255, 0, 0),
+          "ancestor clip removed visible child pixel");
+    CHECK(pixel_is_rgb(ancestorSurface, 2, 12, 0, 0, 0),
+          "ancestor clip allowed child to draw outside parent");
+    SDL_FreeSurface(ancestorSurface);
+
+    XFreeGC(display, ancestorGc);
+    XDestroyWindow(display, clipTop);
+
     /* Aggressive GC clipping must not block Expose generation. */
     Window exposeWindow =
         XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
@@ -524,7 +596,7 @@ static int test_compat_stubs(Display *display)
     CHECK(XGetErrorDatabaseText(display, "XlibMessage", "Missing", "fallback",
                                 errorText, sizeof(errorText)) == 0,
           "XGetErrorDatabaseText failed");
-    CHECK(strcmp(errorText, "fallback") == 0,
+    CHECK(!strcmp(errorText, "fallback"),
           "XGetErrorDatabaseText ignored fallback");
 
     XIOErrorHandler previous = XSetIOErrorHandler(ignored_io_error);
@@ -555,6 +627,37 @@ static int test_compat_stubs(Display *display)
     mask = XParseGeometry("bogus", &gx, &gy, &gw, &gh);
     CHECK(mask == 0, "XParseGeometry bogus should return 0");
 
+    XSizeHints geomHints;
+    memset(&geomHints, 0, sizeof(geomHints));
+    geomHints.flags = PBaseSize | PMinSize | PResizeInc;
+    geomHints.base_width = 10;
+    geomHints.base_height = 20;
+    geomHints.min_width = 30;
+    geomHints.min_height = 40;
+    geomHints.width_inc = 5;
+    geomHints.height_inc = 7;
+    int wx = -1, wy = -1, ww = 0, wh = 0, gravity = 0;
+    mask = XWMGeometry(display, DefaultScreen(display), NULL, "8x6-0-0", 2,
+                       &geomHints, &wx, &wy, &ww, &wh, &gravity);
+    CHECK(mask == (XNegative | YNegative),
+          "XWMGeometry default negative mask wrong");
+    CHECK(ww == 50 && wh == 62, "XWMGeometry did not apply increments/base");
+    CHECK(wx == DisplayWidth(display, DefaultScreen(display)) - ww - 4 &&
+              wy == DisplayHeight(display, DefaultScreen(display)) - wh - 4,
+          "XWMGeometry default negative position wrong");
+    CHECK(gravity == SouthEastGravity,
+          "XWMGeometry default negative gravity wrong");
+
+    mask = XWMGeometry(display, DefaultScreen(display), "4x3-10+12", "8x6+1+2",
+                       1, &geomHints, &wx, &wy, &ww, &wh, &gravity);
+    CHECK(mask == (WidthValue | HeightValue | XValue | XNegative | YValue),
+          "XWMGeometry user mask wrong");
+    CHECK(ww == 30 && wh == 41, "XWMGeometry user size did not apply hints");
+    CHECK(wx == DisplayWidth(display, DefaultScreen(display)) - 10 - ww - 2 &&
+              wy == 12,
+          "XWMGeometry user position wrong");
+    CHECK(gravity == NorthEastGravity, "XWMGeometry user gravity wrong");
+
     return 1;
 }
 
@@ -577,7 +680,7 @@ static int test_colors(Display *display)
     memset(&exact, 0, sizeof(exact));
     CHECK(XParseColor(display, colormap, "#123456", &exact),
           "XParseColor #rrggbb failed");
-    CHECK(exact.red == 0x1212 && exact.green == 0x3434 && exact.blue == 0x5656,
+    CHECK(exact.red == 0x1200 && exact.green == 0x3400 && exact.blue == 0x5600,
           "XParseColor #rrggbb returned wrong components");
     CHECK((exact.flags & (DoRed | DoGreen | DoBlue)) ==
               (DoRed | DoGreen | DoBlue),
@@ -586,7 +689,7 @@ static int test_colors(Display *display)
     memset(&exact, 0, sizeof(exact));
     CHECK(XParseColor(display, colormap, "#abc", &exact),
           "XParseColor #rgb failed");
-    CHECK(exact.red == 0xaaaa && exact.green == 0xbbbb && exact.blue == 0xcccc,
+    CHECK(exact.red == 0xa000 && exact.green == 0xb000 && exact.blue == 0xc000,
           "XParseColor #rgb returned wrong components");
 
     XColor screen;
@@ -640,6 +743,44 @@ static int test_colors(Display *display)
     CHECK(!XAllocNamedColor(display, colormap, "not-a-real-color", &screen,
                             &exact),
           "XAllocNamedColor accepted invalid color");
+
+    /* XSetRGBColormaps / XGetRGBColormaps round-trip. Locks in the
+     * ICCCM section 6.4 wire-format ordering (visualid, killid, colormap,
+     * red_max, red_mult, green_max, green_mult, blue_max, blue_mult,
+     * base_pixel). If anyone edits the field order in one direction
+     * without the other, this test fails. */
+    Window stdCmapTarget = RootWindow(display, DefaultScreen(display));
+    Atom rgbProbe = XInternAtom(display, "_LIBX11_COMPAT_TEST_RGB", False);
+    XStandardColormap inCmap = {0};
+    inCmap.colormap = colormap;
+    inCmap.red_max = 31;
+    inCmap.red_mult = 0x800;
+    inCmap.green_max = 63;
+    inCmap.green_mult = 0x20;
+    inCmap.blue_max = 31;
+    inCmap.blue_mult = 1;
+    inCmap.base_pixel = 0x42;
+    inCmap.visualid =
+        XVisualIDFromVisual(DefaultVisual(display, DefaultScreen(display)));
+    inCmap.killid = (XID) 0x99;
+    XSetRGBColormaps(display, stdCmapTarget, &inCmap, 1, rgbProbe);
+    XStandardColormap *outCmap = NULL;
+    int outCount = 0;
+    CHECK(
+        XGetRGBColormaps(display, stdCmapTarget, &outCmap, &outCount, rgbProbe),
+        "XGetRGBColormaps did not find the entry just installed");
+    CHECK(outCount == 1, "XGetRGBColormaps returned wrong count");
+    CHECK(outCmap[0].visualid == inCmap.visualid &&
+              outCmap[0].killid == inCmap.killid &&
+              outCmap[0].colormap == inCmap.colormap &&
+              outCmap[0].red_max == 31 && outCmap[0].red_mult == 0x800 &&
+              outCmap[0].green_max == 63 && outCmap[0].green_mult == 0x20 &&
+              outCmap[0].blue_max == 31 && outCmap[0].blue_mult == 1 &&
+              outCmap[0].base_pixel == 0x42,
+          "XStandardColormap fields did not round-trip");
+    XFree(outCmap);
+    XDeleteProperty(display, stdCmapTarget, rgbProbe);
+
     return 1;
 }
 
@@ -729,6 +870,17 @@ static int test_pixmaps(Display *display)
     char bits[] = {0x01, 0x00};
     Pixmap bitmap = XCreateBitmapFromData(display, root, bits, 2, 2);
     CHECK(bitmap != None, "XCreateBitmapFromData failed");
+    Window geomRoot = None;
+    int geomX = 0;
+    int geomY = 0;
+    unsigned int geomWidth = 0;
+    unsigned int geomHeight = 0;
+    unsigned int geomBorder = 0;
+    unsigned int geomDepth = 0;
+    CHECK(XGetGeometry(display, bitmap, &geomRoot, &geomX, &geomY, &geomWidth,
+                       &geomHeight, &geomBorder, &geomDepth),
+          "XGetGeometry on bitmap failed");
+    CHECK(geomDepth == 1, "XCreateBitmapFromData did not preserve depth 1");
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(bitmap, renderer);
     SDL_Surface *surface = getRenderSurface(renderer);
@@ -793,6 +945,11 @@ static int test_pixmaps(Display *display)
     Pixmap colorPixmap = XCreatePixmapFromBitmapData(
         display, root, colorBits, 2, 1, 0xFFFF0000, 0xFF000000, 24);
     CHECK(colorPixmap != None, "XCreatePixmapFromBitmapData failed");
+    CHECK(XGetGeometry(display, colorPixmap, &geomRoot, &geomX, &geomY,
+                       &geomWidth, &geomHeight, &geomBorder, &geomDepth),
+          "XGetGeometry on color pixmap failed");
+    CHECK(geomDepth == 24,
+          "XCreatePixmapFromBitmapData did not preserve requested depth");
     GET_RENDERER(colorPixmap, renderer);
     surface = getRenderSurface(renderer);
     CHECK(surface != NULL, "getRenderSurface for color pixmap failed");
@@ -1802,8 +1959,104 @@ static int test_events(Display *display)
     CHECK(out.xexpose.x == 2 && out.xexpose.y == 3 && out.xexpose.width == 6 &&
               out.xexpose.height == 5,
           "child Expose was not clipped to child-local coordinates");
+    while (XCheckTypedWindowEvent(display, clipChild, Expose, &out)) {
+    }
     while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
+
+    GC parentDrawGc = XCreateGC(display, window, 0, NULL);
+    CHECK(parentDrawGc != NULL, "parent child-overlap GC creation failed");
+    CHECK(XDrawLine(display, window, parentDrawGc, 0, 14, 31, 14),
+          "parent draw across child failed");
+    CHECK(XCheckTypedWindowEvent(display, clipChild, Expose, &out),
+          "parent drawing across mapped child did not schedule child repaint");
+    CHECK(out.xexpose.x == 0 && out.xexpose.y == 3 && out.xexpose.width == 8 &&
+              out.xexpose.height == 3,
+          "child repaint damage from parent draw was not child-local");
+    while (XCheckTypedWindowEvent(display, clipChild, Expose, &out)) {
+    }
+
+    Window unmaskedChild =
+        XCreateSimpleWindow(display, window, 4, 4, 20, 20, 0, 0, 0);
+    CHECK(unmaskedChild != None, "unmasked exposure child creation failed");
+    Window nestedExposeChild =
+        XCreateSimpleWindow(display, unmaskedChild, 6, 6, 8, 8, 0, 0, 0);
+    CHECK(nestedExposeChild != None, "nested exposure child creation failed");
+    XSelectInput(display, nestedExposeChild, ExposureMask);
+    CHECK(XMapWindow(display, nestedExposeChild),
+          "nested exposure child map failed");
+    CHECK(XMapWindow(display, unmaskedChild),
+          "unmasked exposure child map failed");
+    while (XCheckTypedWindowEvent(display, nestedExposeChild, Expose, &out)) {
+    }
+    CHECK(XDrawLine(display, window, parentDrawGc, 0, 12, 31, 12),
+          "parent draw across nested child failed");
+    CHECK(XCheckTypedWindowEvent(display, nestedExposeChild, Expose, &out),
+          "nested child did not receive repaint through unmasked parent");
+    CHECK(out.xexpose.x == 0 && out.xexpose.y == 1 && out.xexpose.width == 8 &&
+              out.xexpose.height == 3,
+          "nested child repaint damage was not child-local");
+    while (XCheckTypedWindowEvent(display, nestedExposeChild, Expose, &out)) {
+    }
+    while (XCheckTypedWindowEvent(display, clipChild, Expose, &out)) {
+    }
+    CHECK(XDestroyWindow(display, unmaskedChild),
+          "unmasked exposure child destroy failed");
+    while (XCheckTypedEvent(display, Expose, &out)) {
+    }
+
+    XPoint framePolyline[] = {
+        {0, 9},
+        {31, 9},
+        {31, 14},
+        {0, 14},
+    };
+    CHECK(XDrawLines(display, window, parentDrawGc, framePolyline,
+                     (int) (sizeof(framePolyline) / sizeof(framePolyline[0])),
+                     CoordModeOrigin),
+          "parent polyline across child failed");
+    CHECK(XCheckTypedWindowEvent(display, clipChild, Expose, &out),
+          "parent polyline across mapped child did not schedule child repaint");
+    CHECK(out.xexpose.x == 0 && out.xexpose.y == 0 && out.xexpose.width == 8 &&
+              out.xexpose.height == 6,
+          "child repaint damage from parent polyline was not child-local");
+    while (XCheckTypedWindowEvent(display, clipChild, Expose, &out)) {
+    }
+    XFreeGC(display, parentDrawGc);
+
+    Window offsetWindow =
+        XCreateSimpleWindow(display, root, 70, 80, 30, 30, 0, 0, 0);
+    CHECK(offsetWindow != None, "offset exposure parent creation failed");
+    Window offsetChild =
+        XCreateSimpleWindow(display, offsetWindow, 4, 5, 10, 10, 0, 0, 0);
+    CHECK(offsetChild != None, "offset exposure child creation failed");
+    XSelectInput(display, offsetChild, ExposureMask);
+    CHECK(XMapWindow(display, offsetChild),
+          "offset exposure child map request failed");
+    CHECK(XMapWindow(display, offsetWindow),
+          "offset exposure parent map failed");
+    CHECK(XCheckTypedWindowEvent(display, offsetChild, Expose, &out),
+          "offset top-level map did not expose mapped child");
+    CHECK(out.xexpose.x == 0 && out.xexpose.y == 0 && out.xexpose.width == 10 &&
+              out.xexpose.height == 10,
+          "offset child Expose was not child-local");
+    while (XCheckTypedWindowEvent(display, offsetChild, Expose, &out)) {
+    }
+
+    int translatedX = -1;
+    int translatedY = -1;
+    Window translatedChild = None;
+    CHECK(XTranslateCoordinates(display, offsetWindow, offsetWindow, 5, 16,
+                                &translatedX, &translatedY, &translatedChild),
+          "XTranslateCoordinates same-window failed");
+    CHECK(translatedChild == None,
+          "XTranslateCoordinates returned child outside y bounds");
+    CHECK(XTranslateCoordinates(display, offsetWindow, offsetWindow, 5, 6,
+                                &translatedX, &translatedY, &translatedChild),
+          "XTranslateCoordinates child lookup failed");
+    CHECK(translatedChild == offsetChild,
+          "XTranslateCoordinates did not return containing child");
+
     Pixmap backgroundPixmap = XCreatePixmap(
         display, window, 4, 4, DefaultDepth(display, DefaultScreen(display)));
     CHECK(backgroundPixmap != None, "XCreatePixmap for background failed");
@@ -1813,6 +2066,8 @@ static int test_events(Display *display)
           "XSetWindowBackgroundPixmap ParentRelative failed");
     CHECK(XSetWindowBackgroundPixmap(display, window, None),
           "XSetWindowBackgroundPixmap None failed");
+    while (XCheckTypedEvent(display, Expose, &out)) {
+    }
 
     XEvent expose = make_event(Expose, window);
     XEvent client = make_event(ClientMessage, window);
@@ -1853,9 +2108,10 @@ static int test_events(Display *display)
           "CreateNotify fields were incorrect");
 
     XSendEvent(display, window, False, ExposureMask, &expose);
+    int queuedBeforePutBack = XEventsQueued(display, QueuedAlready);
     CHECK(XPutBackEvent(display, &client) == 0, "XPutBackEvent failed");
-    CHECK(XEventsQueued(display, QueuedAlready) > 0,
-          "QueuedAlready did not see put-back event");
+    CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforePutBack + 1,
+          "QueuedAlready double-counted put-back event");
     CHECK(XPending(display) > 0, "XPending did not see put-back event");
     XNextEvent(display, &out);
     CHECK(out.type == ClientMessage && out.xany.window == window,
@@ -1863,6 +2119,24 @@ static int test_events(Display *display)
     XNextEvent(display, &out);
     CHECK(out.type == Expose && out.xany.window == window,
           "XPutBackEvent disturbed queued event order");
+
+    XSendEvent(display, window, False, ExposureMask, &expose);
+    CHECK(XCheckMaskEvent(display, ExposureMask, &out),
+          "XCheckMaskEvent did not find Expose");
+    CHECK(out.type == Expose && out.xany.window == window,
+          "XCheckMaskEvent returned unexpected event");
+
+    XSendEvent(display, window, False, ExposureMask, &expose);
+    CHECK(XPeekEvent(display, &out) == 0, "XPeekEvent failed");
+    CHECK(out.type == Expose && out.xany.window == window,
+          "XPeekEvent returned unexpected event");
+    CHECK(XCheckMaskEvent(display, ExposureMask, &out),
+          "XPeekEvent removed the event");
+
+    XSendEvent(display, window, False, ExposureMask, &expose);
+    CHECK(XMaskEvent(display, ExposureMask, &out) == 0, "XMaskEvent failed");
+    CHECK(out.type == Expose && out.xany.window == window,
+          "XMaskEvent returned unexpected event");
 
     Window resetWindow =
         XCreateSimpleWindow(display, root, 40, 0, 24, 24, 0, 0, 0);
@@ -1940,8 +2214,11 @@ static int test_events(Display *display)
 
     /* Wheel up -> ButtonPress Button4 with current modifier state. */
     SDL_Event wheelEvent;
+    XSelectInput(display, window, ButtonPressMask);
     SDL_zero(wheelEvent);
     wheelEvent.type = SDL_MOUSEWHEEL;
+    wheelEvent.wheel.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
     wheelEvent.wheel.y = 1;
     wheelEvent.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
     SDL_PushEvent(&wheelEvent);
@@ -1951,6 +2228,8 @@ static int test_events(Display *display)
 
     SDL_zero(wheelEvent);
     wheelEvent.type = SDL_MOUSEWHEEL;
+    wheelEvent.wheel.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
     wheelEvent.wheel.y = -1;
     wheelEvent.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
     SDL_PushEvent(&wheelEvent);
@@ -1976,6 +2255,172 @@ static int test_events(Display *display)
     CHECK(out.xmotion.is_hint == NotifyHint,
           "motion with PointerMotionHintMask did not use NotifyHint");
 
+    Window pointerParent =
+        XCreateSimpleWindow(display, root, 0, 0, 80, 80, 0, 0, 0);
+    CHECK(pointerParent != None, "pointer parent creation failed");
+    Window pointerChild =
+        XCreateSimpleWindow(display, pointerParent, 10, 12, 20, 22, 0, 0, 0);
+    CHECK(pointerChild != None, "pointer child creation failed");
+    XSelectInput(display, pointerChild,
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+    CHECK(XMapWindow(display, pointerChild), "pointer child map failed");
+    CHECK(XMapWindow(display, pointerParent), "pointer parent map failed");
+    while (XCheckTypedWindowEvent(display, pointerChild, Expose, &out)) {
+    }
+
+    SDL_Event buttonEvent;
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "SDL button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == pointerChild,
+          "SDL button did not target containing child");
+    CHECK(out.xbutton.x == 4 && out.xbutton.y == 5 &&
+              out.xbutton.x_root == 14 && out.xbutton.y_root == 17,
+          "SDL button coordinates were not child-local");
+    CHECK((out.xbutton.state & Button1Mask) == 0,
+          "ButtonPress state included the newly pressed button");
+
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "SDL button release did not convert");
+    CHECK(out.type == ButtonRelease && out.xbutton.window == pointerChild,
+          "SDL button release did not target containing child");
+    CHECK((out.xbutton.state & Button1Mask) != 0,
+          "ButtonRelease state did not include the released button");
+
+    Window offsetPointerParent =
+        XCreateSimpleWindow(display, root, 90, 70, 80, 80, 0, 0, 0);
+    CHECK(offsetPointerParent != None, "offset pointer parent creation failed");
+    Window offsetPointerChild = XCreateSimpleWindow(
+        display, offsetPointerParent, 10, 12, 20, 22, 0, 0, 0);
+    CHECK(offsetPointerChild != None, "offset pointer child creation failed");
+    XSelectInput(display, offsetPointerChild,
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+    CHECK(XMapWindow(display, offsetPointerChild),
+          "offset pointer child map failed");
+    CHECK(XMapWindow(display, offsetPointerParent),
+          "offset pointer parent map failed");
+    while (XCheckTypedWindowEvent(display, offsetPointerChild, Expose, &out)) {
+    }
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "offset SDL button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
+          "offset SDL button did not target containing child");
+    CHECK(out.xbutton.root == SCREEN_WINDOW && out.xbutton.x_root == 104 &&
+              out.xbutton.y_root == 87,
+          "offset SDL button did not report root coordinates");
+    CHECK(out.xbutton.x == 4 && out.xbutton.y == 5,
+          "offset SDL button coordinates were not child-local");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "offset SDL button release did not convert");
+
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, False) == 0,
+          "SDL button probe did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == pointerChild,
+          "SDL button probe targeted the wrong window");
+    CHECK((out.xbutton.state & Button1Mask) == 0,
+          "ButtonPress probe state included the newly pressed button");
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "SDL button delivery after probe did not convert");
+    CHECK((out.xbutton.state & Button1Mask) == 0,
+          "ButtonPress delivery observed state mutated by probe");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "SDL button release after probe did not convert");
+
+    Window pointerGrandchild =
+        XCreateSimpleWindow(display, pointerChild, 3, 4, 6, 7, 0, 0, 0);
+    CHECK(pointerGrandchild != None, "pointer grandchild creation failed");
+    CHECK(XMapWindow(display, pointerGrandchild),
+          "pointer grandchild map failed");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
+    buttonEvent.button.x = 16;
+    buttonEvent.button.y = 19;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "SDL nested-child button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == pointerChild,
+          "SDL nested-child button did not propagate to selected ancestor");
+    CHECK(out.xbutton.subwindow == pointerGrandchild,
+          "SDL nested-child button did not preserve direct subwindow");
+    CHECK(out.xbutton.x == 6 && out.xbutton.y == 7 &&
+              out.xbutton.x_root == 16 && out.xbutton.y_root == 19,
+          "SDL nested-child button coordinates were not ancestor-local");
+    CHECK((out.xbutton.state & Button1Mask) == 0,
+          "nested ButtonPress state included the newly pressed button");
+
+    SDL_zero(hintMotion);
+    hintMotion.type = SDL_MOUSEMOTION;
+    hintMotion.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
+    hintMotion.motion.x = 18;
+    hintMotion.motion.y = 21;
+    CHECK(convertEvent(display, &hintMotion, &out, True) == 0,
+          "SDL child motion did not convert");
+    CHECK(out.type == MotionNotify && out.xmotion.window == pointerChild,
+          "SDL motion did not target containing child");
+    CHECK(out.xmotion.x == 8 && out.xmotion.y == 9 &&
+              out.xmotion.x_root == 18 && out.xmotion.y_root == 21,
+          "SDL motion coordinates were not child-local");
+    CHECK((out.xmotion.state & Button1Mask) != 0,
+          "SDL drag motion did not include active Button1 state");
+
+    hintMotion.motion.x = 17;
+    hintMotion.motion.y = 20;
+    CHECK(convertEvent(display, &hintMotion, &out, True) == 0,
+          "SDL nested-child motion did not convert");
+    CHECK(out.type == MotionNotify && out.xmotion.window == pointerChild,
+          "SDL nested-child motion did not propagate to selected ancestor");
+    CHECK(out.xmotion.subwindow == pointerGrandchild,
+          "SDL nested-child motion did not preserve direct subwindow");
+    CHECK(out.xmotion.x == 7 && out.xmotion.y == 8 &&
+              out.xmotion.x_root == 17 && out.xmotion.y_root == 20,
+          "SDL nested-child motion coordinates were not ancestor-local");
+
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    buttonEvent.button.x = 70;
+    buttonEvent.button.y = 70;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "SDL nested-child button release did not convert");
+    CHECK(out.type == ButtonRelease && out.xbutton.window == pointerChild,
+          "SDL nested-child release did not stay on active pointer window");
+    CHECK(out.xbutton.subwindow == None,
+          "SDL outside release incorrectly reported a direct subwindow");
+    CHECK(out.xbutton.x == 60 && out.xbutton.y == 58 &&
+              out.xbutton.x_root == 70 && out.xbutton.y_root == 70,
+          "SDL outside release coordinates were not active-window-local");
+    CHECK((out.xbutton.state & Button1Mask) != 0,
+          "nested ButtonRelease state did not include released Button1");
+
+    CHECK(convertEvent(display, &hintMotion, &out, True) == 0,
+          "SDL post-release motion did not convert");
+    CHECK((out.xmotion.state & Button1Mask) == 0,
+          "SDL motion kept Button1 state after release");
+
     XSelectInput(display, window, EnterWindowMask | LeaveWindowMask);
     SDL_Event crossingEvent;
     SDL_zero(crossingEvent);
@@ -1996,6 +2441,8 @@ static int test_events(Display *display)
                        EnterWindowMask | LeaveWindowMask, GrabModeSync,
                        GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
           "XGrabPointer failed");
+    CHECK(SDL_GetRelativeMouseMode() == SDL_FALSE,
+          "XGrabPointer enabled SDL relative mouse mode");
     CHECK(mouseFrozen, "XGrabPointer did not freeze sync pointer mode");
     CHECK(XCheckTypedWindowEvent(display, window, EnterNotify, &out),
           "XGrabPointer did not post EnterNotify");
@@ -2021,6 +2468,16 @@ static int test_events(Display *display)
           "CWOverrideRedirect did not stick on the window");
 
     XSelectInput(display, window, StructureNotifyMask);
+    while (XCheckTypedWindowEvent(display, window, ConfigureNotify, &out)) {
+    }
+    unsigned long resizeRequest = XNextRequest(display);
+    CHECK(XResizeWindow(display, window, 52, 41),
+          "XResizeWindow for serial check failed");
+    CHECK(XCheckTypedWindowEvent(display, window, ConfigureNotify, &out),
+          "XResizeWindow did not post ConfigureNotify");
+    CHECK(out.xconfigure.serial >= resizeRequest,
+          "ConfigureNotify serial did not satisfy the triggering request");
+
     SDL_Event resizeEvent;
     SDL_zero(resizeEvent);
     resizeEvent.type = SDL_WINDOWEVENT;
@@ -2063,10 +2520,20 @@ static int test_events(Display *display)
     CHECK(expect_map_state(display, window, IsUnmapped),
           "SDL hidden did not update map state");
     windowEvent.window.event = SDL_WINDOWEVENT_SHOWN;
+    GET_WINDOW_STRUCT(window)->needsPresent = False;
     CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
           "SDL shown did not convert to MapNotify");
     CHECK(expect_map_state(display, window, IsViewable),
           "SDL shown did not update map state");
+    CHECK(GET_WINDOW_STRUCT(window)->needsPresent,
+          "SDL shown did not request repaint of the mapped window");
+    GET_WINDOW_STRUCT(window)->needsPresent = False;
+    windowEvent.window.event = SDL_WINDOWEVENT_EXPOSED;
+    CHECK(convertEvent(display, &windowEvent, &out, True) < 0,
+          "SDL exposed should be consumed internally");
+    CHECK(GET_WINDOW_STRUCT(window)->needsPresent,
+          "SDL exposed did not request repaint of the existing backing store");
+    GET_WINDOW_STRUCT(window)->needsPresent = False;
     windowEvent.window.event = SDL_WINDOWEVENT_MINIMIZED;
     CHECK(convertEvent(display, &windowEvent, &out, True) < 0,
           "SDL minimized should be consumed internally");
@@ -2077,6 +2544,8 @@ static int test_events(Display *display)
           "SDL restored should be consumed internally");
     CHECK(expect_map_state(display, window, IsViewable),
           "SDL restored did not update map state");
+    CHECK(GET_WINDOW_STRUCT(window)->needsPresent,
+          "SDL restored did not request repaint of the existing backing store");
     while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
 
@@ -2126,6 +2595,28 @@ static int test_events(Display *display)
           "second parent resize failed");
     CHECK(!XCheckTypedWindowEvent(display, stableChild, GravityNotify, &out),
           "NorthWestGravity child got spurious GravityNotify");
+    while (XCheckTypedEvent(display, Expose, &out)) {
+    }
+
+    Window moveClip =
+        XCreateSimpleWindow(display, window, 0, 0, 20, 10, 0, 0, 0);
+    CHECK(moveClip != None, "move expose clip window creation failed");
+    Window moveChild =
+        XCreateSimpleWindow(display, moveClip, 0, 0, 20, 30, 0, 0, 0);
+    CHECK(moveChild != None, "move expose child window creation failed");
+    XSelectInput(display, moveChild, ExposureMask);
+    CHECK(XMapWindow(display, moveChild), "move expose child map failed");
+    CHECK(XMapWindow(display, moveClip), "move expose clip map failed");
+    while (XCheckTypedWindowEvent(display, moveChild, Expose, &out)) {
+    }
+    CHECK(XMoveWindow(display, moveChild, 0, -10),
+          "move expose child move failed");
+    CHECK(XCheckTypedWindowEvent(display, moveChild, Expose, &out),
+          "moving clipped child did not expose newly visible area");
+    CHECK(out.xexpose.x <= 0 && out.xexpose.y <= 10 &&
+              out.xexpose.x + out.xexpose.width >= 20 &&
+              out.xexpose.y + out.xexpose.height >= 20,
+          "moving clipped child expose did not cover newly visible area");
     while (XCheckTypedEvent(display, Expose, &out)) {
     }
 
@@ -2212,9 +2703,8 @@ static int test_properties(Display *display)
     int argcBack = 0;
     CHECK(XGetCommand(display, window, &cmdBack, &argcBack),
           "XGetCommand failed");
-    CHECK(argcBack == 3 && strcmp(cmdBack[0], "app") == 0 &&
-              strcmp(cmdBack[1], "--flag") == 0 &&
-              strcmp(cmdBack[2], "value") == 0,
+    CHECK(argcBack == 3 && !strcmp(cmdBack[0], "app") &&
+              !strcmp(cmdBack[1], "--flag") && !strcmp(cmdBack[2], "value"),
           "WM_COMMAND did not round-trip");
     for (int i = 0; i < argcBack; i++)
         XFree(cmdBack[i]);
@@ -2229,9 +2719,8 @@ static int test_properties(Display *display)
     argcBack = 0;
     CHECK(XGetCommand(display, window, &cmdBack, &argcBack),
           "long XGetCommand failed");
-    CHECK(argcBack == 3 && strcmp(cmdBack[0], "app") == 0 &&
-              strcmp(cmdBack[1], longArg) == 0 &&
-              strcmp(cmdBack[2], "tail") == 0,
+    CHECK(argcBack == 3 && !strcmp(cmdBack[0], "app") &&
+              !strcmp(cmdBack[1], longArg) && !strcmp(cmdBack[2], "tail"),
           "long WM_COMMAND did not round-trip");
     for (int i = 0; i < argcBack; i++)
         XFree(cmdBack[i]);
@@ -2241,8 +2730,8 @@ static int test_properties(Display *display)
     CHECK(XSetClassHint(display, window, &classHint), "XSetClassHint failed");
     XClassHint classBack;
     CHECK(XGetClassHint(display, window, &classBack), "XGetClassHint failed");
-    CHECK(strcmp(classBack.res_name, "sample") == 0 &&
-              strcmp(classBack.res_class, "Sample") == 0,
+    CHECK(!strcmp(classBack.res_name, "sample") &&
+              !strcmp(classBack.res_class, "Sample"),
           "WM_CLASS did not round-trip");
     XFree(classBack.res_name);
     XFree(classBack.res_class);
@@ -2258,8 +2747,8 @@ static int test_properties(Display *display)
           "long XSetClassHint failed");
     CHECK(XGetClassHint(display, window, &classBack),
           "long XGetClassHint failed");
-    CHECK(strcmp(classBack.res_name, longName) == 0 &&
-              strcmp(classBack.res_class, longClass) == 0,
+    CHECK(!strcmp(classBack.res_name, longName) &&
+              !strcmp(classBack.res_class, longClass),
           "long WM_CLASS did not round-trip");
     XFree(classBack.res_name);
     XFree(classBack.res_class);
@@ -2324,6 +2813,52 @@ static int test_properties(Display *display)
     CHECK(data && ((unsigned long *) data)[0] == rotateValueB,
           "rotateA did not receive rotateB value");
     XFree(data);
+
+    /* XChangeProperty(_NET_WM_NAME, UTF8_STRING) must route through the
+     * top-level title path so SDL's window title reflects what Motif/
+     * GTK/Qt published. Regression for the WM_NAME detour added to
+     * XChangeProperty. */
+    {
+        Window titleWin =
+            XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+        CHECK(titleWin != None, "title test window creation failed");
+        CHECK(XMapWindow(display, titleWin), "title window map failed");
+        Atom netWmName = XInternAtom(display, "_NET_WM_NAME", False);
+        Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
+        const char *desired = "compat-net-name-detour";
+        CHECK(XChangeProperty(display, titleWin, netWmName, utf8, 8,
+                              PropModeReplace, (unsigned char *) desired,
+                              (int) strlen(desired)),
+              "XChangeProperty(_NET_WM_NAME) failed");
+        SDL_Window *sdlw = GET_WINDOW_STRUCT(titleWin)->sdlWindow;
+        CHECK(sdlw != NULL, "title window has no SDL backing");
+        const char *sdlTitle = SDL_GetWindowTitle(sdlw);
+        CHECK(sdlTitle && !strcmp(sdlTitle, desired),
+              "_NET_WM_NAME XChangeProperty did not update SDL title");
+
+        /* Plain XA_WM_NAME with XA_STRING should detour identically. */
+        const char *wmDesired = "compat-wm-name-detour";
+        CHECK(XChangeProperty(display, titleWin, XA_WM_NAME, XA_STRING, 8,
+                              PropModeReplace, (unsigned char *) wmDesired,
+                              (int) strlen(wmDesired)),
+              "XChangeProperty(WM_NAME) failed");
+        sdlTitle = SDL_GetWindowTitle(sdlw);
+        CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
+              "WM_NAME XChangeProperty did not update SDL title");
+
+        /* Non-text property writes to WM_NAME (atom payload) must NOT
+         * touch the title: detour only triggers on XA_STRING /
+         * UTF8_STRING / COMPOUND_TEXT format=8 payloads. */
+        Atom atomPayload = XA_CARDINAL;
+        CHECK(
+            XChangeProperty(display, titleWin, XA_WM_NAME, XA_ATOM, 32,
+                            PropModeReplace, (unsigned char *) &atomPayload, 1),
+            "XChangeProperty(WM_NAME, ATOM) failed");
+        sdlTitle = SDL_GetWindowTitle(sdlw);
+        CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
+              "non-text WM_NAME write should not change SDL title");
+        XDestroyWindow(display, titleWin);
+    }
 
     XDestroyWindow(display, transientFor);
     XDestroyWindow(display, window);
@@ -2559,6 +3094,8 @@ static int test_windows(Display *display)
           "mapping child of unmapped parent failed");
     CHECK(expect_map_state(display, delayedChild, IsUnviewable),
           "child mapped under unmapped parent should be unviewable");
+    CHECK(GET_WINDOW_STRUCT(delayedParent)->sdlTexture == NULL,
+          "unmapped parent should not merge map-requested child backing");
     CHECK(XMapWindow(display, delayedParent), "mapping delayed parent failed");
     CHECK(expect_map_state(display, delayedChild, IsViewable),
           "map-requested child was not viewable after parent map");
@@ -2571,6 +3108,21 @@ static int test_windows(Display *display)
     CHECK(expect_map_state(display, delayedChild, IsViewable),
           "descendant did not become viewable after ancestor remap");
     XDestroyWindow(display, delayedParent);
+
+    Window delayedSubParent =
+        XCreateSimpleWindow(display, root, 0, 0, 24, 24, 0, 0, 0);
+    Window delayedSubChild =
+        XCreateSimpleWindow(display, delayedSubParent, 1, 1, 8, 8, 0, 0, 0);
+    CHECK(delayedSubParent != None && delayedSubChild != None,
+          "delayed XMapSubwindows setup failed");
+    CHECK(XMapWindow(display, delayedSubParent),
+          "mapping XMapSubwindows parent failed");
+    GET_WINDOW_STRUCT(delayedSubChild)->mapState = MapRequested;
+    CHECK(XMapSubwindows(display, delayedSubParent),
+          "XMapSubwindows with map-requested child failed");
+    CHECK(expect_map_state(display, delayedSubChild, IsViewable),
+          "XMapSubwindows skipped map-requested child");
+    XDestroyWindow(display, delayedSubParent);
 
     XMapWindow(display, parent);
     XMapSubwindows(display, parent);
@@ -2805,11 +3357,36 @@ static int test_fonts(Display *display)
 
         XFontStruct *fixed = XLoadQueryFont(display, "fixed");
         CHECK(fixed != NULL && fixed->fid != None, "fixed alias did not load");
+        CHECK(fixed->ascent == 11 && fixed->descent == 2,
+              "fixed alias did not use core 6x13 ascent/descent");
+        CHECK(fixed->min_bounds.width == 6 && fixed->max_bounds.width == 6,
+              "fixed alias did not use core 6x13 width");
+        CHECK(XTextWidth(fixed, "Motif", 5) == 30,
+              "fixed alias XTextWidth did not use core width");
+        CHECK(XTextWidth(fixed, "\xc3\xa9", 2) == 12,
+              "fixed alias XTextWidth did not count core-font bytes");
+        const char fixedWithNul[] = {'A', '\0', 'B'};
+        CHECK(XTextWidth(fixed, fixedWithNul, 3) == 18,
+              "fixed alias XTextWidth did not honor byte count through NUL");
+        XChar2b fixedWide[] = {{0, 0xe9}};
+        CHECK(XTextWidth16(fixed, fixedWide, 1) == 6,
+              "fixed alias XTextWidth16 did not count 16-bit characters");
         XFreeFont(display, fixed);
+
+        XFontStruct *sixByThirteen = XLoadQueryFont(display, "6x13");
+        CHECK(sixByThirteen != NULL && sixByThirteen->fid != None,
+              "6x13 alias did not load");
+        CHECK(sixByThirteen->ascent == 11 && sixByThirteen->descent == 2,
+              "6x13 alias did not use native ascent/descent");
+        CHECK(XTextWidth(sixByThirteen, "Motif", 5) == 30,
+              "6x13 alias XTextWidth did not use native width");
+        XFreeFont(display, sixByThirteen);
 
         XFontStruct *nineByThirteen = XLoadQueryFont(display, "9x13");
         CHECK(nineByThirteen != NULL && nineByThirteen->fid != None,
               "9x13 alias did not load");
+        CHECK(nineByThirteen->ascent + nineByThirteen->descent <= 24,
+              "9x13 alias opened with inflated metrics");
         CHECK(XTextWidth(nineByThirteen, "A", 1) > 0,
               "XTextWidth ASCII width failed");
         CHECK(XTextWidth(nineByThirteen, "\xc3\xa9", 2) > 0,
@@ -2819,6 +3396,49 @@ static int test_fonts(Display *display)
                   XTextWidth(nineByThirteen, "A", 1),
               "XTextWidth16 ASCII decoding mismatch");
         XFreeFont(display, nineByThirteen);
+
+        XFontStruct *helvetica =
+            XLoadQueryFont(display, "*-helvetica-medium-r-normal--14-*");
+        if (helvetica) {
+            CHECK(helvetica->fid != None,
+                  "helvetica XLFD returned invalid font id");
+            CHECK(XTextWidth(helvetica, "iiii", 4) <
+                      XTextWidth(helvetica, "WWWW", 4),
+                  "helvetica XLFD alias did not use proportional metrics");
+            XFreeFont(display, helvetica);
+        }
+        XFontStruct *helvetica140 = XLoadQueryFont(
+            display, "-*-helvetica-medium-r-*-*-*-140-*-*-*-*-*-*");
+        if (helvetica140) {
+            CHECK(helvetica140->fid != None,
+                  "helvetica 140-decipoint XLFD returned invalid font id");
+            CHECK(helvetica140->ascent == 19 && helvetica140->descent == 4,
+                  "helvetica 140-decipoint XLFD alias used wrong vertical "
+                  "metrics");
+            CHECK(XTextWidth(helvetica140, "Motif", 5) > 30,
+                  "helvetica 140-decipoint XLFD alias ignored point size");
+            CHECK(
+                XTextWidth(helvetica140, "iiii", 4) <
+                    XTextWidth(helvetica140, "WWWW", 4),
+                "helvetica 140-decipoint XLFD alias lost proportional metrics");
+            XFreeFont(display, helvetica140);
+        }
+        int (*timesPreviousErrorHandler)(Display *, XErrorEvent *) =
+            XSetErrorHandler(ignored_error);
+        XFontStruct *times14 =
+            XLoadQueryFont(display, "*-times-medium-r-normal--14-*-iso8859-1");
+        XSetErrorHandler(timesPreviousErrorHandler);
+        CHECK(times14 == NULL,
+              "native-missing Times 14 wildcard should not be force-aliased");
+        if (fontCache) {
+            size_t cacheLength = fontCache->length;
+            helvetica =
+                XLoadQueryFont(display, "*-helvetica-medium-r-normal--14-*");
+            CHECK(fontCache->length == cacheLength,
+                  "repeated helvetica probe duplicated font cache entries");
+            if (helvetica)
+                XFreeFont(display, helvetica);
+        }
 
         Window root = RootWindow(display, DefaultScreen(display));
         Pixmap pixmap =
@@ -2840,12 +3460,45 @@ static int test_fonts(Display *display)
         CHECK(implicitFont != None, "text draw did not attach implicit font");
         CHECK(XUnloadFont(display, implicitFont),
               "XUnloadFont rejected implicit fixed font");
+        CHECK(XDrawString(display, pixmap, gc, 2, 18, "text", 4),
+              "GC-held font stopped drawing after XUnloadFont");
         XGCValues values;
         CHECK(XGetGCValues(display, gc, GCForeground | GCBackground, &values),
               "font GC readback failed");
         CHECK(
             values.foreground == 0xFF112233 && values.background == 0xFF445566,
             "XDrawImageString mutated GC colors");
+        XFreeGC(display, gc);
+        XFreePixmap(display, pixmap);
+
+        pixmap = XCreatePixmap(display, root, 96, 32,
+                               DefaultDepth(display, DefaultScreen(display)));
+        gc = XCreateGC(display, pixmap, 0, NULL);
+        Font heldFont = XLoadFont(display, "fixed");
+        CHECK(heldFont != None, "explicit fixed font did not load");
+        CHECK(XSetFont(display, gc, heldFont), "XSetFont rejected fixed font");
+        CHECK(XUnloadFont(display, heldFont), "XUnloadFont rejected held font");
+        CHECK(XDrawString(display, pixmap, gc, 2, 18, "held", 4),
+              "GC-held explicit font stopped drawing after XUnloadFont");
+        int (*fontPreviousErrorHandler)(Display *, XErrorEvent *) =
+            XSetErrorHandler(ignored_error);
+        CHECK(!XSetFont(display, gc, heldFont),
+              "XSetFont accepted a closed client font id");
+        XSetErrorHandler(fontPreviousErrorHandler);
+        XFreeGC(display, gc);
+        XFreePixmap(display, pixmap);
+
+        pixmap = XCreatePixmap(display, root, 96, 32,
+                               DefaultDepth(display, DefaultScreen(display)));
+        gc = XCreateGC(display, pixmap, 0, NULL);
+        Font closedFont = XLoadFont(display, "fixed");
+        CHECK(closedFont != None, "stale-id fixed font did not load");
+        CHECK(XUnloadFont(display, closedFont),
+              "XUnloadFont rejected unreferenced font");
+        fontPreviousErrorHandler = XSetErrorHandler(ignored_error);
+        CHECK(!XSetFont(display, gc, closedFont),
+              "XSetFont accepted an immediately closed font id");
+        XSetErrorHandler(fontPreviousErrorHandler);
         XFreeGC(display, gc);
         XFreePixmap(display, pixmap);
         break;
@@ -2857,6 +3510,32 @@ static int test_fonts(Display *display)
     XFontStruct *invalid = XQueryFont(display, None);
     XSetErrorHandler(previousErrorHandler);
     CHECK(invalid == NULL, "XQueryFont accepted None");
+
+    /* XQueryTextExtents Status contract: nonzero means success. The pre-fix
+     * code returned 0 after filling outputs, which Motif/Xt measurement
+     * paths interpreted as failure and discarded valid metrics. */
+    {
+        Font measureFont = XLoadFont(display, "fixed");
+        if (measureFont != None) {
+            int dir = 0;
+            int ascent = 0;
+            int descent = 0;
+            XCharStruct overall;
+            memset(&overall, 0, sizeof(overall));
+            Status st = XQueryTextExtents(display, measureFont, "hello", 5,
+                                          &dir, &ascent, &descent, &overall);
+            CHECK(st != 0,
+                  "XQueryTextExtents Status must be nonzero on success");
+            CHECK(overall.width > 0,
+                  "XQueryTextExtents filled overall.width == 0");
+            XChar2b wide[] = {{0, 'h'}, {0, 'i'}};
+            st = XQueryTextExtents16(display, measureFont, wide, 2, &dir,
+                                     &ascent, &descent, &overall);
+            CHECK(st != 0,
+                  "XQueryTextExtents16 Status must be nonzero on success");
+            XUnloadFont(display, measureFont);
+        }
+    }
     return 1;
 }
 
@@ -2882,14 +3561,14 @@ static int test_contexts(Display *display)
 
     XrmQuark quark = XrmStringToQuark("app.window.title");
     CHECK(quark != NULLQUARK, "XrmStringToQuark returned NULLQUARK");
-    CHECK(strcmp(XrmQuarkToString(quark), "app.window.title") == 0,
+    CHECK(!strcmp(XrmQuarkToString(quark), "app.window.title"),
           "XrmQuarkToString returned wrong string");
 
     XrmQuark quarks[4];
     XrmStringToQuarkList("app.window.title", quarks);
-    CHECK(strcmp(XrmQuarkToString(quarks[0]), "app") == 0 &&
-              strcmp(XrmQuarkToString(quarks[1]), "window") == 0 &&
-              strcmp(XrmQuarkToString(quarks[2]), "title") == 0 &&
+    CHECK(!strcmp(XrmQuarkToString(quarks[0]), "app") &&
+              !strcmp(XrmQuarkToString(quarks[1]), "window") &&
+              !strcmp(XrmQuarkToString(quarks[2]), "title") &&
               quarks[3] == NULLQUARK,
           "XrmStringToQuarkList returned wrong quarks");
 
@@ -2901,7 +3580,7 @@ static int test_contexts(Display *display)
 
     XrmStringToBindingQuarkList("app*.title", bindings, quarks);
     CHECK(bindings[0] == XrmBindTightly && bindings[1] == XrmBindLoosely &&
-              strcmp(XrmQuarkToString(quarks[1]), "title") == 0 &&
+              !strcmp(XrmQuarkToString(quarks[1]), "title") &&
               quarks[2] == NULLQUARK,
           "XrmStringToBindingQuarkList tightened loose empty component");
 
@@ -2946,8 +3625,8 @@ static int test_extensions(Display *display)
     CHECK(extension_close_count == 1,
           "extension close callback was not called");
 
-    /* Safe stubs for XSync, XShape, MIT-SHM: probing clients should get
-     * stable "unsupported" answers with zeroed outputs. */
+    /* Safe stubs for XSync and MIT-SHM: probing clients should get stable
+     * answers with zeroed outputs where an extension is unsupported. */
     int evBase = 99, errBase = 98;
     CHECK(!XSyncQueryExtension(display, &evBase, &errBase),
           "XSyncQueryExtension should report unsupported");
@@ -2963,10 +3642,38 @@ static int test_extensions(Display *display)
 
     evBase = 99;
     errBase = 98;
-    CHECK(!XShapeQueryExtension(display, &evBase, &errBase),
-          "XShapeQueryExtension should report unsupported");
-    CHECK(evBase == 0 && errBase == 0,
-          "XShapeQueryExtension did not zero outputs");
+    int shapeOpcode = 99;
+    CHECK(XQueryExtension(display, SHAPENAME, &shapeOpcode, &evBase, &errBase),
+          "XQueryExtension should report SHAPE");
+    CHECK(shapeOpcode > 0 && evBase > 0 && errBase > 0,
+          "XQueryExtension returned invalid SHAPE codes");
+    evBase = 99;
+    errBase = 98;
+    CHECK(XShapeQueryExtension(display, &evBase, &errBase),
+          "XShapeQueryExtension should report SHAPE");
+    CHECK(evBase > 0 && errBase > 0,
+          "XShapeQueryExtension returned invalid bases");
+    int shapeMajor = 0, shapeMinor = 0;
+    CHECK(XShapeQueryVersion(display, &shapeMajor, &shapeMinor),
+          "XShapeQueryVersion failed");
+    CHECK(
+        shapeMajor == SHAPE_MAJOR_VERSION && shapeMinor == SHAPE_MINOR_VERSION,
+        "XShapeQueryVersion returned wrong version");
+    Bool bShaped = True, cShaped = True;
+    int xbs = 99, ybs = 98, xcs = 97, ycs = 96;
+    unsigned int wbs = 0, hbs = 0, wcs = 0, hcs = 0;
+    CHECK(
+        XShapeQueryExtents(display, RootWindow(display, 0), &bShaped, &xbs,
+                           &ybs, &wbs, &hbs, &cShaped, &xcs, &ycs, &wcs, &hcs),
+        "XShapeQueryExtents failed");
+    CHECK(!bShaped && !cShaped,
+          "XShapeQueryExtents should report rectangular windows");
+    CHECK(xbs == 0 && ybs == 0 && xcs == 0 && ycs == 0,
+          "XShapeQueryExtents returned non-zero rectangular origins");
+    CHECK(wbs == (unsigned int) DisplayWidth(display, 0) &&
+              hbs == (unsigned int) DisplayHeight(display, 0) && wcs == wbs &&
+              hcs == hbs,
+          "XShapeQueryExtents did not return rectangular extents");
     int xc = 99, oc = 98;
     CHECK(XShapeGetRectangles(display, RootWindow(display, 0), ShapeBounding,
                               &xc, &oc) == NULL,
@@ -3041,11 +3748,25 @@ static int test_extensions(Display *display)
     int opcode = 77, xkbMajor = 1, xkbMinor = 1;
     evBase = 99;
     errBase = 98;
-    CHECK(!XkbQueryExtension(display, &opcode, &evBase, &errBase, &xkbMajor,
-                             &xkbMinor),
-          "XkbQueryExtension should report unsupported");
-    CHECK(opcode == 0 && evBase == 0 && errBase == 0,
-          "XkbQueryExtension did not zero opcode/event/error outputs");
+    /* xfreerdp / Motif / GTK probe XkbUseExtension and XkbQueryExtension
+     * before any keyboard work and refuse to start when either reports
+     * unavailable. We now report "available" with synthetic opcode /
+     * event / error base codes chosen above the core protocol range so
+     * `event.type - eventBase` math against the synthetic event base
+     * does not collide with X core events. The two probes must agree;
+     * the prior inconsistency (UseExtension true, QueryExtension false)
+     * was diagnosed by Codex as load-bearing on xfreerdp boot. */
+    CHECK(XkbQueryExtension(display, &opcode, &evBase, &errBase, &xkbMajor,
+                            &xkbMinor),
+          "XkbQueryExtension must report supported to match XkbUseExtension");
+    CHECK(opcode != 0 && evBase != 0 && errBase != 0,
+          "XkbQueryExtension synthetic bases must be nonzero");
+    CHECK(evBase > 34,
+          "XkbQueryExtension event base must clear the core event range");
+    int useMajor = 0;
+    int useMinor = 0;
+    CHECK(XkbUseExtension(display, &useMajor, &useMinor),
+          "XkbUseExtension must report supported");
     return 1;
 }
 
@@ -3144,7 +3865,7 @@ static int test_xrm(Display *display)
     CHECK(XrmGetResource(db, "App.window.title", "Application.Window.Title",
                          &type, &value),
           "XrmGetResource missed exact match");
-    CHECK(value.addr != NULL && strcmp((char *) value.addr, "Hello") == 0,
+    CHECK(value.addr != NULL && !strcmp((char *) value.addr, "Hello"),
           "XrmGetResource returned wrong value");
 
     char longName[301];
@@ -3168,8 +3889,7 @@ static int test_xrm(Display *display)
     CHECK(
         XrmQGetResource(db, qLongNames, qLongClasses, &qLongType, &qLongValue),
         "XrmQGetResource missed long quark resource path");
-    CHECK(qLongValue.addr != NULL &&
-              strcmp((char *) qLongValue.addr, "QLong") == 0,
+    CHECK(qLongValue.addr != NULL && !strcmp((char *) qLongValue.addr, "QLong"),
           "XrmQGetResource returned wrong value for long path");
 
     XrmName deepNames[66];
@@ -3197,14 +3917,75 @@ static int test_xrm(Display *display)
                                  XrmStringToQuark("Leaf"), &qLongType,
                                  &qLongValue),
           "deep no-match search list should not resolve resources");
+    XrmDatabase deepDb = NULL;
+    XrmPutStringResource(&deepDb, "*labelString", "deep label");
+    XrmHashTable deepLabelSearch[200];
+    CHECK(
+        XrmQGetSearchList(deepDb, deepNames, deepClasses, deepLabelSearch, 200),
+        "XrmQGetSearchList should encode deep label prefix");
+    CHECK(XrmQGetSearchResource(
+              deepLabelSearch, XrmStringToQuark("labelString"),
+              XrmStringToQuark("LabelString"), &qLongType, &qLongValue),
+          "deep search list missed loose label resource");
+    CHECK(!strcmp((char *) qLongValue.addr, "deep label"),
+          "deep loose label resource returned wrong value");
+    XrmDestroyDatabase(deepDb);
 
     /* Loose binding via '*'. */
     value.addr = NULL;
     CHECK(XrmGetResource(db, "App.window.background", "App.Window.Background",
                          &type, &value),
           "XrmGetResource did not match through loose '*' binding");
-    CHECK(strcmp((char *) value.addr, "white") == 0,
+    CHECK(!strcmp((char *) value.addr, "white"),
           "XrmGetResource through '*' returned wrong value");
+
+    XrmPutStringResource(&db, "App.window.?.font", "question-font");
+    value.addr = NULL;
+    CHECK(XrmGetResource(db, "App.window.label.font",
+                         "Application.Window.Label.Font", &type, &value),
+          "XrmGetResource did not match '?' component");
+    CHECK(!strcmp((char *) value.addr, "question-font"),
+          "XrmGetResource '?' component returned wrong value");
+    XrmName qQuestionNames[] = {
+        XrmStringToQuark("App"),
+        XrmStringToQuark("window"),
+        XrmStringToQuark("button"),
+        XrmStringToQuark("font"),
+        NULLQUARK,
+    };
+    XrmClass qQuestionClasses[] = {
+        XrmStringToQuark("Application"),
+        XrmStringToQuark("Window"),
+        XrmStringToQuark("Button"),
+        XrmStringToQuark("Font"),
+        NULLQUARK,
+    };
+    qLongValue.addr = NULL;
+    CHECK(XrmQGetResource(db, qQuestionNames, qQuestionClasses, &qLongType,
+                          &qLongValue),
+          "XrmQGetResource did not match '?' component");
+    CHECK(!strcmp((char *) qLongValue.addr, "question-font"),
+          "XrmQGetResource '?' component returned wrong value");
+
+    XrmDatabase questionPrec = NULL;
+    XrmPutStringResource(&questionPrec, "A.B.foo", "exact");
+    XrmPutStringResource(&questionPrec, "?.B.foo", "wildcard");
+    value.addr = NULL;
+    CHECK(XrmGetResource(questionPrec, "A.B.foo", "A.B.Foo", &type, &value),
+          "XrmGetResource exact-vs-'?' lookup failed");
+    CHECK(!strcmp((char *) value.addr, "exact"),
+          "'?' component should not outrank exact name component");
+    XrmDestroyDatabase(questionPrec);
+
+    questionPrec = NULL;
+    XrmPutStringResource(&questionPrec, "A.B.foo", "class");
+    XrmPutStringResource(&questionPrec, "?.B.foo", "wildcard");
+    value.addr = NULL;
+    CHECK(XrmGetResource(questionPrec, "Other.B.foo", "A.B.Foo", &type, &value),
+          "XrmGetResource class-vs-'?' lookup failed");
+    CHECK(!strcmp((char *) value.addr, "class"),
+          "'?' component should not outrank exact class component");
+    XrmDestroyDatabase(questionPrec);
 
     /* Specificity: a later, tighter rule must beat an earlier loose one. */
     XrmDatabase prec = NULL;
@@ -3215,7 +3996,7 @@ static int test_xrm(Display *display)
     CHECK(XrmGetResource(prec, "App.window.background",
                          "Application.Window.Background", &precType, &precVal),
           "specificity lookup failed");
-    CHECK(strcmp((char *) precVal.addr, "red") == 0,
+    CHECK(!strcmp((char *) precVal.addr, "red"),
           "tight rule should beat earlier loose rule");
     XrmDestroyDatabase(prec);
 
@@ -3237,15 +4018,14 @@ static int test_xrm(Display *display)
     XrmParseCommand(&parsed, opts, sizeof(opts) / sizeof(opts[0]), "MyApp",
                     &argc, argv);
     CHECK(parsed != NULL, "XrmParseCommand did not populate database");
-    CHECK(argc == 2 && strcmp(argv[0], "demo") == 0 &&
-              strcmp(argv[1], "extra") == 0,
+    CHECK(argc == 2 && !strcmp(argv[0], "demo") && !strcmp(argv[1], "extra"),
           "XrmParseCommand left wrong argv");
     XrmValue parsedValue = {.size = 0, .addr = NULL};
     char *parsedType = NULL;
     CHECK(XrmGetResource(parsed, "MyApp.foreground", "MyApp.Foreground",
                          &parsedType, &parsedValue),
           "XrmParseCommand did not store -fg");
-    CHECK(strcmp((char *) parsedValue.addr, "yellow") == 0,
+    CHECK(!strcmp((char *) parsedValue.addr, "yellow"),
           "-fg parsed to wrong value");
     XrmDestroyDatabase(parsed);
 
@@ -3259,6 +4039,73 @@ static int test_xrm(Display *display)
           "XrmSetDatabase did not stick on display");
     XrmSetDatabase(display, NULL);
     XrmDestroyDatabase(mine);
+
+    /* Motif-style cascade: '*XmLabel.fontList' must match the widget
+     * path 'top.frame.row.col.button.label.fontList' / class
+     * 'Top.Frame.Row.Col.Button.XmLabel.FontList'. The leading loose
+     * binding skips the four ancestor segments and pins on the
+     * 'XmLabel' class quark; the trailing tight binding hits 'fontList'
+     * as the leaf. Regression for the bindingQuarkListToPattern bug
+     * that dropped the leading '*' from loosely-bound patterns built
+     * through XrmQPutStringResource. */
+    {
+        XrmDatabase motifDb = NULL;
+        XrmBinding bindings[2] = {XrmBindLoosely, XrmBindTightly};
+        XrmQuark quarks[3] = {
+            XrmStringToQuark("XmLabel"),
+            XrmStringToQuark("fontList"),
+            NULLQUARK,
+        };
+        XrmQPutStringResource(&motifDb, bindings, quarks,
+                              "-*-helvetica-medium-r-*-12-*");
+        XrmValue mv = {.size = 0, .addr = NULL};
+        char *mt = NULL;
+        CHECK(XrmGetResource(motifDb, "top.frame.row.col.button.label.fontList",
+                             "Top.Frame.Row.Col.Button.XmLabel.FontList", &mt,
+                             &mv),
+              "Motif *XmLabel.fontList cascade missed");
+        CHECK(mv.addr != NULL &&
+                  !strcmp((char *) mv.addr, "-*-helvetica-medium-r-*-12-*"),
+              "Motif fontList resource returned wrong value");
+        XrmDestroyDatabase(motifDb);
+    }
+
+    /* Backslash continuation in resource source: '*XmLabel.fontList'
+     * lines in Motif app-defaults routinely split across multiple
+     * physical lines with trailing '\'. The parser must join them before
+     * looking for the ':'. */
+    {
+        const char *multiline =
+            "*App.fontList:\\\n"
+            "    -*-helvetica-medium-r-normal--12-*-*-*-p-*-iso8859-1\n"
+            "*App.foreground: black\n";
+        XrmDatabase mlDb = XrmGetStringDatabase(multiline);
+        CHECK(mlDb != NULL, "multiline XrmGetStringDatabase returned NULL");
+        XrmValue mlv = {.size = 0, .addr = NULL};
+        char *mlt = NULL;
+        CHECK(XrmGetResource(mlDb, "App.fontList", "App.FontList", &mlt, &mlv),
+              "backslash-continued resource missed lookup");
+        CHECK(
+            mlv.addr != NULL && strstr((char *) mlv.addr, "iso8859-1") != NULL,
+            "backslash-continued value missing tail");
+        XrmDestroyDatabase(mlDb);
+    }
+
+    /* Class-vs-name specificity: a class match scores lower than a name
+     * match at the same path depth. */
+    {
+        XrmDatabase cn = NULL;
+        XrmPutStringResource(&cn, "*Label.color", "byClass");
+        XrmPutStringResource(&cn, "*label.color", "byName");
+        XrmValue cv = {.size = 0, .addr = NULL};
+        char *ct = NULL;
+        CHECK(
+            XrmGetResource(cn, "app.label.color", "App.Label.Color", &ct, &cv),
+            "class-vs-name lookup missed");
+        CHECK(!strcmp((char *) cv.addr, "byName"),
+              "name match should beat class match at same depth");
+        XrmDestroyDatabase(cn);
+    }
 
     XrmDestroyDatabase(db);
     return 1;
@@ -3275,8 +4122,12 @@ static int test_input_methods(Display *display)
 
     XRectangle area = {.x = 2, .y = 3, .width = 4, .height = 5};
     XFontSet fontSet = (XFontSet) (uintptr_t) 0x1234;
-    XVaNestedList preedit =
-        XVaCreateNestedList(0, XNArea, &area, XNFontSet, fontSet, NULL);
+    unsigned long foreground = 0x112233;
+    unsigned long background = 0x445566;
+    XVaNestedList preedit = XVaCreateNestedList(
+        0, XNArea, &area, XNForeground, (XPointer) (uintptr_t) foreground,
+        XNBackground, (XPointer) (uintptr_t) background, XNFontSet, fontSet,
+        NULL);
     CHECK(preedit, "XVaCreateNestedList for preedit failed");
     XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditArea | XIMStatusNothing,
                        XNClientWindow, client, XNFocusWindow, focus,
@@ -3287,13 +4138,17 @@ static int test_input_methods(Display *display)
     Window clientBack = None;
     Window focusBack = None;
     XRectangle areaBack = {0, 0, 0, 0};
+    unsigned long foregroundBack = 0;
+    unsigned long backgroundBack = 0;
     XFontSet fontSetBack = NULL;
     XVaNestedList preeditBack = XVaCreateNestedList(
-        0, XNArea, &areaBack, XNFontSet, &fontSetBack, NULL);
+        0, XNArea, &areaBack, XNForeground, &foregroundBack, XNBackground,
+        &backgroundBack, XNFontSet, &fontSetBack, NULL);
     CHECK(preeditBack, "XVaCreateNestedList for preedit return failed");
+    unsigned long filterEvents = 0;
     CHECK(!XGetICValues(ic, XNInputStyle, &style, XNClientWindow, &clientBack,
                         XNFocusWindow, &focusBack, XNPreeditAttributes,
-                        preeditBack, NULL),
+                        preeditBack, XNFilterEvents, &filterEvents, NULL),
           "XGetICValues failed");
     CHECK(style == (XIMPreeditArea | XIMStatusNothing),
           "XGetICValues returned wrong style");
@@ -3302,11 +4157,57 @@ static int test_input_methods(Display *display)
     CHECK(areaBack.x == area.x && areaBack.y == area.y &&
               areaBack.width == area.width && areaBack.height == area.height,
           "XGetICValues returned wrong preedit area");
+    CHECK(foregroundBack == foreground && backgroundBack == background,
+          "XGetICValues returned wrong preedit colors");
     CHECK(fontSetBack == fontSet, "XGetICValues returned wrong font set");
+    CHECK(filterEvents == (KeyPressMask | KeyReleaseMask),
+          "XGetICValues returned wrong filter events");
 
     XFree(preedit);
     XFree(preeditBack);
     XDestroyIC(ic);
+
+    XVaNestedList nestedIC = XVaCreateNestedList(
+        0, XNInputStyle,
+        (XPointer) (uintptr_t) (XIMPreeditNothing | XIMStatusNothing),
+        XNClientWindow, client, XNFocusWindow, focus, NULL);
+    CHECK(nestedIC, "XVaCreateNestedList for IC failed");
+    ic = XCreateIC(im, XNVaNestedList, nestedIC, NULL);
+    CHECK(ic, "XCreateIC failed for XNVaNestedList");
+    style = 0;
+    CHECK(!XGetICValues(ic, XNInputStyle, &style, NULL),
+          "XGetICValues failed for nested-list IC");
+    CHECK(style == (XIMPreeditNothing | XIMStatusNothing),
+          "XCreateIC did not apply nested-list input style");
+    XFree(nestedIC);
+    XDestroyIC(ic);
+
+    char **missingCharsets = NULL;
+    int missingCharsetCount = -1;
+    char *defaultString = NULL;
+    XFontSet fixed14 =
+        XCreateFontSet(display, "*medium*-r-*--14*", &missingCharsets,
+                       &missingCharsetCount, &defaultString);
+    CHECK(fixed14 != NULL, "14-pixel medium fontset did not load");
+    CHECK(missingCharsetCount == 0, "fontset reported missing charsets");
+    XFontStruct **fontStructs = NULL;
+    char **fontNames = NULL;
+    CHECK(XFontsOfFontSet(fixed14, &fontStructs, &fontNames) == 1,
+          "fontset did not expose one compatibility font");
+    CHECK(fontStructs[0]->ascent == 12 && fontStructs[0]->descent == 2 &&
+              fontStructs[0]->max_bounds.width == 7,
+          "14-pixel medium fontset did not use native fixed metrics");
+    CHECK(XmbTextEscapement(fixed14, "Hello", 5) == 35,
+          "XmbTextEscapement ignored fontset fixed width");
+    XFreeFontSet(display, fixed14);
+
+    XFontSet fixed18 =
+        XCreateFontSet(display, "*medium*-r-*--18*", NULL, NULL, NULL);
+    CHECK(fixed18 != NULL, "18-pixel medium fontset did not load");
+    CHECK(XmbTextEscapement(fixed18, "Hello", 5) == 45,
+          "18-pixel fontset escapement did not use native fixed width");
+    XFreeFontSet(display, fixed18);
+
     XDestroyWindow(display, client);
     XCloseIM(im);
     return 1;
@@ -3341,6 +4242,18 @@ static int test_defaults(Display *display)
           "XWidthMMOfScreen mismatch");
     CHECK(XHeightMMOfScreen(screen) == DisplayHeightMM(display, screenNumber),
           "XHeightMMOfScreen mismatch");
+    int displayWidthMM = DisplayWidthMM(display, screenNumber);
+    int displayHeightMM = DisplayHeightMM(display, screenNumber);
+    int reportedXDpi =
+        (DisplayWidth(display, screenNumber) * 254 + displayWidthMM * 5) /
+        (displayWidthMM * 10);
+    int reportedYDpi =
+        (DisplayHeight(display, screenNumber) * 254 + displayHeightMM * 5) /
+        (displayHeightMM * 10);
+    CHECK(reportedXDpi >= 95 && reportedXDpi <= 97,
+          "DisplayWidthMM did not report 96 DPI logical width");
+    CHECK(reportedYDpi >= 95 && reportedYDpi <= 97,
+          "DisplayHeightMM did not report 96 DPI logical height");
     CHECK(XPlanesOfScreen(screen) == DisplayPlanes(display, screenNumber),
           "XPlanesOfScreen mismatch");
     CHECK(XCellsOfScreen(screen) == DisplayCells(display, screenNumber),
@@ -3443,16 +4356,28 @@ static int test_defaults(Display *display)
     close(fd);
 
     setenv("XENVIRONMENT", path, 1);
-    CHECK(strcmp(XGetDefault(display, "/usr/bin/demo", "font"), "9x13") == 0,
+    CHECK(!strcmp(XGetDefault(display, "/usr/bin/demo", "font"), "9x13"),
           "XGetDefault did not read program-specific value");
-    CHECK(strcmp(XGetDefault(display, "other", "dpi"), "144") == 0,
+    CHECK(!strcmp(XGetDefault(display, "other", "dpi"), "144"),
           "XGetDefault did not read wildcard value");
     unsetenv("XENVIRONMENT");
     unlink(path);
 
-    CHECK(strcmp(XGetDefault(display, "demo", "font"), "fixed") == 0,
+    char *oldDefaults = display->xdefaults;
+    display->xdefaults =
+        "demo.font: 10x20\n"
+        "*foreground: navy\n";
+    CHECK(XResourceManagerString(display) == display->xdefaults,
+          "XResourceManagerString did not expose display defaults");
+    CHECK(XScreenResourceString(screen) == display->xdefaults,
+          "XScreenResourceString did not expose screen defaults");
+    CHECK(!strcmp(XGetDefault(display, "demo", "font"), "10x20"),
+          "XGetDefault did not read display resource manager string");
+    display->xdefaults = oldDefaults;
+
+    CHECK(!strcmp(XGetDefault(display, "demo", "font"), "fixed"),
           "XGetDefault built-in font default failed");
-    CHECK(strcmp(XGetDefault(display, "demo", "Xft.dpi"), "96") == 0,
+    CHECK(!strcmp(XGetDefault(display, "demo", "Xft.dpi"), "96"),
           "XGetDefault built-in DPI default failed");
     CHECK(XGetDefault(display, "demo", "unknownOption") == NULL,
           "XGetDefault returned value for unknown option");
@@ -3514,7 +4439,7 @@ static int test_wm_hints(Display *display)
     CHECK(XGetTextProperty(display, window, &readText, XA_WM_NAME),
           "XGetTextProperty failed");
     CHECK(readText.encoding == XA_STRING && readText.format == 8 &&
-              strcmp((char *) readText.value, "libx11-compat") == 0,
+              !strcmp((char *) readText.value, "libx11-compat"),
           "text property did not round-trip");
     XFree(text.value);
     XFree(readText.value);
@@ -3548,6 +4473,331 @@ static int run_test(const char *name, int (*test)(Display *))
     return ok;
 }
 
+/* End-to-end check that an installed shape mask carves a hole in
+ * subsequent draw primitives. The mask is opaque-white except for a
+ * BLACK_HOLE rect in the middle, which the spec says should clip the
+ * shape; pixels in that hole must NOT receive the foreground fill we
+ * apply afterwards. */
+static int test_shape_mask(Display *display)
+{
+    enum { W = 16, H = 16, HOLE_X = 6, HOLE_Y = 6, HOLE_W = 4, HOLE_H = 4 };
+    Window root = DefaultRootWindow(display);
+    int screen = DefaultScreen(display);
+    int depth = DefaultDepth(display, screen);
+
+    Window window = XCreateSimpleWindow(display, root, 0, 0, W, H, 0, 0, 0);
+    CHECK(window != None, "shape: window creation failed");
+    CHECK(XMapWindow(display, window), "shape: window map failed");
+
+    GC gc = XCreateGC(display, window, 0, NULL);
+    CHECK(gc, "shape: GC creation failed");
+
+    /* Build the mask pixmap first (white everywhere, black inside HOLE)
+     * and install it. XShapeCombineMask paints visual indicators for the
+     * masked-out region as part of its install, so the "baseline" we want
+     * to preserve across later draws is the state AFTER that install. */
+    Pixmap mask = XCreatePixmap(display, window, W, H, depth);
+    CHECK(mask != None, "shape: mask pixmap creation failed");
+    GC maskGC = XCreateGC(display, mask, 0, NULL);
+    CHECK(maskGC, "shape: mask GC creation failed");
+    XSetForeground(display, maskGC, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, mask, maskGC, 0, 0, W, H),
+          "shape: mask white fill failed");
+    XSetForeground(display, maskGC, 0xFF000000);
+    CHECK(XFillRectangle(display, mask, maskGC, HOLE_X, HOLE_Y, HOLE_W, HOLE_H),
+          "shape: mask hole fill failed");
+    XFreeGC(display, maskGC);
+
+    /* Seed the entire window with a baseline color before installing the
+     * mask so the mask-install indicator + the surrounding region give
+     * the post-install snapshot something stable to capture. */
+    unsigned long blue = 0xFF0000FF;
+    unsigned long red = 0xFFFF0000;
+    XSetForeground(display, gc, blue);
+    CHECK(XFillRectangle(display, window, gc, 0, 0, W, H),
+          "shape: baseline fill failed");
+
+    Bool bShaped = False;
+    Bool cShaped = False;
+    int xbs = 0, ybs = 0, xcs = 0, ycs = 0;
+    unsigned int wbs = 0, hbs = 0, wcs = 0, hcs = 0;
+
+    XShapeCombineMask(display, window, ShapeClip, 1, 2, mask, ShapeSet);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "shape: query after clip-only mask failed");
+    CHECK(!bShaped && cShaped && xbs == 0 && ybs == 0 && wbs == W && hbs == H &&
+              xcs == 1 && ycs == 2 && wcs == W && hcs == H,
+          "shape: clip-only mask polluted bounding extents");
+    XShapeCombineMask(display, window, ShapeClip, 0, 0, None, ShapeSet);
+
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, mask, ShapeSet);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "shape: query after bounding mask failed");
+    CHECK(bShaped && !cShaped && xbs == 0 && ybs == 0 && wbs == W && hbs == H &&
+              xcs == 0 && ycs == 0 && wcs == W && hcs == H,
+          "shape: bounding mask polluted clip extents");
+
+    XShapeCombineMask(display, window, ShapeClip, 1, 2, mask, ShapeSet);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "shape: query after clip mask failed");
+    CHECK(bShaped && cShaped && xbs == 0 && ybs == 0 && wbs == W && hbs == H &&
+              xcs == 1 && ycs == 2 && wcs == W && hcs == H,
+          "shape: clip mask overwrote bounding extents");
+
+    XShapeCombineMask(display, window, ShapeClip, 0, 0, None, ShapeSet);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "shape: query after clearing clip mask failed");
+    CHECK(bShaped && !cShaped && xbs == 0 && ybs == 0 && wbs == W && hbs == H,
+          "shape: clearing clip mask cleared bounding mask");
+
+    Pixmap sparseMask = XCreatePixmap(display, window, 8, 8, depth);
+    CHECK(sparseMask != None, "shape: sparse pixmap creation failed");
+    GC sparseGC = XCreateGC(display, sparseMask, 0, NULL);
+    CHECK(sparseGC, "shape: sparse GC creation failed");
+    XSetForeground(display, sparseGC, 0xFF000000);
+    CHECK(XFillRectangle(display, sparseMask, sparseGC, 0, 0, 8, 8),
+          "shape: sparse black fill failed");
+    XSetForeground(display, sparseGC, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, sparseMask, sparseGC, 2, 3, 3, 2),
+          "shape: sparse active fill failed");
+    XFreeGC(display, sparseGC);
+    XShapeCombineMask(display, window, ShapeClip, 4, 5, sparseMask, ShapeSet);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "shape: query after sparse clip mask failed");
+    CHECK(cShaped && xcs == 6 && ycs == 8 && wcs == 3 && hcs == 2,
+          "shape: sparse clip extents ignored active pixels");
+    XShapeCombineMask(display, window, ShapeClip, 0, 0, None, ShapeSet);
+
+    Pixmap smallMask = XCreatePixmap(display, window, 4, 4, depth);
+    CHECK(smallMask != None, "shape: small pixmap creation failed");
+    GC smallGC = XCreateGC(display, smallMask, 0, NULL);
+    CHECK(smallGC, "shape: small GC creation failed");
+    XSetForeground(display, smallGC, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, smallMask, smallGC, 0, 0, 4, 4),
+          "shape: small mask fill failed");
+    XFreeGC(display, smallGC);
+    XImage *beforeSmall =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(beforeSmall, "shape: small mask baseline XGetImage failed");
+    unsigned long beforeOutsideSmall = XGetPixel(beforeSmall, 10, 10);
+    XDestroyImage(beforeSmall);
+    XShapeCombineMask(display, window, ShapeBounding, 2, 2, smallMask,
+                      ShapeSet);
+    XImage *smallReadback =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(smallReadback, "shape: small mask XGetImage failed");
+    unsigned long outsideSmall = XGetPixel(smallReadback, 10, 10);
+    XDestroyImage(smallReadback);
+    CHECK(outsideSmall != beforeOutsideSmall,
+          "shape: smaller bounding mask left stale outside pixel visible");
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "shape: query after small bounding mask failed");
+    CHECK(bShaped && xbs == 2 && ybs == 2 && wbs == 4 && hbs == 4,
+          "shape: small bounding extents ignored mask offset");
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, mask, ShapeSet);
+
+    /* Capture the post-install state. XGetImage uses SDL's RGBA8888
+     * packing rather than X11 ARGB, so compare against the stored
+     * baseline byte-for-byte instead of guessing the channel layout. */
+    XImage *baseline =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(baseline, "shape: baseline XGetImage failed");
+    unsigned long holeBaseline = XGetPixel(baseline, HOLE_X + 1, HOLE_Y + 1);
+    unsigned long outsideBaseline = XGetPixel(baseline, 1, 1);
+    XDestroyImage(baseline);
+
+    /* Now paint red over the whole window. The shape mask should keep
+     * the HOLE pixels at their preserved baseline and turn everything
+     * else red. */
+    XSetForeground(display, gc, red);
+    CHECK(XFillRectangle(display, window, gc, 0, 0, W, H),
+          "shape: post-mask fill failed");
+
+    XImage *readback =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(readback, "shape: XGetImage failed");
+    unsigned long inside = XGetPixel(readback, HOLE_X + 1, HOLE_Y + 1);
+    unsigned long outside = XGetPixel(readback, 1, 1);
+    CHECK(inside == holeBaseline,
+          "shape: inside-hole pixel lost its preserved baseline");
+    CHECK(outside != outsideBaseline,
+          "shape: outside-hole pixel did not receive the red fill");
+    XDestroyImage(readback);
+
+    /* Remove the mask and verify that a fresh fill now reaches the hole. */
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, None, ShapeSet);
+    XSetForeground(display, gc, red);
+    CHECK(XFillRectangle(display, window, gc, 0, 0, W, H),
+          "shape: post-uninstall fill failed");
+    XImage *readback2 =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(readback2, "shape: second XGetImage failed");
+    unsigned long after = XGetPixel(readback2, HOLE_X + 1, HOLE_Y + 1);
+    CHECK(after != holeBaseline,
+          "shape: hole still preserved after mask removed");
+    XDestroyImage(readback2);
+
+    XFreePixmap(display, smallMask);
+    XFreePixmap(display, sparseMask);
+    XFreePixmap(display, mask);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* Bounding and clip masks must compose by intersection: a pixel is
+ * preserved when EITHER mask excludes it. Install two disjoint holes —
+ * one via ShapeBounding, one via ShapeClip — and verify that pixels in
+ * either hole survive the post-mask fill while pixels admitted by both
+ * masks are overwritten. */
+static int test_shape_mask_intersection(Display *display)
+{
+    enum { W = 20, H = 20 };
+    /* The bounding hole sits in the top-left quadrant, the clip hole in
+     * the bottom-right; they don't overlap so each verifies one mask
+     * independently. */
+    enum { B_X = 4, B_Y = 4, B_W = 4, B_H = 4 };
+    enum { C_X = 12, C_Y = 12, C_W = 4, C_H = 4 };
+
+    Window root = DefaultRootWindow(display);
+    int screen = DefaultScreen(display);
+    int depth = DefaultDepth(display, screen);
+
+    Window window = XCreateSimpleWindow(display, root, 0, 0, W, H, 0, 0, 0);
+    CHECK(window != None, "intersect: window creation failed");
+    CHECK(XMapWindow(display, window), "intersect: window map failed");
+    GC gc = XCreateGC(display, window, 0, NULL);
+    CHECK(gc, "intersect: GC creation failed");
+
+    Pixmap boundingMask = XCreatePixmap(display, window, W, H, depth);
+    CHECK(boundingMask != None, "intersect: bounding pixmap failed");
+    Pixmap clipMask = XCreatePixmap(display, window, W, H, depth);
+    CHECK(clipMask != None, "intersect: clip pixmap failed");
+    GC maskGC = XCreateGC(display, boundingMask, 0, NULL);
+    CHECK(maskGC, "intersect: mask GC failed");
+    XSetForeground(display, maskGC, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, boundingMask, maskGC, 0, 0, W, H),
+          "intersect: bounding white failed");
+    CHECK(XFillRectangle(display, clipMask, maskGC, 0, 0, W, H),
+          "intersect: clip white failed");
+    XSetForeground(display, maskGC, 0xFF000000);
+    CHECK(XFillRectangle(display, boundingMask, maskGC, B_X, B_Y, B_W, B_H),
+          "intersect: bounding hole failed");
+    CHECK(XFillRectangle(display, clipMask, maskGC, C_X, C_Y, C_W, C_H),
+          "intersect: clip hole failed");
+    XFreeGC(display, maskGC);
+
+    XSetForeground(display, gc, 0xFF0000FF);
+    CHECK(XFillRectangle(display, window, gc, 0, 0, W, H),
+          "intersect: baseline fill failed");
+
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, boundingMask,
+                      ShapeSet);
+    XShapeCombineMask(display, window, ShapeClip, 0, 0, clipMask, ShapeSet);
+
+    XImage *baseline =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(baseline, "intersect: baseline XGetImage failed");
+    unsigned long bHoleBaseline = XGetPixel(baseline, B_X + 1, B_Y + 1);
+    unsigned long cHoleBaseline = XGetPixel(baseline, C_X + 1, C_Y + 1);
+    unsigned long openBaseline = XGetPixel(baseline, W / 2, 1);
+    XDestroyImage(baseline);
+
+    XSetForeground(display, gc, 0xFFFF0000);
+    CHECK(XFillRectangle(display, window, gc, 0, 0, W, H),
+          "intersect: post-mask fill failed");
+
+    XImage *readback =
+        XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(readback, "intersect: XGetImage failed");
+    unsigned long bHole = XGetPixel(readback, B_X + 1, B_Y + 1);
+    unsigned long cHole = XGetPixel(readback, C_X + 1, C_Y + 1);
+    unsigned long openPixel = XGetPixel(readback, W / 2, 1);
+    CHECK(bHole == bHoleBaseline,
+          "intersect: bounding-only hole was overwritten");
+    CHECK(cHole == cHoleBaseline, "intersect: clip-only hole was overwritten");
+    CHECK(openPixel != openBaseline,
+          "intersect: pixel admitted by both masks was not drawn");
+    XDestroyImage(readback);
+
+    XFreePixmap(display, boundingMask);
+    XFreePixmap(display, clipMask);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+static int test_shape_combine_ops(Display *display)
+{
+    enum { W = 16, H = 10, MW = 8, MH = 6 };
+    Window root = DefaultRootWindow(display);
+    int screen = DefaultScreen(display);
+    int depth = DefaultDepth(display, screen);
+    Window window = XCreateSimpleWindow(display, root, 0, 0, W, H, 0, 0, 0);
+    CHECK(window != None, "combine: window creation failed");
+
+    Pixmap base = XCreatePixmap(display, window, MW, MH, depth);
+    Pixmap src = XCreatePixmap(display, window, MW, MH, depth);
+    CHECK(base != None && src != None, "combine: pixmap creation failed");
+    GC gc = XCreateGC(display, base, 0, NULL);
+    CHECK(gc, "combine: GC creation failed");
+    XSetForeground(display, gc, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, base, gc, 0, 0, MW, MH),
+          "combine: base fill failed");
+    CHECK(XFillRectangle(display, src, gc, 0, 0, MW, MH),
+          "combine: source fill failed");
+
+    Bool bShaped = False;
+    Bool cShaped = False;
+    int xbs = 0, ybs = 0, xcs = 0, ycs = 0;
+    unsigned int wbs = 0, hbs = 0, wcs = 0, hcs = 0;
+
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, base, ShapeSet);
+    XShapeCombineMask(display, window, ShapeBounding, 4, 0, src, ShapeUnion);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "combine: union query failed");
+    CHECK(bShaped && xbs == 0 && ybs == 0 && wbs == 12 && hbs == 6,
+          "combine: ShapeUnion did not expand extents");
+
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, base, ShapeSet);
+    XShapeCombineMask(display, window, ShapeBounding, 4, 0, src,
+                      ShapeIntersect);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "combine: intersect query failed");
+    CHECK(bShaped && xbs == 4 && ybs == 0 && wbs == 4 && hbs == 6,
+          "combine: ShapeIntersect did not shrink extents");
+
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, base, ShapeSet);
+    XShapeCombineMask(display, window, ShapeBounding, 4, 0, src, ShapeSubtract);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "combine: subtract query failed");
+    CHECK(bShaped && xbs == 0 && ybs == 0 && wbs == 4 && hbs == 6,
+          "combine: ShapeSubtract did not remove source region");
+
+    XShapeCombineMask(display, window, ShapeBounding, 0, 0, base, ShapeSet);
+    XShapeCombineMask(display, window, ShapeBounding, 4, 0, src, ShapeInvert);
+    CHECK(XShapeQueryExtents(display, window, &bShaped, &xbs, &ybs, &wbs, &hbs,
+                             &cShaped, &xcs, &ycs, &wcs, &hcs),
+          "combine: invert query failed");
+    CHECK(bShaped && xbs == 8 && ybs == 0 && wbs == 4 && hbs == 6,
+          "combine: ShapeInvert did not compute source-minus-dest");
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, src);
+    XFreePixmap(display, base);
+    XDestroyWindow(display, window);
+    return 1;
+}
+
 int main(void)
 {
     run_test("smoke", test_smoke);
@@ -3573,5 +4823,8 @@ int main(void)
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);
     run_test("wm_hints", test_wm_hints);
+    run_test("shape_mask", test_shape_mask);
+    run_test("shape_mask_intersection", test_shape_mask_intersection);
+    run_test("shape_combine_ops", test_shape_combine_ops);
     return failures == 0 ? 0 : 1;
 }

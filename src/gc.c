@@ -1,8 +1,11 @@
 #include <X11/Xlib.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include "gc.h"
 #include "display.h"
 #include "drawing.h"
 #include "colors.h"
+#include "font.h"
 
 int XFreeGC(Display *display, GC gc)
 {
@@ -17,6 +20,7 @@ int XFreeGC(Display *display, GC gc)
         gContext->clipRects = NULL;
         gContext->clipRectCount = 0;
     }
+    compatFontReleaseForGC(gContext->font);
     gContext->clipRectanglesSet = False;
     free(gContext);
     XExtData *extData = gc->ext_data;
@@ -64,16 +68,13 @@ GC XCreateGC(Display *display,
     graphicContextStruct->gid = contextId;
     SET_XID_TYPE(contextId, GRAPHICS_CONTEXT);
     SET_XID_VALUE(contextId, gc);
-    // Initialize default values
-    gc->dashes = malloc(sizeof(char) * 2);
-    if (!gc->dashes) {
-        XFreeGC(display, graphicContextStruct);
-        handleOutOfMemory(0, display, 0, 0);
-        return NULL;
-    }
-    gc->numDashes = 2;
-    gc->dashes[0] = 4;
-    gc->dashes[1] = 4;
+    /* Initialize every field to safe defaults before any fallible
+     * allocation. XFreeGC walks gc->clipRects via free() and gc->font
+     * via compatFontReleaseForGC; if the dashes malloc below fails the
+     * cleanup path runs with whatever garbage malloc(3) left behind
+     * unless those fields are zeroed first. */
+    gc->dashes = NULL;
+    gc->numDashes = 0;
     gc->function = GXcopy;
     gc->planeMask = 0xFFFFFFFF;
     /* Per X11 spec the defaults are pixel indices 0 (foreground) and 1
@@ -105,6 +106,17 @@ GC XCreateGC(Display *display,
     gc->clipRectCount = 0;
     gc->dashOffset = 0;
     gc->generation = 0;
+
+    gc->dashes = malloc(sizeof(char) * 2);
+    if (!gc->dashes) {
+        XFreeGC(display, graphicContextStruct);
+        handleOutOfMemory(0, display, 0, 0);
+        return NULL;
+    }
+    gc->numDashes = 2;
+    gc->dashes[0] = 4;
+    gc->dashes[1] = 4;
+
     if (!XChangeGC(display, graphicContextStruct, valuemask, values)) {
         XFreeGC(display, graphicContextStruct);
         return NULL;
@@ -469,8 +481,23 @@ int XSetPlaneMask(Display *dpy, GC gc, unsigned long planemask)
 int XSetFont(Display *display, GC gc, Font font)
 {
     // http://www.net.uom.gr/Books/Manuals/xlib/GC/convenience-functions/XSetFont.html
+    if (font == None || font == (Font) ~0UL || (uintptr_t) font < 4096) {
+        handleError(0, display, font, 0, BadFont, 0);
+        return 0;
+    }
     TYPE_CHECK(font, FONT, display, 0);
+    if (!compatFontIsClientUsable(font)) {
+        handleError(0, display, font, 0, BadFont, 0);
+        return 0;
+    }
     GraphicContext *g = GET_GC(gc);
+    if (g->font == font)
+        return 1;
+    if (!compatFontRetainForGC(font)) {
+        handleError(0, display, font, 0, BadFont, 0);
+        return 0;
+    }
+    compatFontReleaseForGC(g->font);
     g->font = font;
     GC_BUMP_GENERATION(g);
     return 1;

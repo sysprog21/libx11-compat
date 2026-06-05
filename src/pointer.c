@@ -1,6 +1,7 @@
 #include "X11/Xlib.h"
 #include <SDL2/SDL.h>
 #include <string.h>
+#include "window-internal.h"
 #include "window.h"
 #include "events.h"
 #include "display.h"
@@ -21,6 +22,31 @@ typedef struct {
 } PointerGrabState;
 
 static PointerGrabState pointerGrab;
+
+static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
+{
+    SDL_Window *focus = SDL_GetMouseFocus();
+    if (focus) {
+        Window focusWindow = getWindowFromId(SDL_GetWindowID(focus));
+        if (focusWindow != None && IS_TYPE(focusWindow, WINDOW)) {
+            int local_x = 0;
+            int local_y = 0;
+            SDL_GetMouseState(&local_x, &local_y);
+            Window child = None;
+            if (XTranslateCoordinates(display, focusWindow, SCREEN_WINDOW,
+                                      local_x, local_y, root_x, root_y,
+                                      &child)) {
+                return;
+            }
+        }
+    }
+
+#if SDL_VERSION_ATLEAST(2, 0, 4)
+    SDL_GetGlobalMouseState(root_x, root_y);
+#else
+    SDL_GetMouseState(root_x, root_y);
+#endif
+}
 
 int XWarpPointer(Display *display,
                  Window src_window,
@@ -110,7 +136,7 @@ Bool XQueryPointer(Display *display,
     // https://tronche.com/gui/x/xlib/window-information/XQueryPointer.html
     SET_X_SERVER_REQUEST(display, X_QueryPointer);
     *root_return = SCREEN_WINDOW;
-    SDL_GetMouseState(root_x_return, root_y_return);
+    queryPointerRootPosition(display, root_x_return, root_y_return);
     XTranslateCoordinates(display, SCREEN_WINDOW, window, *root_x_return,
                           *root_y_return, win_x_return, win_y_return,
                           child_return);
@@ -134,14 +160,12 @@ int XGrabPointer(Display *display,
      * GrabInvalidTime == 2, GrabNotViewable == 3, GrabFrozen == 4.
      * Returning a bare `1` for success would be read by Xlib clients as
      * AlreadyGrabbed and route them down the wrong recovery path.
-     * SDL_SetRelativeMouseMode failure is benign here: dummy/headless
-     * drivers reject it, and the X grab state still applies to event
-     * routing whether or not SDL captures the pointer.
+     *
+     * Do not use SDL relative mouse mode for an X pointer grab. SDL relative
+     * mode hides the system cursor and reports relative deltas; an X grab only
+     * redirects/freezes pointer events while preserving normal cursor
+     * visibility. Motif pulldown menus rely on that distinction.
      */
-    if (SDL_SetRelativeMouseMode(SDL_TRUE) != 0) {
-        LOG("SDL_SetRelativeMouseMode failed in XGrabPointer: %s",
-            SDL_GetError());
-    }
     pointerGrab.active = True;
     pointerGrab.grab_window = grab_window;
     pointerGrab.owner_events = owner_events;
@@ -167,13 +191,6 @@ int XUngrabPointer(Display *display, Time time)
 {
     // https://tronche.com/gui/x/xlib/input/XUngrabPointer.html
     SET_X_SERVER_REQUEST(display, X_UngrabPointer);
-    if (SDL_GetRelativeMouseMode() == SDL_TRUE) {
-        if (SDL_SetRelativeMouseMode(SDL_FALSE) != 0) {
-            LOG("SDL_SetRelativeMouseMode failed in XUngrabPointer: %s",
-                SDL_GetError());
-            return 0;
-        }
-    }
     if (pointerGrab.confine_to != None &&
         IS_TYPE(pointerGrab.confine_to, WINDOW) &&
         IS_MAPPED_TOP_LEVEL_WINDOW(pointerGrab.confine_to)) {

@@ -209,13 +209,13 @@ static Bool parseHexComponent(const char *text,
 
     switch (digits) {
     case 1:
-        *value = (unsigned short) (component * 0x1111u);
+        *value = (unsigned short) (component << 12);
         return True;
     case 2:
-        *value = (unsigned short) (component * 0x0101u);
+        *value = (unsigned short) (component << 8);
         return True;
     case 3:
-        *value = (unsigned short) ((component << 4) | (component >> 8));
+        *value = (unsigned short) (component << 4);
         return True;
     case 4:
         *value = (unsigned short) component;

@@ -690,17 +690,27 @@ int XPutImage(Display *display,
         return -1;
     }
     SDL_Rect dst = {dest_x, dest_y, width, height};
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, drawable, renderer, &dst);
     int clipCount = getGcClipIterationCount(gc);
     for (int clip = 0; clip < clipCount; clip++) {
         if (!setGcClipForIteration(renderer, gc, clip))
             continue;
         if (SDL_RenderCopy(renderer, texture, NULL, &dst) < 0) {
             clearRendererClip(renderer);
+            shapeGuardEnd(&sg);
             LOG("SDL_RenderCopy failed: %s\n", SDL_GetError());
             return -1;
         }
     }
     clearRendererClip(renderer);
+    /* If the shape composite failed mid-flight, mask-violating pixels
+     * may still be on the renderer; skip the present so the next draw
+     * recomposes from a fresh baseline rather than flashing stale
+     * output. */
+    Bool shapeOk = shapeGuardEnd(&sg);
+    if (shapeOk)
+        presentDrawableIfVisible(drawable);
     return 1;
 }
 

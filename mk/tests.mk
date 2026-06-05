@@ -1,5 +1,9 @@
 CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
-              $(OUT)/tests/test-libxt-link $(OUT)/tests/test-libxt-micro
+              $(OUT)/tests/test-libxt-link $(OUT)/tests/test-libxt-micro \
+              $(OUT)/tests/test-libxt-resources \
+              $(OUT)/tests/test-xmu-link \
+              $(OUT)/tests/test-xinerama-link \
+              $(OUT)/tests/test-libxpm-link
 BENCH_BINS := $(OUT)/tests/bench-paths
 
 .PHONY: check symbol-coverage api-symbol-coverage bench-paths
@@ -35,14 +39,42 @@ LIBXT_TEST_LDFLAGS :=
 ifeq ($(UNAME_S),Linux)
   LIBXT_TEST_LDFLAGS += -Wl,-rpath-link,$(OUT)
 endif
-
+TEST_LDFLAGS :=
+ifeq ($(UNAME_S),Linux)
+  TEST_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
+endif
+ifeq ($(UNAME_S),Darwin)
+  TEST_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
+endif
 $(OUT)/tests/test-libxt-%: tests/test-libxt-%.c $(LIBXT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
-	    $(LIBXT_TARGET) $(TARGET) $(LDLIBS) $(LIBXT_TEST_LDFLAGS) -o $@
+	    $(LIBXT_TARGET) $(TARGET) $(LDLIBS) $(LIBXT_TEST_LDFLAGS) \
+	    $(TEST_LDFLAGS) -o $@
+
+$(OUT)/tests/test-libxpm-%: tests/test-libxpm-%.c $(LIBXPM_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(LIBXPM_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+$(OUT)/tests/test-xmu-link: tests/test-xmu-link.c $(XMU_COMPAT_TARGET) $(LIBXT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(XMU_COMPAT_TARGET) $(LIBXT_TARGET) $(TARGET) $(LDLIBS) \
+	    $(LIBXT_TEST_LDFLAGS) $(TEST_LDFLAGS) -o $@
+
+$(OUT)/tests/test-xinerama-link: tests/test-xinerama-link.c $(XINERAMA_COMPAT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(XINERAMA_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) \
+	    -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) -o $@
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
+	    $(LDLIBS) $(TEST_LDFLAGS) -o $@

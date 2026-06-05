@@ -19,6 +19,10 @@
 #include <X11/Xutil.h>
 #include <limits.h>
 
+#ifndef SDL_HINT_VIDEO_X11_XKB
+#define SDL_HINT_VIDEO_X11_XKB "SDL_VIDEO_X11_XKB"
+#endif
+
 /* Lock hooks installed by libX11's locking.c when XInitThreads runs;
  * we hold the function-pointer storage so display open/close can invoke
  * them without dragging in upstream XlibInt.c. The storage is
@@ -47,6 +51,7 @@ static char *vendor = "SDL " TO_STRING(SDL_MAJOR_VERSION) "." TO_STRING(
     SDL_MINOR_VERSION) "." TO_STRING(SDL_PATCHLEVEL);
 static const int releaseVersion = 1;
 static const int supportedDepths[] = {1, 16, 24, 32};
+#define COMPAT_LOGICAL_DPI 96.0f
 
 int XCloseDisplay(Display *display)
 {
@@ -61,6 +66,10 @@ int XCloseDisplay(Display *display)
             screen->default_gc = NULL;
         }
     }
+    /* Release this Display's per-Display error.c state before SDL_Quit:
+     * the side-table teardown touches SDL_mutex APIs and must run while
+     * the SDL subsystem is still up. */
+    releaseLastRequestCode(display);
     if (numDisplaysOpen == 1) {
         freeImageStorage();
         destroyScreenWindow(display);
@@ -70,6 +79,7 @@ int XCloseDisplay(Display *display)
         freeColorStorage();
         freeVisuals();
         releaseMainEventThread();
+        freeLastRequestStorage();
         TTF_Quit();
         SDL_Quit();
     }
@@ -112,6 +122,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
     Bool ttfOwned = False;
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_SetMainReady();
+        SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
         if (SDL_Init(SDL_INIT_VIDEO) == -1) {
             LOG("Failed to initialize SDL: %s\n", SDL_GetError());
             free(display);
@@ -156,7 +167,9 @@ Display *XOpenDisplay(_Xconst char *display_name)
     display->proto_minor_version = X_PROTOCOL_REVISION;
     display->vendor = vendor;
     display->release = releaseVersion;
-    display->request = X_NoOperation;
+    display->request = 0;
+    display->last_request_read = 0;
+    setLastRequestCode(display, X_NoOperation);
     display->min_keycode = 8;
     display->max_keycode = 255;
     display->display_name = (char *) display_name;
@@ -165,7 +178,8 @@ Display *XOpenDisplay(_Xconst char *display_name)
     display->bitmap_pad = 32;
     display->bitmap_bit_order = display->byte_order;
     /* Keep the Xlib default screen stable at 0. SDL_GetCurrentVideoDisplay is
-     * window-relative and can change after windows move between displays. */
+     * window-relative and can change after windows move between displays.
+     */
     display->default_screen = 0;
     display->nscreens = SDL_GetNumVideoDisplays();
     if (display->nscreens < 0) {
@@ -206,28 +220,21 @@ Display *XOpenDisplay(_Xconst char *display_name)
         screen->display = display;
         screen->width = displayMode.w;
         screen->height = displayMode.h;
-#if SDL_VERSION_ATLEAST(2, 0, 4)
-        // Calculate the values in millimeters
-        float h_dpi, v_dpi;
-        if (SDL_GetDisplayDPI(screenIndex, NULL, &h_dpi, &v_dpi) != 0) {
-            LOG("Warning: SDL_GetDisplayDPI failed, "
-                "using pixel values for mm values: %s\n",
-                SDL_GetError());
-            screen->mwidth = displayMode.w;
-            screen->mheight = displayMode.h;
-        } else {
-            screen->mwidth = (int) roundf((displayMode.w * 25.4f) / v_dpi);
-            screen->mheight = (int) roundf((displayMode.h * 25.4f) / h_dpi);
-        }
-#else
-        screen->mwidth = displayMode.w;
-        screen->mheight = displayMode.h;
-#endif
+        /* Motif converts resolution-independent dimensions from the screen's
+         * reported physical size. Host physical DPI, especially Retina/HiDPI,
+         * makes those resources expand by the monitor scale factor while
+         * XGetDefault/_XSETTINGS still advertise 96 DPI. Report a stable
+         * logical X server size so toolkit layout and font defaults agree.
+         */
+        screen->mwidth =
+            (int) roundf(((float) displayMode.w * 25.4f) / COMPAT_LOGICAL_DPI);
+        screen->mheight =
+            (int) roundf(((float) displayMode.h * 25.4f) / COMPAT_LOGICAL_DPI);
         screen->root = SCREEN_WINDOW;
         screen->root_visual = getDefaultVisual(screenIndex);
-        /* RGB32 visuals have 24 significant bits with the high byte ignored
-         * for alpha. Matches the (depth 24, bpp 32) entry from
-         * XListPixmapFormats. xlibe commit 17a9bf7. */
+        /* RGB32 visuals have 24 significant bits with the high byte ignored for
+         * alpha. Matches the (depth 24, bpp 32) entry from XListPixmapFormats.
+         */
         screen->root_depth = 24;
         screen->ndepths = ARRAY_LENGTH(supportedDepths);
         screen->depths = calloc(ARRAY_LENGTH(supportedDepths), sizeof(Depth));
@@ -240,7 +247,8 @@ Display *XOpenDisplay(_Xconst char *display_name)
             screen->depths[depthIndex].depth = supportedDepths[depthIndex];
         }
         /* ARGB pixel encoding matches src/colors.h shifts
-         * (A=24, R=16, G=8, B=0). */
+         * (A=24, R=16, G=8, B=0).
+         */
         screen->white_pixel = 0xFFFFFFFF;
         screen->black_pixel = 0xFF000000;
         screen->cmap = REAL_COLOR_COLORMAP;
@@ -266,8 +274,9 @@ Display *XOpenDisplay(_Xconst char *display_name)
             return NULL;
         }
     }
+
     if (numDisplaysOpen == 1) {
-        // Init the font search path
+        /* Init the font search path */
         XSetFontPath(display, NULL, 0);
     }
     return display;
@@ -281,7 +290,8 @@ int XBell(Display *display, int percent)
         handleError(0, display, None, 0, BadValue, 0);
     } else {
         /* Terminal bell only: portable SDL audio/haptic feedback would need
-         * device setup and user-visible side effects beyond XBell's hint. */
+         * device setup and user-visible side effects beyond XBell's hint.
+         */
         printf("\a");
         fflush(stdout);
     }
@@ -435,10 +445,12 @@ int XSetCommand(Display *display, Window w, char **argv, int argc)
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
     }
+
     /* XChangeProperty takes the element count as int, and the ICCCM payload
      * size is bounded by the X protocol; cap aggregate WM_COMMAND bytes at
      * INT_MAX. Check bytes first so the subtraction in the second clause
-     * cannot wrap when bytes is already at the cap. */
+     * cannot wrap when bytes is already at the cap.
+     */
     size_t bytes = 0;
     for (int i = 0; i < argc; i++) {
         size_t len = argv && argv[i] ? strlen(argv[i]) : 0;
@@ -501,9 +513,8 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
                   (USPosition | USSize | PPosition | PSize | PMinSize |
                    PMaxSize | PResizeInc | PAspect | PBaseSize | PWinGravity));
 
-    /*
-     * The x, y, width, and height fields are obsolete; but, applications
-     * that want to work with old window managers might set them.
+    /* The x, y, width, and height fields are obsolete; but, applications that
+     * want to work with old window managers might set them.
      */
     if (hints->flags & (USPosition | PPosition)) {
         data.x = hints->x;
@@ -548,12 +559,14 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
 void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
 {
     XSetWMSizeHints(dpy, w, hints, XA_WM_NORMAL_HINTS);
-    /* Apply size hints to the SDL window so user resizes are clamped.
-     * X11 'border_width' lives inside the window's geometry, so SDL
-     * minimum/maximum can use min/max_width/height directly without
-     * adding border to either side. */
+    /* Apply size hints to the SDL window so user resizes are clamped. X11
+     * 'border_width' lives inside the window's geometry, so SDL minimum /
+     * maximum can use min/max_width/height directly without adding border to
+     * either side.
+     */
     if (!hints || !IS_MAPPED_TOP_LEVEL_WINDOW(w))
         return;
+
     SDL_Window *sdlWindow = GET_WINDOW_STRUCT(w)->sdlWindow;
     if (hints->flags & PMinSize) {
         SDL_SetWindowMinimumSize(sdlWindow, hints->min_width,
@@ -633,6 +646,7 @@ int XSetClassHint(Display *display, Window w, XClassHint *class_hints)
     const char *resClass = class_hints->res_class ? class_hints->res_class : "";
     size_t nameLen = strlen(resName);
     size_t classLen = strlen(resClass);
+
     /* XChangeProperty takes int element count; both NUL terminators must fit
      * along with nameLen + classLen, so cap the combined size below INT_MAX.
      * Check nameLen first so the subtraction in the second clause cannot wrap
@@ -662,7 +676,8 @@ Status XStringListToTextProperty(char **list,
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XStringListToTextProperty.html
     /* Per ICCCM: value holds NUL-separated strings, nitems is the byte count
-     * excluding the trailing NUL. NULL entries become empty strings. */
+     * excluding the trailing NUL. NULL entries become empty strings.
+     */
     text_prop_return->encoding = XA_STRING;
     text_prop_return->format = 8;
     text_prop_return->value = NULL;
@@ -785,8 +800,7 @@ Status XGetSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom property)
     return XGetWMSizeHints(dpy, w, hints, &supplied, property);
 }
 
-/*
- * XSetNormalHints sets the property
+/* XSetNormalHints sets the property
  *	WM_NORMAL_HINTS 	type: WM_SIZE_HINTS format: 32
  */
 
@@ -804,8 +818,7 @@ Status XGetNormalHints(Display *dpy, Window w, XSizeHints *hints)
     return XGetWMNormalHints(dpy, w, hints, &supplied);
 }
 
-/*
- * XSetStandardProperties sets the following properties:
+/* XSetStandardProperties sets the following properties:
  *	WM_NAME		  type: STRING		format: 8
  *	WM_ICON_NAME	  type: STRING		format: 8
  *	WM_HINTS	  type: WM_HINTS	format: 32

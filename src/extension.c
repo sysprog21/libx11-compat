@@ -3,6 +3,7 @@
 #include <string.h>
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
+#include <X11/extensions/shape.h>
 #include "extension.h"
 #include "util.h"
 
@@ -62,6 +63,16 @@ Bool XQueryExtension(Display *display,
                      int *first_error_return)
 {
     (void) display;
+    if (name && !strcmp(name, SHAPENAME)) {
+        if (major_opcode_return)
+            *major_opcode_return = 129;
+        if (first_event_return)
+            *first_event_return = 64;
+        if (first_error_return)
+            *first_error_return = 128;
+        return True;
+    }
+
     LOG("Ignoring unsupported extension probe: %s\n", name ? name : "(null)");
     if (major_opcode_return) {
         *major_opcode_return = 0;
