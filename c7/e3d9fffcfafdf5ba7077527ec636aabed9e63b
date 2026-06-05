@@ -1,0 +1,21 @@
+src/wrapper/sdl-wrapper.c
+  s_eb0938053a6a88::t_b846ed843e6083 11-37
+src/wrapper/sdl-ttf-wrapper.c
+  s_eb0938053a6a88::t_12271ec97e99de 10-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "c7e3d9fffcfafdf5ba7077527ec636aabed9e63b",
+  "prompts": {},
+  "sessions": {
+    "s_eb0938053a6a88": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c120052e-4b3b-4908-aaf1-9aee73d3f947",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
