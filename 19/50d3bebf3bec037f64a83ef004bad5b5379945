@@ -1,0 +1,30 @@
+src/error.c
+  s_eb0938053a6a88::t_13f0c6622135b7 16-19
+  s_eb0938053a6a88::t_766b1802ffeb5c 35-42
+  s_eb0938053a6a88::t_3cfd6958a560ef 110
+  s_eb0938053a6a88::t_0cafc4e72057e2 158
+include/X11/Xmu/Misc.h
+  s_eb0938053a6a88::t_05404d2f832dd8 7
+  s_eb0938053a6a88::t_e3bdb5f90bef16 4-6
+mk/library.mk
+  s_eb0938053a6a88::t_b2c8d2f44228d9 26-30
+src/wrapper/sdl-wrapper.c
+  s_eb0938053a6a88::t_e0c615d3488581 19
+  s_eb0938053a6a88::t_e76bf69fa85fc5 43-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "1950d3bebf3bec037f64a83ef004bad5b5379945",
+  "prompts": {},
+  "sessions": {
+    "s_eb0938053a6a88": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c120052e-4b3b-4908-aaf1-9aee73d3f947",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
