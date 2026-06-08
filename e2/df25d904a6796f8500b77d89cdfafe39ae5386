@@ -1,0 +1,24 @@
+tests/ui/replays/motif-fileview-done.replay
+  s_42a8ba1a88142c::t_356ead6d458aa2 2-7,12
+tests/ui/replays/motif-fileview-menu.replay
+  s_42a8ba1a88142c::t_be6eeb2587ad5c 2-8,14,19
+.github/workflows/ci.yml
+  s_42a8ba1a88142c::t_dcc181fbd7664a 211-214,219
+  s_42a8ba1a88142c::t_7d0ccf1ac41022 140-145,150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "e2df25d904a6796f8500b77d89cdfafe39ae5386",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
