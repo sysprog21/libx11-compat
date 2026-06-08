@@ -1,0 +1,59 @@
+scripts/capture-motif-demo-screenshots.sh
+  s_42a8ba1a88142c::t_34490b2ffc67f7 277,348,360
+mk/common.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 41
+mk/xcompat-libs.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 10,15,20
+mk/config.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 36-44
+scripts/compare-motif-reference.py
+  s_42a8ba1a88142c::t_34490b2ffc67f7 56-57
+mk/violawww.mk
+  s_42a8ba1a88142c::t_cc0e5cdf3cd93e 76-84
+mk/tests.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 6-7,10,12-19,27-43
+.github/workflows/ci.yml
+  s_42a8ba1a88142c::t_34490b2ffc67f7 30,100-102,119,121,127,129,140-145,147-150,168-170,187,189,197,199,211-214,216-219,234-236,253,255,261,263,281-283,291-296,301,306-308,325-326,340,342,359,361,390,403-520,522-526
+README.md
+  s_42a8ba1a88142c::t_34490b2ffc67f7 32-33,43-75,79
+Makefile
+  s_42a8ba1a88142c::t_34490b2ffc67f7 27
+scripts/sync-upstream-headers.py
+  s_42a8ba1a88142c::t_34490b2ffc67f7 55-56,61-62,67-68,89-90,97-98,237-415
+scripts/run-motif-differential-tests.py
+  s_4c21f4f50f5bac::t_efc6699b8acfb7 150,152
+  s_42a8ba1a88142c::t_34490b2ffc67f7 99,103-104,126,163-218,233,250-254,277-278,281-283,286-292,303-323,460-464,468,473,495-502
+  s_4c21f4f50f5bac::t_1694fb73926387 279-280
+  s_42a8ba1a88142c::t_00ea4d5212d964 284-285,293-302
+scripts/run-ui-replay.py
+  s_42a8ba1a88142c::t_94cda3e4c3ea58 622-627
+  s_42a8ba1a88142c::t_3beef25179f965 121-131
+.gitignore
+  s_42a8ba1a88142c::t_34490b2ffc67f7 7
+mk/motif.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 5-16,29-30,78-82,87-92,207-217,224-236,243-244,251-252,267-273,275,277,280,284,287,291,297-351
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "299b4b1a27864a2c4bcfc03f1ea46e026844ccc1",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    },
+    "s_4c21f4f50f5bac": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ea79b-5ab2-74f2-bd88-ee28f83c53ac",
+        "model": "gpt-5.5"
+      },
+      "human_author": null
+    }
+  }
+}
