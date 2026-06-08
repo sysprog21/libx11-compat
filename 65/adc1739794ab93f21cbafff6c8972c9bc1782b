@@ -1,0 +1,19 @@
+.github/workflows/ci.yml
+  s_42a8ba1a88142c::t_110eb6a9c1af64 127,129,197,199,261,263,359,361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "65adc1739794ab93f21cbafff6c8972c9bc1782b",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
