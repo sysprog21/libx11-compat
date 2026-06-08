@@ -1,0 +1,10 @@
+{
+  "assertions": [
+    {
+      "type": "non_empty"
+    },
+    {
+      "type": "not_all_black"
+    }
+  ]
+}

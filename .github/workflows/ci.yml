@@ -27,6 +27,7 @@ concurrency:
 env:
   COMMON_BUILD_PKGS: "clang ccache make pkg-config python3 libsdl2-dev libsdl2-ttf-dev libpixman-1-dev"
   MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4"
+  DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
 
 jobs:
   # ---- Lint: formatting, newline, security, cppcheck ----
@@ -96,7 +97,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ env.COMMON_BUILD_PKGS }}
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
         # Cache only the inputs that derive from sync-upstream-headers.py
@@ -113,17 +116,17 @@ jobs:
             !build/upstream/**/*.o
             !build/upstream/**/*.d
             !build/upstream/motif-src
-          key: upstream-src-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
-            upstream-src-${{ runner.os }}-
+            upstream-src-v2-${{ runner.os }}-
 
       - name: Cache ccache
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-build-${{ runner.os }}-${{ github.sha }}
+          key: ccache-build-v2-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            ccache-build-${{ runner.os }}-
+            ccache-build-v2-${{ runner.os }}-
 
       - name: Configure ccache
         run: |
@@ -134,10 +137,17 @@ jobs:
       - name: Build libX11-compat.so
         run: make -j"$(nproc)"
 
-      - name: Run regression tests (make check)
+      - name: Run regression tests (make check-unit)
+        # check-unit is the sanitizer-friendly subset: in-tree binaries
+        # + symbol-coverage, no motif/violawww gates. The motif job below
+        # owns the heavy integration gates (check-link-motif,
+        # check-demos-motif, check-smoke, check-differential) with the
+        # MOTIF_DEMO_SKIP env this job does not set.
         env:
-          SDL_VIDEODRIVER: dummy
-        run: make check
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 121
+        run: make check-unit
 
       - name: Build bundled examples
         run: make examples -j"$(nproc)"
@@ -155,7 +165,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ env.COMMON_BUILD_PKGS }}
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
         # Cache only the inputs that derive from sync-upstream-headers.py
@@ -172,9 +184,9 @@ jobs:
             !build/upstream/**/*.o
             !build/upstream/**/*.d
             !build/upstream/motif-src
-          key: upstream-src-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
-            upstream-src-${{ runner.os }}-
+            upstream-src-v2-${{ runner.os }}-
 
       - name: Cache ccache
         # Separate key from the release job so the debug
@@ -182,9 +194,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-debug-${{ runner.os }}-${{ github.sha }}
+          key: ccache-debug-v2-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            ccache-debug-${{ runner.os }}-
+            ccache-debug-v2-${{ runner.os }}-
 
       - name: Configure ccache
         run: |
@@ -196,9 +208,15 @@ jobs:
         run: make CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT -j"$(nproc)"
 
       - name: Run regression tests (debug)
+        # check-unit only: the umbrella check would recursively run
+        # check-demos-motif, which segfaults on programs/Tree/tree on
+        # this image. The motif job runs the full check with the
+        # MOTIF_DEMO_SKIP env that makes that demo opt-out.
         env:
-          SDL_VIDEODRIVER: dummy
-        run: make CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT check
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 121
+        run: make CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT check-unit
 
       - name: ccache stats
         run: ccache --show-stats
@@ -213,7 +231,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ env.COMMON_BUILD_PKGS }}
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
         # Cache only the inputs that derive from sync-upstream-headers.py
@@ -230,17 +250,17 @@ jobs:
             !build/upstream/**/*.o
             !build/upstream/**/*.d
             !build/upstream/motif-src
-          key: upstream-src-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
-            upstream-src-${{ runner.os }}-
+            upstream-src-v2-${{ runner.os }}-
 
       - name: Cache ccache
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-sanitize-${{ runner.os }}-${{ github.sha }}
+          key: ccache-sanitize-v2-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            ccache-sanitize-${{ runner.os }}-
+            ccache-sanitize-v2-${{ runner.os }}-
 
       - name: Configure ccache
         # Sanitizer flag set defines the cache key partition for ccache,
@@ -258,7 +278,9 @@ jobs:
           # services the .so as well. -fno-sanitize-recover=undefined
           # turns UBSan findings into hard failures.
           SAN_FLAGS: "-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1"
-          SDL_VIDEODRIVER: dummy
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 121
           # SDL2's dummy driver retains pools across XCloseDisplay, so
           # leak detection produces unrelated noise. Keep memory-error
           # detection on; revisit leaks separately.
@@ -266,21 +288,24 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" -j"$(nproc)"
-          make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" check
+          # Run only the cheap unit-test subset under sanitizer. The
+          # umbrella `make check` would recursively trigger motif's
+          # autoconf which probes for Xutf8TextExtents via a link test
+          # that fails when SAN_FLAGS leak into the upstream configure
+          # ("Motif requires a UTF-8 capable libX11").
+          make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" check-unit
 
       - name: ccache stats
         run: ccache --show-stats
 
-  # ---- Motif integration and validation ----
+  # ---- Motif, ViolaWWW integration and validation ----
   #
   # Build the thentenaar/motif libXm and libMrm against the compat stack,
   # build every Motif demo program, and run the demo smoke checks
   # (validate-motif-demos.sh launches each demo briefly and asserts no
-  # fatal output / abnormal exit). This is the local equivalent of the
-  # `motif-differential` make target, which orchestrates the same flow
-  # plus an SSH-driven comparison against a system libX11 host; the
-  # remote half isn't reproducible in a stock GitHub runner so we run
-  # the compat-stack half here.
+  # fatal output / abnormal exit). ViolaWWW is built locally and, when a
+  # remote differential host is configured, Motif and ViolaWWW are
+  # screenshot-compared against system libX11 under Xvfb.
   motif:
     runs-on: ubuntu-24.04
     env:
@@ -297,7 +322,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }}
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
         # Same cache as the other compile jobs use, scoped to
@@ -311,9 +337,9 @@ jobs:
             !build/upstream/**/*.o
             !build/upstream/**/*.d
             !build/upstream/motif-src
-          key: upstream-src-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
-            upstream-src-${{ runner.os }}-
+            upstream-src-v2-${{ runner.os }}-
 
       - name: Cache Motif source clone and autoreconf output
         # Exact-match key only (no restore-keys fallback). The Motif
@@ -330,9 +356,9 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-motif-${{ runner.os }}-${{ github.sha }}
+          key: ccache-motif-v2-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
-            ccache-motif-${{ runner.os }}-
+            ccache-motif-v2-${{ runner.os }}-
 
       - name: Configure ccache
         run: |
@@ -361,7 +387,7 @@ jobs:
           # crash log (uploaded by the next step on failure), skip so
           # the rest of the smoke set can keep gating.
           MOTIF_DEMO_SKIP: "programs/Tree/tree"
-        run: make motif-demos-check
+        run: make check-demos-motif
 
       - name: Upload Motif demo logs on failure
         # Captures every demo's per-run log so a future regression can be
@@ -374,5 +400,128 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Build ViolaWWW against compat stack
+        id: violawww
+        # Build the bolknote/violawww browser against libx11-compat +
+        # libXt-compat + libXpm-compat + libXmu-compat + bundled Motif.
+        # This is a build-only differential gate: the source is cloned
+        # at the pinned commit in mk/violawww.mk and compiled. A clean
+        # build verifies the full Xt + Motif + Xext surface the demos
+        # alone don't cover (e.g. selection helpers, XmuConvertStandard,
+        # Xpm pixmap loaders). The full per-step log is written to
+        # build/violawww/build.log and uploaded on failure.
+        #
+        # !cancelled() runs this step even if check-demos-motif
+        # above failed, so the two differential gates report
+        # independently. A workflow cancellation still aborts.
+        if: ${{ !cancelled() }}
+        run: make violawww
+
+      - name: Run Xvfb-backed replay smoke checks
+        # make check-smoke is intentionally usable without Xvfb/xdotool on a
+        # developer machine. GitHub-hosted runners are headless, so CI opts
+        # into Xvfb explicitly for deterministic screenshots while still using
+        # the in-process LIBX11_COMPAT_REPLAY input backend. ViolaWWW was built
+        # in the previous step, so clear its smoke prerequisite only when that
+        # build actually succeeded; otherwise the smoke would fail later with a
+        # missing vw binary and obscure the build failure.
+        if: ${{ !cancelled() && steps.violawww.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 121
+          VIOLAWWW_SMOKE_DEPS: ""
+        run: make check-smoke
+
+      - name: Run Motif differential screenshots
+        id: motif-differential
+        # SSHes to a Linux/Xvfb host, builds the pinned Motif inputs
+        # against system libX11 and libx11-compat, captures screenshots
+        # for both paths, and compares visible output. Configure
+        # MOTIF_DIFF_REMOTE as a repository variable when CI can reach
+        # the host; otherwise the gate is skipped, leaving the ViolaWWW
+        # differential step below independently runnable.
+        if: ${{ !cancelled() && vars.MOTIF_DIFF_REMOTE != '' }}
+        env:
+          MOTIF_DIFF_REMOTE: ${{ vars.MOTIF_DIFF_REMOTE }}
+          MOTIF_DIFF_INSTALL_DEPS: ${{ vars.MOTIF_DIFF_INSTALL_DEPS || '0' }}
+          MOTIF_DIFF_JOBS: ${{ vars.MOTIF_DIFF_JOBS || '1' }}
+          MOTIF_DIFF_COMPARE_LOCATION: remote
+          MOTIF_DIFF_REPLAY: ${{ vars.MOTIF_DIFF_REPLAY || '0' }}
+        run: make check-differential-motif
+
+      - name: Run ViolaWWW differential screenshots
+        id: violawww-differential
+        # Companion to the Motif step above. Runs only when ViolaWWW
+        # built successfully (otherwise the screenshot capture would
+        # exercise a stale or missing binary and produce misleading
+        # diffs) and when VIOLAWWW_DIFF_REMOTE is configured. Gated
+        # independently of motif-differential so each surfaces its own
+        # outcome and artifact-upload trigger.
+        if: ${{ !cancelled() && steps.violawww.outcome == 'success' && vars.VIOLAWWW_DIFF_REMOTE != '' }}
+        env:
+          VIOLAWWW_DIFF_REMOTE: ${{ vars.VIOLAWWW_DIFF_REMOTE }}
+          VIOLAWWW_DIFF_INSTALL_DEPS: ${{ vars.VIOLAWWW_DIFF_INSTALL_DEPS || '0' }}
+          VIOLAWWW_DIFF_JOBS: ${{ vars.VIOLAWWW_DIFF_JOBS || '1' }}
+          VIOLAWWW_DIFF_COMPARE_LOCATION: remote
+        run: make check-differential-violawww
+
+      - name: Upload ViolaWWW build log on failure
+        # Upload only when this specific step failed. A bare
+        # `if: failure()` would also fire on an earlier failure (e.g.
+        # check-demos-motif) and attach a successful ViolaWWW log,
+        # which would be a misleading artifact.
+        if: ${{ steps.violawww.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: violawww-build-log
+          path: build/violawww/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload UI smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Motif differential artifacts on failure
+        if: ${{ steps.motif-differential.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: motif-differential
+          path: |
+            build/motif-differential/report.tsv
+            build/motif-differential/junit.xml
+            build/motif-differential/logs
+            build/motif-differential/diff
+            build/motif-differential/system
+            build/motif-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload ViolaWWW differential artifacts on failure
+        if: ${{ steps.violawww-differential.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: violawww-differential
+          path: |
+            build/violawww-differential/report.tsv
+            build/violawww-differential/junit.xml
+            build/violawww-differential/logs
+            build/violawww-differential/diff
+            build/violawww-differential/system
+            build/violawww-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: ccache stats
+        # Always log ccache stats so we can see whether earlier-step
+        # failures still produced cache activity. !cancelled() keeps
+        # this gated on workflow cancellation while running through
+        # both demo and violawww failures.
+        if: ${{ !cancelled() }}
         run: ccache --show-stats

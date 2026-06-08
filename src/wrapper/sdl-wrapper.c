@@ -136,7 +136,12 @@ SDL_WRAP(SDL_PixelFormat *,
          SDL_AllocFormat,
          (Uint32 pixel_format),
          (pixel_format))
+SDL_WRAP(int, SDL_AtomicAdd, (SDL_atomic_t * a, int v), (a, v))
 SDL_WRAP(int, SDL_AtomicGet, (SDL_atomic_t * a), (a))
+SDL_WRAP(SDL_bool,
+         SDL_AtomicCAS,
+         (SDL_atomic_t * a, int oldv, int newv),
+         (a, oldv, newv))
 SDL_WRAP_VOID(SDL_AtomicLock, (SDL_SpinLock * lock), (lock))
 SDL_WRAP(int, SDL_AtomicSet, (SDL_atomic_t * a, int v), (a, v))
 SDL_WRAP_VOID(SDL_AtomicUnlock, (SDL_SpinLock * lock), (lock))
@@ -214,6 +219,7 @@ SDL_WRAP(int,
          SDL_GetCurrentDisplayMode,
          (int displayIndex, SDL_DisplayMode *mode),
          (displayIndex, mode))
+SDL_WRAP(const char *, SDL_GetCurrentVideoDriver, (void), ())
 SDL_WRAP(SDL_Cursor *, SDL_GetCursor, (void), ())
 SDL_WRAP(SDL_Cursor *, SDL_GetDefaultCursor, (void), ())
 SDL_WRAP(int,
@@ -226,10 +232,13 @@ SDL_WRAP(SDL_bool,
          (SDL_EventFilter * filter, void **userdata),
          (filter, userdata))
 SDL_WRAP(Uint32, SDL_GetGlobalMouseState, (int *x, int *y), (x, y))
+SDL_WRAP(SDL_Keycode, SDL_GetKeyFromScancode, (SDL_Scancode s), (s))
+SDL_WRAP(SDL_Scancode, SDL_GetScancodeFromKey, (SDL_Keycode k), (k))
 SDL_WRAP(SDL_Keymod, SDL_GetModState, (void), ())
 SDL_WRAP(SDL_Window *, SDL_GetMouseFocus, (void), ())
 SDL_WRAP(Uint32, SDL_GetMouseState, (int *x, int *y), (x, y))
 SDL_WRAP(int, SDL_GetNumVideoDisplays, (void), ())
+SDL_WRAP(Uint32, SDL_GetTicks, (void), ())
 SDL_WRAP_VOID(
     SDL_GetRGB,
     (Uint32 pixel, const SDL_PixelFormat *format, Uint8 *r, Uint8 *g, Uint8 *b),
@@ -263,6 +272,7 @@ SDL_WRAP_VOID(SDL_GetWindowSize,
 SDL_WRAP(SDL_Surface *, SDL_GetWindowSurface, (SDL_Window * window), (window))
 SDL_WRAP(const char *, SDL_GetWindowTitle, (SDL_Window * window), (window))
 SDL_WRAP(SDL_bool, SDL_HasClipboardText, (void), ())
+SDL_WRAP(SDL_bool, SDL_HasEvent, (Uint32 type), (type))
 SDL_WRAP(int, SDL_Init, (Uint32 flags), (flags))
 SDL_WRAP(SDL_bool,
          SDL_IntersectRect,
@@ -300,7 +310,16 @@ SDL_WRAP(int,
          (texture, format, access, w, h))
 SDL_WRAP_VOID(SDL_Quit, (void), ())
 SDL_WRAP_VOID(SDL_RaiseWindow, (SDL_Window * window), (window))
+SDL_WRAP(SDL_RWops *,
+         SDL_RWFromFile,
+         (const char *file, const char *mode),
+         (file, mode))
+SDL_WRAP(int,
+         SDL_SaveBMP_RW,
+         (SDL_Surface * surface, SDL_RWops *dst, int freedst),
+         (surface, dst, freedst))
 SDL_WRAP(Uint32, SDL_RegisterEvents, (int numevents), (numevents))
+SDL_WRAP(SDL_bool, SDL_RemoveTimer, (SDL_TimerID id), (id))
 SDL_WRAP(int, SDL_RenderClear, (SDL_Renderer * renderer), (renderer))
 SDL_WRAP(int,
          SDL_RenderCopy,
@@ -413,6 +432,7 @@ SDL_WRAP_VOID(SDL_SetWindowSize,
 SDL_WRAP_VOID(SDL_SetWindowTitle,
               (SDL_Window * window, const char *title),
               (window, title))
+SDL_WRAP_VOID(SDL_ShowWindow, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_StopTextInput, (void), ())
 SDL_WRAP(SDL_threadID, SDL_ThreadID, (void), ())
 SDL_WRAP(int, SDL_UnlockMutex, (SDL_mutex * mutex), (mutex))
@@ -434,6 +454,9 @@ SDL_WRAP(int,
          (src, srcrect, dst, dstrect))
 SDL_WRAP(int, SDL_WaitEvent, (SDL_Event * event), (event))
 SDL_WRAP(int, SDL_WarpMouseGlobal, (int x, int y), (x, y))
+SDL_WRAP_VOID(SDL_WarpMouseInWindow,
+              (SDL_Window * window, int x, int y),
+              (window, x, y))
 SDL_WRAP(Uint32, SDL_WasInit, (Uint32 flags), (flags))
 SDL_WRAP_VOID(SDL_free, (void *mem), (mem))
 SDL_WRAP(void *, SDL_memset, (void *dst, int c, size_t len), (dst, c, len))

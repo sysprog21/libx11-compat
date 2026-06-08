@@ -3,19 +3,44 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
               $(OUT)/tests/test-libxt-resources \
               $(OUT)/tests/test-xmu-link \
               $(OUT)/tests/test-xinerama-link \
-              $(OUT)/tests/test-libxpm-link
+              $(OUT)/tests/test-libxpm-link \
+              $(OUT)/tests/test-xtest
 BENCH_BINS := $(OUT)/tests/bench-paths
 
-.PHONY: check symbol-coverage api-symbol-coverage bench-paths
+.PHONY: check check-unit check-differential symbol-coverage api-symbol-coverage bench-paths
 
-## Build and run the regression test suite
-check: $(CHECK_BINS)
+## Run only the in-tree binary regression tests + api-symbol coverage.
+## This is the cheap, sanitizer-friendly subset: no motif autoconf, no
+## ViolaWWW build, no replay-driven UI smoke. Use this from CI sanitize
+## jobs and from any caller that cannot afford a full motif build under
+## CFLAGS_EXTRA flags (e.g. SAN_FLAGS), since the motif autoconf script
+## probes for Xutf8TextExtents via a link test that fails when the wrong
+## flag set leaks into the upstream configure.
+check-unit: $(CHECK_BINS)
 	@set -e; for test_bin in $(CHECK_BINS); do \
 		printf "$(BLUE)RUN$(RESET) %s\n" "$$test_bin"; \
 		SDL_VIDEODRIVER=dummy $$test_bin; \
 	done
 	@printf "$(BLUE)RUN$(RESET) tests/check-api-symbols.py\n"
 	$(Q)$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
+
+## Full local regression suite: unit tests, motif link/demos gates, the
+## replay smoke tier, and the SSH-backed differential screenshots. The
+## sub-targets are invoked via $(MAKE) so progress markers stay ordered
+## under -jN; failing prereqs surface inside the recipe rather than at
+## dependency resolution.
+check: check-unit
+	@printf "$(BLUE)RUN$(RESET) check-link-motif\n"
+	$(Q)$(MAKE) --no-print-directory check-link-motif
+	@printf "$(BLUE)RUN$(RESET) check-demos-motif\n"
+	$(Q)$(MAKE) --no-print-directory check-demos-motif
+	@printf "$(BLUE)RUN$(RESET) check-smoke\n"
+	$(Q)$(MAKE) --no-print-directory check-smoke
+	@printf "$(BLUE)RUN$(RESET) check-differential\n"
+	$(Q)$(MAKE) --no-print-directory check-differential
+
+## Run all system-libX11-vs-libx11-compat differential checks
+check-differential: check-differential-motif check-differential-violawww
 
 ## Run exported-symbol coverage checks
 symbol-coverage: $(OUT)/tests/symbol-coverage api-symbol-coverage

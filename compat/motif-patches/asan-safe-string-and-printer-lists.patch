@@ -1,0 +1,44 @@
+diff --git a/demos/lib/Xmd/Print.c b/demos/lib/Xmd/Print.c
+--- a/demos/lib/Xmd/Print.c
++++ b/demos/lib/Xmd/Print.c
+@@ -604,11 +604,11 @@ process_printer_list(Widget w)
+     /* Terminate with 0 */
+     buf[count++] = 0;
+     /* Make sure printer lists are big enough */
+     pw -> print.printers = (char**) XtRealloc((char*) pw -> print.printers,
+-					      sizeof(char*) *
+-					      pw -> print.num_printers + 1);
++					      sizeof(char*) *
++					      (pw -> print.num_printers + 1));
+     pw -> print.is_printer =
+       (Boolean*) XtRealloc((char*) pw -> print.is_printer,
+-			   sizeof(Boolean) * pw -> print.num_printers + 1);
++			   sizeof(Boolean) * (pw -> print.num_printers + 1));
+     pw -> print.printers[pw -> print.num_printers] = XtNewString(buf);
+     pw -> print.is_printer[pw -> print.num_printers] = ! is_path;
+     pw -> print.num_printers++;
+diff --git a/lib/Xm/XmExtUtil.c b/lib/Xm/XmExtUtil.c
+--- a/lib/Xm/XmExtUtil.c
++++ b/lib/Xm/XmExtUtil.c
+@@ -349,7 +349,7 @@ _XmGetMBStringFromXmString(XmString xmstr)
+ 	{
+     	case XmSTRING_COMPONENT_TEXT:
+ 	case XmSTRING_COMPONENT_LOCALE_TEXT:
+-	    length += strlen( newText );
++	    length += u_length;
+ 	    break;
+  	case XmSTRING_COMPONENT_SEPARATOR:
+ 	    length += 1;
+@@ -396,7 +396,11 @@ _XmGetMBStringFromXmString(XmString xmstr)
+ 	{
+     	case XmSTRING_COMPONENT_TEXT:
+ 	case XmSTRING_COMPONENT_LOCALE_TEXT:
+-	    strcat(text, newText);
++	    {
++		size_t text_len = strlen(text);
++		memcpy(text + text_len, newText, u_length);
++		text[text_len + u_length] = '\0';
++	    }
+ 	    break;
+  	case XmSTRING_COMPONENT_SEPARATOR:
+ 	    strcat(text, "\n");

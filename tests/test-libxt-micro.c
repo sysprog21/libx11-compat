@@ -15,6 +15,7 @@
  *   events      - XtAppMainLoop drains an XtAppAddTimeOut without spin.
  *   callbacks   - XtAddCallback/XtCallCallbacks/XtRemoveCallback round-trip.
  *   gc          - XtAllocateGC returns a non-NULL GC and tolerates release.
+ *   pointer     - XtGrabPointer accepts same-client regrabs.
  *   resources   - XtVaGetValues against an XtAppSetFallbackResources entry.
  *
  * The resources path drives the full XrmQGetSearchResource ->
@@ -178,6 +179,29 @@ static void test_gc(Widget shell)
     OK("gc");
 }
 
+/* --------------------------------------------------------------- pointer */
+
+static void test_pointer(Widget shell)
+{
+    int status =
+        XtGrabPointer(shell, True, ButtonPressMask | ButtonReleaseMask,
+                      GrabModeSync, GrabModeAsync, None, None, CurrentTime);
+    MUST(status == GrabSuccess, "pointer",
+         "initial XtGrabPointer returned %d, expected GrabSuccess", status);
+
+    /* Motif menu posting can grab the pointer while libXt already owns an
+     * active pointer grab for the same client. X11 treats this as a regrab
+     * that updates the active grab, not as AlreadyGrabbed. */
+    status = XtGrabPointer(shell, True, ButtonMotionMask, GrabModeAsync,
+                           GrabModeAsync, None, None, CurrentTime);
+    MUST(status == GrabSuccess, "pointer",
+         "same-client XtGrabPointer regrab returned %d, expected GrabSuccess",
+         status);
+
+    XtUngrabPointer(shell, CurrentTime);
+    OK("pointer");
+}
+
 /* --------------------------------------------------------- resources */
 
 /* Fallback resources are merged into the per-screen database the first
@@ -255,6 +279,7 @@ int main(int argc, char *argv[])
     test_events(app);
     test_callbacks(shell);
     test_gc(shell);
+    test_pointer(shell);
     test_resources(shell);
 
     /* Hold off destroy until the shell-using tests finish so a callback

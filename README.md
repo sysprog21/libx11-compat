@@ -29,6 +29,8 @@ Clients link against it the same way they would link against the system `libX11.
 
 ## Examples
 
+![ViolaWWW running through libx11-compat on macOS](assets/violawww.png)
+
 `examples/` bundles real Xlib clients built against the local `libX11-compat.so`:
 
 ```sh
@@ -38,10 +40,43 @@ build/examples/2048
 
 The bundle covers a 2048 game, a paint demo, Conway's Game of Life, an analog clock, an interactive Mandelbrot viewer, a single-runner Processing-style showcase, an SDL-backed clipboard `TARGETS` probe, and the upstream X.Org `x11perf` benchmark.
 See [`docs/EXAMPLES.md`](docs/EXAMPLES.md) for the API each example exercises.
+The screenshot above is from the larger ViolaWWW port described in [Larger Workloads Under Investigation](#larger-workloads-under-investigation).
+
+## Larger Workloads Under Investigation
+
+Two ports beyond the bundled demos are actively exercising `libx11-compat`.
+Both are work-in-progress rather than ready for daily use,
+but each surfaces gaps in coverage and edge cases that small examples never reach.
+
+- [Motif](https://en.wikipedia.org/wiki/Motif_(software)): upstream Motif and its demo suite build against the compatibility libraries.
+  Menu posting, pointer grabs, focus changes, and text rendering all work in the cases tested so far,
+  and the screenshot-based differential harness flags regressions against native X11/Motif.
+  Some widget paths still trigger fallback or layout artifacts that require further work.
+- [ViolaWWW](https://en.wikipedia.org/wiki/ViolaWWW): the 1992-era Motif web browser builds and runs out of the consolidated `build/` tree,
+  loads HTTP pages over the network,
+  and renders inline XPM images through `libXpm-compat`.
+  HTTPS, complex modern HTML, and several interactive flows are known limitations of the application itself rather than the compatibility layer.
+
+  ```sh
+  make violawww                          # build ViolaWWW (depends on motif)
+  build/violawww/source/src/vw/vw        # launch the browser
+  make check-smoke-violawww              # replay-driven smoke checks (scroll + Help menu)
+  make check-differential-violawww       # screenshot diff vs system libX11 (needs remote host)
+  ```
+
+  The `check-*-smoke` targets need an X display, or `UI_REPLAY_XVFB=--xvfb` to drive an in-process Xvfb;
+  on macOS the browser launches against the host SDL backend without extra setup.
+
+The value of these targets is not that they replace a real X11/Motif install today,
+but that they keep legacy Xlib/Motif code building and running on platforms where no X server is available while migration is in progress.
+
+Both ports rely on community input.
+Concrete reproducers, screenshot diffs, and small fixes posted to [GitHub Issues](https://github.com/sysprog21/libx11-compat/issues) are the most effective way to push these workloads forward.
+Specific gaps worth opening issues for include widget paths that misrender, Motif demos that crash or differ visibly from the native baseline, and ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did.
 
 ## Coverage and Compatibility
 
-The library exports 615 public Xlib symbols listed in [`tests/api-symbols.txt`](tests/api-symbols.txt),
+The library exports 631 public Xlib symbols listed in [`tests/api-symbols.txt`](tests/api-symbols.txt),
 covering window, drawable, GC, pixmap, image, event, input, atom, property, color, font, cursor, and region subsystems for the cases that real Xlib clients exercise.
 Selection, property, and resource-manager support is partial;
 MIT-SHM is a thin wrapper over the regular image path;

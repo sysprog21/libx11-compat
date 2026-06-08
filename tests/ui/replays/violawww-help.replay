@@ -1,0 +1,21 @@
+# Deterministic local ViolaWWW Help menu smoke test.
+#
+# Uses XTest-style pointer motion and button events to click the Help
+# menubar entry. This intentionally uses host screenshots rather than
+# in-process snapshots: the Help menu is an override-redirect top-level
+# popup, not part of vw's main window framebuffer.
+delay 2500
+wait-window "vw|Viola" 3000
+screenshot initial
+assert-image initial common-visible.json
+motion 780 14
+button 1 press
+delay 2000
+screenshot pressed
+assert-image pressed common-visible.json
+assert-image pressed violawww-help-menu.json
+button 1 release
+delay 1000
+screenshot released
+assert-image released common-visible.json
+assert-image released violawww-help-menu.json

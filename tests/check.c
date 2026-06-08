@@ -19,6 +19,7 @@
 #include "drawing.h"
 #include "gc.h"
 #include "image.h"
+#include "input.h"
 #include "path/compose.h"
 #include "path/edges.h"
 #include "path/path.h"
@@ -71,6 +72,17 @@ static XEvent make_event(int type, Window window)
         event.xexpose.height = 10;
     }
     return event;
+}
+
+static int font_struct_char_width(XFontStruct *font, unsigned int ch)
+{
+    if (!font)
+        return 0;
+    if (font->per_char && ch >= font->min_char_or_byte2 &&
+        ch <= font->max_char_or_byte2) {
+        return font->per_char[ch - font->min_char_or_byte2].width;
+    }
+    return font->min_bounds.width;
 }
 
 static int expect_map_state(Display *display, Window window, int expected)
@@ -133,6 +145,7 @@ static int pixel_is_rgba(SDL_Surface *surface,
                          Uint8 green,
                          Uint8 blue,
                          Uint8 alpha);
+static int pixel_is_between_black_and_white(SDL_Surface *surface, int x, int y);
 
 static int count_open_file_descriptors(void)
 {
@@ -257,6 +270,8 @@ static int test_keyboard(Display *display)
     CHECK(XStringToKeysym("a") == XK_a, "XStringToKeysym(\"a\") failed");
     CHECK(XStringToKeysym("A") == XK_A, "XStringToKeysym(\"A\") failed");
     CHECK(XStringToKeysym("1") == XK_1, "XStringToKeysym(\"1\") failed");
+    CHECK(XStringToKeysym("KDelete") == XK_Delete,
+          "XStringToKeysym(\"KDelete\") failed");
 
     unsigned int consumedModifiers = ShiftMask;
     KeySym lookupSym = NoSymbol;
@@ -320,6 +335,7 @@ static int test_keyboard(Display *display)
     Window probeWindow = XCreateSimpleWindow(
         display, DefaultRootWindow(display), 0, 0, 10, 10, 0, 0, 0);
     CHECK(probeWindow != None, "XCreateSimpleWindow for focus probe failed");
+    XSelectInput(display, probeWindow, FocusChangeMask);
     XSetInputFocus(display, probeWindow, RevertToParent, CurrentTime);
     Window focused = None;
     int revert = 0;
@@ -327,10 +343,148 @@ static int test_keyboard(Display *display)
     CHECK(focused == probeWindow,
           "XSetInputFocus did not update keyboard focus");
     CHECK(revert == RevertToParent, "XSetInputFocus did not record revert_to");
+    XEvent focusEvent;
+    CHECK(XCheckTypedWindowEvent(display, probeWindow, FocusIn, &focusEvent),
+          "XSetInputFocus did not queue FocusIn");
+    Window focusChild =
+        XCreateSimpleWindow(display, probeWindow, 1, 1, 5, 5, 0, 0, 0);
+    CHECK(focusChild != None, "XCreateSimpleWindow for focus child failed");
+    XSelectInput(display, focusChild, FocusChangeMask);
+    XSetInputFocus(display, focusChild, RevertToParent, CurrentTime);
+    CHECK(XCheckTypedWindowEvent(display, probeWindow, FocusOut, &focusEvent),
+          "parent-to-child focus change did not queue parent FocusOut");
+    CHECK(focusEvent.xfocus.detail == NotifyInferior,
+          "parent FocusOut to focused child did not use NotifyInferior");
+    CHECK(XCheckTypedWindowEvent(display, focusChild, FocusIn, &focusEvent),
+          "parent-to-child focus change did not queue child FocusIn");
+    CHECK(focusEvent.xfocus.detail == NotifyAncestor,
+          "child FocusIn from parent did not use NotifyAncestor");
     XSetInputFocus(display, None, RevertToParent, CurrentTime);
     XGetInputFocus(display, &focused, &revert);
+    /* Per Xlib spec XGetInputFocus reports the actual target: None for
+     * None, PointerRoot for PointerRoot. The previous behavior collapsed
+     * both into PointerRoot, which was non-conformant. */
+    CHECK(focused == None,
+          "XGetInputFocus after None focus should report None");
+    /* Window-to-None per Xlib 10.7.1: the relationship between a window
+     * and a non-window focus target is nonlinear (no shared hierarchy),
+     * so the leaf gets NotifyNonlinear and each strict ancestor below
+     * the root gets NotifyNonlinearVirtual. The root also receives a
+     * companion FocusIn with detail NotifyDetailNone, not asserted here
+     * because the root has no FocusChangeMask. */
+    CHECK(XCheckTypedWindowEvent(display, focusChild, FocusOut, &focusEvent),
+          "XSetInputFocus(None) did not queue FocusOut on focus leaf");
+    CHECK(focusEvent.xfocus.detail == NotifyNonlinear,
+          "FocusOut to None on focus leaf did not use NotifyNonlinear");
+    CHECK(XCheckTypedWindowEvent(display, probeWindow, FocusOut, &focusEvent),
+          "XSetInputFocus(None) did not queue FocusOut on focus ancestor");
+    CHECK(focusEvent.xfocus.detail == NotifyNonlinearVirtual,
+          "FocusOut to None on focus ancestor did not use "
+          "NotifyNonlinearVirtual");
+    /* Round-trip the PointerRoot case so a future regression that
+     * re-collapses the two non-window targets in XGetInputFocus is
+     * caught at this test. */
+    XSetInputFocus(display, (Window) PointerRoot, RevertToParent, CurrentTime);
+    XGetInputFocus(display, &focused, &revert);
     CHECK(focused == (Window) PointerRoot,
-          "XGetInputFocus after None focus should report PointerRoot");
+          "XGetInputFocus after PointerRoot focus should report PointerRoot");
+
+    /* Destroying the focus window must auto-revert per the recorded
+     * revert_to (Xlib spec). Without this the focus state stayed pinned
+     * to a freed XID and subsequent key events routed to dead memory.
+     * The parent must be mapped: RevertToParent walks past unviewable
+     * ancestors, which is what a real X server does too. */
+    Window revertParent = XCreateSimpleWindow(
+        display, DefaultRootWindow(display), 0, 0, 8, 8, 0, 0, 0);
+    CHECK(revertParent != None, "XCreateSimpleWindow for revert parent failed");
+    XMapWindow(display, revertParent);
+    Window revertChild =
+        XCreateSimpleWindow(display, revertParent, 0, 0, 4, 4, 0, 0, 0);
+    CHECK(revertChild != None, "XCreateSimpleWindow for revert child failed");
+    XMapWindow(display, revertChild);
+    XSetInputFocus(display, revertChild, RevertToParent, CurrentTime);
+    XDestroyWindow(display, revertChild);
+    XGetInputFocus(display, &focused, &revert);
+    CHECK(focused == revertParent,
+          "destroying focus window with RevertToParent did not revert to "
+          "parent");
+    CHECK(revert == RevertToNone,
+          "post-revert revert_to should reset to RevertToNone per spec");
+    XSetInputFocus(display, revertParent, RevertToPointerRoot, CurrentTime);
+    XDestroyWindow(display, revertParent);
+    XGetInputFocus(display, &focused, &revert);
+    CHECK(focused == (Window) PointerRoot,
+          "destroying focus window with RevertToPointerRoot did not revert "
+          "to PointerRoot");
+
+    /* RevertToParent with an unmapped parent walks past it to the next
+     * viewable ancestor (per spec's "closest viewable ancestor" clause).
+     * Setup note: strict Xlib would BadMatch the XSetInputFocus call
+     * below because mappedChild is not viewable (its parent is
+     * unmapped). The compat layer does not enforce that check by
+     * design - Motif sets focus on widgets before they are fully
+     * realized and depends on the call landing. This regression is for
+     * the compat-layer revert-walk behavior, not for a spec-conformant
+     * client scenario. */
+    Window unmappedParent = XCreateSimpleWindow(
+        display, DefaultRootWindow(display), 0, 0, 8, 8, 0, 0, 0);
+    CHECK(unmappedParent != None,
+          "XCreateSimpleWindow for unmapped revert parent failed");
+    Window mappedChild =
+        XCreateSimpleWindow(display, unmappedParent, 0, 0, 4, 4, 0, 0, 0);
+    CHECK(mappedChild != None,
+          "XCreateSimpleWindow for unmapped-parent child failed");
+    XMapWindow(display, mappedChild);
+    XSetInputFocus(display, mappedChild, RevertToParent, CurrentTime);
+    XDestroyWindow(display, mappedChild);
+    XGetInputFocus(display, &focused, &revert);
+    CHECK(focused != unmappedParent,
+          "RevertToParent landed on an unmapped ancestor instead of "
+          "walking up");
+    XDestroyWindow(display, unmappedParent);
+
+    /* Cascading destroy must preserve the FocusIn(parent) generated by
+     * a child's revert. Earlier code drained the parent's queue after
+     * recursion (which discarded that just-queued event); the discard
+     * now runs before recursion. Verify by selecting FocusChangeMask on
+     * the parent, focusing a mapped child with RevertToParent, then
+     * destroying the parent (which cascades to the child). The
+     * intermediate FocusIn(parent, NotifyInferior) from the child's
+     * revert (child is descendant of parent, so the spec detail is
+     * NotifyInferior, not NotifyAncestor) must reach the queue. */
+    Window cascadeParent = XCreateSimpleWindow(
+        display, DefaultRootWindow(display), 0, 0, 8, 8, 0, 0, 0);
+    CHECK(cascadeParent != None,
+          "XCreateSimpleWindow for cascade parent failed");
+    XSelectInput(display, cascadeParent, FocusChangeMask);
+    XMapWindow(display, cascadeParent);
+    Window cascadeChild =
+        XCreateSimpleWindow(display, cascadeParent, 0, 0, 4, 4, 0, 0, 0);
+    CHECK(cascadeChild != None, "XCreateSimpleWindow for cascade child failed");
+    XMapWindow(display, cascadeChild);
+    XSetInputFocus(display, cascadeChild, RevertToParent, CurrentTime);
+    while (
+        XCheckTypedWindowEvent(display, cascadeParent, FocusIn, &focusEvent)) {
+    }
+    while (
+        XCheckTypedWindowEvent(display, cascadeParent, FocusOut, &focusEvent)) {
+    }
+    XDestroyWindow(display, cascadeParent);
+    Bool sawRevertFocusIn = False;
+    while (
+        XCheckTypedWindowEvent(display, cascadeParent, FocusIn, &focusEvent)) {
+        if (focusEvent.xfocus.detail == NotifyInferior)
+            sawRevertFocusIn = True;
+    }
+    CHECK(sawRevertFocusIn,
+          "cascading destroy discarded the child-revert FocusIn on the "
+          "parent");
+    /* Drain any other events the cascade emitted (FocusOut on the parent
+     * from its own auto-revert, DestroyNotify, etc.) so they do not bleed
+     * into later subtests that assert XNextEvent ordering. */
+    while (XPending(display) > 0)
+        XNextEvent(display, &focusEvent);
+
     XDestroyWindow(display, probeWindow);
     XSetInputFocus(display, focusedBefore, revertBefore, CurrentTime);
 
@@ -365,6 +519,21 @@ static int test_gc(Display *display)
     CHECK(XGContextFromGC(defaultGc) != None, "DefaultGC has no XID");
     CHECK(GET_GC(defaultGc)->generation == 0,
           "DefaultGC generation was not initialized");
+    XGCValues defaultValues;
+    CHECK(XGetGCValues(display, defaultGc, GCForeground | GCBackground,
+                       &defaultValues),
+          "XGetGCValues failed for DefaultGC");
+    CHECK(
+        defaultValues.foreground == BlackPixel(display, DefaultScreen(display)),
+        "DefaultGC foreground did not match BlackPixel");
+    CHECK(
+        defaultValues.background == WhitePixel(display, DefaultScreen(display)),
+        "DefaultGC background did not match WhitePixel");
+    CHECK(defaultValues.foreground <
+                  (1ul << DefaultDepth(display, DefaultScreen(display))) &&
+              defaultValues.background <
+                  (1ul << DefaultDepth(display, DefaultScreen(display))),
+          "DefaultGC pixels exceeded DefaultDepth range");
 
     GC gc = XCreateGC(display, root, 0, NULL);
     CHECK(gc != NULL, "XCreateGC returned NULL");
@@ -658,6 +827,54 @@ static int test_compat_stubs(Display *display)
           "XWMGeometry user position wrong");
     CHECK(gravity == NorthEastGravity, "XWMGeometry user gravity wrong");
 
+    mask = XGeometry(display, DefaultScreen(display), "80x24", "120x40-0-0", 1,
+                     8, 16, 4, 6, &wx, &wy, &ww, &wh);
+    CHECK(mask == (WidthValue | HeightValue),
+          "XGeometry returned default position bits");
+    CHECK(ww == 80 && wh == 24, "XGeometry did not preserve unit width/height");
+    CHECK(wx == DisplayWidth(display, DefaultScreen(display)) - (120 * 8 + 4) -
+                      2 &&
+              wy == DisplayHeight(display, DefaultScreen(display)) -
+                        (40 * 16 + 6) - 2,
+          "XGeometry did not use default size for default negative position");
+
+    mask = XGeometry(display, DefaultScreen(display), "80x24+7-9", "120x40+1+2",
+                     2, 8, 16, 4, 6, &wx, &wy, &ww, &wh);
+    CHECK(mask == (WidthValue | HeightValue | XValue | YValue | YNegative),
+          "XGeometry user mask wrong");
+    CHECK(ww == 80 && wh == 24, "XGeometry user size was converted to pixels");
+    CHECK(wx == 7 && wy == DisplayHeight(display, DefaultScreen(display)) -
+                               (24 * 16 + 6) - 4 - 9,
+          "XGeometry user position wrong");
+
+    mask = XGeometry(display, DefaultScreen(display), NULL, "120x40-0-0", 1, 0,
+                     0, 4, 6, &wx, &wy, &ww, &wh);
+    CHECK(mask == NoValue, "XGeometry default-only mask wrong");
+    CHECK(wx == DisplayWidth(display, DefaultScreen(display)) - 4 - 2 &&
+              wy == DisplayHeight(display, DefaultScreen(display)) - 6 - 2,
+          "XGeometry did not preserve zero unit sizes");
+
+    /* The negative-anchor pixel-arithmetic path must saturate when the
+     * font cell times the parsed unit count overflows int. We drive
+     * the satMulAdd path with a small parseable spec (so upstream
+     * XParseGeometry's signed int math stays in range) and a huge
+     * font cell argument; clampInt64ToInt clamps the result. */
+    int saturatedX = -1;
+    int saturatedY = -1;
+    int saturatedW = -1;
+    int saturatedH = -1;
+    XGeometry(display, DefaultScreen(display), "100x100-0-0", "10x10+0+0", 0,
+              INT_MAX / 2, INT_MAX / 2, 0, 0, &saturatedX, &saturatedY,
+              &saturatedW, &saturatedH);
+    CHECK(saturatedW == 100 && saturatedH == 100,
+          "XGeometry parsed width/height was clobbered");
+    /* anchorPixelWidth = 100 * (INT_MAX/2) is far above INT_MAX, so
+     * DisplayWidth - anchorPixelWidth - border clamps to INT_MIN. */
+    CHECK(saturatedX == INT_MIN,
+          "XGeometry negative-anchor X did not saturate at INT_MIN");
+    CHECK(saturatedY == INT_MIN,
+          "XGeometry negative-anchor Y did not saturate at INT_MIN");
+
     return 1;
 }
 
@@ -812,6 +1029,18 @@ static int pixel_is_rgba(SDL_Surface *surface,
            gotAlpha == alpha;
 }
 
+static int pixel_is_between_black_and_white(SDL_Surface *surface, int x, int y)
+{
+    Uint8 red = 0;
+    Uint8 green = 0;
+    Uint8 blue = 0;
+    Uint8 alpha = 0;
+    SDL_GetRGBA(getPixel(surface, (unsigned int) x, (unsigned int) y),
+                surface->format, &red, &green, &blue, &alpha);
+    return alpha == 255 && red == green && green == blue && red > 0 &&
+           red < 255;
+}
+
 static int test_pixmaps(Display *display)
 {
     int formatCount = 0;
@@ -959,6 +1188,162 @@ static int test_pixmaps(Display *display)
           "pixmap set bit did not use foreground");
     SDL_FreeSurface(surface);
     XFreePixmap(display, colorPixmap);
+
+    colorPixmap = XCreatePixmapFromBitmapData(display, root, colorBits, 2, 1, 0,
+                                              0x00FFFFFF, 24);
+    CHECK(colorPixmap != None,
+          "XCreatePixmapFromBitmapData with X11 pixel colors failed");
+    GET_RENDERER(colorPixmap, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface != NULL,
+          "getRenderSurface for X11 pixel color pixmap failed");
+    CHECK(pixel_is_rgb(surface, 0, 0, 255, 255, 255),
+          "pixmap clear bit treated alpha-less white as transparent");
+    CHECK(pixel_is_rgb(surface, 1, 0, 0, 0, 0),
+          "pixmap set bit treated X11 black pixel as transparent");
+    SDL_FreeSurface(surface);
+    XFreePixmap(display, colorPixmap);
+
+    Pixmap copySrc = XCreatePixmap(
+        display, root, 8, 8, DefaultDepth(display, DefaultScreen(display)));
+    Pixmap copyDest = XCreatePixmap(
+        display, root, 8, 8, DefaultDepth(display, DefaultScreen(display)));
+    CHECK(copySrc != None && copyDest != None,
+          "XCopyArea pixmap regression pixmap creation failed");
+    GC copyGc = XCreateGC(display, copySrc, 0, NULL);
+    CHECK(copyGc != NULL, "XCopyArea pixmap regression GC creation failed");
+    CHECK(XSetForeground(display, copyGc, 0xFFFFFFFF),
+          "XCopyArea pixmap regression source clear color failed");
+    CHECK(XFillRectangle(display, copySrc, copyGc, 0, 0, 8, 8),
+          "XCopyArea pixmap regression source fill failed");
+    CHECK(XSetForeground(display, copyGc, 0xFF000000),
+          "XCopyArea pixmap regression source mark color failed");
+    CHECK(XFillRectangle(display, copySrc, copyGc, 2, 2, 3, 3),
+          "XCopyArea pixmap regression source mark failed");
+    CHECK(XSetForeground(display, copyGc, 0xFFFFFFFF),
+          "XCopyArea pixmap regression destination clear color failed");
+    CHECK(XFillRectangle(display, copyDest, copyGc, 0, 0, 8, 8),
+          "XCopyArea pixmap regression destination clear failed");
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 2, 2, 3, 3, 0, 0),
+          "XCopyArea to pixmap failed");
+    GET_RENDERER(copyDest, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface != NULL,
+          "getRenderSurface for XCopyArea pixmap destination failed");
+    CHECK(pixel_is_rgb(surface, 0, 0, 0, 0, 0),
+          "XCopyArea to pixmap did not copy source pixels");
+    CHECK(pixel_is_rgb(surface, 4, 4, 255, 255, 255),
+          "XCopyArea to pixmap damaged unrelated pixels");
+    SDL_FreeSurface(surface);
+
+    /* Non-GXcopy XCopyArea: the raster-op fallback should now respect
+     * the GC function. GXxor of opaque white over black yields white,
+     * GXand yields black. Skip the assertion if SDL_RenderReadPixels
+     * returns 0 (some headless SDL configs), but at minimum the call
+     * must report success. */
+    CHECK(XSetForeground(display, copyGc, 0xFFFFFFFF),
+          "raster-op src fill color setup failed");
+    CHECK(XFillRectangle(display, copySrc, copyGc, 0, 0, 8, 8),
+          "raster-op src fill failed");
+    CHECK(XSetForeground(display, copyGc, 0xFF000000),
+          "raster-op dest clear color setup failed");
+    CHECK(XFillRectangle(display, copyDest, copyGc, 0, 0, 8, 8),
+          "raster-op dest clear failed");
+    XGCValues rasterValues;
+    rasterValues.function = GXxor;
+    CHECK(XChangeGC(display, copyGc, GCFunction, &rasterValues),
+          "raster-op GXxor configuration failed");
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 0, 0, 8, 8, 0, 0) == 1,
+          "XCopyArea with GXxor failed");
+    rasterValues.function = GXcopy;
+    XChangeGC(display, copyGc, GCFunction, &rasterValues);
+    /* Verify actual pixel output: white XOR black = white (0xFFFFFF).
+     * Without this assertion the test would pass even if the raster-op
+     * helper read the wrong renderer or fed uninitialized memory into
+     * applyRasterFunction. */
+    {
+        SDL_Renderer *rasterRenderer = NULL;
+        GET_RENDERER(copyDest, rasterRenderer);
+        SDL_Surface *rasterSurface = getRenderSurface(rasterRenderer);
+        if (rasterSurface) {
+            CHECK(pixel_is_rgb(rasterSurface, 0, 0, 255, 255, 255),
+                  "GXxor XCopyArea did not produce white = black ^ white");
+            CHECK(pixel_is_rgb(rasterSurface, 4, 4, 255, 255, 255),
+                  "GXxor XCopyArea did not cover the full rect");
+            SDL_FreeSurface(rasterSurface);
+        }
+    }
+
+    CHECK(XSetForeground(display, copyGc, 0xFF000000),
+          "clipped raster-op dest clear color setup failed");
+    CHECK(XFillRectangle(display, copyDest, copyGc, 0, 0, 8, 8),
+          "clipped raster-op dest clear failed");
+    rasterValues.function = GXxor;
+    CHECK(XChangeGC(display, copyGc, GCFunction, &rasterValues),
+          "clipped raster-op GXxor configuration failed");
+    CHECK(
+        XCopyArea(display, copySrc, copyDest, copyGc, 0, 0, 4, 4, -2, -2) == 1,
+        "clipped GXxor XCopyArea failed");
+    rasterValues.function = GXcopy;
+    XChangeGC(display, copyGc, GCFunction, &rasterValues);
+    {
+        SDL_Renderer *rasterRenderer = NULL;
+        GET_RENDERER(copyDest, rasterRenderer);
+        SDL_Surface *rasterSurface = getRenderSurface(rasterRenderer);
+        if (rasterSurface) {
+            CHECK(pixel_is_rgb(rasterSurface, 0, 0, 255, 255, 255),
+                  "clipped GXxor XCopyArea did not write visible pixels");
+            CHECK(pixel_is_rgb(rasterSurface, 2, 2, 0, 0, 0),
+                  "clipped GXxor XCopyArea damaged outside clipped region");
+            SDL_FreeSurface(rasterSurface);
+        }
+    }
+
+    /* XCopyArea must reject geometries whose extents would overflow
+     * signed int instead of wrapping into SDL_Rect math. Combine a near-
+     * INT_MAX coordinate with a non-zero width to force the extent over
+     * the int boundary. */
+    int (*xcOldHandler)(Display *, XErrorEvent *) =
+        XSetErrorHandler(record_error);
+    last_error_code = 0;
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, INT_MAX, 0, 16u, 1u, 0,
+                    0) == 0,
+          "XCopyArea accepted src_x + width past INT_MAX");
+    XSync(display, False);
+    CHECK(last_error_code == BadValue,
+          "XCopyArea src extent overflow did not raise BadValue");
+    last_error_code = 0;
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 0, 0, 16u, 1u, INT_MAX,
+                    0) == 0,
+          "XCopyArea accepted dest_x + width past INT_MAX");
+    XSync(display, False);
+    CHECK(last_error_code == BadValue,
+          "XCopyArea dest extent overflow did not raise BadValue");
+    last_error_code = 0;
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 0, 0,
+                    (unsigned int) INT_MAX + 1u, 1u, 0, 0) == 0,
+          "XCopyArea accepted width over INT_MAX");
+    XSync(display, False);
+    CHECK(last_error_code == BadValue,
+          "XCopyArea width over INT_MAX did not raise BadValue");
+    rasterValues.function = GXxor;
+    CHECK(XChangeGC(display, copyGc, GCFunction, &rasterValues),
+          "raster-op overflow GXxor configuration failed");
+    last_error_code = 0;
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 0, 0,
+                    (unsigned int) (INT_MAX / sizeof(Uint32)) + 1u, 1u, 0,
+                    0) == 0,
+          "XCopyArea accepted raster-op pitch past INT_MAX");
+    XSync(display, False);
+    CHECK(last_error_code == BadValue,
+          "XCopyArea raster-op pitch overflow did not raise BadValue");
+    rasterValues.function = GXcopy;
+    XChangeGC(display, copyGc, GCFunction, &rasterValues);
+    XSetErrorHandler(xcOldHandler);
+
+    XFreeGC(display, copyGc);
+    XFreePixmap(display, copySrc);
+    XFreePixmap(display, copyDest);
 
     /* XBM file round-trip: parse a hand-written file, then read back a
      * file produced by XWriteBitmapFile. */
@@ -1171,6 +1556,106 @@ static int test_drawables_and_gcs(Display *display)
     CHECK(pixel_is_rgba(surface, 13, 3, 0x66, 0x77, 0x88, 0x80),
           "GXcopy arc fill blended instead of replacing");
     SDL_FreeSurface(surface);
+
+    Window clipTop =
+        XCreateSimpleWindow(display, root, 120, 40, 24, 24, 0, 0, 0);
+    CHECK(clipTop != None, "child clip top-level creation failed");
+    Window clipChild =
+        XCreateSimpleWindow(display, clipTop, 8, 8, 8, 8, 0, 0, 0);
+    CHECK(clipChild != None, "child clip window creation failed");
+    CHECK(XMapWindow(display, clipChild), "child clip child map failed");
+    CHECK(XMapWindow(display, clipTop), "child clip top-level map failed");
+    GC childClipGc = XCreateGC(display, clipChild, 0, NULL);
+    CHECK(childClipGc != NULL, "child clip GC creation failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFF000000),
+          "child clip black failed");
+    CHECK(XFillRectangle(display, clipTop, childClipGc, 0, 0, 24, 24),
+          "child clip top clear failed");
+    XRectangle childClip = {.x = 0, .y = 0, .width = 4, .height = 4};
+    CHECK(
+        XSetClipRectangles(display, childClipGc, 0, 0, &childClip, 1, Unsorted),
+        "child clip rect setup failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFFFF0000),
+          "child clip red failed");
+    CHECK(XFillRectangle(display, clipChild, childClipGc, 0, 0, 8, 8),
+          "child clipped fill failed");
+    XSetClipMask(display, childClipGc, None);
+    SDL_Renderer *clipTopRenderer = NULL;
+    GET_RENDERER(clipTop, clipTopRenderer);
+    SDL_Surface *clipTopSurface = getRenderSurface(clipTopRenderer);
+    CHECK(clipTopSurface != NULL, "child clip surface readback failed");
+    CHECK(pixel_is_rgb(clipTopSurface, 8, 8, 255, 0, 0),
+          "child clip missed drawable-local inside pixel");
+    CHECK(pixel_is_rgb(clipTopSurface, 12, 8, 0, 0, 0),
+          "child clip allowed outside pixel");
+    SDL_FreeSurface(clipTopSurface);
+
+    CHECK(XSetClipMask(display, childClipGc, None),
+          "child copy clip reset failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFF000000),
+          "child copy black failed");
+    CHECK(XFillRectangle(display, clipTop, childClipGc, 0, 0, 24, 24),
+          "child copy top reset failed");
+    CHECK(XMoveResizeWindow(display, clipChild, 5, 5, 8, 8),
+          "child copy geometry reset failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFFFF0000),
+          "child copy red failed");
+    CHECK(XFillRectangle(display, clipChild, childClipGc, 0, 0, 8, 4),
+          "child copy top fill failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFF00FF00),
+          "child copy green failed");
+    CHECK(XFillRectangle(display, clipChild, childClipGc, 0, 4, 8, 4),
+          "child copy bottom fill failed");
+    CHECK(
+        XCopyArea(display, clipChild, clipChild, childClipGc, 0, 4, 8, 4, 0, 0),
+        "child same-window XCopyArea failed");
+    GET_RENDERER(clipTop, clipTopRenderer);
+    clipTopSurface = getRenderSurface(clipTopRenderer);
+    CHECK(clipTopSurface != NULL, "child copy surface readback failed");
+    CHECK(pixel_is_rgb(clipTopSurface, 5, 5, 0, 255, 0),
+          "child same-window XCopyArea read from wrong coordinates");
+    SDL_FreeSurface(clipTopSurface);
+
+    CHECK(XSetClipMask(display, childClipGc, None),
+          "child move clear clip reset failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFF000000),
+          "child move clear black failed");
+    CHECK(XFillRectangle(display, clipTop, childClipGc, 0, 0, 24, 24),
+          "child move clear top reset failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFFFF0000),
+          "child move clear red failed");
+    CHECK(XFillRectangle(display, clipChild, childClipGc, 0, 0, 8, 8),
+          "child move clear initial child fill failed");
+    CHECK(XMoveWindow(display, clipChild, 12, 12),
+          "child move clear move failed");
+    GET_RENDERER(clipTop, clipTopRenderer);
+    clipTopSurface = getRenderSurface(clipTopRenderer);
+    CHECK(clipTopSurface != NULL, "child move clear surface readback failed");
+    CHECK(pixel_is_rgb(clipTopSurface, 8, 8, 0, 0, 0),
+          "moving child left stale pixels in old parent area");
+    SDL_FreeSurface(clipTopSurface);
+
+    CHECK(XSetForeground(display, childClipGc, 0xFF000000),
+          "child resize gravity black failed");
+    CHECK(XFillRectangle(display, clipTop, childClipGc, 0, 0, 24, 24),
+          "child resize gravity top reset failed");
+    CHECK(XMoveResizeWindow(display, clipChild, 4, 4, 8, 8),
+          "child resize gravity reset failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFFFF0000),
+          "child resize gravity red failed");
+    CHECK(XFillRectangle(display, clipChild, childClipGc, 0, 0, 8, 8),
+          "child resize gravity initial fill failed");
+    CHECK(XResizeWindow(display, clipChild, 10, 10),
+          "child resize gravity resize failed");
+    GET_RENDERER(clipTop, clipTopRenderer);
+    clipTopSurface = getRenderSurface(clipTopRenderer);
+    CHECK(clipTopSurface != NULL,
+          "child resize gravity surface readback failed");
+    CHECK(pixel_is_rgb(clipTopSurface, 4, 4, 0, 0, 0),
+          "ForgetGravity resize preserved stale child pixels");
+    SDL_FreeSurface(clipTopSurface);
+    XFreeGC(display, childClipGc);
+    XDestroyWindow(display, clipTop);
 
     Pixmap pathArcPixmap =
         XCreatePixmap(display, root, 40, 40, DefaultDepth(display, 0));
@@ -1722,6 +2207,37 @@ static int test_images(Display *display)
           "XGetImage XYPixmap returned a zero-filled image");
     XDestroyImage(xyReadback);
 
+    /* Verify the ZPixmap 32-bit fast path promotes X11 pixel colors
+     * (upper byte == 0) to opaque alpha so SDL2 renders them visible.
+     * Without the alpha promotion the entire surface would read as
+     * fully transparent. */
+    char *alphaTestData = calloc(1, 16);
+    CHECK(alphaTestData, "alpha-promotion image data allocation failed");
+    XImage *alphaImage =
+        XCreateImage(display, DefaultVisual(display, DefaultScreen(display)),
+                     32, ZPixmap, 0, alphaTestData, 2, 2, 32, 0);
+    CHECK(alphaImage, "alpha-promotion XCreateImage failed");
+    XPutPixel(alphaImage, 0, 0, 0x00FFFFFF);
+    XPutPixel(alphaImage, 1, 0, 0x00000000);
+    Pixmap alphaPixmap =
+        XCreatePixmap(display, secondWindow, 2, 1,
+                      DefaultDepth(display, DefaultScreen(display)));
+    CHECK(alphaPixmap != None, "alpha-promotion pixmap creation failed");
+    CHECK(XPutImage(display, alphaPixmap, imageGc, alphaImage, 0, 0, 0, 0, 2,
+                    1) == 1,
+          "ZPixmap XPutImage with X11 pixel colors failed");
+    SDL_Renderer *alphaRenderer = NULL;
+    GET_RENDERER(alphaPixmap, alphaRenderer);
+    SDL_Surface *alphaSurface = getRenderSurface(alphaRenderer);
+    CHECK(alphaSurface, "alpha-promotion render surface unavailable");
+    CHECK(pixel_is_rgb(alphaSurface, 0, 0, 255, 255, 255),
+          "ZPixmap XPutImage treated alpha-less white as transparent");
+    CHECK(pixel_is_rgb(alphaSurface, 1, 0, 0, 0, 0),
+          "ZPixmap XPutImage treated alpha-less black as transparent");
+    SDL_FreeSurface(alphaSurface);
+    XFreePixmap(display, alphaPixmap);
+    XDestroyImage(alphaImage);
+
     XSetWindowAttributes inputAttrs;
     memset(&inputAttrs, 0, sizeof(inputAttrs));
     Window inputOnly =
@@ -1937,6 +2453,13 @@ static int test_events(Display *display)
     GET_RENDERER(window, renderer);
     CHECK(renderer, "mapped window renderer was not available");
     XEvent out;
+    int mapExposeCount = 0;
+    while (XCheckWindowEvent(display, window, ExposureMask, &out)) {
+        CHECK(out.type == Expose && out.xexpose.count == 0,
+              "map Expose had unexpected type/count");
+        mapExposeCount++;
+    }
+    CHECK(mapExposeCount == 1, "XMapWindow posted duplicate Expose events");
     while (XCheckWindowEvent(display, window, ExposureMask, &out)) {
     }
     CHECK(XClearArea(display, window, 3, 4, 0, 0, True), "XClearArea failed");
@@ -1963,6 +2486,29 @@ static int test_events(Display *display)
     }
     while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
+
+    /* XSendEvent's contract is sizeof(XEvent), so the buffer must be
+     * full-union sized; passing a bare XClientMessageEvent triggers a
+     * stack-buffer-overflow under ASan. */
+    XEvent olderClient;
+    memset(&olderClient, 0, sizeof(olderClient));
+    olderClient.xclient.type = ClientMessage;
+    olderClient.xclient.display = display;
+    olderClient.xclient.window = window;
+    olderClient.xclient.message_type = XA_STRING;
+    olderClient.xclient.format = 32;
+    olderClient.xclient.data.l[0] = 0x1234;
+    CHECK(XSendEvent(display, window, False, NoEventMask, &olderClient),
+          "event-order ClientMessage send failed");
+    CHECK(XClearArea(display, window, 21, 22, 5, 6, True),
+          "event-order XClearArea failed");
+    XNextEvent(display, &out);
+    CHECK(out.type == ClientMessage && out.xany.window == window,
+          "generated Expose jumped ahead of older queued SDL event");
+    XNextEvent(display, &out);
+    CHECK(out.type == Expose && out.xany.window == window &&
+              out.xexpose.x == 21 && out.xexpose.y == 22,
+          "generated Expose was not delivered after older SDL event");
 
     GC parentDrawGc = XCreateGC(display, window, 0, NULL);
     CHECK(parentDrawGc != NULL, "parent child-overlap GC creation failed");
@@ -2057,6 +2603,30 @@ static int test_events(Display *display)
     CHECK(translatedChild == offsetChild,
           "XTranslateCoordinates did not return containing child");
 
+    Window lowerOverlap =
+        XCreateSimpleWindow(display, offsetWindow, 6, 6, 8, 8, 0, 0, 0);
+    CHECK(lowerOverlap != None, "lower overlap child creation failed");
+    Window upperOverlap =
+        XCreateSimpleWindow(display, offsetWindow, 8, 8, 8, 8, 0, 0, 0);
+    CHECK(upperOverlap != None, "upper overlap child creation failed");
+    CHECK(XMapWindow(display, lowerOverlap), "lower overlap child map failed");
+    CHECK(XMapWindow(display, upperOverlap), "upper overlap child map failed");
+    CHECK(XTranslateCoordinates(display, offsetWindow, offsetWindow, 9, 9,
+                                &translatedX, &translatedY, &translatedChild),
+          "XTranslateCoordinates overlap lookup failed");
+    CHECK(translatedChild == upperOverlap,
+          "XTranslateCoordinates did not return topmost child");
+    XUnmapWindow(display, upperOverlap);
+    CHECK(XTranslateCoordinates(display, offsetWindow, offsetWindow, 9, 9,
+                                &translatedX, &translatedY, &translatedChild),
+          "XTranslateCoordinates unmapped overlap lookup failed");
+    CHECK(translatedChild == lowerOverlap,
+          "XTranslateCoordinates returned an unmapped child");
+    /* Tear the offsetWindow subtree down before the rest of the test
+     * reuses `window` for unrelated checks; XDestroyWindow recursively
+     * frees offsetChild, lowerOverlap, and upperOverlap. */
+    XDestroyWindow(display, offsetWindow);
+
     Pixmap backgroundPixmap = XCreatePixmap(
         display, window, 4, 4, DefaultDepth(display, DefaultScreen(display)));
     CHECK(backgroundPixmap != None, "XCreatePixmap for background failed");
@@ -2119,6 +2689,16 @@ static int test_events(Display *display)
     XNextEvent(display, &out);
     CHECK(out.type == Expose && out.xany.window == window,
           "XPutBackEvent disturbed queued event order");
+
+    XSendEvent(display, window, False, 0, &client);
+    XNextEvent(display, &out);
+    CHECK(out.type == ClientMessage && out.xany.window == window,
+          "XNextEvent did not drain normal event after empty put-back check");
+    CHECK(XPutBackEvent(display, &client) == 0,
+          "XPutBackEvent deadlocked after empty put-back pop");
+    XNextEvent(display, &out);
+    CHECK(out.type == ClientMessage && out.xany.window == window,
+          "post-empty-pop XPutBackEvent was not readable");
 
     XSendEvent(display, window, False, ExposureMask, &expose);
     CHECK(XCheckMaskEvent(display, ExposureMask, &out),
@@ -2268,6 +2848,94 @@ static int test_events(Display *display)
     while (XCheckTypedWindowEvent(display, pointerChild, Expose, &out)) {
     }
 
+    XSelectInput(display, pointerChild, EnterWindowMask);
+    SDL_Event enterOnlyMotion;
+    SDL_zero(enterOnlyMotion);
+    enterOnlyMotion.type = SDL_MOUSEMOTION;
+    enterOnlyMotion.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
+    enterOnlyMotion.motion.x = 15;
+    enterOnlyMotion.motion.y = 18;
+    CHECK(convertEvent(display, &enterOnlyMotion, &out, True) != 0,
+          "enter-only child unexpectedly received MotionNotify");
+    CHECK(XCheckTypedWindowEvent(display, pointerChild, EnterNotify, &out),
+          "enter-only child did not receive crossing event");
+    CHECK(out.xcrossing.x == 5 && out.xcrossing.y == 6,
+          "enter-only child crossing coordinates were not child-local");
+    CHECK(!XCheckTypedWindowEvent(display, pointerChild, MotionNotify, &out),
+          "enter-only child queued MotionNotify without selecting motion");
+
+    XSelectInput(display, pointerChild, LeaveWindowMask);
+    enterOnlyMotion.motion.x = 70;
+    enterOnlyMotion.motion.y = 70;
+    CHECK(convertEvent(display, &enterOnlyMotion, &out, True) != 0,
+          "leave-only child unexpectedly received MotionNotify");
+    CHECK(XCheckTypedWindowEvent(display, pointerChild, LeaveNotify, &out),
+          "leave-only child did not receive crossing event");
+
+    XSelectInput(display, pointerChild, EnterWindowMask | PointerMotionMask);
+    enterOnlyMotion.motion.x = 15;
+    enterOnlyMotion.motion.y = 18;
+    CHECK(convertEvent(display, &enterOnlyMotion, &out, True) != 0,
+          "crossing motion should be queued behind EnterNotify");
+    XNextEvent(display, &out);
+    CHECK(out.type == EnterNotify && out.xcrossing.window == pointerChild,
+          "crossing motion did not deliver EnterNotify first");
+    XNextEvent(display, &out);
+    CHECK(out.type == MotionNotify && out.xmotion.window == pointerChild,
+          "crossing motion did not deliver MotionNotify after EnterNotify");
+
+    XSelectInput(display, pointerParent, EnterWindowMask | LeaveWindowMask);
+    XSelectInput(display, pointerChild, EnterWindowMask | LeaveWindowMask);
+    enterOnlyMotion.motion.x = 70;
+    enterOnlyMotion.motion.y = 70;
+    CHECK(convertEvent(display, &enterOnlyMotion, &out, True) != 0,
+          "child-to-parent crossing unexpectedly produced MotionNotify");
+    CHECK(XCheckTypedWindowEvent(display, pointerChild, LeaveNotify, &out),
+          "child-to-parent crossing did not leave child");
+    CHECK(out.xcrossing.detail == NotifyAncestor,
+          "child-to-parent LeaveNotify did not use NotifyAncestor");
+    CHECK(XCheckTypedWindowEvent(display, pointerParent, EnterNotify, &out),
+          "child-to-parent crossing did not enter parent");
+    CHECK(out.xcrossing.detail == NotifyInferior,
+          "child-to-parent EnterNotify did not use NotifyInferior");
+
+    enterOnlyMotion.motion.x = 15;
+    enterOnlyMotion.motion.y = 18;
+    CHECK(convertEvent(display, &enterOnlyMotion, &out, True) != 0,
+          "parent-to-child crossing unexpectedly produced MotionNotify");
+    CHECK(XCheckTypedWindowEvent(display, pointerParent, LeaveNotify, &out),
+          "parent-to-child crossing did not leave parent");
+    CHECK(out.xcrossing.detail == NotifyInferior,
+          "parent-to-child LeaveNotify did not use NotifyInferior");
+    CHECK(XCheckTypedWindowEvent(display, pointerChild, EnterNotify, &out),
+          "parent-to-child crossing did not enter child");
+    CHECK(out.xcrossing.detail == NotifyAncestor,
+          "parent-to-child EnterNotify did not use NotifyAncestor");
+
+    SDL_Event topLeave;
+    SDL_zero(topLeave);
+    topLeave.type = SDL_WINDOWEVENT;
+    topLeave.window.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
+    topLeave.window.event = SDL_WINDOWEVENT_LEAVE;
+    CHECK(convertEvent(display, &topLeave, &out, True) != 0,
+          "top-level leave should queue child leave first");
+    XNextEvent(display, &out);
+    CHECK(out.type == LeaveNotify && out.xcrossing.window == pointerChild,
+          "top-level leave did not deliver nested child LeaveNotify first");
+    CHECK(out.xcrossing.x_root == 15 && out.xcrossing.y_root == 18,
+          "nested child LeaveNotify did not preserve root coordinates");
+    CHECK(out.xcrossing.x == 5 && out.xcrossing.y == 6,
+          "nested child LeaveNotify did not preserve child-local coordinates");
+    XNextEvent(display, &out);
+    CHECK(out.type == LeaveNotify && out.xcrossing.window == pointerParent,
+          "top-level leave did not deliver parent LeaveNotify after child");
+
+    XSelectInput(display, pointerParent, NoEventMask);
+    XSelectInput(display, pointerChild,
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+
     SDL_Event buttonEvent;
     SDL_zero(buttonEvent);
     buttonEvent.type = SDL_MOUSEBUTTONDOWN;
@@ -2327,6 +2995,143 @@ static int test_events(Display *display)
     buttonEvent.type = SDL_MOUSEBUTTONUP;
     CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
           "offset SDL button release did not convert");
+
+    Window unmappedCover = XCreateSimpleWindow(display, offsetPointerParent, 0,
+                                               0, 80, 80, 0, 0, 0);
+    CHECK(unmappedCover != None, "unmapped cover creation failed");
+    XSelectInput(display, unmappedCover, ButtonPressMask);
+    XSelectInput(display, offsetPointerChild,
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "covered SDL button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
+          "unmapped sibling stole pointer hit-test from visible child");
+    CHECK(out.xbutton.subwindow == None,
+          "button event reported an unmapped sibling as subwindow");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "covered SDL button release did not convert");
+
+    CHECK(XGrabButton(display, Button1, AnyModifier, offsetPointerChild, False,
+                      ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
+                      GrabModeAsync, None, None) == Success,
+          "nested passive button grab failed");
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "nested passive-grab button press did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
+          "nested passive grab did not activate on deepest child");
+    CHECK(out.xbutton.subwindow == None,
+          "nested passive grab reported unexpected subwindow");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "nested passive-grab button release did not convert");
+    CHECK(out.type == ButtonRelease && out.xbutton.window == offsetPointerChild,
+          "nested passive grab did not keep release on grab window");
+    CHECK(XUngrabButton(display, Button1, AnyModifier, offsetPointerChild) ==
+              Success,
+          "nested passive button ungrab failed");
+
+    CHECK(XGrabButton(display, Button1, AnyModifier, offsetPointerParent, False,
+                      ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
+                      GrabModeAsync, None, None) == Success,
+          "passive button grab failed");
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "passive-grab button press did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerParent,
+          "passive button grab did not route press to grab window");
+    CHECK(out.xbutton.subwindow == offsetPointerChild,
+          "passive button grab did not preserve direct subwindow");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "passive-grab button release did not convert");
+    CHECK(
+        out.type == ButtonRelease && out.xbutton.window == offsetPointerParent,
+        "passive button grab did not keep release on grab window");
+    CHECK(XUngrabButton(display, Button1, AnyModifier, offsetPointerParent) ==
+              Success,
+          "passive button ungrab failed");
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "post-passive-ungrab button press did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
+          "post-passive-ungrab press did not return to normal hit-testing");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "post-passive-ungrab button release did not convert");
+
+    CHECK(XGrabButton(display, Button1, AnyModifier, offsetPointerParent, False,
+                      ButtonPressMask | ButtonReleaseMask, GrabModeSync,
+                      GrabModeAsync, None, None) == Success,
+          "sync passive button grab failed");
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "sync passive-grab button press did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerParent,
+          "sync passive button grab did not route press to grab window");
+    CHECK(mouseFrozen, "sync passive button grab did not freeze pointer");
+    CHECK(XAllowEvents(display, ReplayPointer, CurrentTime),
+          "ReplayPointer failed for passive button grab");
+    CHECK(!mouseFrozen, "ReplayPointer did not thaw pointer");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "post-ReplayPointer button release did not convert");
+    CHECK(out.type == ButtonRelease && out.xbutton.window == offsetPointerChild,
+          "ReplayPointer did not release passive button grab routing");
+    CHECK(XUngrabButton(display, Button1, AnyModifier, offsetPointerParent) ==
+              Success,
+          "sync passive button ungrab failed");
+
+    CHECK(XGrabButton(display, Button1, AnyModifier, offsetPointerParent, True,
+                      ButtonReleaseMask, GrabModeSync, GrabModeAsync, None,
+                      None) == Success,
+          "Motif-style passive button grab failed");
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "Motif-style passive-grab button press did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
+          "owner-events passive grab did not deliver press to selected child");
+    CHECK(mouseFrozen, "Motif-style sync passive grab did not freeze pointer");
+    CHECK(XGrabPointer(display, offsetPointerParent, True,
+                       ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                       GrabModeSync, GrabModeAsync, None, None,
+                       CurrentTime) == GrabSuccess,
+          "XGrabPointer did not upgrade active passive grab");
+    CHECK(mouseFrozen, "upgraded menu pointer grab did not preserve sync mode");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "upgraded menu pointer grab did not ungrab");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "Motif-style passive-grab button release did not convert");
+    CHECK(XUngrabButton(display, Button1, AnyModifier, offsetPointerParent) ==
+              Success,
+          "Motif-style passive button ungrab failed");
+
+    SDL_zero(hintMotion);
+    hintMotion.type = SDL_MOUSEMOTION;
+    hintMotion.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    hintMotion.motion.x = 14;
+    hintMotion.motion.y = 17;
+    XSelectInput(display, offsetPointerChild, Button1MotionMask);
+    CHECK(convertEvent(display, &hintMotion, &out, True) < 0,
+          "Button1MotionMask received motion with no held Button1");
+    XSelectInput(display, offsetPointerChild,
+                 ButtonPressMask | ButtonReleaseMask | Button1MotionMask);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "Button1Motion setup press did not convert");
+    CHECK(convertEvent(display, &hintMotion, &out, True) == 0,
+          "Button1MotionMask missed drag motion with held Button1");
+    CHECK(out.type == MotionNotify && out.xmotion.window == offsetPointerChild,
+          "Button1MotionMask drag targeted the wrong window");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "Button1Motion cleanup release did not convert");
+    XSelectInput(display, offsetPointerChild,
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
 
     SDL_zero(buttonEvent);
     buttonEvent.type = SDL_MOUSEBUTTONDOWN;
@@ -2441,21 +3246,153 @@ static int test_events(Display *display)
                        EnterWindowMask | LeaveWindowMask, GrabModeSync,
                        GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
           "XGrabPointer failed");
-    CHECK(SDL_GetRelativeMouseMode() == SDL_FALSE,
-          "XGrabPointer enabled SDL relative mouse mode");
     CHECK(mouseFrozen, "XGrabPointer did not freeze sync pointer mode");
     CHECK(XCheckTypedWindowEvent(display, window, EnterNotify, &out),
           "XGrabPointer did not post EnterNotify");
     CHECK(out.xcrossing.mode == NotifyGrab,
           "XGrabPointer EnterNotify used wrong mode");
+    /* A second active grab by the same client is a regrab: it updates the
+     * active grab instead of reporting AlreadyGrabbed. */
+    CHECK(XGrabPointer(display, window, False,
+                       ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "same-client XGrabPointer regrab did not report GrabSuccess");
+    CHECK(!mouseFrozen, "same-client XGrabPointer regrab did not thaw pointer");
+    CHECK(getPointerGrabEventMask() == (ButtonPressMask | ButtonReleaseMask),
+          "same-client XGrabPointer regrab did not update event mask");
+    /* A grab on None or on a non-window must report BadWindow. */
+    CHECK(XGrabPointer(display, None, False, 0, GrabModeAsync, GrabModeAsync,
+                       None, None, CurrentTime) == BadWindow,
+          "XGrabPointer(None) did not report BadWindow");
+    CHECK(SDL_GetRelativeMouseMode() == SDL_FALSE,
+          "XGrabPointer enabled SDL relative mouse mode");
+    CHECK(XAllowEvents(display, SyncPointer, CurrentTime),
+          "XAllowEvents(SyncPointer) failed");
+    CHECK(!mouseFrozen, "SyncPointer did not thaw pointer freeze");
+    CHECK(getGrabbedPointerWindow() == window,
+          "SyncPointer released the active pointer grab");
     CHECK(XAllowEvents(display, AsyncPointer, CurrentTime),
           "XAllowEvents failed");
-    CHECK(!mouseFrozen, "XAllowEvents did not release pointer freeze");
+    CHECK(!mouseFrozen, "AsyncPointer did not keep pointer thawed");
     CHECK(XUngrabPointer(display, CurrentTime), "XUngrabPointer failed");
     CHECK(XCheckTypedWindowEvent(display, window, LeaveNotify, &out),
           "XUngrabPointer did not post LeaveNotify");
     CHECK(out.xcrossing.mode == NotifyUngrab,
           "XUngrabPointer LeaveNotify used wrong mode");
+
+    Window viewableRequestedChild =
+        XCreateSimpleWindow(display, window, 3, 4, 16, 16, 0, 0, 0);
+    CHECK(viewableRequestedChild != None,
+          "viewable MapRequested child creation failed");
+    CHECK(XMapWindow(display, viewableRequestedChild),
+          "viewable MapRequested child map failed");
+    GET_WINDOW_STRUCT(viewableRequestedChild)->mapState = MapRequested;
+    XWindowAttributes requestedAttrs;
+    CHECK(
+        XGetWindowAttributes(display, viewableRequestedChild, &requestedAttrs),
+        "viewable MapRequested child attributes failed");
+    CHECK(requestedAttrs.map_state == IsViewable,
+          "test setup did not produce an effectively viewable child");
+    CHECK(XGrabPointer(display, viewableRequestedChild, False, ButtonPressMask,
+                       GrabModeAsync, GrabModeAsync, None, None,
+                       CurrentTime) == GrabSuccess,
+          "XGrabPointer rejected effectively viewable child");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "effectively viewable child pointer ungrab failed");
+
+    CHECK(XGrabPointer(display, pointerChild, False,
+                       ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                       GrabModeAsync, GrabModeAsync, None, None,
+                       CurrentTime) == GrabSuccess,
+          "explicit pointer grab failed");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "explicit-grab SDL button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == pointerChild,
+          "explicit pointer grab did not route ButtonPress to grab window");
+    CHECK(out.xbutton.x == 94 && out.xbutton.y == 75 &&
+              out.xbutton.x_root == 104 && out.xbutton.y_root == 87,
+          "explicit pointer grab ButtonPress coordinates were wrong");
+    SDL_zero(hintMotion);
+    hintMotion.type = SDL_MOUSEMOTION;
+    hintMotion.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    hintMotion.motion.x = 16;
+    hintMotion.motion.y = 19;
+    CHECK(convertEvent(display, &hintMotion, &out, True) == 0,
+          "explicit-grab SDL motion did not convert");
+    CHECK(out.type == MotionNotify && out.xmotion.window == pointerChild,
+          "explicit pointer grab did not route MotionNotify to grab window");
+    CHECK(out.xmotion.x == 96 && out.xmotion.y == 77 &&
+              out.xmotion.x_root == 106 && out.xmotion.y_root == 89,
+          "explicit pointer grab MotionNotify coordinates were wrong");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    buttonEvent.button.x = 16;
+    buttonEvent.button.y = 19;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "explicit-grab SDL button release did not convert");
+    CHECK(out.type == ButtonRelease && out.xbutton.window == pointerChild,
+          "explicit pointer grab did not route ButtonRelease to grab window");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "explicit pointer ungrab failed");
+    while (XCheckTypedWindowEvent(display, pointerChild, LeaveNotify, &out)) {
+    }
+
+    CHECK(XGrabPointer(display, pointerChild, False,
+                       ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "explicit pointer grab for ungrab-release failed");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "explicit-grab press before ungrab did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == pointerChild,
+          "explicit pointer grab before ungrab did not route to grab window");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "explicit pointer ungrab during button hold failed");
+    while (XCheckTypedWindowEvent(display, pointerChild, LeaveNotify, &out)) {
+    }
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "post-ungrab button release did not convert");
+    CHECK(out.type == ButtonRelease && out.xbutton.window == offsetPointerChild,
+          "post-ungrab release kept routing to stale grab window");
+    CHECK((out.xbutton.state & Button1Mask) != 0,
+          "post-ungrab release lost the held Button1 state");
+
+    CHECK(XGrabPointer(display, pointerChild, True, ButtonPressMask,
+                       GrabModeAsync, GrabModeAsync, None, None,
+                       CurrentTime) == GrabSuccess,
+          "owner-events pointer grab failed");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "owner-events grab SDL button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
+          "owner-events pointer grab did not preserve normal owner routing");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "owner-events grab SDL button release did not convert");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "owner-events pointer ungrab failed");
+    while (XCheckTypedWindowEvent(display, pointerChild, LeaveNotify, &out)) {
+    }
 
     /* CWOverrideRedirect must round-trip through XGetWindowAttributes. */
     XSetWindowAttributes ovAttrs;
@@ -2467,8 +3404,10 @@ static int test_events(Display *display)
     CHECK(ovQuery.override_redirect == True,
           "CWOverrideRedirect did not stick on the window");
 
-    XSelectInput(display, window, StructureNotifyMask);
+    XSelectInput(display, window, StructureNotifyMask | ExposureMask);
     while (XCheckTypedWindowEvent(display, window, ConfigureNotify, &out)) {
+    }
+    while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
     unsigned long resizeRequest = XNextRequest(display);
     CHECK(XResizeWindow(display, window, 52, 41),
@@ -2477,6 +3416,8 @@ static int test_events(Display *display)
           "XResizeWindow did not post ConfigureNotify");
     CHECK(out.xconfigure.serial >= resizeRequest,
           "ConfigureNotify serial did not satisfy the triggering request");
+    while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
+    }
 
     SDL_Event resizeEvent;
     SDL_zero(resizeEvent);
@@ -2492,12 +3433,34 @@ static int test_events(Display *display)
           "SDL resize converted to the wrong X event");
     CHECK(out.xconfigure.width == 48 && out.xconfigure.height == 40,
           "ConfigureNotify did not report the SDL resize dimensions");
+    CHECK(XCheckTypedWindowEvent(display, window, Expose, &out),
+          "SDL resize did not post a full-window Expose");
+    CHECK(out.xexpose.x == 0 && out.xexpose.y == 0 && out.xexpose.width == 48 &&
+              out.xexpose.height == 40,
+          "SDL resize Expose rectangle was incorrect");
     int textureWidth = 0;
     int textureHeight = 0;
     SDL_QueryTexture(GET_WINDOW_STRUCT(window)->sdlTexture, NULL, NULL,
                      &textureWidth, &textureHeight);
     CHECK(textureWidth == 48 && textureHeight == 40,
           "backing texture did not resize to SDL dimensions");
+    GC resizeGc = XCreateGC(display, window, 0, NULL);
+    CHECK(resizeGc != NULL, "resize backing GC creation failed");
+    CHECK(XSetForeground(display, resizeGc, 0xFFFF0000),
+          "resize backing red foreground failed");
+    CHECK(XFillRectangle(display, window, resizeGc, 0, 0, 12, 12),
+          "resize backing stale fill failed");
+    CHECK(convertEvent(display, &resizeEvent, &out, True) == 0,
+          "second SDL resize did not convert to ConfigureNotify");
+    SDL_Renderer *resizeRenderer = NULL;
+    GET_RENDERER(window, resizeRenderer);
+    CHECK(resizeRenderer != NULL, "resize backing renderer lookup failed");
+    SDL_Surface *resizeSurface = getRenderSurface(resizeRenderer);
+    CHECK(resizeSurface != NULL, "resize backing readback failed");
+    CHECK(!pixel_is_rgb(resizeSurface, 1, 1, 255, 0, 0),
+          "top-level resize preserved stale backing pixels");
+    SDL_FreeSurface(resizeSurface);
+    XFreeGC(display, resizeGc);
     SDL_Event windowEvent;
     SDL_zero(windowEvent);
     windowEvent.type = SDL_WINDOWEVENT;
@@ -3083,6 +4046,7 @@ static int test_windows(Display *display)
           "sibling restack above returned unexpected child order");
     XFree(children);
 
+    XEvent visibility;
     XSelectInput(display, child1, VisibilityChangeMask);
     Window delayedParent =
         XCreateSimpleWindow(display, root, 10, 10, 32, 32, 0, 0, 0);
@@ -3090,15 +4054,40 @@ static int test_windows(Display *display)
         XCreateSimpleWindow(display, delayedParent, 1, 1, 8, 8, 0, 0, 0);
     CHECK(delayedParent != None && delayedChild != None,
           "delayed map window creation failed");
+    XSelectInput(display, delayedParent, SubstructureNotifyMask);
+    XSelectInput(display, delayedChild, StructureNotifyMask | ExposureMask);
     CHECK(XMapWindow(display, delayedChild),
           "mapping child of unmapped parent failed");
     CHECK(expect_map_state(display, delayedChild, IsUnviewable),
           "child mapped under unmapped parent should be unviewable");
     CHECK(GET_WINDOW_STRUCT(delayedParent)->sdlTexture == NULL,
           "unmapped parent should not merge map-requested child backing");
+    CHECK(
+        !XCheckTypedWindowEvent(display, delayedParent, MapNotify, &visibility),
+        "map-requested child notified parent before ancestor mapped");
+    CHECK(
+        !XCheckTypedWindowEvent(display, delayedChild, MapNotify, &visibility),
+        "map-requested child notified itself before ancestor mapped");
     CHECK(XMapWindow(display, delayedParent), "mapping delayed parent failed");
     CHECK(expect_map_state(display, delayedChild, IsViewable),
           "map-requested child was not viewable after parent map");
+    CHECK(
+        XCheckTypedWindowEvent(display, delayedParent, MapNotify, &visibility),
+        "map-requested child did not notify parent on realization");
+    CHECK(visibility.xmap.event == delayedParent &&
+              visibility.xmap.window == delayedChild,
+          "map-requested child parent MapNotify fields were wrong");
+    CHECK(XCheckTypedWindowEvent(display, delayedChild, MapNotify, &visibility),
+          "map-requested child did not notify itself on realization");
+    CHECK(visibility.xmap.event == delayedChild &&
+              visibility.xmap.window == delayedChild,
+          "map-requested child self MapNotify fields were wrong");
+    CHECK(XCheckTypedWindowEvent(display, delayedChild, Expose, &visibility),
+          "map-requested child did not receive realization Expose");
+    CHECK(visibility.xexpose.x == 0 && visibility.xexpose.y == 0 &&
+              visibility.xexpose.width == 8 && visibility.xexpose.height == 8 &&
+              visibility.xexpose.count == 0,
+          "map-requested child realization Expose fields were wrong");
     CHECK(XUnmapWindow(display, delayedParent),
           "unmapping delayed parent failed");
     CHECK(expect_map_state(display, delayedChild, IsUnviewable),
@@ -3107,6 +4096,12 @@ static int test_windows(Display *display)
           "remapping delayed parent failed");
     CHECK(expect_map_state(display, delayedChild, IsViewable),
           "descendant did not become viewable after ancestor remap");
+    CHECK(XCheckTypedWindowEvent(display, delayedChild, Expose, &visibility),
+          "mapped descendant did not receive Expose after ancestor remap");
+    CHECK(visibility.xexpose.x == 0 && visibility.xexpose.y == 0 &&
+              visibility.xexpose.width == 8 && visibility.xexpose.height == 8 &&
+              visibility.xexpose.count == 0,
+          "mapped descendant remap Expose fields were wrong");
     XDestroyWindow(display, delayedParent);
 
     Window delayedSubParent =
@@ -3117,6 +4112,15 @@ static int test_windows(Display *display)
           "delayed XMapSubwindows setup failed");
     CHECK(XMapWindow(display, delayedSubParent),
           "mapping XMapSubwindows parent failed");
+    Window directMapChild =
+        XCreateSimpleWindow(display, delayedSubParent, 4, 4, 8, 8, 0, 0, 0);
+    CHECK(directMapChild != None, "direct child map setup failed");
+    CHECK(GET_WINDOW_STRUCT(directMapChild)->sdlWindow == NULL,
+          "child window unexpectedly owns an SDL window");
+    CHECK(XMapWindow(display, directMapChild),
+          "mapping child of mapped parent failed");
+    CHECK(GET_WINDOW_STRUCT(directMapChild)->mapState == Mapped,
+          "direct child map did not mark child mapped");
     GET_WINDOW_STRUCT(delayedSubChild)->mapState = MapRequested;
     CHECK(XMapSubwindows(display, delayedSubParent),
           "XMapSubwindows with map-requested child failed");
@@ -3136,7 +4140,36 @@ static int test_windows(Display *display)
     CHECK(viewport.x == 5 && viewport.y == 6 && viewport.w == 16 &&
               viewport.h == 16,
           "child renderer viewport did not use top-left X coordinates");
-    XEvent visibility;
+    SDL_Rect negativeViewport = {.x = -5, .y = -6, .w = 16, .h = 16};
+    CHECK(SDL_RenderSetViewport(childRenderer, &negativeViewport) == 0,
+          "negative viewport setup failed");
+    SDL_Rect negativeRead = {.x = 0, .y = 0, .w = 16, .h = 16};
+    SDL_Surface *negativeSurface =
+        getRenderSurfaceRect(childRenderer, &negativeRead);
+    CHECK(negativeSurface != NULL,
+          "getRenderSurfaceRect failed for negative viewport");
+    SDL_FreeSurface(negativeSurface);
+    CHECK(SDL_RenderSetViewport(childRenderer, &viewport) == 0,
+          "viewport restore failed");
+    GC childClipGc = XCreateGC(display, parent, 0, NULL);
+    CHECK(childClipGc != NULL, "ClipByChildren GC creation failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFFFFFFFF),
+          "ClipByChildren parent clear setup failed");
+    CHECK(XFillRectangle(display, parent, childClipGc, 0, 0, 32, 32),
+          "ClipByChildren parent initial fill failed");
+    CHECK(XSetForeground(display, childClipGc, 0xFF112233),
+          "ClipByChildren child draw setup failed");
+    CHECK(XFillRectangle(display, child2, childClipGc, 0, 0, 4, 4),
+          "ClipByChildren child fill failed");
+    CHECK(XClearArea(display, parent, 0, 0, 32, 32, False),
+          "ClipByChildren parent clear failed");
+    SDL_Renderer *parentRenderer = getWindowRenderer(parent);
+    SDL_Surface *clipSurface = getRenderSurface(parentRenderer);
+    CHECK(clipSurface != NULL, "ClipByChildren readback failed");
+    CHECK(pixel_is_rgb(clipSurface, 5, 6, 17, 34, 51),
+          "parent clear erased mapped child contents");
+    SDL_FreeSurface(clipSurface);
+    XFreeGC(display, childClipGc);
     CHECK(
         XCheckTypedWindowEvent(display, child1, VisibilityNotify, &visibility),
         "VisibilityNotify was not delivered for mapped child");
@@ -3180,6 +4213,10 @@ static int test_windows(Display *display)
           "child to top-level XReparentWindow failed");
     CHECK(expect_map_state(display, mappedChild, IsViewable),
           "child to top-level reparent did not keep mapped state");
+    CHECK(GET_WINDOW_STRUCT(mappedChild)->sdlWindow != NULL,
+          "child to top-level reparent did not realize an SDL window");
+    CHECK(GET_WINDOW_STRUCT(mappedChild)->hasPresented,
+          "child to top-level reparent did not present before show");
     CHECK(XCheckWindowEvent(display, mappedChild, StructureNotifyMask,
                             &reparentEvent),
           "child to top-level did not post UnmapNotify");
@@ -3293,10 +4330,16 @@ static int test_windows(Display *display)
 
 static int test_fonts(Display *display)
 {
-    char **names = malloc(sizeof(char *) * 2);
+    /* The names list passed to XFreeFontInfo must follow the same
+     * caller-owned, NULL-terminated convention that XListFonts now
+     * returns: each entry is heap-allocated and the array carries a
+     * trailing NULL sentinel that XFreeFontNames walks. */
+    char **names = malloc(sizeof(char *) * 3);
     CHECK(names != NULL, "font names allocation failed");
-    names[0] = "font-a";
-    names[1] = "font-b";
+    names[0] = strdup("font-a");
+    names[1] = strdup("font-b");
+    names[2] = NULL;
+    CHECK(names[0] != NULL && names[1] != NULL, "font names strdup failed");
 
     XFontStruct *infos = calloc(2, sizeof(XFontStruct));
     CHECK(infos != NULL, "font info allocation failed");
@@ -3355,6 +4398,31 @@ static int test_fonts(Display *display)
               "fixed-size aliases were not listed");
         XFreeFontNames(aliases);
 
+        int cappedAliasCount = 0;
+        aliases = XListFonts(display, "9x13", 1, &cappedAliasCount);
+        CHECK(aliases != NULL && cappedAliasCount == 1,
+              "XListFonts alias results exceeded maxnames");
+        XFreeFontNames(aliases);
+
+        /* XListFonts must not return the caller's pattern buffer as a
+         * list entry. Mutate the buffer after the call and confirm the
+         * returned name is unchanged. */
+        char patternBuf[64];
+        snprintf(patternBuf, sizeof(patternBuf), "-*helv*medium-r-*-12-*");
+        int aliasResolved = 0;
+        char **aliasList = XListFonts(display, patternBuf, 1, &aliasResolved);
+        if (aliasList != NULL && aliasResolved > 0) {
+            char first[64];
+            snprintf(first, sizeof(first), "%s", aliasList[0]);
+            memset(patternBuf, 'X', sizeof(patternBuf) - 1);
+            patternBuf[sizeof(patternBuf) - 1] = '\0';
+            CHECK(!strcmp(aliasList[0], first),
+                  "XListFonts aliased the caller's pattern buffer");
+            CHECK(!strchr(aliasList[0], '*'),
+                  "XListFonts returned a wildcard pattern as a font name");
+        }
+        XFreeFontNames(aliasList);
+
         XFontStruct *fixed = XLoadQueryFont(display, "fixed");
         CHECK(fixed != NULL && fixed->fid != None, "fixed alias did not load");
         CHECK(fixed->ascent == 11 && fixed->descent == 2,
@@ -3372,6 +4440,11 @@ static int test_fonts(Display *display)
         CHECK(XTextWidth16(fixed, fixedWide, 1) == 6,
               "fixed alias XTextWidth16 did not count 16-bit characters");
         XFreeFont(display, fixed);
+
+        XFontStruct *variable = XLoadQueryFont(display, "variable");
+        CHECK(variable != NULL && variable->fid != None,
+              "variable alias did not load");
+        XFreeFont(display, variable);
 
         XFontStruct *sixByThirteen = XLoadQueryFont(display, "6x13");
         CHECK(sixByThirteen != NULL && sixByThirteen->fid != None,
@@ -3396,6 +4469,91 @@ static int test_fonts(Display *display)
                   XTextWidth(nineByThirteen, "A", 1),
               "XTextWidth16 ASCII decoding mismatch");
         XFreeFont(display, nineByThirteen);
+
+        XFontStruct *nineByFifteen = XLoadQueryFont(display, "9x15");
+        CHECK(nineByFifteen != NULL && nineByFifteen->fid != None,
+              "9x15 alias did not load");
+        CHECK(XTextWidth(nineByFifteen, "Viola", 5) > 0,
+              "9x15 alias selected a font without ASCII metrics");
+        CHECK(XTextWidth(nineByFifteen, " ", 1) > 0,
+              "9x15 alias did not provide a usable space width");
+        XFreeFont(display, nineByFifteen);
+
+        int motifFixedCount = 0;
+        char **motifFixedNames =
+            XListFonts(display, "-misc-fixed-medium-r-*-*-14-*-*-*-*-*-*-*", 1,
+                       &motifFixedCount);
+        CHECK(motifFixedNames != NULL && motifFixedCount == 1,
+              "Viola fixed XLFD alias was not listed");
+        XFontStruct *motifFixed = XLoadQueryFont(display, motifFixedNames[0]);
+        CHECK(motifFixed != NULL && motifFixed->fid != None,
+              "listed Viola fixed XLFD alias did not load");
+        CHECK(font_struct_char_width(motifFixed, ' ') > 0,
+              "listed Viola fixed XLFD alias had zero space width");
+        XFreeFont(display, motifFixed);
+        XFreeFontNames(motifFixedNames);
+
+        int motifHelveticaCount = 0;
+        char **motifHelveticaNames = XListFonts(
+            display, "-adobe-helvetica-medium-r-*-*-14-*-*-*-p-*-*-*", 1,
+            &motifHelveticaCount);
+        CHECK(motifHelveticaNames != NULL && motifHelveticaCount == 1,
+              "Viola Helvetica XLFD alias was not listed");
+        XFontStruct *motifHelvetica =
+            XLoadQueryFont(display, motifHelveticaNames[0]);
+        CHECK(motifHelvetica != NULL && motifHelvetica->fid != None,
+              "listed Viola Helvetica XLFD alias did not load");
+        CHECK(font_struct_char_width(motifHelvetica, ' ') > 0,
+              "listed Viola Helvetica XLFD alias had zero space width");
+        Pixmap motifTextPixmap = XCreatePixmap(
+            display, RootWindow(display, DefaultScreen(display)), 160, 32,
+            DefaultDepth(display, DefaultScreen(display)));
+        CHECK(motifTextPixmap != None,
+              "Viola Helvetica alias text pixmap creation failed");
+        GC motifTextGc = XCreateGC(display, motifTextPixmap, 0, NULL);
+        CHECK(motifTextGc != NULL, "Viola Helvetica alias GC creation failed");
+        CHECK(XSetFont(display, motifTextGc, motifHelvetica->fid),
+              "Viola Helvetica alias XSetFont failed");
+        CHECK(XSetForeground(display, motifTextGc, 0x00FFFFFF),
+              "Viola Helvetica alias white foreground failed");
+        CHECK(XFillRectangle(display, motifTextPixmap, motifTextGc, 0, 0, 160,
+                             32),
+              "Viola Helvetica alias background fill failed");
+        CHECK(XSetForeground(display, motifTextGc, 0x00000000),
+              "Viola Helvetica alias black foreground failed");
+        last_error_code = 0;
+        int (*oldErrorHandler)(Display *, XErrorEvent *) =
+            XSetErrorHandler(record_error);
+        CHECK(XDrawString(display, motifTextPixmap, motifTextGc, 4, 18,
+                          "World Wide Web", 14),
+              "Viola Helvetica alias XDrawString failed");
+        XSync(display, False);
+        XSetErrorHandler(oldErrorHandler);
+        CHECK(last_error_code == 0,
+              "Viola Helvetica alias XDrawString raised an X error");
+        SDL_Renderer *motifTextRenderer = NULL;
+        GET_RENDERER(motifTextPixmap, motifTextRenderer);
+        SDL_Surface *motifTextSurface = getRenderSurface(motifTextRenderer);
+        CHECK(motifTextSurface,
+              "getRenderSurface for anti-aliased Helvetica text failed");
+        int sawAntialiasedEdge = 0;
+        for (int ty = 0; ty < motifTextSurface->h && !sawAntialiasedEdge;
+             ty++) {
+            for (int tx = 0; tx < motifTextSurface->w; tx++) {
+                if (pixel_is_between_black_and_white(motifTextSurface, tx,
+                                                     ty)) {
+                    sawAntialiasedEdge = 1;
+                    break;
+                }
+            }
+        }
+        SDL_FreeSurface(motifTextSurface);
+        CHECK(sawAntialiasedEdge,
+              "Viola Helvetica alias text did not render anti-aliased edges");
+        XFreeGC(display, motifTextGc);
+        XFreePixmap(display, motifTextPixmap);
+        XFreeFont(display, motifHelvetica);
+        XFreeFontNames(motifHelveticaNames);
 
         XFontStruct *helvetica =
             XLoadQueryFont(display, "*-helvetica-medium-r-normal--14-*");
@@ -3423,13 +4581,51 @@ static int test_fonts(Display *display)
                 "helvetica 140-decipoint XLFD alias lost proportional metrics");
             XFreeFont(display, helvetica140);
         }
-        int (*timesPreviousErrorHandler)(Display *, XErrorEvent *) =
-            XSetErrorHandler(ignored_error);
+        XFontStruct *helvBold = XLoadQueryFont(display, "*helv*bold*-r-*-12-*");
+        CHECK(helvBold != NULL,
+              "Motif helv bold wildcard did not resolve to a fallback font");
+        CHECK(helvBold->fid != None,
+              "Motif helv bold wildcard returned invalid font id");
+        CHECK(helvBold->ascent + helvBold->descent >= 12,
+              "Motif helv bold wildcard fell back to the default font size");
+        XFreeFont(display, helvBold);
+
         XFontStruct *times14 =
-            XLoadQueryFont(display, "*-times-medium-r-normal--14-*-iso8859-1");
-        XSetErrorHandler(timesPreviousErrorHandler);
-        CHECK(times14 == NULL,
-              "native-missing Times 14 wildcard should not be force-aliased");
+            XLoadQueryFont(display, "-*times*medium*-r-*--14-*");
+        CHECK(times14 != NULL,
+              "Motif Times 14 wildcard did not resolve to a fallback font");
+        CHECK(times14->fid != None,
+              "Motif Times 14 wildcard returned invalid font id");
+        XFreeFont(display, times14);
+
+        int times14ListedCount = 0;
+        char **times14Listed = XListFonts(display, "-*times*medium*-r-*--14-*",
+                                          1, &times14ListedCount);
+        CHECK(times14Listed != NULL && times14ListedCount == 1,
+              "Motif Times 14 wildcard was not listed");
+        CHECK(
+            !strchr(times14Listed[0], '*') && strstr(times14Listed[0], "--14-"),
+            "Motif Times 14 listed alias did not preserve requested size");
+        times14 = XLoadQueryFont(display, times14Listed[0]);
+        CHECK(times14 != NULL && times14->fid != None,
+              "listed Motif Times 14 alias did not load");
+        CHECK(times14->ascent + times14->descent >= 14,
+              "listed Motif Times 14 alias loaded at default size");
+        XFreeFont(display, times14);
+        XFreeFontNames(times14Listed);
+
+        XFontStruct *timesBoldMenu =
+            XLoadQueryFont(display, "*times*bold*-r-*-14-*");
+        CHECK(timesBoldMenu != NULL,
+              "Motif Times bold menu wildcard did not resolve to a fallback "
+              "font");
+        CHECK(timesBoldMenu->fid != None,
+              "Motif Times bold menu wildcard returned invalid font id");
+        CHECK(timesBoldMenu->ascent + timesBoldMenu->descent >= 14,
+              "Motif Times bold menu wildcard fell back to the default font "
+              "size");
+        XFreeFont(display, timesBoldMenu);
+
         if (fontCache) {
             size_t cacheLength = fontCache->length;
             helvetica =
@@ -3462,12 +4658,121 @@ static int test_fonts(Display *display)
               "XUnloadFont rejected implicit fixed font");
         CHECK(XDrawString(display, pixmap, gc, 2, 18, "text", 4),
               "GC-held font stopped drawing after XUnloadFont");
+        CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+              "font background color setup failed");
+        CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 96, 32),
+              "font background fill failed");
+        CHECK(XSetForeground(display, gc, 0),
+              "font X11 black pixel setup failed");
+        CHECK(XDrawString(display, pixmap, gc, 2, 18, "text", 4),
+              "XDrawString with X11 black pixel failed");
+        SDL_Renderer *renderer = NULL;
+        GET_RENDERER(pixmap, renderer);
+        SDL_Surface *textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "getRenderSurface for X11 black text failed");
+        int sawBlackTextPixel = 0;
+        for (int ty = 0; ty < textSurface->h && !sawBlackTextPixel; ty++) {
+            for (int tx = 0; tx < textSurface->w; tx++) {
+                if (pixel_is_rgb(textSurface, tx, ty, 0, 0, 0)) {
+                    sawBlackTextPixel = 1;
+                    break;
+                }
+            }
+        }
+        SDL_FreeSurface(textSurface);
+        CHECK(sawBlackTextPixel,
+              "XDrawString treated X11 black pixel as transparent");
+
+        Window textWindow =
+            XCreateSimpleWindow(display, root, 0, 0, 96, 32, 0, 0, 0x00FFFFFF);
+        CHECK(textWindow != None, "XDrawText window creation failed");
+        XMapWindow(display, textWindow);
+        GC textGc = XCreateGC(display, textWindow, 0, NULL);
+        CHECK(textGc != NULL, "XDrawText GC creation failed");
+        CHECK(XSetForeground(display, textGc, 0),
+              "XDrawText foreground setup failed");
+        Font textFont = XLoadFont(display, "fixed");
+        CHECK(textFont != None, "XDrawText font load failed");
+        XTextItem textItem = {
+            .chars = "text",
+            .nchars = 4,
+            .delta = 0,
+            .font = textFont,
+        };
+        CHECK(XDrawText(display, textWindow, textGc, 2, 18, &textItem, 1),
+              "XDrawText failed");
+        GET_RENDERER(textWindow, renderer);
+        textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "getRenderSurface for XDrawText window failed");
+        sawBlackTextPixel = 0;
+        for (int ty = 0; ty < textSurface->h && !sawBlackTextPixel; ty++) {
+            for (int tx = 0; tx < textSurface->w; tx++) {
+                if (pixel_is_rgb(textSurface, tx, ty, 0, 0, 0)) {
+                    sawBlackTextPixel = 1;
+                    break;
+                }
+            }
+        }
+        SDL_FreeSurface(textSurface);
+        CHECK(sawBlackTextPixel, "XDrawText rendered no visible black pixels");
+        XUnloadFont(display, textFont);
+        XFreeGC(display, textGc);
+        XDestroyWindow(display, textWindow);
+
+        Pixmap metricPixmap =
+            XCreatePixmap(display, root, 96, 32,
+                          DefaultDepth(display, DefaultScreen(display)));
+        CHECK(metricPixmap != None, "fixed metric pixmap creation failed");
+        GC metricGc = XCreateGC(display, metricPixmap, 0, NULL);
+        CHECK(metricGc != NULL, "fixed metric GC creation failed");
+        Font metricFont = XLoadFont(display, "fixed");
+        CHECK(metricFont != None, "fixed metric font load failed");
+        XFontStruct *metricStruct = XQueryFont(display, metricFont);
+        CHECK(metricStruct != NULL, "fixed metric query failed");
+        CHECK(XSetFont(display, metricGc, metricFont),
+              "fixed metric XSetFont failed");
+        CHECK(XSetForeground(display, metricGc, 0x00FFFFFF),
+              "fixed metric white setup failed");
+        CHECK(XFillRectangle(display, metricPixmap, metricGc, 0, 0, 96, 32),
+              "fixed metric background fill failed");
+        CHECK(XSetForeground(display, metricGc, 0x00000000),
+              "fixed metric black setup failed");
+        int metricBaseline = metricStruct->ascent;
+        CHECK(XDrawString(display, metricPixmap, metricGc, 0, metricBaseline,
+                          "gjpqy", 5),
+              "fixed metric draw failed");
+        CHECK(XSetForeground(display, metricGc, 0x00FFFFFF),
+              "fixed metric clear color setup failed");
+        int metricClearHeight = metricStruct->ascent + metricStruct->descent;
+        CHECK(XFillRectangle(display, metricPixmap, metricGc, 0, 0, 96,
+                             (unsigned int) metricClearHeight),
+              "fixed metric row clear failed");
+        GET_RENDERER(metricPixmap, renderer);
+        textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "fixed metric readback failed");
+        int escapedMetricPixel = 0;
+        for (int ty = metricClearHeight;
+             ty < textSurface->h && !escapedMetricPixel; ty++) {
+            for (int tx = 0; tx < textSurface->w; tx++) {
+                if (pixel_is_rgb(textSurface, tx, ty, 0, 0, 0)) {
+                    escapedMetricPixel = 1;
+                    break;
+                }
+            }
+        }
+        SDL_FreeSurface(textSurface);
+        XFreeFontInfo(NULL, metricStruct, 1);
+        XUnloadFont(display, metricFont);
+        XFreeGC(display, metricGc);
+        XFreePixmap(display, metricPixmap);
+        CHECK(!escapedMetricPixel,
+              "fixed font rendered outside its advertised row metrics");
+
         XGCValues values;
         CHECK(XGetGCValues(display, gc, GCForeground | GCBackground, &values),
               "font GC readback failed");
-        CHECK(
-            values.foreground == 0xFF112233 && values.background == 0xFF445566,
-            "XDrawImageString mutated GC colors");
+        CHECK(values.foreground == 0 && values.background == 0xFF445566,
+              "XDrawImageString mutated GC colors");
         XFreeGC(display, gc);
         XFreePixmap(display, pixmap);
 
@@ -3767,6 +5072,18 @@ static int test_extensions(Display *display)
     int useMinor = 0;
     CHECK(XkbUseExtension(display, &useMajor, &useMinor),
           "XkbUseExtension must report supported");
+
+    /* XDoubleToFixed must clamp out-of-range and NaN inputs instead of
+     * invoking undefined behavior on the double->int cast. */
+    CHECK(XDoubleToFixed(0.0) == 0, "XDoubleToFixed zero failed");
+    CHECK(XDoubleToFixed(1.0) == 0x10000, "XDoubleToFixed one failed");
+    CHECK(XDoubleToFixed(-1.0) == -0x10000, "XDoubleToFixed minus one failed");
+    CHECK(XDoubleToFixed(1.0e100) == 0x7FFFFFFF,
+          "XDoubleToFixed positive overflow did not saturate");
+    CHECK(XDoubleToFixed(-1.0e100) == (int) (-0x7FFFFFFF - 1),
+          "XDoubleToFixed negative overflow did not saturate");
+    double nanVal = strtod("NaN", NULL);
+    CHECK(XDoubleToFixed(nanVal) == 0, "XDoubleToFixed NaN did not return 0");
     return 1;
 }
 
@@ -4227,6 +5544,11 @@ static int test_defaults(Display *display)
           "XBlackPixelOfScreen mismatch");
     CHECK(XWhitePixelOfScreen(screen) == WhitePixel(display, screenNumber),
           "XWhitePixelOfScreen mismatch");
+    unsigned long defaultPixelLimit =
+        1ul << (unsigned int) DefaultDepth(display, screenNumber);
+    CHECK(BlackPixel(display, screenNumber) < defaultPixelLimit &&
+              WhitePixel(display, screenNumber) < defaultPixelLimit,
+          "default black/white pixels exceeded default depth range");
     CHECK(XDefaultColormapOfScreen(screen) ==
               DefaultColormap(display, screenNumber),
           "XDefaultColormapOfScreen mismatch");

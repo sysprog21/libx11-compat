@@ -122,6 +122,15 @@ void XRenderFillRectangles(Display *dpy,
     (void) n_rects;
 }
 
+void XRenderSetPictureTransform(Display *dpy,
+                                Picture picture,
+                                XTransform *transform)
+{
+    (void) dpy;
+    (void) picture;
+    (void) transform;
+}
+
 GlyphSet XRenderCreateGlyphSet(Display *dpy, _Xconst XRenderPictFormat *format)
 {
     (void) dpy;

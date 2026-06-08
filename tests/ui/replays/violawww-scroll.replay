@@ -1,0 +1,37 @@
+# Deterministic local ViolaWWW wheel-scroll + resize smoke test.
+#
+# Exercises two event-handling paths in one pass:
+#   1. Wheel scroll via XTest button 4/5 events.
+#   2. Window resize via the replay engine's `resize` command, which
+#      pumps an SDL_USEREVENT to the main thread that calls
+#      SDL_SetWindowSize. The Cocoa backend then emits the standard
+#      window-resize event, which libx11-compat translates to
+#      ConfigureNotify for vw.
+#   3. In-process snapshot of every captured frame, bypassing macOS
+#      screencapture's NSApp-deactivation that previously stalled vw's
+#      SDL event pump.
+#
+# Assertions:
+#   * Every frame is non-empty and passes the stale-text detector.
+#   * `scrolled` differs from `initial` in the document area.
+#   * `resized` differs from `initial` (vw reflowed after resize).
+delay 2500
+wait-window "vw|Viola" 3000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial violawww-scroll.json
+motion 360 540
+wheel down 5
+delay 1000
+screenshot scrolled
+assert-image scrolled violawww-scroll.json
+assert-image scrolled violawww-scroll-changed.json
+# Resize the vw window. The new geometry has a meaningfully different
+# aspect ratio so the document reflows visibly: line-wrap moves, the
+# scrollbar resizes, and the Motif chrome rectangles adjust width.
+resize 640 720
+delay 5000
+screenshot resized
+assert-image resized common-visible.json
+assert-image resized violawww-scroll-resized-changed.json
+assert-image resized violawww-scroll-resized.json

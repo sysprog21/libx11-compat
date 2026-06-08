@@ -1,0 +1,24 @@
+--- a/src/vw/callbacks.c
++++ b/src/vw/callbacks.c
+@@ -1077,7 +1077,20 @@
+     if (event->type == ConfigureNotify) {
+         XConfigureEvent* xcep = (XConfigureEvent*)event;
+ 
+-        XResizeWindow(XtDisplay(widget), (Window)clientData, (unsigned int)xcep->width, (unsigned int)xcep->height);
++        Display* dpy = XtDisplay(widget);
++        Window target = (Window)clientData;
++
++        XResizeWindow(dpy, target, (unsigned int)xcep->width, (unsigned int)xcep->height);
++        XClearArea(dpy, target, 0, 0, 0, 0, True);
++        DocViewInfo* dvi = mainViewInfo();
++        if (dvi && dvi->violaDocViewObj &&
++            (GET_window(dvi->violaDocViewObj) == target ||
++             dvi->violaDocViewWindow == target)) {
++            clearDocViewBeforeScroll(dvi, dvi->violaDocViewObj);
++            sendMessage1N4int(dvi->violaDocViewObj, "config", -1, -1,
++                              xcep->width, xcep->height);
++            sendMessage1(dvi->violaDocViewObj, "render");
++        }
+     }
+ }
+ 

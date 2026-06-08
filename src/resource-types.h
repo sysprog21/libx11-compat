@@ -28,7 +28,34 @@ typedef struct {
 #define GET_XID_TYPE(id) (((XID_Struct *) (id))->type)
 #define GET_XID_VALUE(id) (((XID_Struct *) (id))->dataPointer)
 
+/* GET_WINDOW_STRUCT dereferences the XID's data pointer with no NULL
+ * guard. Debug builds trip an abort on misuse so the offending call
+ * site shows up in the test log instead of a SIGSEGV in unrelated
+ * frames. Release builds keep the bare deref to avoid any overhead on
+ * the hot path. Uses a GCC/Clang statement expression to evaluate the
+ * argument once. */
+#ifdef DEBUG_LIBX11_COMPAT
+#include <stdio.h>
+#include <stdlib.h>
+#define GET_WINDOW_STRUCT(window)                                              \
+    (__extension__({                                                           \
+        Window _gws_w = (window);                                              \
+        if (_gws_w == None) {                                                  \
+            fprintf(stderr, "%s:%d: GET_WINDOW_STRUCT(None) in debug build\n", \
+                    __FILE__, __LINE__);                                       \
+            abort();                                                           \
+        }                                                                      \
+        WindowStruct *_gws_p = (WindowStruct *) GET_XID_VALUE(_gws_w);         \
+        if (!_gws_p) {                                                         \
+            fprintf(stderr, "%s:%d: GET_WINDOW_STRUCT freed resource %lu\n",   \
+                    __FILE__, __LINE__, (unsigned long) _gws_w);               \
+            abort();                                                           \
+        }                                                                      \
+        _gws_p;                                                                \
+    }))
+#else
 #define GET_WINDOW_STRUCT(window) ((WindowStruct *) GET_XID_VALUE(window))
+#endif
 
 #define IS_TYPE(resource, typeID)           \
     ((resource) != None &&                  \

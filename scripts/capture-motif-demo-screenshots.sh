@@ -274,6 +274,7 @@ while IFS= read -r exe; do
     app_res_dir=$(motif_app_resource_dir "$rel")
     xappresdir="$app_res_dir"
     xfile_search_path=$(motif_xfile_search_path "$app_res_dir")
+    compat_font_dir=${LIBX11_COMPAT_FONT_DIR:-"$abs_out_dir/../fonts"}
     set -- "$run_exe"
     count=$((count + 1))
     printf 'SHOT %s\n' "$rel"
@@ -344,6 +345,7 @@ EOF
             exec env -u SDL_VIDEODRIVER \
                 DYLD_LIBRARY_PATH="$lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
                 LD_LIBRARY_PATH="$lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+                LIBX11_COMPAT_FONT_DIR="$compat_font_dir" \
                 XFILESEARCHPATH="$xfile_search_path${XFILESEARCHPATH:+:$XFILESEARCHPATH}" \
                 XAPPLRESDIR="$xappresdir" \
                 HOME="${home_dir:-$HOME}" \
@@ -355,6 +357,7 @@ EOF
             exec env -u SDL_VIDEODRIVER \
                 DYLD_LIBRARY_PATH="$lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
                 LD_LIBRARY_PATH="$lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+                LIBX11_COMPAT_FONT_DIR="$compat_font_dir" \
                 XFILESEARCHPATH="$xfile_search_path${XFILESEARCHPATH:+:$XFILESEARCHPATH}" \
                 XAPPLRESDIR="$xappresdir" \
                 HOME="${home_dir:-$HOME}" \

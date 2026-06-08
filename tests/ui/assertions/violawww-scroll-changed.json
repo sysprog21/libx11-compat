@@ -1,0 +1,11 @@
+{
+  "_comment": "Compares the post-scroll capture against the initial frame inside the 800x720 vw viewport. min_changed_ratio is generous: any honest scroll moves at least a few percent of the document pixels even on tiny fixtures.",
+  "assertions": [
+    {
+      "type": "changed_region",
+      "baseline": "initial",
+      "rect": [40, 130, 720, 560],
+      "min_changed_ratio": 0.02
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "_comment": "Rect coordinates are window-relative inside the 800x720 vw frame. The viewport rect skips Motif chrome (menubar, address, toolbar) so stale-text ratios are computed only over the rendered HTML body. Clean scroll frames measure below 50 dense rows; double-stamped stale glyphs push the count much higher.",
+  "assertions": [
+    {
+      "type": "non_empty"
+    },
+    {
+      "type": "not_all_black"
+    },
+    {
+      "type": "region_non_background",
+      "rect": [40, 255, 720, 435],
+      "min_dark_ratio": 0.01
+    },
+    {
+      "type": "stale_text",
+      "rect": [40, 255, 720, 435],
+      "dark_threshold": 80,
+      "max_row_dark_ratio": 0.21,
+      "max_dense_rows": 50
+    }
+  ]
+}

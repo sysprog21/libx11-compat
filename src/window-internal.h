@@ -33,6 +33,7 @@ void resizeWindowTexture(Window window);
 void deleteWindowMapping(Window window);
 void registerWindowMapping(Window window, Uint32 sdlWindowId);
 Bool isParent(Window window1, Window window2);
+Bool isWindowEffectivelyViewable(Window window);
 WindowProperty *findProperty(Array *properties, Atom property, size_t *index);
 void freeWindowProperty(WindowProperty *property);
 Bool mergeWindowDrawables(Window parent, Window child);

@@ -8,6 +8,7 @@
 #include "X11/Xlocale.h"
 #include <limits.h>
 #include <locale.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,9 +19,37 @@
 #include "errors.h"
 #include "events.h"
 #include "font.h"
+#include "input.h"
 #include "input-method.h"
 #include "window.h"
 #include "atoms.h"
+
+int _Xdebug;
+
+/* Saturating 64-bit multiply-add for geometry math. Real Xlib only ever
+ * deals with display-scale pixels, but XParseGeometry happily accepts
+ * UINT_MAX units which, multiplied by a UINT_MAX font cell, overshoots
+ * int64_t. Saturate instead of wrapping so the caller's window placement
+ * never lands at a nonsensical negative coordinate. */
+static int64_t satMulAdd(int64_t a, int64_t b, int64_t c)
+{
+    int64_t prod;
+    if (__builtin_mul_overflow(a, b, &prod))
+        prod = ((a > 0) == (b > 0)) ? INT64_MAX : INT64_MIN;
+    int64_t sum;
+    if (__builtin_add_overflow(prod, c, &sum))
+        return prod > 0 ? INT64_MAX : INT64_MIN;
+    return sum;
+}
+
+static int clampInt64ToInt(int64_t v)
+{
+    if (v > INT_MAX)
+        return INT_MAX;
+    if (v < INT_MIN)
+        return INT_MIN;
+    return (int) v;
+}
 
 static void fillTextExtents(XFontStruct *fs,
                             int width,
@@ -1306,12 +1335,23 @@ static void fillTextExtents(XFontStruct *fs,
     if (font_descent)
         *font_descent = fs ? fs->descent : 0;
     if (overall) {
+        /* Real Xlib XCharStruct uses short for bearing/width/ascent;
+         * clamp instead of letting a wide string or huge font silently
+         * wrap negative. */
+        int fsAscent = fs ? fs->ascent : 0;
+        int fsDescent = fs ? fs->descent : 0;
         memset(overall, 0, sizeof(*overall));
         overall->lbearing = 0;
-        overall->rbearing = (short) width;
-        overall->width = (short) width;
-        overall->ascent = fs ? (short) fs->ascent : 0;
-        overall->descent = fs ? (short) fs->descent : 0;
+        overall->rbearing = (short) (width > SHRT_MAX   ? SHRT_MAX
+                                     : width < SHRT_MIN ? SHRT_MIN
+                                                        : width);
+        overall->width = overall->rbearing;
+        overall->ascent = (short) (fsAscent > SHRT_MAX   ? SHRT_MAX
+                                   : fsAscent < SHRT_MIN ? SHRT_MIN
+                                                         : fsAscent);
+        overall->descent = (short) (fsDescent > SHRT_MAX   ? SHRT_MAX
+                                    : fsDescent < SHRT_MIN ? SHRT_MIN
+                                                           : fsDescent);
     }
 }
 
@@ -1433,30 +1473,6 @@ int XQueryTextExtents16(register Display *dpy,
 }
 
 
-int XGrabButton(register Display *dpy,
-                unsigned int button,
-                /* CARD8 */ unsigned int modifiers,
-                /* CARD16 */ Window grab_window,
-                Bool owner_events,
-                unsigned int event_mask,
-                /* CARD16 */ int pointer_mode,
-                int keyboard_mode,
-                Window confine_to,
-                Cursor curs)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
-int XUngrabButton(register Display *dpy,
-                  unsigned int button,
-                  /* CARD8 */ unsigned int modifiers,
-                  /* CARD16 */ Window grab_window)
-{
-    WARN_UNIMPLEMENTED;
-    return 0;
-}
-
 int XQueryKeymap(register Display *dpy, char keys[32])
 {
     WARN_UNIMPLEMENTED;
@@ -1510,8 +1526,11 @@ int XAllowEvents(register Display *dpy, int mode, Time time)
     extern Bool keyboardFrozen;
     switch (mode) {
     case AsyncPointer:
+        mouseFrozen = False;
+        break;
     case ReplayPointer:
         mouseFrozen = False;
+        releasePassivePointerGrab(dpy);
         break;
     case AsyncKeyboard:
     case ReplayKeyboard:
@@ -1522,8 +1541,14 @@ int XAllowEvents(register Display *dpy, int mode, Time time)
         keyboardFrozen = False;
         break;
     case SyncPointer:
+        mouseFrozen = False;
+        break;
     case SyncKeyboard:
+        keyboardFrozen = False;
+        break;
     case SyncBoth:
+        mouseFrozen = False;
+        keyboardFrozen = False;
         break;
     default:
         return 0;
@@ -1780,8 +1805,15 @@ int XmbTextEscapement(XFontSet font_set, _Xconst char *text, int text_len)
     if (!text || text_len <= 0)
         return 0;
     CompatFontSet *set = GET_FONT_SET(font_set);
-    int w =
-        set && set->font ? XTextWidth(set->font, text, text_len) : text_len * 8;
+    int w;
+    if (set && set->font) {
+        w = XTextWidth(set->font, text, text_len);
+    } else {
+        /* 8 px-per-byte fallback runs through int64 so a long text_len
+         * cannot wrap the returned int. */
+        int64_t fallback = (int64_t) text_len * 8;
+        w = clampInt64ToInt(fallback);
+    }
     LOG("XmbTextEscapement: text_len=%d (preview='%.20s') -> %d\n", text_len,
         text, w);
     return w;
@@ -1792,8 +1824,9 @@ int Xutf8TextEscapement(XFontSet font_set, _Xconst char *text, int text_len)
     if (!text || text_len <= 0)
         return 0;
     CompatFontSet *set = GET_FONT_SET(font_set);
-    return set && set->font ? XTextWidth(set->font, text, text_len)
-                            : text_len * 8;
+    if (set && set->font)
+        return XTextWidth(set->font, text, text_len);
+    return clampInt64ToInt((int64_t) text_len * 8);
 }
 
 XIM XIMOfIC(XIC ic)
@@ -1949,14 +1982,17 @@ int XWMGeometry(
             heightInc = hints->height_inc;
     }
 
-    int widthUnits = (umask & WidthValue)
-                         ? (int) uwidth
-                         : ((dmask & WidthValue) ? (int) dwidth : 1);
-    int heightUnits = (umask & HeightValue)
-                          ? (int) uheight
-                          : ((dmask & HeightValue) ? (int) dheight : 1);
-    int width = widthUnits * widthInc + baseWidth;
-    int height = heightUnits * heightInc + baseHeight;
+    /* All pixel math runs in int64_t and routes through satMulAdd so a
+     * UINT_MAX geometry-units value times UINT_MAX width_inc cannot wrap
+     * before we clamp into the returned int. */
+    int64_t widthUnits = (umask & WidthValue)
+                             ? (int64_t) uwidth
+                             : ((dmask & WidthValue) ? (int64_t) dwidth : 1);
+    int64_t heightUnits = (umask & HeightValue)
+                              ? (int64_t) uheight
+                              : ((dmask & HeightValue) ? (int64_t) dheight : 1);
+    int64_t width = satMulAdd(widthUnits, widthInc, baseWidth);
+    int64_t height = satMulAdd(heightUnits, heightInc, baseHeight);
     if (width < minWidth)
         width = minWidth;
     if (height < minHeight)
@@ -1967,29 +2003,30 @@ int XWMGeometry(
         if (height > hints->max_height)
             height = hints->max_height;
     }
+    int64_t border = 2 * (int64_t) bwidth;
 
-    int x = 0;
+    int64_t x = 0;
     if (umask & XValue) {
         x = (umask & XNegative)
-                ? DisplayWidth(dpy, screen) + ux - width - 2 * (int) bwidth
+                ? (int64_t) DisplayWidth(dpy, screen) + ux - width - border
                 : ux;
     } else if (dmask & XValue) {
         if (dmask & XNegative) {
-            x = DisplayWidth(dpy, screen) + dx - width - 2 * (int) bwidth;
+            x = (int64_t) DisplayWidth(dpy, screen) + dx - width - border;
             rmask |= XNegative;
         } else {
             x = dx;
         }
     }
 
-    int y = 0;
+    int64_t y = 0;
     if (umask & YValue) {
         y = (umask & YNegative)
-                ? DisplayHeight(dpy, screen) + uy - height - 2 * (int) bwidth
+                ? (int64_t) DisplayHeight(dpy, screen) + uy - height - border
                 : uy;
     } else if (dmask & YValue) {
         if (dmask & YNegative) {
-            y = DisplayHeight(dpy, screen) + dy - height - 2 * (int) bwidth;
+            y = (int64_t) DisplayHeight(dpy, screen) + dy - height - border;
             rmask |= YNegative;
         } else {
             y = dy;
@@ -1997,13 +2034,13 @@ int XWMGeometry(
     }
 
     if (x_return)
-        *x_return = x;
+        *x_return = clampInt64ToInt(x);
     if (y_return)
-        *y_return = y;
+        *y_return = clampInt64ToInt(y);
     if (width_return)
-        *width_return = width;
+        *width_return = clampInt64ToInt(width);
     if (height_return)
-        *height_return = height;
+        *height_return = clampInt64ToInt(height);
     if (gravity_return) {
         switch (rmask & (XNegative | YNegative)) {
         case 0:
@@ -2021,6 +2058,95 @@ int XWMGeometry(
         }
     }
     return rmask;
+}
+
+int XGeometry(Display *dpy,
+              int screen,
+              _Xconst char *position,
+              _Xconst char *default_position,
+              unsigned int bwidth,
+              unsigned int fwidth,
+              unsigned int fheight,
+              int xadder,
+              int yadder,
+              int *x_return,
+              int *y_return,
+              int *width_return,
+              int *height_return)
+{
+    int x = 0;
+    int y = 0;
+    unsigned int width = 0;
+    unsigned int height = 0;
+    int mask = default_position
+                   ? XParseGeometry(default_position, &x, &y, &width, &height)
+                   : NoValue;
+    int defaultMask = mask;
+    unsigned int defaultWidth = width;
+    unsigned int defaultHeight = height;
+
+    int userX = 0;
+    int userY = 0;
+    unsigned int userWidth = 0;
+    unsigned int userHeight = 0;
+    int userMask = position ? XParseGeometry(position, &userX, &userY,
+                                             &userWidth, &userHeight)
+                            : NoValue;
+    if (userMask & WidthValue)
+        width = userWidth;
+    if (userMask & HeightValue)
+        height = userHeight;
+    if (userMask & XValue) {
+        x = userX;
+        mask = (mask & ~XNegative) | (userMask & XNegative) | XValue;
+    }
+    if (userMask & YValue) {
+        y = userY;
+        mask = (mask & ~YNegative) | (userMask & YNegative) | YValue;
+    }
+
+    /* Anchor dimensions feed the (-x, -y) corner math. Match upstream
+     * X.org XGeometry: when the USER spec supplies a position, anchor
+     * with the merged width (user override if any, else default).
+     * When the user spec has NO position, the default-position branch
+     * anchors with the DEFAULT width even if the user changed width.
+     * This matches xterm-style command-line geometry handling.
+     * Routing through satMulAdd so a pathological spec cannot wrap
+     * int64_t before the clamp. */
+    unsigned int xAnchorWidth =
+        (userMask & XValue) || !(defaultMask & WidthValue) ? width
+                                                           : defaultWidth;
+    unsigned int yAnchorHeight =
+        (userMask & YValue) || !(defaultMask & HeightValue) ? height
+                                                            : defaultHeight;
+    int64_t xAnchorPixelWidth =
+        satMulAdd((int64_t) xAnchorWidth, (int64_t) fwidth, (int64_t) xadder);
+    int64_t yAnchorPixelHeight =
+        satMulAdd((int64_t) yAnchorHeight, (int64_t) fheight, (int64_t) yadder);
+    int64_t border = 2 * (int64_t) bwidth;
+    if (x_return) {
+        int64_t v = 0;
+        if (mask & XValue) {
+            v = (mask & XNegative) ? (int64_t) DisplayWidth(dpy, screen) -
+                                         xAnchorPixelWidth - border + x
+                                   : (int64_t) x;
+        }
+        *x_return = clampInt64ToInt(v);
+    }
+    if (y_return) {
+        int64_t v = 0;
+        if (mask & YValue) {
+            v = (mask & YNegative) ? (int64_t) DisplayHeight(dpy, screen) -
+                                         yAnchorPixelHeight - border + y
+                                   : (int64_t) y;
+        }
+        *y_return = clampInt64ToInt(v);
+    }
+    if (width_return)
+        *width_return = clampInt64ToInt((int64_t) width);
+    if (height_return)
+        *height_return = clampInt64ToInt((int64_t) height);
+    return userMask;
 }
 
 Status XGetIconSizes(
@@ -3295,9 +3421,12 @@ Status XmbTextPerCharExtents(XFontSet font_set,
                              XRectangle *max_logical_extents)
 {
     CompatFontSet *set = GET_FONT_SET(font_set);
+    /* Clamp both sides at zero: a negative buffer_size would otherwise
+     * propagate into count and report a negative num_chars. */
     int count = text_len > 0 ? text_len : 0;
-    if (count > buffer_size)
-        count = buffer_size;
+    int cap = buffer_size > 0 ? buffer_size : 0;
+    if (count > cap)
+        count = cap;
     int charWidth = set && set->font ? set->font->max_bounds.width : 8;
     int height = set && set->font ? set->font->ascent + set->font->descent : 0;
     int ascent = set && set->font ? set->font->ascent : 0;

@@ -1,0 +1,18 @@
+--- a/src/viola/tfed.c
++++ b/src/viola/tfed.c
+@@ -6019,8 +6019,15 @@
+ 
+         if (offsetdir == 0)
+             return 0;
+-        else if (offsetdir > 0)
++
++        /*
++         * The copy-scroll optimization leaves stale glyphs on backends where
++         * transparent text redraws are not preceded by a full clear. The
++         * caller has already moved offsetp/currentp; redraw from the model.
++         */
++        return renderTF(tf);
++        if (offsetdir > 0)
+             linesToMove = offsetdir;
+         else
+             linesToMove = -offsetdir;

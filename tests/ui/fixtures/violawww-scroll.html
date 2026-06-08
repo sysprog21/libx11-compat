@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<title>ViolaWWW replay scroll fixture</title>
+</head>
+<body>
+<h1>ViolaWWW Replay Scroll Fixture</h1>
+<p>This page intentionally contains repeated fixed-size text rows so
+scrolling exposes stale-pixel and text-metric regressions.</p>
+<p><a href="#section-1">Section 1</a> |
+<a href="#section-8">Section 8</a> |
+<a href="#section-16">Section 16</a></p>
+<hr>
+<h2 id="section-1">Section 1</h2>
+<p>gjpqy fixed font descenders should clear cleanly after every scroll.</p>
+<p>WWW browser text should not duplicate, overlap, or smear on expose.</p>
+<h2>Section 2</h2>
+<p>Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda.</p>
+<p>Repeated rows make stale glyph fragments visually obvious.</p>
+<h2>Section 3</h2>
+<p>Common Library, Line Mode Browser, MidasWWW, and ViolaWWW.</p>
+<p>Each line gives the scroll region more repaint work.</p>
+<h2>Section 4</h2>
+<p>Characters with descenders: g j p q y, again and again.</p>
+<p>Numbers and punctuation: 0123456789 ! ? / : ; - _ + =.</p>
+<h2>Section 5</h2>
+<p>Longer text wraps across the client area and exercises row clearing.</p>
+<p>The smoke test does not require native X11 to reject obvious overlap.</p>
+<h2>Section 6</h2>
+<p>Motif chrome stays at the top while the document viewport scrolls.</p>
+<p>Wheel input should move the document and scrollbar consistently.</p>
+<h2>Section 7</h2>
+<p>Black glyph pixels should stay inside their advertised font metrics.</p>
+<p>No row should accumulate several old copies of the same text.</p>
+<h2 id="section-8">Section 8</h2>
+<p>Halfway marker for scroll replay and screenshot comparison.</p>
+<p>The changed-region assertion should see movement in the document area.</p>
+<h2>Section 9</h2>
+<p>Expose handling should clear damaged children and parent backgrounds.</p>
+<p>Same-window copies and clear areas are common scroll primitives.</p>
+<h2>Section 10</h2>
+<p>Additional rows keep the viewport busy after multiple wheel ticks.</p>
+<p>Dense dark bands are treated as stale-text smoke-test failures.</p>
+<h2>Section 11</h2>
+<p>ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz.</p>
+<p>MMMM WWWW mmmm wwww iii lll ttt fff.</p>
+<h2>Section 12</h2>
+<p>Repeated rows continue beyond the first viewport.</p>
+<p>Scrolling back should repaint a plausible clean page.</p>
+<h2>Section 13</h2>
+<p>XDrawString, XDrawImageString, XClearArea, and Expose.</p>
+<p>The local replay smoke test watches the rendered result.</p>
+<h2>Section 14</h2>
+<p>Another line with descenders: ggg jjj ppp qqq yyy.</p>
+<p>Another line with capitals: WWW SOFTWARE PRODUCTS.</p>
+<h2>Section 15</h2>
+<p>Near the bottom of the deterministic fixture.</p>
+<p>Scrollbars and text rows should remain stable.</p>
+<h2 id="section-16">Section 16</h2>
+<p>Final section for replay smoke testing.</p>
+<p>End of document.</p>
+</body>
+</html>

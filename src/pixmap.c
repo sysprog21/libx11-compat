@@ -24,6 +24,7 @@ static Bool isSupportedPixmapDepth(unsigned int depth)
 
 static Uint32 mapPixel(SDL_PixelFormat *format, unsigned long pixel)
 {
+    pixel = colorWithOpaqueDefault(pixel);
     return SDL_MapRGBA(format, GET_RED_FROM_COLOR(pixel),
                        GET_GREEN_FROM_COLOR(pixel), GET_BLUE_FROM_COLOR(pixel),
                        GET_ALPHA_FROM_COLOR(pixel));
@@ -93,7 +94,6 @@ Pixmap XCreatePixmap(Display *display,
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
-    LOG("%s: addr= %lu, w = %d, h = %d\n", __func__, pixmap, width, height);
     PixmapStruct *pixmapStruct = malloc(sizeof(PixmapStruct));
     if (!pixmapStruct) {
         FREE_XID(pixmap);

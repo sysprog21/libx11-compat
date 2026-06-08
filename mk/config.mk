@@ -33,6 +33,15 @@ CPPFLAGS += -Iinclude -Isrc \
             $(SDL2_CFLAGS) $(SDL2_TTF_CFLAGS) $(PIXMAN_CFLAGS) \
             -DNARROWPROTO -DXTHREADS -D_GNU_SOURCE
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC
+# Opt-in strict mode: STRICT=1 turns warnings into errors so CI surfaces
+# new diagnostics at PR time. STRICT_CFLAGS is applied only to first-
+# party objects via mk/common.mk's compile rule; upstream-derived libXt
+# and libXpm sources have their own warning footprint we do not own,
+# and the libXt typecast warnings would otherwise block the build.
+STRICT_CFLAGS :=
+ifeq ($(STRICT),1)
+  STRICT_CFLAGS += -Werror
+endif
 SDL_COMPAT_LIBS := -L$(abspath $(OUT)) -lSDL2-x11compat \
                    -lSDL2_ttf-x11compat
 LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm -pthread \

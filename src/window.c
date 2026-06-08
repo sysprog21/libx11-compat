@@ -11,6 +11,8 @@
 #include "image.h"
 #include "input.h"
 #include "net-atoms.h"
+#include "replay.h"
+#include "replay-target.h"
 #include "visual.h"
 #include "window.h"
 
@@ -70,7 +72,12 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     if (windowStruct->sdlWindow)
         return True;
 
-    Uint32 flags = SDL_WINDOW_SHOWN;
+    /* Start hidden so XMapWindow controls the show timing. Without
+     * this, SDL_CreateWindow flashes an empty window before
+     * drawWindowDataToScreen renders content; the SDL_ShowWindow call
+     * at the end of XMapWindow brings it on screen with the first
+     * frame already drawn. */
+    Uint32 flags = SDL_WINDOW_HIDDEN;
     if (windowStruct->borderWidth == 0) {
         flags |= SDL_WINDOW_BORDERLESS;
     }
@@ -108,6 +115,9 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     if (windowStruct->icon) {
         SDL_SetWindowIcon(windowStruct->sdlWindow, windowStruct->icon);
     }
+    /* Prime the X backing store while the native window is still hidden.
+     * XMapWindow will present and show it after map/expose state is ready. */
+    (void) getWindowRenderer(window);
     return True;
 }
 
@@ -116,6 +126,11 @@ static void unrealizeTopLevelWindow(Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (!windowStruct->sdlWindow)
         return;
+
+    /* If this top-level was the replay/XTest injection target, retire the
+     * cached ID so the next mapped shell can take its place. */
+    Uint32 destroyedId = SDL_GetWindowID(windowStruct->sdlWindow);
+    replayTargetForgetWindow(destroyedId);
 
     deleteWindowMapping(window);
     SDL_DestroyWindow(windowStruct->sdlWindow);
@@ -404,7 +419,6 @@ int XMapWindow(Display *display, Window window)
          * stay in the terminal. Real X11's MapWindow puts the window on screen;
          * raising it here matches user expectation.
          */
-        SDL_RaiseWindow(windowStruct->sdlWindow);
         if (windowStruct->windowName) {
             free(windowStruct->windowName);
             windowStruct->windowName = NULL;
@@ -418,6 +432,18 @@ int XMapWindow(Display *display, Window window)
              * popup shells from finishing their map sequence. */
             SDL_StopTextInput();
         }
+        /* First top-level mapping is the canonical "window is up" signal
+         * for an external test script. Snapshot the SDL window ID now,
+         * on the main thread, so XTest's off-thread injection has a
+         * stable target without scanning the live window tree. Then
+         * arm the replay engine. */
+        if (windowStruct->sdlWindow) {
+            int wid = 0, hgt = 0;
+            SDL_GetWindowSize(windowStruct->sdlWindow, &wid, &hgt);
+            replayTargetOfferWindow(SDL_GetWindowID(windowStruct->sdlWindow),
+                                    windowStruct->x, windowStruct->y, wid, hgt);
+        }
+        replayStartIfRequested(display);
     } else { /* Mapping a window that is not a top level window  */
         Window parent = GET_PARENT(window);
         if (GET_WINDOW_STRUCT(parent)->mapState == Mapped) {
@@ -442,7 +468,14 @@ int XMapWindow(Display *display, Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     SDL_Rect exposeRect = {0, 0, windowStruct->w, windowStruct->h};
     postExposeEvent(display, window, &exposeRect, 1);
-    drawWindowDataToScreen();
+    if (windowStruct->sdlWindow) {
+        /* Render first into the hidden SDL_Window so the user never
+         * sees an empty frame, then show + raise. */
+        windowStruct->needsPresent = True;
+        drawWindowDataToScreen();
+        SDL_ShowWindow(windowStruct->sdlWindow);
+        SDL_RaiseWindow(windowStruct->sdlWindow);
+    }
 
     // SDL_UpdateWindowSurface(GET_WINDOW_STRUCT(window)->sdlWindow);
 
@@ -468,17 +501,14 @@ int XUnmapWindow(Display *display, Window window)
     windowStruct->mapState = UnMapped;
     postVisibilityForWindowAndSiblings(display, window);
     if (windowStruct->sdlWindow) {
-        SDL_Window *sdlWindow = windowStruct->sdlWindow;
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
-        windowStruct->sdlWindow = NULL;
         windowStruct->sdlRenderer = NULL;
-        windowStruct->needsPresent = False;
         if (sdlRenderer) {
             invalidatePutImageStagingTexture(sdlRenderer);
             invalidateTextCacheForRenderer(sdlRenderer);
             SDL_DestroyRenderer(sdlRenderer);
         }
-        SDL_DestroyWindow(sdlWindow);
+        unrealizeTopLevelWindow(window);
     } else if (GET_WINDOW_STRUCT(GET_PARENT(window))->mapState != UnMapped) {
         postEvent(display, window, UnmapNotify, False);
         SDL_Rect exposeRect = {windowStruct->x, windowStruct->y,
@@ -657,6 +687,17 @@ int XReparentWindow(Display *display,
                 windowStruct->mapState = mapState;
                 return 0;
             }
+            /* realizeTopLevelWindow creates the SDL_Window hidden so
+             * XMapWindow can control show timing. The reparent path
+             * doesn't go through XMapWindow, so the window stays
+             * hidden, and XGetWindowAttributes reports IsUnmapped
+             * even though mapState is Mapped. Show it now since the
+             * old child was already mapped before reparent. */
+            if (windowStruct->sdlWindow) {
+                windowStruct->needsPresent = True;
+                drawWindowDataToScreen();
+                SDL_ShowWindow(windowStruct->sdlWindow);
+            }
         }
     }
     if (mapState != UnMapped) {
@@ -723,16 +764,17 @@ Bool XTranslateCoordinates(Display *display,
     *destinationYReturn = currY;
     if (childReturn) {
         *childReturn = None;
-        // Get the first child which contains x and y
         Window *children = GET_CHILDREN(destinationWindow);
-        size_t i;
-        for (i = 0; i < GET_WINDOW_STRUCT(destinationWindow)->children.length;
-             i++) {
-            GET_WINDOW_POS(children[i], x, y);
-            GET_WINDOW_DIMS(children[i], width, height);
+        for (size_t i = GET_WINDOW_STRUCT(destinationWindow)->children.length;
+             i > 0; i--) {
+            Window child = children[i - 1];
+            if (!isWindowEffectivelyViewable(child))
+                continue;
+            GET_WINDOW_POS(child, x, y);
+            GET_WINDOW_DIMS(child, width, height);
             if (x <= currX && x + width > currX && y <= currY &&
                 y + height > currY) {
-                *childReturn = children[i];
+                *childReturn = child;
                 break;
             }
         }

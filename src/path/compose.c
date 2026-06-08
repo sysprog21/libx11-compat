@@ -112,6 +112,11 @@ Bool pathComposeSpansToBuffer(Uint32 *buffer,
         return False;
     }
 
+    /* Promote core X11 pixels (alpha byte == 0) to opaque before they reach
+     * the pixman fill or the per-span blend loop; otherwise primitives that
+     * use BlackPixel would write transparent destinations. */
+    color = colorWithOpaqueDefault(color);
+
     Uint32 src = colorToRgba8888(color);
     Bool usedPixman = False;
     if (!fillFullCoverageSpansWithPixman(buffer, width, height, spans, color,

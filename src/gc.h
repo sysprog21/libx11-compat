@@ -44,7 +44,26 @@ typedef struct _GraphicContext {
 
 #define GC_BUMP_GENERATION(gc) ((gc)->generation++)
 
-#define GET_GC(gc) GET_GC_FROM_XID(((struct _XGC *) (gc))->gid)
 #define GET_GC_FROM_XID(id) ((GraphicContext *) GET_XID_VALUE(id))
+
+/* Debug-only NULL guard. Production keeps the bare deref so well-formed
+ * callers pay nothing; misbehaving callers (or future regressions like
+ * the round-6 XCopyArea NULL gc finding) abort with file:line. */
+#ifdef DEBUG_LIBX11_COMPAT
+#include <stdio.h>
+#include <stdlib.h>
+#define GET_GC(gc)                                                            \
+    (__extension__({                                                          \
+        GC _gg_gc = (gc);                                                     \
+        if (!_gg_gc) {                                                        \
+            fprintf(stderr, "%s:%d: GET_GC(NULL) in debug build\n", __FILE__, \
+                    __LINE__);                                                \
+            abort();                                                          \
+        }                                                                     \
+        GET_GC_FROM_XID(((struct _XGC *) _gg_gc)->gid);                       \
+    }))
+#else
+#define GET_GC(gc) GET_GC_FROM_XID(((struct _XGC *) (gc))->gid)
+#endif
 
 #endif /* GC_H */

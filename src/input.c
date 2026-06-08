@@ -7,9 +7,15 @@
 #include "keysymlist.h"
 #include "errors.h"
 #include "display.h"
+#include "events.h"
+#include "window-internal.h"
 
 Window keyboardFocus = None;
 int revertTo = RevertToParent;
+/* Distinguishes the two non-window focus targets (None vs PointerRoot)
+ * for postFocusChange's root-detail code. keyboardFocus itself stays
+ * collapsed to None for both, so event routing stays binary. */
+static FocusKind keyboardFocusKind = FocusKindNone;
 
 static const struct {
     KeySym keysym;
@@ -67,6 +73,39 @@ void setKeyboardFocus(Window window)
 {
     LOG("SET keyboard focus is %lu\n", window);
     keyboardFocus = window;
+}
+
+void revertKeyboardFocusForDestroyedWindow(Display *display, Window window)
+{
+    /* Xlib spec: when the focus window is destroyed, focus reverts per
+     * revert_to and the new revert_to becomes RevertToNone (so a
+     * cascading destroy of the parent does not keep walking up). Route
+     * through XSetInputFocus so postFocusChange emits the proper
+     * FocusOut/FocusIn sequence and keyboardFocusKind stays in sync. */
+    if (window == None || window != keyboardFocus)
+        return;
+    switch (revertTo) {
+    case RevertToPointerRoot:
+        XSetInputFocus(display, (Window) PointerRoot, RevertToNone,
+                       CurrentTime);
+        return;
+    case RevertToParent: {
+        /* Xlib spec: "the focus reverts to its parent (or the closest
+         * viewable ancestor)"; fall back to None if none exists. */
+        Window target = GET_PARENT(window);
+        while (target != None && IS_TYPE(target, WINDOW) &&
+               !isWindowEffectivelyViewable(target))
+            target = GET_PARENT(target);
+        Bool viewable = target != None && IS_TYPE(target, WINDOW);
+        XSetInputFocus(display, viewable ? target : None, RevertToNone,
+                       CurrentTime);
+        return;
+    }
+    case RevertToNone:
+    default:
+        XSetInputFocus(display, None, RevertToNone, CurrentTime);
+        return;
+    }
 }
 
 int XSelectInput(Display *display, Window window, long event_mask)
@@ -189,6 +228,8 @@ KeySym XStringToKeysym(_Xconst char *string)
         if (strcmp(osfKeysyms[i].name, string) == 0)
             return osfKeysyms[i].keysym;
     }
+    if (!strcmp(string, "KDelete"))
+        return XK_Delete;
     for (size_t i = 0; i < KEY_SYM_LIST_LENGTH; i++) {
         if (strcmp(KEY_SYM_LIST[i].name, string) == 0) {
             return KEY_SYM_LIST[i].keySym;
@@ -357,9 +398,17 @@ int XGetInputFocus(Display *display,
 {
     // https://tronche.com/gui/x/xlib/input/XGetInputFocus.html
     SET_X_SERVER_REQUEST(display, X_GetInputFocus);
-    *focus_return = getKeyboardFocus();
-    if (*focus_return == None)
+    /* Xlib spec: report the actual current focus target. The previous
+     * implementation collapsed None to PointerRoot in the return value,
+     * which was non-conformant and indistinguishable from a real
+     * PointerRoot focus once XSetInputFocus learned to track the two
+     * cases separately. */
+    if (keyboardFocusKind == FocusKindPointerRoot)
         *focus_return = (Window) PointerRoot;
+    else if (keyboardFocusKind == FocusKindNone)
+        *focus_return = None;
+    else
+        *focus_return = getKeyboardFocus();
     *revert_to_return = revertTo;
     return 1;
 }
@@ -370,15 +419,24 @@ int XSetInputFocus(Display *display, Window focus, int revert_to, Time time)
     SET_X_SERVER_REQUEST(display, X_SetInputFocus);
     (void) time;
     revertTo = revert_to;
-    /* PointerRoot and None are valid Xlib targets that the X server
-     * interprets as "follow pointer" and "no focus." Both map to our
-     * keyboardFocus = None state since the SDL backend doesn't track a
-     * separate pointer-following focus. */
-    if (focus == PointerRoot || focus == None) {
-        setKeyboardFocus(None);
-    } else {
-        setKeyboardFocus(focus);
-    }
+    Window oldFocus = getKeyboardFocus();
+    FocusKind oldKind = keyboardFocusKind;
+    FocusKind newKind;
+    if (focus == PointerRoot)
+        newKind = FocusKindPointerRoot;
+    else if (focus == None)
+        newKind = FocusKindNone;
+    else
+        newKind = FocusKindWindow;
+    /* Storage stays collapsed: PointerRoot and None both park keyboard
+     * focus at None for event routing; the kind tracker preserves the
+     * distinction so postFocusChange emits the correct root detail. */
+    Window newFocus = newKind == FocusKindWindow ? focus : None;
+    if (oldKind == newKind && oldFocus == newFocus)
+        return 1;
+    setKeyboardFocus(newFocus);
+    keyboardFocusKind = newKind;
+    postFocusChange(display, oldKind, oldFocus, newKind, newFocus);
     return 1;
 }
 
@@ -434,12 +492,11 @@ Bool getKeyboardGrabOwnerEvents(void)
 /* Passive key grabs registered via XGrabKey. Motif menus install one
  * grab per accelerator (Alt-F for File, Alt-E for Edit, etc.) on the
  * top-level shell at widget realize time; without tracking the grabs
- * here every key event landed at the focus window, accelerators
- * silently failed, and DEBUG builds spammed one warning per grab call.
+ * here every key event landed at the focus window, accelerators silently
+ * failed, and DEBUG builds spammed one warning per grab call.
  *
- * One global list across Displays mirrors what xlibe does. Motif demos
- * are single-display; if multi-Display threading becomes a goal the
- * list moves under a Display pointer field. */
+ * Motif demos are single-display; if multi-Display threading becomes a
+ * goal the list moves under a Display pointer field. */
 typedef struct KeyGrab {
     int key;                /* X keycode, or AnyKey for all keys */
     unsigned int modifiers; /* modifier mask, or AnyModifier */

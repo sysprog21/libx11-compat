@@ -1,0 +1,117 @@
+diff --git a/lib/Xm/XmString.c b/lib/Xm/XmString.c
+index aed38e37..5a03e807 100644
+--- a/lib/Xm/XmString.c
++++ b/lib/Xm/XmString.c
+@@ -312,6 +312,14 @@ static int _get_generate_parse_table(XmParseTable *gen_table);
+ static const char *WCHAR_T = "WCHAR_T";
+ static const XmStringTag TO_UTF8 = "UTF-8";
+ 
++/* Quiet variant of _Xmcsconv: returns NULL on iconv_open failure without
++ * emitting XmeWarning. Used by the XmStringParse cascade (tag → locale.tag
++ * → XmFALLBACK_CHARSET) where each non-final step is expected to fail and
++ * only the final aggregated failure warrants a user-visible warning. */
++static char *_Xmcsconv_silent(const char *from, const char *to,
++                              char *text, size_t bytes, size_t *len_out);
++
++
+ static struct __Xmlocale locale;
+ static XmStringTag *_tag_cache = NULL;
+ static size_t _cache_count = 0;
+@@ -404,6 +412,86 @@ again:
+ 	return result;
+ }
+ 
++/* See declaration comment near the top of this file. */
++static char *_Xmcsconv_silent(const char *from, const char *to,
++                              char *text, size_t bytes, size_t *len_out)
++{
++	iconv_t ic;
++	char *inbuf, *outbuf, *result;
++	size_t insz, outsz, used, conv;
++	char msg[256];
++#if defined(_LIBICONV_VERSION)
++	char *_to, *_from;
++#endif
++
++	if (from == XmFONTLIST_DEFAULT_TAG || (from && !strcmp(from, XmFONTLIST_DEFAULT_TAG)))
++		from = locale.tag;
++
++#if defined(_LIBICONV_VERSION)
++	_to   = XtMalloc(strlen(to) + 9);
++	_from = XtMalloc(strlen(from) + 9);
++	sprintf(_to,   "%s//IGNORE", to);
++	sprintf(_from, "%s//IGNORE", from);
++	to   = _to;
++	from = _from;
++#endif
++
++	if ((ic = iconv_open(to, from)) == (iconv_t)-1) {
++		/* Silent: caller will cascade or warn aggregate. */
++		*len_out = 0;
++#if defined(_LIBICONV_VERSION)
++		XtFree(_to);
++		XtFree(_from);
++#endif
++		return NULL;
++	}
++
++	insz   = bytes;
++	inbuf  = text;
++	outsz  = 1 + (bytes << 2);
++	outbuf = XtMalloc(outsz);
++	result = outbuf;
++
++silent_again:
++	if ((conv  = iconv(ic, &inbuf, &insz, &outbuf, &outsz)) == (size_t)-1) {
++		switch (errno) {
++		case EINVAL:
++			break;
++		case E2BIG:
++			insz   = bytes;
++			inbuf  = text;
++			used   = (size_t)(outbuf - result);
++			outsz += 2 + (outsz >> 2);
++			result = XtRealloc(result, outsz);
++			outbuf = result + used;
++			goto silent_again;
++		case EILSEQ:
++			XmeWarning(NULL, "Invalid byte sequence in character set conversion input");
++			break;
++		default:
++			snprintf(msg, sizeof msg, "Error during charset conversion: %s", strerror(errno));
++			XmeWarning(NULL, msg);
++		}
++
++		iconv_close(ic);
++		XtFree(result);
++#if defined(_LIBICONV_VERSION)
++		XtFree(_to);
++		XtFree(_from);
++#endif
++		if (len_out) *len_out = 0;
++		return NULL;
++	}
++
++	iconv_close(ic);
++#if defined(_LIBICONV_VERSION)
++	XtFree(_to);
++	XtFree(_from);
++#endif
++	if (len_out) *len_out = (size_t)(outbuf - result);
++	return result;
++}
++
+ /**
+  * Create a new XmString
+  */
+@@ -5876,8 +5964,8 @@ static void parse_unmatched(XmString *result, char **ptr,
+      * So, if we can't convert based on the tag, fallback to the locale
+      * charset and further back to the fallback charset (Latin 1).
+      */
+-    if (!(out = _Xmcsconv(tag, TO_UTF8, *ptr, length, &convsz))) {
+-      if (!(out = _Xmcsconv(locale.tag, TO_UTF8, *ptr, length, &convsz)))
++    if (!(out = _Xmcsconv_silent(tag, TO_UTF8, *ptr, length, &convsz))) {
++      if (!(out = _Xmcsconv_silent(locale.tag, TO_UTF8, *ptr, length, &convsz)))
+         out = _Xmcsconv(XmFALLBACK_CHARSET, TO_UTF8, *ptr, length, &convsz);
+     }
+ 
