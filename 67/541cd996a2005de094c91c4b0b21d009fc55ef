@@ -1,0 +1,19 @@
+tests/ui/assertions/violawww-scroll-resized.json
+  s_42a8ba1a88142c::t_659d373e2c3778 2,13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "67541cd996a2005de094c91c4b0b21d009fc55ef",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
