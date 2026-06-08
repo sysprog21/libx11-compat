@@ -33,6 +33,20 @@
 #define GET_BLUE_FROM_COLOR(color) ((Uint8) ((color >> BLUE_SHIFT) & 0xFF))
 #define GET_ALPHA_FROM_COLOR(color) ((Uint8) ((color >> ALPHA_SHIFT) & 0xFF))
 
+/* Core X11 has no notion of alpha: pixel values written through Xlib are
+ * opaque by definition and the upper byte is conventionally zero. SDL2
+ * textures are RGBA, so a literal copy renders X11 pixels as fully
+ * transparent. Promote alpha == 0 to 0xFF to preserve the legacy
+ * contract. Trade-off: callers that intentionally pass an ARGB pixel
+ * value with alpha == 0 (a non-core Xrender/Composite usage) lose the
+ * transparency. Use the XRender path when alpha is meaningful. */
+static inline unsigned long colorWithOpaqueDefault(unsigned long color)
+{
+    if ((color & (0xFFul << ALPHA_SHIFT)) == 0)
+        return color | (0xFFul << ALPHA_SHIFT);
+    return color;
+}
+
 extern Colormap GREY_SCALE_COLORMAP;
 extern Colormap REAL_COLOR_COLORMAP;
 

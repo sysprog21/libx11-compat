@@ -7,6 +7,27 @@ typedef unsigned long Picture;
 typedef unsigned long GlyphSet;
 typedef unsigned long Glyph;
 typedef unsigned long PictFormat;
+typedef int XFixed;
+
+/* XFixed is 16.16 fixed-point; representable range is approximately
+ * [-32768, +32768). A bare cast of an out-of-range double to int is
+ * undefined in C, which upstream Xrender's macro form invites. Clamp
+ * to the representable range so misbehaving clients cannot trigger UB
+ * inside the compat layer. */
+static inline XFixed _xCompatDoubleToFixed(double f)
+{
+    double scaled = f * 65536.0;
+    /* NaN compares false to every numeric, so the clamp below would let
+     * it fall through to a (XFixed) cast, which is also UB. */
+    if (scaled != scaled)
+        return 0;
+    if (scaled >= 2147483647.0)
+        return (XFixed) 0x7FFFFFFF;
+    if (scaled <= -2147483648.0)
+        return (XFixed) (-0x7FFFFFFF - 1);
+    return (XFixed) scaled;
+}
+#define XDoubleToFixed(f) _xCompatDoubleToFixed((double) (f))
 
 typedef struct {
     short red;
@@ -33,6 +54,26 @@ typedef struct {
     unsigned short blue;
     unsigned short alpha;
 } XRenderColor;
+
+typedef struct {
+    XFixed matrix[3][3];
+} XTransform;
+
+typedef struct {
+    int repeat;
+    Picture alpha_map;
+    int alpha_x_origin;
+    int alpha_y_origin;
+    int clip_x_origin;
+    int clip_y_origin;
+    Pixmap clip_mask;
+    Bool graphics_exposures;
+    int subwindow_mode;
+    int poly_edge;
+    int poly_mode;
+    Atom dither;
+    Bool component_alpha;
+} XRenderPictureAttributes;
 
 typedef struct {
     GlyphSet glyphset;
@@ -79,6 +120,20 @@ typedef struct {
 #define PictStandardA4 3
 #define PictStandardA1 4
 
+#define CPRepeat (1L << 0)
+#define CPAlphaMap (1L << 1)
+#define CPAlphaXOrigin (1L << 2)
+#define CPAlphaYOrigin (1L << 3)
+#define CPClipXOrigin (1L << 4)
+#define CPClipYOrigin (1L << 5)
+#define CPClipMask (1L << 6)
+#define CPGraphicsExposure (1L << 7)
+#define CPSubwindowMode (1L << 8)
+#define CPPolyEdge (1L << 9)
+#define CPPolyMode (1L << 10)
+#define CPDither (1L << 11)
+#define CPComponentAlpha (1L << 12)
+
 extern Bool XRenderQueryExtension(Display *dpy,
                                   int *event_base_return,
                                   int *error_base_return);
@@ -121,6 +176,9 @@ extern void XRenderFillRectangles(Display *dpy,
                                   _Xconst XRenderColor *color,
                                   _Xconst XRectangle *rectangles,
                                   int n_rects);
+extern void XRenderSetPictureTransform(Display *dpy,
+                                       Picture picture,
+                                       XTransform *transform);
 extern GlyphSet XRenderCreateGlyphSet(Display *dpy,
                                       _Xconst XRenderPictFormat *format);
 extern void XRenderAddGlyphs(Display *dpy,

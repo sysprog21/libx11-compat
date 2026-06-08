@@ -5,7 +5,9 @@
 #include "display.h"
 #include "font.h"
 #include "image.h"
+#include "input.h"
 #include "colors.h"
+#include "replay-target.h"
 
 Window SCREEN_WINDOW = None;
 
@@ -158,7 +160,7 @@ static SDL_mutex *mappingListLock = NULL;
  * path before SDL_Window / event-pump threads can reach the register /
  * lookup helpers; subsequent callers are harmless no-ops. If
  * SDL_CreateMutex fails we leave the lock NULL and the lock/unlock
- * wrappers below skip the SDL call — better than crashing on an
+ * wrappers below skip the SDL call. This is better than crashing on an
  * unrecoverable allocator fail. */
 static void ensureMappingListLock(void)
 {
@@ -301,6 +303,8 @@ Window getContainingWindow(Window window, int x, int y)
     int i, child_x, child_y, child_w, child_h;
     Window *children = GET_CHILDREN(window);
     for (i = GET_WINDOW_STRUCT(window)->children.length - 1; i >= 0; i--) {
+        if (!isWindowEffectivelyViewable(children[i]))
+            continue;
         GET_WINDOW_POS(children[i], child_x, child_y);
         GET_WINDOW_DIMS(children[i], child_w, child_h);
         if (x >= child_x && x < child_x + child_w && y >= child_y &&
@@ -329,12 +333,35 @@ void removeChildFromParent(Window child)
 
 void destroyWindow(Display *display, Window window, Bool freeParentData)
 {
+    /* Drain pre-cascade stale events for this window FIRST, before any
+     * recursion. A focused descendant whose revert lands on us would
+     * otherwise queue FocusIn(window) during the recursion, and a
+     * naive discard at the end of this function would erase it. The
+     * order is: drain own stale events -> recurse (children's reverts
+     * may queue events for us, all survive) -> own revert -> teardown
+     * -> DestroyNotify. */
+    discardQueuedEventsForWindow(display, window);
+
     size_t i;
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     Window *children = GET_CHILDREN(window);
     for (i = 0; i < windowStruct->children.length; i++) {
         destroyWindow(display, children[i], False);
     }
+
+    /* Auto-revert per Xlib spec; post-order recursion means each
+     * ancestor's check sees the updated focus as the cascade unwinds. */
+    revertKeyboardFocusForDestroyedWindow(display, window);
+
+    /* Drop any passive button grabs on this window so a later XID
+     * reuse cannot route events through a stale grab entry. */
+    releaseButtonGrabsForWindow(window);
+    /* Clear cached pointer-target XIDs so a queued SDL motion event
+     * does not drive postPointerCrossingEvents -> buildWindowPathToRoot
+     * into this window's freed WindowStruct. ASan caught this on the
+     * test-xtest path where XDestroyWindow ran before the SDL motion
+     * queue drained. */
+    clearPointerStateForWindow(window);
     freeArray(&windowStruct->children);
     XFreeColormap(display, GET_COLORMAP(window));
     for (i = 0; i < windowStruct->properties.length; i++) {
@@ -361,9 +388,9 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         SDL_DestroyTexture(windowStruct->sdlTexture);
     }
     if (windowStruct->sdlWindow) {
+        replayTargetForgetWindow(SDL_GetWindowID(windowStruct->sdlWindow));
         SDL_DestroyWindow(windowStruct->sdlWindow);
     }
-    discardQueuedEventsForWindow(display, window);
     deleteWindowMapping(window);
     postEvent(display, window, DestroyNotify);
     if (freeParentData) {
@@ -419,6 +446,21 @@ Bool isParent(Window window1, Window window2)
     return False;
 }
 
+Bool isWindowEffectivelyViewable(Window window)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return False;
+    if (GET_WINDOW_STRUCT(window)->mapState == UnMapped)
+        return False;
+    Window parent = GET_PARENT(window);
+    while (parent != None) {
+        if (GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
+            return False;
+        parent = GET_PARENT(parent);
+    }
+    return True;
+}
+
 WindowProperty *findProperty(Array *properties, Atom property, size_t *index)
 {
     size_t i;
@@ -461,7 +503,7 @@ Bool moveChildToIndex(Window window, size_t targetIndex)
     return True;
 }
 
-/* Returns True when the geometric rectangles of `a` and `b` overlap.
+/* Returns True when the geometric rectangles of a and b overlap.
  * Endpoints are computed in int64_t so x + w cannot overflow when the
  * window struct holds extreme coordinates or dimensions.
  */
@@ -478,8 +520,8 @@ Bool windowsOverlap(Window a, Window b)
 }
 
 /* TopIf/BottomIf/Opposite are conditional restacks. "Occludes" means an
- * upper sibling overlaps `window`; "occluded by" means a lower sibling
- * overlaps `window`. An unconditional raise/lower would violate the
+ * upper sibling overlaps window; "occluded by" means a lower sibling
+ * overlaps window. An unconditional raise/lower would violate the
  * Xlib spec when no overlap is present.
  */
 static Bool hasOccludingSiblingAbove(Array *children, size_t index)
@@ -577,6 +619,8 @@ static void postParentExposureForOldArea(Display *display,
     Window parent = GET_PARENT(window);
     if (parent == None || GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
         return;
+    XClearArea(display, parent, oldX, oldY, (unsigned int) oldWidth,
+               (unsigned int) oldHeight, False);
     SDL_Rect exposed = {oldX, oldY, oldWidth, oldHeight};
     postExposeEvent(display, parent, &exposed, 1);
 }
@@ -621,6 +665,19 @@ static void postResizeExpose(Display *display,
                              int oldHeight)
 {
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+        SDL_Rect fullWindow = {
+            0,
+            0,
+            (int) windowStruct->w,
+            (int) windowStruct->h,
+        };
+        XClearArea(display, window, 0, 0, (unsigned int) fullWindow.w,
+                   (unsigned int) fullWindow.h, False);
+        postExposeEvent(display, window, &fullWindow, 1);
+        return;
+    }
+
     SDL_Rect rects[2];
     size_t count = 0;
     if ((int) windowStruct->w > oldWidth) {
@@ -661,8 +718,6 @@ void resizeWindowTexture(Window window)
      * (resize events may be faked in tests), so we cannot re-query via
      * SDL_GetWindowSize here. */
     SDL_Texture *oldTexture = windowStruct->sdlTexture;
-    SDL_Rect destRect = {0, 0, 0, 0};
-    SDL_QueryTexture(oldTexture, NULL, NULL, &destRect.w, &destRect.h);
     SDL_Texture *newTexture = SDL_CreateTexture(
         windowRenderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
         (int) windowStruct->w, (int) windowStruct->h);
@@ -682,7 +737,6 @@ void resizeWindowTexture(Window window)
                            GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(windowRenderer);
-    SDL_RenderCopy(windowRenderer, oldTexture, NULL, &destRect);
     windowStruct->sdlTexture = newTexture;
     windowStruct->needsPresent = True;
     SDL_SetRenderTarget(windowRenderer,
@@ -729,6 +783,18 @@ void mapRequestedChildren(Display *display, Window window)
             continue;
 
         if (GET_WINDOW_STRUCT(children[i])->mapState == Mapped) {
+            WindowStruct *childStruct = GET_WINDOW_STRUCT(children[i]);
+            if (childStruct->sdlTexture) {
+                if (!mergeWindowDrawables(window, children[i])) {
+                    LOG("Failed to merge mapped child drawables in %s\n",
+                        __func__);
+                    continue;
+                }
+            }
+            childStruct->contentsMergedToParent = False;
+            XClearArea(display, children[i], 0, 0, 0, 0, False);
+            SDL_Rect exposeRect = {0, 0, childStruct->w, childStruct->h};
+            postExposeEvent(display, children[i], &exposeRect, 1);
             mapRequestedChildren(display, children[i]);
         } else if (GET_WINDOW_STRUCT(children[i])->mapState == MapRequested) {
             if (!mergeWindowDrawables(window, children[i])) {
@@ -826,7 +892,7 @@ Bool configureWindow(Display *display,
             }
             windowStruct->w = (unsigned int) width;
             windowStruct->h = (unsigned int) height;
-            if (isMappedTopLevelWindow) {
+            if (windowStruct->sdlTexture) {
                 resizeWindowTexture(window);
             }
             hasChanged = True;

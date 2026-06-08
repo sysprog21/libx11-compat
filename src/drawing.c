@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
 #include "X11/Xlib.h"
@@ -12,7 +13,9 @@
 #include "events.h"
 #include "path/raster.h"
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -23,6 +26,7 @@ static SDL_atomic_t presentWakeTimerPending = {False};
 static SDL_atomic_t presentWakeEventType = {-1};
 
 static unsigned long opaqueColorIfAlphaUnset(unsigned long color);
+static Bool getDrawableSize(Drawable drawable, int *width, int *height);
 static void resolveWindowBackground(Window window,
                                     Pixmap *backgroundPixmap,
                                     unsigned long *backgroundColor);
@@ -41,6 +45,38 @@ typedef struct ShapeMaskView {
 static Bool resolveShapeMasks(const WindowStruct *window, ShapeMaskView *out);
 static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy);
 
+static uint64_t monotonicNowNs(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return 0;
+    return ((uint64_t) now.tv_sec * 1000000000ULL) + (uint64_t) now.tv_nsec;
+}
+
+static double nsToMs(uint64_t ns)
+{
+    return (double) ns / 1000000.0;
+}
+
+static FILE *renderStatsFile(void)
+{
+    static Bool initialized = False;
+    static FILE *file = NULL;
+    if (!initialized) {
+        initialized = True;
+        const char *path = getenv("LIBX11_COMPAT_RENDER_STATS");
+        if (path && *path) {
+            file = fopen(path, "w");
+            if (file) {
+                setvbuf(file, NULL, _IOLBF, 0);
+                fprintf(file,
+                        "event\telapsed_ms\treadback_ms\twindows\tpixels\n");
+            }
+        }
+    }
+    return file;
+}
+
 static Uint32 presentWakeTimerCallback(Uint32 interval, void *param)
 {
     (void) interval;
@@ -53,6 +89,7 @@ static Uint32 presentWakeTimerCallback(Uint32 interval, void *param)
     SDL_Event event;
     SDL_zero(event);
     event.type = (Uint32) eventType;
+    event.user.code = PRESENT_EVENT_CODE;
     if (SDL_PushEvent(&event) == 1)
         SDL_AtomicSet(&presentWakePending, True);
     return 0;
@@ -80,6 +117,10 @@ void drawWindowDataToScreen()
     if (!screen)
         return;
 
+    uint64_t totalStart = monotonicNowNs();
+    uint64_t readbackNs = 0;
+    uint64_t presentedPixels = 0;
+    size_t presentedWindows = 0;
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
     SDL_Texture *prevTarget = SDL_GetRenderTarget(screen);
     Bool screenTargetMutated = False;
@@ -152,6 +193,7 @@ void drawWindowDataToScreen()
             .h = rh,
         };
         int readRc = -1;
+        uint64_t readStart = monotonicNowNs();
         if (winFmt == readFmt) {
             /* Direct readback into the window's framebuffer. Saves one
              * full-image memcpy on every present.
@@ -173,10 +215,13 @@ void drawWindowDataToScreen()
                 SDL_FreeSurface(staging);
             }
         }
+        readbackNs += monotonicNowNs() - readStart;
         if (readRc == 0) {
             SDL_UpdateWindowSurface(child->sdlWindow);
             child->needsPresent = False;
             child->hasPresented = True;
+            presentedWindows++;
+            presentedPixels += (uint64_t) rw * (uint64_t) rh;
         } else {
             LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -190,6 +235,13 @@ void drawWindowDataToScreen()
 #ifdef DEBUG_WINDOWS
     printWindowsHierarchy();
 #endif
+    FILE *stats = renderStatsFile();
+    if (stats) {
+        uint64_t totalEnd = monotonicNowNs();
+        fprintf(stats, "drawWindowDataToScreen\t%.3f\t%.3f\t%zu\t%" PRIu64 "\n",
+                nsToMs(totalEnd - totalStart), nsToMs(readbackNs),
+                presentedWindows, presentedPixels);
+    }
 }
 
 void markWindowNeedsPresent(Window window)
@@ -420,11 +472,31 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
     };
     size_t dstOffsetX = (size_t) (clipped.x - source->x);
     size_t dstOffsetY = (size_t) (clipped.y - source->y);
+    SDL_Rect targetReadRect = readRect;
+    if (targetReadRect.x < 0) {
+        int clippedPixels = -targetReadRect.x;
+        if (clippedPixels >= targetReadRect.w)
+            return surface;
+        targetReadRect.x = 0;
+        targetReadRect.w -= clippedPixels;
+        dstOffsetX += (size_t) clippedPixels;
+    }
+    if (targetReadRect.y < 0) {
+        int clippedPixels = -targetReadRect.y;
+        if (clippedPixels >= targetReadRect.h)
+            return surface;
+        targetReadRect.y = 0;
+        targetReadRect.h -= clippedPixels;
+        dstOffsetY += (size_t) clippedPixels;
+    }
+    if (targetReadRect.w <= 0 || targetReadRect.h <= 0)
+        return surface;
     Uint8 *dstPixels = (Uint8 *) surface->pixels +
                        dstOffsetY * (size_t) surface->pitch +
                        dstOffsetX * (SDL_SURFACE_DEPTH / 8);
-    if (SDL_RenderReadPixels(renderer, &readRect, SDL_PIXELFORMAT_RGBA8888,
-                             dstPixels, surface->pitch) != 0) {
+    if (SDL_RenderReadPixels(renderer, &targetReadRect,
+                             SDL_PIXELFORMAT_RGBA8888, dstPixels,
+                             surface->pitch) != 0) {
         LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
             SDL_GetError());
         SDL_FreeSurface(surface);
@@ -553,6 +625,46 @@ int getGcClipIterationCount(GC gc)
     return gContext->clipRectCount;
 }
 
+/* Centralize the graphics-exposures lookup so every XCopyArea exit
+ * path tolerates a NULL gc the same way the clip helpers already do. */
+static Bool gcWantsGraphicsExposures(GC gc)
+{
+    if (!gc)
+        return False;
+    GraphicContext *gContext = GET_GC(gc);
+    return gContext ? gContext->graphicsExposures : False;
+}
+
+static Bool rectInsideDrawable(Drawable drawable, const SDL_Rect *rect)
+{
+    if (!rect)
+        return False;
+    int width = 0;
+    int height = 0;
+    if (!getDrawableSize(drawable, &width, &height))
+        return False;
+    return rect->x >= 0 && rect->y >= 0 && rect->w >= 0 && rect->h >= 0 &&
+           rect->x <= width && rect->y <= height &&
+           rect->w <= width - rect->x && rect->h <= height - rect->y;
+}
+
+static void postCopyAreaExposure(Display *display,
+                                 Drawable src,
+                                 Drawable dest,
+                                 GC gc,
+                                 const SDL_Rect *srcRect,
+                                 const SDL_Rect *destRect)
+{
+    if (!gcWantsGraphicsExposures(gc))
+        return;
+    if (rectInsideDrawable(src, srcRect)) {
+        postEvent(display, dest, NoExpose, X_CopyArea, 0);
+        return;
+    }
+    postEvent(display, dest, GraphicsExpose, (SDL_Rect *) destRect, (size_t) 1,
+              X_CopyArea, 0);
+}
+
 void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip)
 {
     if (!renderer || !clip) {
@@ -631,6 +743,14 @@ void applySdlDrawState(SDL_Renderer *renderer,
     if (!renderer)
         return;
 
+    /* Core X11 pixels have no alpha; the upper byte is conventionally zero
+     * (e.g., BlackPixel = 0x00000000, WhitePixel = 0x00FFFFFF). SDL2 treats
+     * alpha=0 as fully transparent, so passing those pixels through verbatim
+     * makes everything drawn with the default GC foreground invisible.
+     * Promote at the single entry point so every primitive routed through
+     * applySdlDrawState() inherits the fix. */
+    color = colorWithOpaqueDefault(color);
+
     GraphicContext *gContext = gc ? GET_GC(gc) : NULL;
     unsigned long generation = gContext ? gContext->generation : 0;
     if (lastDrawState.valid && lastDrawState.renderer == renderer &&
@@ -670,6 +790,204 @@ static void repaintMappedChildrenInRect(Display *display,
     if (rect && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, rect, 1);
     presentDrawableIfVisible(drawable);
+}
+
+static int compareInts(const void *a, const void *b)
+{
+    int lhs = *(const int *) a;
+    int rhs = *(const int *) b;
+    return (lhs > rhs) - (lhs < rhs);
+}
+
+/* Splits and removals can produce more outputs than inputs at any given
+ * index, so we cannot write back into `segments` in place: a write to
+ * segments[outCount] when outCount > i would overwrite an unread input
+ * segment. Output through a caller-provided scratch buffer sized for
+ * the worst case (every segment splits in two), then copy back. */
+static void subtractSegment(SDL_Rect *segments,
+                            SDL_Rect *scratch,
+                            int *segmentCount,
+                            int removeX1,
+                            int removeX2)
+{
+    int outCount = 0;
+    int count = *segmentCount;
+    for (int i = 0; i < count; i++) {
+        /* Extents in int64 so a segment near INT_MAX cannot wrap when
+         * width is added. Width differences are clamped back into int
+         * before writing into SDL_Rect.w (caller-side checks guarantee
+         * the post-clamp values are well-formed). */
+        int64_t segX1 = segments[i].x;
+        int64_t segX2 = (int64_t) segments[i].x + (int64_t) segments[i].w;
+        if ((int64_t) removeX2 <= segX1 || (int64_t) removeX1 >= segX2) {
+            scratch[outCount++] = segments[i];
+            continue;
+        }
+        if ((int64_t) removeX1 > segX1) {
+            int64_t w = (int64_t) removeX1 - segX1;
+            if (w > INT_MAX)
+                w = INT_MAX;
+            scratch[outCount++] = (SDL_Rect) {
+                .x = (int) segX1,
+                .y = segments[i].y,
+                .w = (int) w,
+                .h = segments[i].h,
+            };
+        }
+        if ((int64_t) removeX2 < segX2) {
+            int64_t w = segX2 - (int64_t) removeX2;
+            if (w > INT_MAX)
+                w = INT_MAX;
+            scratch[outCount++] = (SDL_Rect) {
+                .x = removeX2,
+                .y = segments[i].y,
+                .w = (int) w,
+                .h = segments[i].h,
+            };
+        }
+    }
+    if (outCount > 0)
+        memcpy(segments, scratch, sizeof(SDL_Rect) * (size_t) outCount);
+    *segmentCount = outCount;
+}
+
+static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
+                                         Window window,
+                                         const SDL_Rect *rect)
+{
+    if (!renderer || !rect || rect->w <= 0 || rect->h <= 0)
+        return True;
+    if (!IS_TYPE(window, WINDOW) ||
+        GET_WINDOW_STRUCT(window)->children.length == 0) {
+        return SDL_RenderFillRect(renderer, rect) == 0 ? True : False;
+    }
+
+    WindowStruct *parent = GET_WINDOW_STRUCT(window);
+    size_t childCount = parent->children.length;
+    /* Bound the allocation so a pathological window tree can't wrap the
+     * malloc size and bypass the OOM guard. */
+    size_t childLimit = SIZE_MAX / sizeof(SDL_Rect) / 4;
+    if (childCount > childLimit) {
+        return SDL_RenderFillRect(renderer, rect) == 0 ? True : False;
+    }
+    int *edges = malloc(sizeof(int) * (childCount * 2 + 2));
+    SDL_Rect *segments = malloc(sizeof(SDL_Rect) * (childCount + 1));
+    SDL_Rect *segScratch = malloc(sizeof(SDL_Rect) * (childCount + 1) * 2);
+    if (!edges || !segments || !segScratch) {
+        free(edges);
+        free(segments);
+        free(segScratch);
+        return SDL_RenderFillRect(renderer, rect) == 0 ? True : False;
+    }
+
+    /* Compute rect extents in int64_t so a rect at the int range cannot
+     * wrap before clamping. */
+    int64_t rectX1_64 = rect->x;
+    int64_t rectX2_64 = (int64_t) rect->x + (int64_t) rect->w;
+    int64_t rectY2_64 = (int64_t) rect->y + (int64_t) rect->h;
+    if (rectX2_64 > INT_MAX)
+        rectX2_64 = INT_MAX;
+    if (rectY2_64 > INT_MAX)
+        rectY2_64 = INT_MAX;
+    int rectY2 = (int) rectY2_64;
+
+    int edgeCount = 0;
+    edges[edgeCount++] = rect->y;
+    edges[edgeCount++] = rectY2;
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = 0; i < childCount; i++) {
+        Window child = children[i];
+        if (child == None || !IS_TYPE(child, WINDOW))
+            continue;
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+        if (childStruct->mapState != Mapped)
+            continue;
+        SDL_Rect childRect = {
+            .x = childStruct->x,
+            .y = childStruct->y,
+            .w = clampToInt(childStruct->w),
+            .h = clampToInt(childStruct->h),
+        };
+        SDL_Rect overlap;
+        if (!SDL_IntersectRect(rect, &childRect, &overlap))
+            continue;
+        int64_t overlapY2 = (int64_t) overlap.y + (int64_t) overlap.h;
+        if (overlapY2 > INT_MAX)
+            overlapY2 = INT_MAX;
+        edges[edgeCount++] = overlap.y;
+        edges[edgeCount++] = (int) overlapY2;
+    }
+    qsort(edges, (size_t) edgeCount, sizeof(int), compareInts);
+
+    Bool ok = True;
+    for (int e = 0; e + 1 < edgeCount; e++) {
+        int bandY1 = edges[e];
+        int bandY2 = edges[e + 1];
+        if (bandY1 == bandY2)
+            continue;
+        int segmentCount = 1;
+        segments[0] = (SDL_Rect) {
+            .x = rect->x,
+            .y = bandY1,
+            .w = rect->w,
+            .h = bandY2 - bandY1,
+        };
+        for (size_t i = 0; i < childCount && segmentCount > 0; i++) {
+            Window child = children[i];
+            if (child == None || !IS_TYPE(child, WINDOW))
+                continue;
+            WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+            if (childStruct->mapState != Mapped)
+                continue;
+            int64_t childY1_64 = childStruct->y;
+            int64_t childY2_64 =
+                (int64_t) childStruct->y + (int64_t) clampToInt(childStruct->h);
+            if (childY2_64 <= bandY1 || childY1_64 >= bandY2)
+                continue;
+            int64_t childX1_64 = childStruct->x;
+            int64_t childX2_64 =
+                (int64_t) childStruct->x + (int64_t) clampToInt(childStruct->w);
+            if (childX2_64 <= rectX1_64 || childX1_64 >= rectX2_64)
+                continue;
+            if (childX1_64 < rectX1_64)
+                childX1_64 = rectX1_64;
+            if (childX2_64 > rectX2_64)
+                childX2_64 = rectX2_64;
+            subtractSegment(segments, segScratch, &segmentCount,
+                            (int) childX1_64, (int) childX2_64);
+        }
+        for (int i = 0; i < segmentCount; i++) {
+            if (segments[i].w <= 0 || segments[i].h <= 0)
+                continue;
+            if (SDL_RenderFillRect(renderer, &segments[i]) != 0)
+                ok = False;
+        }
+    }
+
+    free(edges);
+    free(segments);
+    free(segScratch);
+    return ok;
+}
+
+static Bool getDrawableSize(Drawable drawable, int *width, int *height)
+{
+    if (IS_TYPE(drawable, WINDOW)) {
+        unsigned int w = 0, h = 0;
+        GET_WINDOW_DIMS(drawable, w, h);
+        *width = clampToInt(w);
+        *height = clampToInt(h);
+        return True;
+    }
+    if (IS_TYPE(drawable, PIXMAP)) {
+        PixmapStruct *pixmap = GET_PIXMAP_STRUCT(drawable);
+        if (!pixmap)
+            return False;
+        *width = clampToInt(pixmap->width);
+        *height = clampToInt(pixmap->height);
+        return True;
+    }
+    return False;
 }
 
 /* Cap per-side stroke padding so the bbox arithmetic can't overflow signed
@@ -1101,6 +1419,14 @@ static void rasterOpRendererRect(SDL_Renderer *renderer,
     if (!SDL_IntersectRect(rect, &bounds, &clipped))
         return;
 
+    /* Guard the row * height multiplication so an oversize intersect
+     * cannot wrap size_t before malloc; also keep the pitch within
+     * SDL_RenderReadPixels' int pitch argument. */
+    if (clipped.w <= 0 || clipped.h <= 0 ||
+        (size_t) clipped.w > SIZE_MAX / 4u ||
+        (size_t) clipped.h > SIZE_MAX / ((size_t) clipped.w * 4u) ||
+        (size_t) clipped.w * 4u > (size_t) INT_MAX)
+        return;
     size_t pitch = (size_t) clipped.w * 4u;
     unsigned char *pixels = malloc(pitch * (size_t) clipped.h);
     if (!pixels)
@@ -1225,6 +1551,14 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
     if (!SDL_IntersectRect(&bbox, &bounds, &clipped))
         return;
 
+    /* Guard the row * height multiplication so an oversize intersect
+     * cannot wrap size_t before malloc; also keep the pitch within
+     * SDL_RenderReadPixels' int pitch argument. */
+    if (clipped.w <= 0 || clipped.h <= 0 ||
+        (size_t) clipped.w > SIZE_MAX / 4u ||
+        (size_t) clipped.h > SIZE_MAX / ((size_t) clipped.w * 4u) ||
+        (size_t) clipped.w * 4u > (size_t) INT_MAX)
+        return;
     size_t pitch = (size_t) clipped.w * 4u;
     unsigned char *pixels = malloc(pitch * (size_t) clipped.h);
     if (!pixels)
@@ -2472,7 +2806,6 @@ int XClearArea(register Display *dpy,
     if (clearY + clearHeight > winHeight) {
         clearHeight = winHeight - clearY;
     }
-
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(w, renderer);
     if (!renderer) {
@@ -2524,7 +2857,14 @@ int XClearArea(register Display *dpy,
         }
     } else {
         applySdlDrawState(renderer, NULL, SDL_BLENDMODE_NONE, backgroundColor);
-        SDL_RenderFillRect(renderer, &clearRect);
+        if (!renderFillRectClipByChildren(renderer, w, &clearRect)) {
+            clearRendererClip(renderer);
+            shapeGuardEnd(&sg);
+            LOG("SDL_RenderFillRect failed in %s: %s\n", __func__,
+                SDL_GetError());
+            handleError(0, dpy, w, 0, BadDrawable, 0);
+            return 0;
+        }
     }
     shapeGuardEnd(&sg);
     repaintMappedChildrenInRect(dpy, w, &clearRect);
@@ -2540,6 +2880,186 @@ int XClearArea(register Display *dpy,
     }
 
     return 1;
+}
+
+/* Read-modify-write XCopyArea for non-GXcopy/masked GCs. Returns:
+ *   0 - GC is GXcopy with full plane mask; fall through to the fast
+ *       plain-blit path.
+ *   1 - request handled successfully (read, applied function per
+ *       pixel, wrote back).
+ *  -1 - request failed (intermediate alloc/readback returned an
+ *       error). XCopyArea should report failure to the caller.
+ */
+static int xCopyAreaRasterOp(Display *display,
+                             Drawable src,
+                             Drawable dest,
+                             GC gc,
+                             int src_x,
+                             int src_y,
+                             unsigned int width,
+                             unsigned int height,
+                             int dest_x,
+                             int dest_y)
+{
+    if (!gc)
+        return 0;
+    GraphicContext *gContext = GET_GC(gc);
+    if (!gContext)
+        return 0;
+    int gcFunction = gContext->function;
+    unsigned long gcPlaneMask = gContext->planeMask;
+    if (gcFunction == GXcopy && (gcPlaneMask & 0x00FFFFFFul) == 0x00FFFFFFul) {
+        return 0;
+    }
+    if (width == 0 || height == 0)
+        return 1;
+    if (width > (unsigned int) (INT_MAX / (int) sizeof(Uint32))) {
+        handleError(0, display, src, 0, BadValue, 0);
+        return -1;
+    }
+
+    /* Resolve the source renderer FIRST and read its pixels before the
+     * destination renderer is touched. GET_RENDERER can lazily attach
+     * an SDL_Texture render target to the drawable, which switches the
+     * active target. If we resolved dest first and then read from src,
+     * a same-renderer src/dest pair would read destination pixels into
+     * srcPixels and silently corrupt the GXxor/GXand result. */
+    SDL_Renderer *srcRenderer = NULL;
+    GET_RENDERER(src, srcRenderer);
+    if (!srcRenderer) {
+        handleError(0, display, src, 0, BadDrawable, 0);
+        return -1;
+    }
+    int destWidth = 0;
+    int destHeight = 0;
+    if (!getDrawableSize(dest, &destWidth, &destHeight)) {
+        handleError(0, display, dest, 0, BadDrawable, 0);
+        return -1;
+    }
+    SDL_Rect requestedDestRect = {dest_x, dest_y, (int) width, (int) height};
+    SDL_Rect destBounds = {0, 0, destWidth, destHeight};
+    SDL_Rect destRect;
+    if (!SDL_IntersectRect(&requestedDestRect, &destBounds, &destRect)) {
+        if (gcWantsGraphicsExposures(gc))
+            postEvent(display, dest, NoExpose, X_CopyArea, 0);
+        return 1;
+    }
+    int64_t srcReadX = (int64_t) src_x + ((int64_t) destRect.x - dest_x);
+    int64_t srcReadY = (int64_t) src_y + ((int64_t) destRect.y - dest_y);
+    if (srcReadX < INT_MIN || srcReadX > INT_MAX || srcReadY < INT_MIN ||
+        srcReadY > INT_MAX) {
+        handleError(0, display, src, 0, BadValue, 0);
+        return -1;
+    }
+    SDL_Rect requestedSrcRect = {src_x, src_y, (int) width, (int) height};
+    SDL_Rect srcRect = {(int) srcReadX, (int) srcReadY, destRect.w, destRect.h};
+
+    size_t pixelCount = (size_t) destRect.w * (size_t) destRect.h;
+    if (pixelCount > SIZE_MAX / sizeof(Uint32))
+        return -1;
+    /* calloc instead of malloc: some SDL_RenderReadPixels backends
+     * silently partial-fill when the requested rect intersects
+     * out-of-bounds; the rest stays zero rather than feeding
+     * uninitialized heap into applyRasterFunction. */
+    Uint32 *srcPixels = calloc(pixelCount, sizeof(Uint32));
+    Uint32 *destPixels = calloc(pixelCount, sizeof(Uint32));
+    if (!srcPixels || !destPixels) {
+        free(srcPixels);
+        free(destPixels);
+        handleOutOfMemory(0, display, 0, 0);
+        return -1;
+    }
+
+    /* Free path is unified: all error exits jump to cleanup_pixels,
+     * which frees both pixel buffers. srcPixels is no longer touched
+     * after the pixel-math loop, but holding onto it until the single
+     * cleanup site is far simpler than threading separate free sites. */
+    size_t pitchSize = (size_t) destRect.w * sizeof(Uint32);
+    int pitch = (int) pitchSize;
+    SDL_Texture *texture = NULL;
+    SDL_Renderer *destRenderer = NULL;
+    /* SDL_RenderReadPixels reads absolute render-target coordinates and
+     * ignores the active viewport, while the caller passes srcRect /
+     * destRect in drawable-local (viewport-relative) coordinates. For a
+     * child window whose renderer is offset, raw read would pull from
+     * the wrong pixels. Translate by each renderer's viewport origin
+     * the same way getRenderSurfaceRect does for its readback. */
+    SDL_Rect srcViewport;
+    SDL_RenderGetViewport(srcRenderer, &srcViewport);
+    SDL_Rect srcReadRect = {srcRect.x + srcViewport.x,
+                            srcRect.y + srcViewport.y, srcRect.w, srcRect.h};
+    if (SDL_RenderReadPixels(srcRenderer, &srcReadRect,
+                             SDL_PIXELFORMAT_ARGB8888, srcPixels, pitch) != 0) {
+        LOG("SDL_RenderReadPixels src failed in %s: %s\n", __func__,
+            SDL_GetError());
+        goto cleanup_pixels;
+    }
+    GET_RENDERER(dest, destRenderer);
+    if (!destRenderer) {
+        handleError(0, display, dest, 0, BadDrawable, 0);
+        goto cleanup_pixels;
+    }
+    SDL_Rect destViewport;
+    SDL_RenderGetViewport(destRenderer, &destViewport);
+    SDL_Rect destReadRect = {destRect.x + destViewport.x,
+                             destRect.y + destViewport.y, destRect.w,
+                             destRect.h};
+    if (SDL_RenderReadPixels(destRenderer, &destReadRect,
+                             SDL_PIXELFORMAT_ARGB8888, destPixels,
+                             pitch) != 0) {
+        LOG("SDL_RenderReadPixels dest failed in %s: %s\n", __func__,
+            SDL_GetError());
+        goto cleanup_pixels;
+    }
+
+    for (size_t i = 0; i < pixelCount; i++) {
+        destPixels[i] = applyRasterFunction(gcFunction, (Uint32) gcPlaneMask,
+                                            srcPixels[i], destPixels[i]);
+    }
+
+    SDL_Surface *surface =
+        SDL_CreateRGBSurfaceWithFormatFrom(destPixels, destRect.w, destRect.h,
+                                           32, pitch, SDL_PIXELFORMAT_ARGB8888);
+    if (!surface)
+        goto cleanup_pixels;
+    texture = SDL_CreateTextureFromSurface(destRenderer, surface);
+    SDL_FreeSurface(surface);
+    if (!texture)
+        goto cleanup_pixels;
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
+
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, dest, destRenderer, &destRect);
+    int clipCount = getGcClipIterationCount(gc);
+    int rc = 0;
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(destRenderer, gc, clip))
+            continue;
+        if (SDL_RenderCopy(destRenderer, texture, NULL, &destRect) != 0) {
+            LOG("SDL_RenderCopy failed in %s raster path: %s\n", __func__,
+                SDL_GetError());
+            rc = -1;
+            break;
+        }
+    }
+    clearRendererClip(destRenderer);
+    Bool shapeOk = shapeGuardEnd(&sg);
+    SDL_DestroyTexture(texture);
+    free(srcPixels);
+    free(destPixels);
+    if (rc != 0) {
+        handleError(0, display, src, 0, BadMatch, 0);
+        return -1;
+    }
+    postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect, &destRect);
+    if (shapeOk)
+        presentDrawableIfVisible(dest);
+    return 1;
+
+cleanup_pixels:
+    free(srcPixels);
+    free(destPixels);
+    return -1;
 }
 
 int XCopyArea(Display *display,
@@ -2558,6 +3078,29 @@ int XCopyArea(Display *display,
     TYPE_CHECK(src, DRAWABLE, display, 0);
     TYPE_CHECK(dest, DRAWABLE, display, 0);
     LOG("%s: Copy area from 0x%08lx to 0x%08lx\n", __func__, src, dest);
+    /* Reject anything whose extents would overflow signed int. Downstream
+     * SDL_Rect math uses int x/y/w/h and would wrap; capping width/height
+     * alone is not enough because src_x + width or dest_x + width can
+     * still overflow with a negative-leaning coordinate. */
+    if (width > (unsigned int) INT_MAX || height > (unsigned int) INT_MAX ||
+        (int64_t) src_x + (int64_t) width > INT_MAX ||
+        (int64_t) src_y + (int64_t) height > INT_MAX ||
+        (int64_t) dest_x + (int64_t) width > INT_MAX ||
+        (int64_t) dest_y + (int64_t) height > INT_MAX) {
+        handleError(0, display, src, 0, BadValue, 0);
+        return 0;
+    }
+    /* Non-GXcopy or masked plane masks need per-pixel arithmetic that
+     * SDL_RenderCopy cannot express. xCopyAreaRasterOp does the slow
+     * read-modify-write through SDL_RenderReadPixels and returns 1 if
+     * it handled the request, 0 to fall through to the fast plain-blit
+     * path. */
+    {
+        int rasterRc = xCopyAreaRasterOp(display, src, dest, gc, src_x, src_y,
+                                         width, height, dest_x, dest_y);
+        if (rasterRc != 0)
+            return rasterRc > 0 ? 1 : 0;
+    }
     if (IS_TYPE(src, WINDOW)) {
         if (IS_INPUT_ONLY(src)) {
             LOG("BadMatch: Got input only window as the source in %s!\n",
@@ -2626,9 +3169,8 @@ int XCopyArea(Display *display,
                     handleError(0, display, src, 0, BadMatch, 0);
                     return 0;
                 }
-                if (GET_GC(gc)->graphicsExposures) {
-                    postEvent(display, dest, NoExpose, X_CopyArea, 0);
-                }
+                postCopyAreaExposure(display, src, dest, gc, &fastSrc,
+                                     &fastDest);
                 if (fastShapeOk)
                     presentDrawableIfVisible(dest);
                 return 1;
@@ -2646,6 +3188,7 @@ int XCopyArea(Display *display,
             .w = (int) width,
             .h = (int) height,
         };
+        SDL_Rect requestedSrcRect = srcRect;
         SDL_Rect destRect = {
             .x = dest_x,
             .y = dest_y,
@@ -2701,19 +3244,82 @@ int XCopyArea(Display *display,
             return 0;
         }
         SDL_DestroyTexture(srcTexture);
-        if (GET_GC(gc)->graphicsExposures) {
-            postEvent(display, dest, NoExpose, X_CopyArea, 0);
-        }
+        postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
+                             &destRect);
         if (slowShapeOk)
             presentDrawableIfVisible(dest);
         return 1;
-    } else {
-        LOG("Hit unimplemented type in %s: %d\n", __func__, GET_XID_TYPE(dest));
     }
 
-    if (GET_GC(gc)->graphicsExposures) {
-        postEvent(display, dest, NoExpose, X_CopyArea, 0);
+    SDL_Renderer *srcRenderer;
+    GET_RENDERER(src, srcRenderer);
+    if (!srcRenderer) {
+        handleError(0, display, src, 0, BadDrawable, 0);
+        return 0;
     }
+    SDL_Rect srcRect = {
+        .x = src_x,
+        .y = src_y,
+        .w = (int) width,
+        .h = (int) height,
+    };
+    SDL_Surface *srcSurface = getRenderSurfaceRect(srcRenderer, &srcRect);
+    if (!srcSurface) {
+        handleError(0, display, src, 0, BadMatch, 0);
+        return 0;
+    }
+
+    SDL_Renderer *destRenderer;
+    GET_RENDERER(dest, destRenderer);
+    if (!destRenderer) {
+        SDL_FreeSurface(srcSurface);
+        handleError(0, display, dest, 0, BadDrawable, 0);
+        return 0;
+    }
+    SDL_Texture *srcTexture =
+        SDL_CreateTextureFromSurface(destRenderer, srcSurface);
+    SDL_FreeSurface(srcSurface);
+    if (!srcTexture) {
+        LOG("SDL_CreateTextureFromSurface failed in %s pixmap path: %s\n",
+            __func__, SDL_GetError());
+        handleError(0, display, src, 0, BadMatch, 0);
+        return 0;
+    }
+
+    SDL_Rect copySrc = {
+        .x = 0,
+        .y = 0,
+        .w = (int) width,
+        .h = (int) height,
+    };
+    SDL_Rect destRect = {
+        .x = dest_x,
+        .y = dest_y,
+        .w = (int) width,
+        .h = (int) height,
+    };
+    SDL_SetTextureBlendMode(srcTexture, SDL_BLENDMODE_NONE);
+    int clipCount = getGcClipIterationCount(gc);
+    int rcCopy = 0;
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(destRenderer, gc, clip))
+            continue;
+        if (SDL_RenderCopy(destRenderer, srcTexture, &copySrc, &destRect) !=
+            0) {
+            LOG("SDL_RenderCopy failed in %s pixmap path: %s\n", __func__,
+                SDL_GetError());
+            rcCopy = -1;
+            break;
+        }
+    }
+    clearRendererClip(destRenderer);
+    SDL_DestroyTexture(srcTexture);
+    if (rcCopy != 0) {
+        handleError(0, display, src, 0, BadMatch, 0);
+        return 0;
+    }
+
+    postCopyAreaExposure(display, src, dest, gc, &srcRect, &destRect);
     presentDrawableIfVisible(dest);
     return 1;
 }

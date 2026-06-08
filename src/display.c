@@ -6,9 +6,11 @@
 #include "window.h"
 #include "errors.h"
 #include "events.h"
+#include "replay.h"
 #include "colors.h"
 #include "drawing.h"
 #include "display.h"
+#include "gc.h"
 #include "atoms.h"
 #include "visual.h"
 #include "font.h"
@@ -66,13 +68,27 @@ int XCloseDisplay(Display *display)
             screen->default_gc = NULL;
         }
     }
-    /* Release this Display's per-Display error.c state before SDL_Quit:
-     * the side-table teardown touches SDL_mutex APIs and must run while
-     * the SDL subsystem is still up. */
+    /* Teardown order before SDL_Quit:
+     *   releaseLastRequestCode -> replayStop -> destroyScreenWindow
+     *   -> closeEventPipe -> SDL_Quit.
+     * All four touch SDL primitives (mutexes, timers, the event filter)
+     * that must still exist. replayStop precedes closeEventPipe so the
+     * worker cannot push XTest events through a queue with no filter
+     * behind it. destroyScreenWindow precedes closeEventPipe because
+     * destroyWindow recurses into discardQueuedEventsForWindow() and
+     * postEvent(DestroyNotify), both of which take per-display event
+     * mutexes that closeEventPipe destroys. The numDisplaysOpen guard
+     * scopes replay/screen teardown to the last close so secondary
+     * displays opened by Motif/Xt probes do not tear down shared
+     * state. */
     releaseLastRequestCode(display);
     if (numDisplaysOpen == 1) {
+        replayStop();
         freeImageStorage();
         destroyScreenWindow(display);
+    }
+    closeEventPipe(display);
+    if (numDisplaysOpen == 1) {
         freeAtomStorage();
         resetSelectionAtomCache();
         freeFontStorage();
@@ -95,7 +111,6 @@ int XCloseDisplay(Display *display)
         }
         free(GET_DISPLAY(display)->screens);
     }
-    closeEventPipe(display);
     free(display);
     return 0;
 }
@@ -123,6 +138,12 @@ Display *XOpenDisplay(_Xconst char *display_name)
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_SetMainReady();
         SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
+        /* On macOS, the click that activates a background window is
+         * consumed by activation and never seen by the app. Click-through
+         * routes that first click to the app as a real button event,
+         * matching X11 semantics. Has no effect on Accessibility/TCC
+         * gating of synthetic input (cliclick, CGEvent). */
+        SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
         if (SDL_Init(SDL_INIT_VIDEO) == -1) {
             LOG("Failed to initialize SDL: %s\n", SDL_GetError());
             free(display);
@@ -246,11 +267,12 @@ Display *XOpenDisplay(_Xconst char *display_name)
              depthIndex++) {
             screen->depths[depthIndex].depth = supportedDepths[depthIndex];
         }
-        /* ARGB pixel encoding matches src/colors.h shifts
-         * (A=24, R=16, G=8, B=0).
+        /* Default pixels are 24-bit TrueColor values, not full internal
+         * ARGB draw colors. Some legacy clients index tables sized by
+         * 1 << DefaultDepth using BlackPixel/WhitePixel.
          */
-        screen->white_pixel = 0xFFFFFFFF;
-        screen->black_pixel = 0xFF000000;
+        screen->white_pixel = 0x00FFFFFF;
+        screen->black_pixel = 0x00000000;
         screen->cmap = REAL_COLOR_COLORMAP;
         screen->min_maps = 1;
         screen->max_maps = 1;
@@ -273,6 +295,10 @@ Display *XOpenDisplay(_Xconst char *display_name)
             XCloseDisplay(display);
             return NULL;
         }
+        GraphicContext *defaultGc =
+            GET_GC(display->screens[screenIndex].default_gc);
+        defaultGc->foreground = display->screens[screenIndex].black_pixel;
+        defaultGc->background = display->screens[screenIndex].white_pixel;
     }
 
     if (numDisplaysOpen == 1) {
@@ -319,7 +345,8 @@ int XGrabServer(Display *display)
 {
     // https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
     SET_X_SERVER_REQUEST(display, X_GrabServer);
-    WARN_UNIMPLEMENTED;
+    /* No-op: this backend has no separate X server or competing clients to
+     * exclude while a client updates global state. */
     return 1;
 }
 
@@ -327,7 +354,6 @@ int XUngrabServer(Display *display)
 {
     // https://tronche.com/gui/x/xlib/window-and-session-manager/XUngrabServer.html
     SET_X_SERVER_REQUEST(display, X_UngrabServer);
-    WARN_UNIMPLEMENTED;
     return 1;
 }
 

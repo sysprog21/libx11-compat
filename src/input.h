@@ -6,8 +6,24 @@
 
 Window getKeyboardFocus();
 void setKeyboardFocus(Window window);
+
+/* If `window` is the current keyboard focus, re-target focus per the
+ * stored revert_to value (RevertToParent / RevertToPointerRoot /
+ * RevertToNone) and emit the focus-change events that XSetInputFocus
+ * would have fired. Call from destroyWindow before the window's
+ * resources are freed so the event payloads see live state. */
+void revertKeyboardFocusForDestroyedWindow(Display *display, Window window);
 Window getGrabbedPointerWindow(void);
 Bool getPointerGrabOwnerEvents(void);
+unsigned int getPointerGrabEventMask(void);
+Bool activatePassiveButtonGrab(Display *display,
+                               Window root,
+                               int root_x,
+                               int root_y,
+                               unsigned int button,
+                               unsigned int state);
+Bool pointerGrabIsPassive(void);
+void releasePassivePointerGrab(Display *display);
 
 /* Active keyboard grab installed via XGrabKeyboard. Returns the
  * grab_window or None if no grab is active. While a grab is active the

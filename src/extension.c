@@ -4,6 +4,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
 #include <X11/extensions/shape.h>
+#include <X11/extensions/xtestconst.h>
 #include "extension.h"
 #include "util.h"
 
@@ -70,6 +71,15 @@ Bool XQueryExtension(Display *display,
             *first_event_return = 64;
         if (first_error_return)
             *first_error_return = 128;
+        return True;
+    }
+    if (name && !strcmp(name, XTestExtensionName)) {
+        if (major_opcode_return)
+            *major_opcode_return = 132;
+        if (first_event_return)
+            *first_event_return = 0;
+        if (first_error_return)
+            *first_error_return = 0;
         return True;
     }
 

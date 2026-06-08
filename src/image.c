@@ -24,11 +24,50 @@ static struct {
     int textureHeight;
 } putImageScratch;
 
+/* XPutImage from multiple threads would otherwise race on the scratch
+ * pixel buffer's realloc and the staging texture's create/destroy. The
+ * mutex is created lazily on first use and kept for the lifetime of
+ * the process: tearing it down in freeImageStorage created a TOCTOU
+ * window where ensurePutImageScratchLock could return a pointer that
+ * freeImageStorage destroyed before the caller called SDL_LockMutex
+ * on it. The memory cost is one SDL_mutex per process. */
+static SDL_mutex *putImageScratchLock = NULL;
+static SDL_SpinLock putImageScratchLockInitLock = 0;
+static SDL_mutex *ensurePutImageScratchLock(void)
+{
+    SDL_AtomicLock(&putImageScratchLockInitLock);
+    if (!putImageScratchLock)
+        putImageScratchLock = SDL_CreateMutex();
+    SDL_mutex *lock = putImageScratchLock;
+    SDL_AtomicUnlock(&putImageScratchLockInitLock);
+    return lock;
+}
+/* Return the acquired mutex so the caller pairs lock/unlock against
+ * the exact pointer it locked. Reading putImageScratchLock unlocked at
+ * unlock time would race against another thread initializing it (or,
+ * if SDL_CreateMutex returned NULL on the first thread and succeeded
+ * on the second, would try to unlock a mutex this thread never
+ * locked). NULL return means "no lock was acquired" — pass NULL to
+ * unlockPutImageScratch and the unlock is a no-op. */
+static SDL_mutex *lockPutImageScratch(void)
+{
+    SDL_mutex *lock = ensurePutImageScratchLock();
+    if (lock)
+        SDL_LockMutex(lock);
+    return lock;
+}
+static void unlockPutImageScratch(SDL_mutex *lock)
+{
+    if (lock)
+        SDL_UnlockMutex(lock);
+}
+
 static Uint32 *ensurePutImageScratchBuffer(size_t pixelsNeeded)
 {
     /* Refuse anything that would overflow size_t when scaled to bytes.
      * Caller is also expected to validate width/height before this, but
-     * a second line of defense is cheap. */
+     * a second line of defense is cheap. Caller must hold
+     * putImageScratchLock around the buffer use. */
     if (pixelsNeeded > SIZE_MAX / sizeof(Uint32))
         return NULL;
     if (pixelsNeeded > putImageScratch.pixelCapacity) {
@@ -68,6 +107,10 @@ static SDL_Texture *ensurePutImageStagingTexture(SDL_Renderer *renderer,
 
 void freeImageStorage(void)
 {
+    /* Release scratch payload but leave putImageScratchLock alive;
+     * destroying it here is racy with concurrent callers holding a
+     * pointer returned by ensurePutImageScratchLock(). */
+    SDL_mutex *lock = lockPutImageScratch();
     if (putImageScratch.texture) {
         SDL_DestroyTexture(putImageScratch.texture);
         putImageScratch.texture = NULL;
@@ -78,22 +121,24 @@ void freeImageStorage(void)
     free(putImageScratch.pixels);
     putImageScratch.pixels = NULL;
     putImageScratch.pixelCapacity = 0;
+    unlockPutImageScratch(lock);
 }
 
-/* X color encoding to RGBA8888 packed pixel. With colors.h shifts
- * R=16, G=8, B=0, A=24, the per-channel "extract and re-pack" sequence
- * collapses to a single left-rotate by 8 bits. Compilers lower this to
- * one ROL on x86/ARM. Macro form so the per-pixel hot loop stays
- * inlined even at -O0.
- *
- * Evaluates `color` twice. Pass a pure expression (a named local, an
- * indexed array read, or a memcpy result) only -- never a side-
- * effecting one like *src++. */
-#define X_COLOR_TO_RGBA8888(color) \
-    (((Uint32) (color) << 8) | ((Uint32) (color) >> 24))
+/* Pack an X11 pixel into SDL2's RGBA8888 layout. Routes through
+ * colorWithOpaqueDefault so core-X11 pixels (alpha byte == 0) render
+ * opaque instead of disappearing into SDL2's alpha-aware blend. */
+static inline Uint32 xColorToRgba8888(unsigned long color)
+{
+    color = colorWithOpaqueDefault(color);
+    return ((Uint32) GET_RED_FROM_COLOR(color) << 24) |
+           ((Uint32) GET_GREEN_FROM_COLOR(color) << 16) |
+           ((Uint32) GET_BLUE_FROM_COLOR(color) << 8) |
+           (Uint32) GET_ALPHA_FROM_COLOR(color);
+}
 
 void invalidatePutImageStagingTexture(SDL_Renderer *renderer)
 {
+    SDL_mutex *lock = lockPutImageScratch();
     if (putImageScratch.texture &&
         putImageScratch.textureRenderer == renderer) {
         SDL_DestroyTexture(putImageScratch.texture);
@@ -102,11 +147,15 @@ void invalidatePutImageStagingTexture(SDL_Renderer *renderer)
         putImageScratch.textureWidth = 0;
         putImageScratch.textureHeight = 0;
     }
+    unlockPutImageScratch(lock);
 }
 
 SDL_Renderer *getPutImageStagingTextureRenderer(void)
 {
-    return putImageScratch.textureRenderer;
+    SDL_mutex *lock = lockPutImageScratch();
+    SDL_Renderer *r = putImageScratch.textureRenderer;
+    unlockPutImageScratch(lock);
+    return r;
 }
 
 #ifdef XPutPixel
@@ -201,7 +250,6 @@ XImage *XCreateImage(Display *display,
         handleOutOfMemory(0, display, 0, 0);
         return NULL;
     }
-    LOG("%s: w = %d, h = %d\n", __func__, (int) width, (int) height);
     image->width = width;
     image->height = height;
     image->xoffset = offset;
@@ -512,8 +560,6 @@ int XPutImage(Display *display,
         handleError(0, display, drawable, 0, BadMatch, 0);
         return -1;
     }
-    LOG("%s: Drawing %p on %lu\n", __func__, image, drawable);
-
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(drawable, renderer);
     if (!renderer) {
@@ -522,13 +568,31 @@ int XPutImage(Display *display,
         return -1;
     }
 
+    if (!image) {
+        handleError(0, display, drawable, 0, BadMatch, 0);
+        return -1;
+    }
+
+    /* Reject geometries that would either overflow the scratch-buffer
+     * size or exceed what SDL_Rect (signed int) and SDL_UpdateTexture's
+     * pitch parameter (signed int) can address downstream. The width
+     * cap is INT_MAX / sizeof(Uint32) so width * 4 fits in the pitch
+     * argument. */
+    if (width > (unsigned int) (INT_MAX / sizeof(Uint32)) ||
+        height > (unsigned int) INT_MAX ||
+        (height != 0 && width > SIZE_MAX / sizeof(Uint32) / (size_t) height)) {
+        handleError(0, display, drawable, 0, BadValue, 0);
+        return -1;
+    }
+
     /* Reject requests whose source rectangle does not lie wholly inside
      * the XImage. The old XGetPixel fallback silently returned 0 for
      * out-of-bounds pixels; the new direct fast paths read raw bytes
-     * from image->data and would segfault. */
-    if (!image || src_x < 0 || src_y < 0 || image->width < 0 ||
-        image->height < 0 || (long) src_x + (long) width > image->width ||
-        (long) src_y + (long) height > image->height) {
+     * from image->data and would segfault. The width/height bound above
+     * guarantees the size_t addition cannot wrap. */
+    if (src_x < 0 || src_y < 0 || image->width < 0 || image->height < 0 ||
+        (size_t) src_x + (size_t) width > (size_t) image->width ||
+        (size_t) src_y + (size_t) height > (size_t) image->height) {
         handleError(0, display, drawable, 0, BadMatch, 0);
         return -1;
     }
@@ -537,16 +601,44 @@ int XPutImage(Display *display,
         return -1;
     }
 
-    /* Reject geometries that would either overflow the scratch-buffer
-     * size or exceed what SDL_Rect (signed int) can address downstream. */
-    if (width > (unsigned int) INT_MAX || height > (unsigned int) INT_MAX ||
-        (height != 0 && width > SIZE_MAX / sizeof(Uint32) / (size_t) height)) {
-        handleError(0, display, drawable, 0, BadValue, 0);
-        return -1;
+    /* Stride sanity for every format that dereferences image->data.
+     * A negative or undersized bytes_per_line lets either the fast raw-
+     * byte paths or XGetPixel (which still uses bytes_per_line for the
+     * row offset) step past the caller's buffer. Caps:
+     *   ZPixmap : ceil(maxX * bits_per_pixel / 8) bytes per row
+     *   XYBitmap: ceil(maxX / 8) bytes per row
+     *   XYPixmap: ceil(maxX / 8) bytes per plane row */
+    if (image->data && height > 0) {
+        if (image->bytes_per_line < 0) {
+            handleError(0, display, drawable, 0, BadMatch, 0);
+            return -1;
+        }
+        size_t maxX = (size_t) src_x + (size_t) width;
+        size_t minStride = 0;
+        if (image->format == ZPixmap) {
+            int bpp = image->bits_per_pixel;
+            if (bpp <= 0 || bpp > 32 || maxX > (SIZE_MAX - 7) / (size_t) bpp) {
+                handleError(0, display, drawable, 0, BadMatch, 0);
+                return -1;
+            }
+            minStride = (maxX * (size_t) bpp + 7) / 8;
+        } else if (image->format == XYBitmap || image->format == XYPixmap) {
+            minStride = (maxX + 7) / 8;
+        }
+        if (minStride > 0 && (size_t) image->bytes_per_line < minStride) {
+            handleError(0, display, drawable, 0, BadMatch, 0);
+            return -1;
+        }
     }
+
+    /* Hold the scratch lock across pixel build + texture upload +
+     * RenderCopy so a concurrent XPutImage cannot realloc the pixel
+     * buffer or destroy the staging texture mid-flight. */
+    SDL_mutex *scratchLock = lockPutImageScratch();
     Uint32 *data =
         ensurePutImageScratchBuffer((size_t) width * (size_t) height);
     if (!data) {
+        unlockPutImageScratch(scratchLock);
         handleOutOfMemory(0, display, 0, 0);
         return -1;
     }
@@ -555,11 +647,7 @@ int XPutImage(Display *display,
         image->format == XYBitmap ? GET_GC(gc) : NULL;
     if (!image->data) {
         if (image->format == XYBitmap && graphicContext) {
-            Uint32 background =
-                GET_RED_FROM_COLOR(graphicContext->background) << 24 |
-                GET_GREEN_FROM_COLOR(graphicContext->background) << 16 |
-                GET_BLUE_FROM_COLOR(graphicContext->background) << 8 |
-                GET_ALPHA_FROM_COLOR(graphicContext->background);
+            Uint32 background = xColorToRgba8888(graphicContext->background);
             for (unsigned int y = 0; y < height; y++) {
                 Uint32 *dst = data + y * width;
                 for (unsigned int x = 0; x < width; x++)
@@ -576,34 +664,27 @@ int XPutImage(Display *display,
         Bool aligned = (image->bytes_per_line % (int) sizeof(Uint32)) == 0 &&
                        (((uintptr_t) image->data) % sizeof(Uint32)) == 0;
         for (unsigned int y = 0; y < height; y++) {
-            const char *srcRow = image->data +
-                                 image->bytes_per_line * (src_y + (int) y) +
-                                 src_x * (int) sizeof(Uint32);
+            const char *srcRow =
+                image->data +
+                (size_t) image->bytes_per_line * ((size_t) src_y + y) +
+                (size_t) src_x * sizeof(Uint32);
             Uint32 *dst = data + y * width;
             if (aligned) {
                 const Uint32 *src = (const Uint32 *) srcRow;
                 for (unsigned int x = 0; x < width; x++) {
-                    dst[x] = X_COLOR_TO_RGBA8888(src[x]);
+                    dst[x] = xColorToRgba8888(src[x]);
                 }
             } else {
                 for (unsigned int x = 0; x < width; x++) {
                     Uint32 color;
                     memcpy(&color, srcRow + x * sizeof(Uint32), sizeof(Uint32));
-                    dst[x] = X_COLOR_TO_RGBA8888(color);
+                    dst[x] = xColorToRgba8888(color);
                 }
             }
         }
     } else if (image->format == XYBitmap) {
-        Uint32 foreground =
-            GET_RED_FROM_COLOR(graphicContext->foreground) << 24 |
-            GET_GREEN_FROM_COLOR(graphicContext->foreground) << 16 |
-            GET_BLUE_FROM_COLOR(graphicContext->foreground) << 8 |
-            GET_ALPHA_FROM_COLOR(graphicContext->foreground);
-        Uint32 background =
-            GET_RED_FROM_COLOR(graphicContext->background) << 24 |
-            GET_GREEN_FROM_COLOR(graphicContext->background) << 16 |
-            GET_BLUE_FROM_COLOR(graphicContext->background) << 8 |
-            GET_ALPHA_FROM_COLOR(graphicContext->background);
+        Uint32 foreground = xColorToRgba8888(graphicContext->foreground);
+        Uint32 background = xColorToRgba8888(graphicContext->background);
         Bool msbFirst = image->bitmap_bit_order == MSBFirst;
         /* The 256-entry LUT below costs ~2us to build, only worth it
          * when the image is large enough to amortize over many bytes.
@@ -619,7 +700,7 @@ int XPutImage(Display *display,
             for (unsigned int y = 0; y < height; y++) {
                 const unsigned char *srcRow =
                     (const unsigned char *) image->data +
-                    image->bytes_per_line * (src_y + (int) y);
+                    (size_t) image->bytes_per_line * ((size_t) src_y + y);
                 Uint32 *dst = data + y * width;
                 unsigned int x = 0;
                 unsigned int srcBitX = (unsigned int) src_x;
@@ -650,8 +731,8 @@ int XPutImage(Display *display,
                 for (unsigned int x = 0; x < width; x++) {
                     const char *byte =
                         image->data +
-                        image->bytes_per_line * (src_y + (int) y) +
-                        (src_x + (int) x) / 8;
+                        (size_t) image->bytes_per_line * ((size_t) src_y + y) +
+                        ((size_t) src_x + x) / 8;
                     dst[x] = (*byte & bitMaskForImage(image, src_x + (int) x))
                                  ? foreground
                                  : background;
@@ -663,7 +744,7 @@ int XPutImage(Display *display,
             for (unsigned int x = 0; x < width; x++) {
                 unsigned long color =
                     XGetPixel(image, src_x + (int) x, src_y + (int) y);
-                data[y * width + x] = X_COLOR_TO_RGBA8888((Uint32) color);
+                data[y * width + x] = xColorToRgba8888(color);
             }
         }
     } else {
@@ -674,7 +755,7 @@ int XPutImage(Display *display,
                     color = color ? graphicContext->foreground
                                   : graphicContext->background;
                 }
-                data[y * width + x] = X_COLOR_TO_RGBA8888((Uint32) color);
+                data[y * width + x] = xColorToRgba8888(color);
             }
         }
     }
@@ -682,10 +763,13 @@ int XPutImage(Display *display,
     SDL_Texture *texture =
         ensurePutImageStagingTexture(renderer, (int) width, (int) height);
     if (!texture) {
+        unlockPutImageScratch(scratchLock);
         LOG("SDL_CreateTexture failed: %s\n", SDL_GetError());
         return -1;
     }
-    if (SDL_UpdateTexture(texture, NULL, data, width * sizeof(Uint32)) < 0) {
+    if (SDL_UpdateTexture(texture, NULL, data, (int) (width * sizeof(Uint32))) <
+        0) {
+        unlockPutImageScratch(scratchLock);
         LOG("SDL_UpdateTexture failed in %s: %s\n", __func__, SDL_GetError());
         return -1;
     }
@@ -699,6 +783,7 @@ int XPutImage(Display *display,
         if (SDL_RenderCopy(renderer, texture, NULL, &dst) < 0) {
             clearRendererClip(renderer);
             shapeGuardEnd(&sg);
+            unlockPutImageScratch(scratchLock);
             LOG("SDL_RenderCopy failed: %s\n", SDL_GetError());
             return -1;
         }
@@ -709,6 +794,7 @@ int XPutImage(Display *display,
      * recomposes from a fresh baseline rather than flashing stale
      * output. */
     Bool shapeOk = shapeGuardEnd(&sg);
+    unlockPutImageScratch(scratchLock);
     if (shapeOk)
         presentDrawableIfVisible(drawable);
     return 1;
