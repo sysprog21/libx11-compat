@@ -1,0 +1,25 @@
+src/font-6x13-bitmap.h
+  s_42a8ba1a88142c::t_dbef725f8ee8d7 3-258
+src/window-internal.c
+  s_42a8ba1a88142c::t_52e171e8b282d2 359-364
+src/events.h
+  s_42a8ba1a88142c::t_27eb3b72443ac5 77
+src/events.c
+  s_42a8ba1a88142c::t_e4f7f0232f7bcd 1346-1363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "01f2e87e834cc53afa2f28ee9ad9e4405928ca44",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
