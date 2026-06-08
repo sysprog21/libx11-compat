@@ -1,0 +1,19 @@
+tests/ui/replays/motif-fileview-done.replay
+  s_42a8ba1a88142c::t_d25bf90c14043f 3-8,13-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "ce7c57db8735e200a0af18de00e36b918ebea910",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
