@@ -1,0 +1,43 @@
+scripts/compare-motif-reference.py
+  s_42a8ba1a88142c::t_34490b2ffc67f7 56-57
+scripts/run-motif-differential-tests.py
+  s_42a8ba1a88142c::t_34490b2ffc67f7 99,103-104,126,163-218,233,250-254,277-311,448-452,456,461,483-490
+mk/motif.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 5-16,29-30,78-82,87-92,207-217,224-236,243-244,251-252,267-273,275,277,280,284,287,291,297-351
+Makefile
+  s_42a8ba1a88142c::t_34490b2ffc67f7 27
+scripts/sync-upstream-headers.py
+  s_42a8ba1a88142c::t_34490b2ffc67f7 55-56,61-62,67-68,89-90,97-98,237-415
+.github/workflows/ci.yml
+  s_42a8ba1a88142c::t_34490b2ffc67f7 30,100-102,119,121,127,129,140-145,147-150,168-170,187,189,197,199,211-214,216-219,234-236,253,255,261,263,281-283,291-296,301,306-308,325-326,340,342,359,361,390,403-520,522-526
+mk/config.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 36-44
+mk/xcompat-libs.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 10,15,20
+README.md
+  s_42a8ba1a88142c::t_34490b2ffc67f7 32-33,43-75,79
+scripts/capture-motif-demo-screenshots.sh
+  s_42a8ba1a88142c::t_34490b2ffc67f7 277,348,360
+.gitignore
+  s_42a8ba1a88142c::t_34490b2ffc67f7 7
+mk/tests.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 6-7,10,12-19,27-43
+mk/common.mk
+  s_42a8ba1a88142c::t_34490b2ffc67f7 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "8ce24e4c0192fcd4eb3681be787a8c91b40ea8d2",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
