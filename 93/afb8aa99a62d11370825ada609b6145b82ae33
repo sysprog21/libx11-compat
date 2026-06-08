@@ -1,0 +1,19 @@
+src/font.c
+  s_42a8ba1a88142c::t_ad343e0e6a76fd 850-855
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "93afb8aa99a62d11370825ada609b6145b82ae33",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
