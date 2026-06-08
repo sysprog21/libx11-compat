@@ -38,7 +38,7 @@ $(OUT):
 $(OUT)/%.o: %.c | $(OUT)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
 # Upstream sources staged under $(OUT)/upstream/src/ live next to their

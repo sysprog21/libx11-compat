@@ -1,0 +1,20 @@
+# System-X11 ViolaWWW scroll + resize differential capture.
+#
+# The system reference uses host X11 rendering and can trip
+# libx11-compat-specific stale-glyph heuristics. Keep this replay focused
+# on externally driven input and visible state changes.
+delay 2500
+wait-window "vw|Viola" 3000
+screenshot initial
+assert-image initial common-visible.json
+motion 360 540
+wheel down 5
+delay 1000
+screenshot scrolled
+assert-image scrolled common-visible.json
+assert-image scrolled violawww-scroll-changed.json
+resize 640 720
+delay 5000
+screenshot resized
+assert-image resized common-visible.json
+assert-image resized violawww-scroll-resized-changed.json

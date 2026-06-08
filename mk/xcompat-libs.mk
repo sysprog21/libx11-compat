@@ -7,17 +7,17 @@ XINERAMA_COMPAT_LDFLAGS := $(call shared_lib_rpath_ldflags,$(notdir $(XINERAMA_C
 
 $(OUT)/xext-compat.o: compat/xext-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
 $(OUT)/xmu-compat.o: compat/xmu-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
 $(OUT)/xinerama-compat.o: compat/xinerama-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
 $(XEXT_COMPAT_TARGET): $(OUT)/xext-compat.o $(TARGET) | $(OUT)

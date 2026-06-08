@@ -52,20 +52,20 @@ SOURCES = [
     {
         "name": "libX11",
         "version": "libX11-1.8.13",
-        "url": "https://gitlab.freedesktop.org/xorg/lib/libx11/-/archive/libX11-1.8.13/libx11-libX11-1.8.13.tar.gz",
-        "sha256": "d210291f5cd974e5029cce4bde0fc1b8bfc0ce88b8530ea6ba4b1fcf141506ab",
+        "url": "https://xorg.freedesktop.org/archive/individual/lib/libX11-1.8.13.tar.xz",
+        "sha256": "69606f485c2c07c14ef64f75b7bb326d48587af33795d9ab3e607c0b5f94f11c",
     },
     {
         "name": "xorgproto",
         "version": "xorgproto-2025.1",
-        "url": "https://gitlab.freedesktop.org/xorg/proto/xorgproto/-/archive/xorgproto-2025.1/xorgproto-xorgproto-2025.1.tar.gz",
-        "sha256": "473e9d4608d9c1c3f42346746deb06b3e0d440349422d0857ef0989e17d7e03d",
+        "url": "https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2025.1.tar.xz",
+        "sha256": "56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8",
     },
     {
         "name": "libXt",
         "version": "libXt-1.3.1",
-        "url": "https://gitlab.freedesktop.org/xorg/lib/libxt/-/archive/libXt-1.3.1/libxt-libXt-1.3.1.tar.gz",
-        "sha256": "07f71c105a979fe570e5b985dfc58ad512973aaa923c29f11b5009c302f9a76e",
+        "url": "https://xorg.freedesktop.org/archive/individual/lib/libXt-1.3.1.tar.xz",
+        "sha256": "e0a774b33324f4d4c05b199ea45050f87206586d81655f8bef4dba434d931288",
         # libXt's src/ goes to its own staging dir so it does not collide
         # with the libX11 src/ slice (different headers, different build
         # flags). All .c files in src/ are taken so the Makefile picks them
@@ -86,16 +86,16 @@ SOURCES = [
     {
         "name": "libXpm",
         "version": "libXpm-3.5.19",
-        "url": "https://gitlab.freedesktop.org/xorg/lib/libxpm/-/archive/libXpm-3.5.19/libxpm-libXpm-3.5.19.tar.gz",
-        "sha256": "cccff8ec2210476c698d746743aa75504263ce7727089fb832efaeb971ebefa7",
+        "url": "https://xorg.freedesktop.org/archive/individual/lib/libXpm-3.5.19.tar.xz",
+        "sha256": "ad3576d689221a39dc728f0e0dc02ca7bb6a0d724c9a77fd1bfa1e9af83be900",
         "src_subdir": "src-libXpm",
         "src_take_all": True,
     },
     {
         "name": "libXmu",
         "version": "libXmu-1.3.1",
-        "url": "https://gitlab.freedesktop.org/xorg/lib/libxmu/-/archive/libXmu-1.3.1/libxmu-libXmu-1.3.1.tar.gz",
-        "sha256": "a38bff41f609e2ea887c05fb4a31e926a03ba1d69ddda9423682e198839f2355",
+        "url": "https://xorg.freedesktop.org/archive/individual/lib/libXmu-1.3.1.tar.xz",
+        "sha256": "81a99e94c4501e81c427cbaa4a11748b584933e94b7a156830c3621256857bc4",
         # Pulled in for clients/mwm and Motif's clients/ tree. The
         # tarball ships its public surface under include/X11/Xmu/ which
         # the existing extractor already routes into the staged X11
@@ -232,6 +232,187 @@ SRC_PATCHES: dict[str, tuple[tuple[str, str], ...]] = {
             "\n"
             "void\n"
             "_XtShellGetCoordinates(Widget widget, Position *x, Position *y)\n",
+        ),
+    ),
+    # Keep one spare NULL callback record after every internal list. libXt's
+    # public XtCallbackList form is NULL-terminated, and Motif resource
+    # converters can hand lists produced from these internals back through
+    # _XtCompileCallbackList(). Without the sentinel, sanitizer builds read
+    # past single-callback lists while creating widgets. Every producer
+    # (_XtAddCallback, AddCallbacks, _XtRemoveCallback, XtRemoveCallbacks,
+    # _XtCompileCallbackList) must allocate count+1 records and write the
+    # NULL terminator, or removal/compile paths will drop the spare slot.
+    "Callback.c": (
+        (
+            "                                   sizeof(XtCallbackRec) * (size_t) (count +\n"
+            "                                                                     1)));\n"
+            "        (void) memmove((char *) ToList(icl), (char *) ToList(*callbacks),\n",
+            "                                   sizeof(XtCallbackRec) * (size_t) (count +\n"
+            "                                                                     2)));\n"
+            "        (void) memmove((char *) ToList(icl), (char *) ToList(*callbacks),\n",
+        ),
+        (
+            "                                                sizeof(XtCallbackRec) *\n"
+            "                                                (size_t) (count + 1)));\n"
+            "    }\n"
+            "    *callbacks = icl;\n",
+            "                                                sizeof(XtCallbackRec) *\n"
+            "                                                (size_t) (count + 2)));\n"
+            "    }\n"
+            "    *callbacks = icl;\n",
+        ),
+        (
+            "    cl = ToList(icl) + count;\n"
+            "    cl->callback = callback;\n"
+            "    cl->closure = closure;\n"
+            "}                               /* _XtAddCallback */\n",
+            "    cl = ToList(icl) + count;\n"
+            "    cl->callback = callback;\n"
+            "    cl->closure = closure;\n"
+            "    (++cl)->callback = (XtCallbackProc) NULL;\n"
+            "    cl->closure = NULL;\n"
+            "}                               /* _XtAddCallback */\n",
+        ),
+        (
+            "                        sizeof(XtCallbackRec) * (size_t) (i + j)));\n"
+            "        (void) memmove((char *) ToList(*callbacks), (char *) ToList(icl),\n",
+            "                        sizeof(XtCallbackRec) * (size_t) (i + j + 1)));\n"
+            "        (void) memmove((char *) ToList(*callbacks), (char *) ToList(icl),\n",
+        ),
+        (
+            "                                                           sizeof(XtCallbackRec)\n"
+            "                                                           * (size_t) (i + j)));\n"
+            "    }\n"
+            "    *callbacks = icl;\n",
+            "                                                           sizeof(XtCallbackRec)\n"
+            "                                                           * (size_t) (i + j + 1)));\n"
+            "    }\n"
+            "    *callbacks = icl;\n",
+        ),
+        (
+            "    for (cl = ToList(icl) + i; --j >= 0;)\n"
+            "        *cl++ = *newcallbacks++;\n"
+            "}                               /* AddCallbacks */\n",
+            "    for (cl = ToList(icl) + i; --j >= 0;)\n"
+            "        *cl++ = *newcallbacks++;\n"
+            "    cl->callback = (XtCallbackProc) NULL;\n"
+            "    cl->closure = NULL;\n"
+            "}                               /* AddCallbacks */\n",
+        ),
+        # _XtRemoveCallback (call_state branch): grow allocation by one and
+        # write the sentinel after both copy loops finish populating ncl.
+        (
+            "                    icl = (InternalCallbackList)\n"
+            "                        __XtMalloc((Cardinal) (sizeof(InternalCallbackRec) +\n"
+            "                                               sizeof(XtCallbackRec) *\n"
+            "                                               (size_t) (i + j)));\n"
+            "                    icl->count = (unsigned short) (i + j);\n"
+            "                    icl->is_padded = 0;\n"
+            "                    icl->call_state = 0;\n"
+            "                    ncl = ToList(icl);\n"
+            "                    while (--j >= 0)\n"
+            "                        *ncl++ = *ocl++;\n"
+            "                    while (--i >= 0)\n"
+            "                        *ncl++ = *++cl;\n"
+            "                    *callbacks = icl;\n",
+            "                    icl = (InternalCallbackList)\n"
+            "                        __XtMalloc((Cardinal) (sizeof(InternalCallbackRec) +\n"
+            "                                               sizeof(XtCallbackRec) *\n"
+            "                                               (size_t) (i + j + 1)));\n"
+            "                    icl->count = (unsigned short) (i + j);\n"
+            "                    icl->is_padded = 0;\n"
+            "                    icl->call_state = 0;\n"
+            "                    ncl = ToList(icl);\n"
+            "                    while (--j >= 0)\n"
+            "                        *ncl++ = *ocl++;\n"
+            "                    while (--i >= 0)\n"
+            "                        *ncl++ = *++cl;\n"
+            "                    ncl->callback = (XtCallbackProc) NULL;\n"
+            "                    ncl->closure = NULL;\n"
+            "                    *callbacks = icl;\n",
+        ),
+        # _XtRemoveCallback (non-call_state branch): grow XtRealloc by one
+        # and re-anchor the sentinel at the new tail.
+        (
+            "                if (--icl->count) {\n"
+            "                    ncl = cl + 1;\n"
+            "                    while (--i >= 0)\n"
+            "                        *cl++ = *ncl++;\n"
+            "                    icl = (InternalCallbackList)\n"
+            "                        XtRealloc((char *) icl,\n"
+            "                                  (Cardinal) (sizeof(InternalCallbackRec)\n"
+            "                                              +\n"
+            "                                              sizeof(XtCallbackRec) *\n"
+            "                                              icl->count));\n"
+            "                    icl->is_padded = 0;\n"
+            "                    *callbacks = icl;\n",
+            "                if (--icl->count) {\n"
+            "                    ncl = cl + 1;\n"
+            "                    while (--i >= 0)\n"
+            "                        *cl++ = *ncl++;\n"
+            "                    icl = (InternalCallbackList)\n"
+            "                        XtRealloc((char *) icl,\n"
+            "                                  (Cardinal) (sizeof(InternalCallbackRec)\n"
+            "                                              +\n"
+            "                                              sizeof(XtCallbackRec) *\n"
+            "                                              (size_t) (icl->count + 1)));\n"
+            "                    icl->is_padded = 0;\n"
+            "                    cl = ToList(icl) + icl->count;\n"
+            "                    cl->callback = (XtCallbackProc) NULL;\n"
+            "                    cl->closure = NULL;\n"
+            "                    *callbacks = icl;\n",
+        ),
+        # XtRemoveCallbacks: same idea — grow by one and write sentinel.
+        (
+            "    if (icl->count) {\n"
+            "        icl = (InternalCallbackList)\n"
+            "            XtRealloc((char *) icl, (Cardinal) (sizeof(InternalCallbackRec) +\n"
+            "                                                sizeof(XtCallbackRec) *\n"
+            "                                                icl->count));\n"
+            "        icl->is_padded = 0;\n"
+            "        *callbacks = icl;\n"
+            "    }\n",
+            "    if (icl->count) {\n"
+            "        icl = (InternalCallbackList)\n"
+            "            XtRealloc((char *) icl, (Cardinal) (sizeof(InternalCallbackRec) +\n"
+            "                                                sizeof(XtCallbackRec) *\n"
+            "                                                (size_t) (icl->count + 1)));\n"
+            "        icl->is_padded = 0;\n"
+            "        ccl = ToList(icl) + icl->count;\n"
+            "        ccl->callback = (XtCallbackProc) NULL;\n"
+            "        ccl->closure = NULL;\n"
+            "        *callbacks = icl;\n"
+            "    }\n",
+        ),
+        # _XtCompileCallbackList: allocate n+1 records and stamp the
+        # terminator after the copy loop.
+        (
+            "    callbacks =\n"
+            "        (InternalCallbackList)\n"
+            "        __XtMalloc((Cardinal)\n"
+            "                   (sizeof(InternalCallbackRec) +\n"
+            "                    sizeof(XtCallbackRec) * (size_t) n));\n"
+            "    callbacks->count = (unsigned short) n;\n"
+            "    callbacks->is_padded = 0;\n"
+            "    callbacks->call_state = 0;\n"
+            "    cl = ToList(callbacks);\n"
+            "    while (--n >= 0)\n"
+            "        *cl++ = *xtcallbacks++;\n"
+            "    return (callbacks);\n",
+            "    callbacks =\n"
+            "        (InternalCallbackList)\n"
+            "        __XtMalloc((Cardinal)\n"
+            "                   (sizeof(InternalCallbackRec) +\n"
+            "                    sizeof(XtCallbackRec) * (size_t) (n + 1)));\n"
+            "    callbacks->count = (unsigned short) n;\n"
+            "    callbacks->is_padded = 0;\n"
+            "    callbacks->call_state = 0;\n"
+            "    cl = ToList(callbacks);\n"
+            "    while (--n >= 0)\n"
+            "        *cl++ = *xtcallbacks++;\n"
+            "    cl->callback = (XtCallbackProc) NULL;\n"
+            "    cl->closure = NULL;\n"
+            "    return (callbacks);\n",
         ),
     ),
 }

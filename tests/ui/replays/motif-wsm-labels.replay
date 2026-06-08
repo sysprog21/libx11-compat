@@ -1,0 +1,6 @@
+# Workspace manager smoke test for visible room/menu labels.
+delay 3000
+wait-window "WSM|wsm|Workspace" 4000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial motif-wsm-labels.json

@@ -1,0 +1,25 @@
+diff --git a/src/viola/tfed.c b/src/viola/tfed.c
+--- a/src/viola/tfed.c
++++ b/src/viola/tfed.c
+@@ -4984,15 +4984,20 @@
+         short prevFontID, prevVideo;
+         char* buffp;
+         int flags;
+         GC usegc = gc_fg;
+         int localYOffset = *yoffset;
+ 
++        if (tf->isRenderAble) {
++            XClearArea(display, w, tf->xUL, localYOffset, tf->width,
++                       currentp->maxFontHeight * currentp->breakc, False);
++        }
++
+         if (tf->align == PANE_CONFIG_CENTER) {
+             segpx = (tf->xLR - tf->xUL - lineSegWidth(tf, currentp)) / 2;
+         } else if (tf->align == PANE_CONFIG_E2W) {
+             segpx = tf->xLR - tf->xUL - lineSegWidth(tf, currentp);
+         } else {
+             segpx = tf->xUL;
+         }
+ 
+         item.delta = 0;
+         item.chars = buff;

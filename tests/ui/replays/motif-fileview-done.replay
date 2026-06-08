@@ -1,0 +1,22 @@
+# High-value Motif smoke test for nested child button coordinates.
+#
+# scripts/run-ui-replay.py's `button N click` translates internally to
+# press + delay + release for the LIBX11_COMPAT_REPLAY engine, so the
+# Done button's activate callback fires deterministically. The runner
+# does not implement a `click X Y` opcode, even though src/replay.c
+# does; an earlier attempt to use that form failed in CI as "unknown
+# replay command click".
+delay 2500
+wait-window "fileview|File" 3000
+screenshot initial
+assert-image initial common-visible.json
+# (130, 540) lands on the Done button in fileview's language-selection
+# dialog as it renders under Xvfb at the pinned 480x260+0+0 main shell
+# geometry. The previous (110, 495) coordinate hit the OS list entry
+# row instead, which only changed the selected radio button without
+# dismissing the dialog, so fileview kept running and assert-exit
+# tripped with "process is still running".
+motion 130 540
+button 1 click
+delay 1500
+assert-exit any

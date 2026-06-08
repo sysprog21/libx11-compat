@@ -39,8 +39,9 @@ def decode_bdf(text: str, char_count: int, height: int):
             continue
         if bitmap_row >= 0 and bitmap_row < height:
             token = stripped.split()[0] if stripped else ""
-            if len(token) in (1, 2) and all(c in "0123456789abcdefABCDEF"
-                                            for c in token):
+            if len(token) in (1, 2) and all(
+                c in "0123456789abcdefABCDEF" for c in token
+            ):
                 rows[encoding][bitmap_row] = int(token, 16)
                 bitmap_row += 1
     return rows

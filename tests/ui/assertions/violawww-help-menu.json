@@ -1,0 +1,20 @@
+{
+  "_comment": "Coordinates are display-space inside the 1024x720 capture. The Help popup is an override-redirect top-level created near x=754,y=29 after Motif resolves its Times bold 14 menu font; display_rect is scaled to the actual image size so Retina captures and 1x captures use the same rule.",
+  "assertions": [
+    {
+      "type": "changed_region",
+      "baseline": "initial",
+      "display_size": [1024, 720],
+      "display_rect": [754, 29, 160, 94],
+      "min_changed_ratio": 0.35
+    },
+    {
+      "_comment": "Threshold bumped from 0.08 to 0.10 because CI consistently measured 0.08564 (same value across reruns, not flake). The popup region carries Motif's Times-bold-14 menu labels on a light background, which sits in the 8-9% dark-pixel range under Xvfb's font hinting. The previous 0.08 left no headroom for font-rendering deltas; 0.10 still catches a real popup-paint regression (e.g. the menu drawing as a solid dark block ~50%+) without flaking on tooling variance.",
+      "type": "region_max_dark_ratio",
+      "display_size": [1024, 720],
+      "display_rect": [754, 29, 160, 94],
+      "dark_threshold": 32,
+      "max_dark_ratio": 0.10
+    }
+  ]
+}

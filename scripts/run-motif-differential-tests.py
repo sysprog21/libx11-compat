@@ -96,9 +96,11 @@ if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get install -y --no-install-recommends \\
         autoconf automake bison build-essential ca-certificates git \\
         imagemagick libtool make pkg-config rsync xauth xvfb \\
-        libice-dev libsm-dev libx11-dev libxext-dev libxmu-dev libxt-dev
+        xdotool libice-dev libsm-dev libx11-dev libxext-dev libxmu-dev libxt-dev
 fi
 """
+
+    replay_deps = "need xdotool\n" if args.replay_smoke else ""
 
     return f"""
 set -eu
@@ -121,7 +123,7 @@ need pkg-config
 need python3
 need rsync
 need Xvfb
-if command -v yacc >/dev/null 2>&1; then
+{replay_deps}if command -v yacc >/dev/null 2>&1; then
     yacc_bin=yacc
 elif command -v bison >/dev/null 2>&1; then
     yacc_bin="bison -y"
@@ -145,9 +147,9 @@ display=:{q(args.display)}
 run_logged() {{
     log=$1
     shift
-    # Capture $? inside the else-branch: after `fi` the exit status of
+    # Capture $? inside the else-branch: after fi the exit status of
     # the if-statement is 0 when no branch ran (POSIX), which would mask
-    # the original failure if we read $? on the line below `fi`.
+    # the original failure if we read $? on the line below fi.
     if "$@" >>"$log" 2>&1; then
         return 0
     else
@@ -156,6 +158,62 @@ run_logged() {{
         tail -40 "$log" >&2 || true
         exit "$status"
     fi
+}}
+
+write_wsm_home() {{
+    home_dir=$1
+    mkdir -p "$home_dir"
+    cat >"$home_dir/.wsmdb" <<'WSMEOF'
+wsm_WSM.WSM.0.linked:True
+wsm_WSM.WSM.0.allWorkspaces:True
+wsm_WSM.WSM.0.linkedRoom.hidden:0
+saveAsShell_WSM*allWorkspaces:True
+configureShell_WSM*allWorkspaces:True
+nameShell_WSM*allWorkspaces: True
+backgroundShell_WSM*allWorkspaces:True
+deleteShell_WSM*allWorkspaces:True
+occupyShell_WSM*allWorkspaces:True
+WSMEOF
+}}
+
+run_motif_replay() {{
+    name=$1
+    replay=$2
+    app=$3
+    workdir=$4
+    libpath=$5
+    log_dir=$6
+    screen_dir=$7
+    home_dir=$8
+    input_backend=$9
+    replay_out="$remote_root/replay-$name"
+    rm -rf "$replay_out"
+    mkdir -p "$log_dir" "$screen_dir"
+    python3 "$repo/scripts/run-ui-replay.py" \\
+        --name "$name" \\
+        --app "$app" \\
+        --workdir "$workdir" \\
+        --replay "$repo/tests/ui/replays/$replay" \\
+        --out-root "$replay_out" \\
+        --display {q(args.display)} \\
+        --geometry {q(args.geometry)} \\
+        --input-backend "$input_backend" \\
+        --screenshot-command import \\
+        --env DISPLAY="$display" \\
+        --env HOME="$home_dir" \\
+        --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
+        --env XAPPLRESDIR="$(dirname "$app")" \\
+        --env XFILESEARCHPATH="$(dirname "$app")/%N.ad:$(dirname "$app")/%N:$motif_src/demos/$(basename "$(dirname "$app")")/%N.ad:$motif_src/demos/$(basename "$(dirname "$app")")/%N"
+    # Replay assertions are enforced by run-ui-replay itself. Keep their
+    # screenshots out of the differential screenshot directories so these
+    # smoke interactions do not require symmetric reference/local frames.
+    cp "$replay_out"/junit.xml "$log_dir/$name-junit.xml"
+    if [ -f "$log_dir/results.tsv" ]; then
+        tail -n +2 "$replay_out/results.tsv" >>"$log_dir/results.tsv"
+    else
+        cp "$replay_out/results.tsv" "$log_dir/results.tsv"
+    fi
+    cp "$replay_out"/logs/* "$log_dir"/ 2>/dev/null || true
 }}
 
 {clean_remote}
@@ -172,7 +230,7 @@ if [ ! -f .configure-stamp ]; then
     : >"$system_config_log"
     run_logged "$system_config_log" env \\
         CPP="gcc -E" \\
-        CFLAGS="-g -O0" \\
+        CFLAGS="-g -O0 -include stdlib.h" \\
         YACC="$yacc_bin" \\
         "$motif_src/configure" \\
         --prefix="$system_out/motif-install" \\
@@ -189,11 +247,11 @@ if [ ! -f .configure-stamp ]; then
     touch .configure-stamp
 fi
 run_logged "$system_build_log" make -C config
-run_logged "$system_build_log" make -C lib/Xm CFLAGS="-g -O0"
-run_logged "$system_build_log" make -C lib/Mrm CFLAGS="-g -O0"
-run_logged "$system_build_log" make -C tools/wml CPP="gcc -E" CFLAGS="-g -O0"
-run_logged "$system_build_log" make -C clients/uil CPP="gcc -E" CFLAGS="-g -O0"
-run_logged "$system_build_log" make -C demos CPP="gcc -E" CFLAGS="-g -O0"
+run_logged "$system_build_log" make -C lib/Xm CFLAGS="-g -O0 -include stdlib.h"
+run_logged "$system_build_log" make -C lib/Mrm CFLAGS="-g -O0 -include stdlib.h"
+run_logged "$system_build_log" make -C tools/wml CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
+run_logged "$system_build_log" make -C clients/uil CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
+run_logged "$system_build_log" make -C demos CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
 
 rm -f "/tmp/.X{q(args.display)}-lock"
 Xvfb "$display" -screen 0 {q(args.geometry)} \\
@@ -216,6 +274,53 @@ export MOTIF_DEMO_SCREENSHOT_DIR="$compat_screens"
 export MOTIF_DEMO_SCREENSHOT_LOG_DIR="$compat_logs"
 sh "$repo/scripts/capture-motif-demo-screenshots.sh" \\
     "$repo/build/motif-demos" "$repo/build"
+
+if [ {q("1" if args.replay_smoke else "0")} = 1 ]; then
+    mkdir -p "$remote_root/home-system" "$remote_root/home-compat" \\
+        "$remote_root/home-system-wsm" "$remote_root/home-compat-wsm"
+    write_wsm_home "$remote_root/home-system-wsm"
+    write_wsm_home "$remote_root/home-compat-wsm"
+    run_motif_replay \\
+        motif-fileview-done \\
+        motif-fileview-done.replay \\
+        "$system_build/demos/programs/fileview/fileview" \\
+        "$system_build/demos/programs/fileview" \\
+        "$system_build/lib/Xm/.libs:$system_build/lib/Mrm/.libs:$system_build/clients/uil/.libs" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        "$remote_root/home-system" \\
+        xdotool
+    run_motif_replay \\
+        motif-fileview-done \\
+        motif-fileview-done.replay \\
+        "$repo/build/motif-demos/demos/programs/fileview/fileview" \\
+        "$repo/build/motif-demos/demos/programs/fileview" \\
+        "$repo/build/motif-demos/lib/Xm/.libs:$repo/build/motif-demos/lib/Mrm/.libs:$repo/build/motif-demos/clients/uil/.libs:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        "$remote_root/home-compat" \\
+        internal
+    run_motif_replay \\
+        motif-wsm-labels \\
+        motif-wsm-labels.replay \\
+        "$system_build/demos/programs/workspace/wsm" \\
+        "$system_build/demos/programs/workspace" \\
+        "$system_build/lib/Xm/.libs:$system_build/lib/Mrm/.libs:$system_build/clients/uil/.libs" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        "$remote_root/home-system-wsm" \\
+        xdotool
+    run_motif_replay \\
+        motif-wsm-labels \\
+        motif-wsm-labels.replay \\
+        "$repo/build/motif-demos/demos/programs/workspace/wsm" \\
+        "$repo/build/motif-demos/demos/programs/workspace" \\
+        "$repo/build/motif-demos/lib/Xm/.libs:$repo/build/motif-demos/lib/Mrm/.libs:$repo/build/motif-demos/clients/uil/.libs:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        "$remote_root/home-compat-wsm" \\
+        internal
+fi
 """
 
 
@@ -352,15 +457,20 @@ def main():
         action="store_true",
         help="install minimal Ubuntu packages on the remote via sudo apt-get",
     )
+    # Defaults match mk/motif.mk. Kept tight enough that a missing widget
+    # or wrong-color background trips the gate, but loose enough to
+    # tolerate font hinting / AA differences between Xft on system X11
+    # and our SDL_ttf path. Override per-job via MOTIF_DIFF_*_THRESHOLD
+    # when adding demos that legitimately render differently.
     parser.add_argument(
         "--mae-threshold",
         type=float,
-        default=float(parse_env_default("MOTIF_DIFF_MAE_THRESHOLD", "0.08")),
+        default=float(parse_env_default("MOTIF_DIFF_MAE_THRESHOLD", "0.04")),
     )
     parser.add_argument(
         "--changed-threshold",
         type=float,
-        default=float(parse_env_default("MOTIF_DIFF_CHANGED_THRESHOLD", "0.35")),
+        default=float(parse_env_default("MOTIF_DIFF_CHANGED_THRESHOLD", "0.20")),
     )
     parser.add_argument(
         "--top",
@@ -380,6 +490,16 @@ def main():
         help=(
             "where to run screenshot image comparison; Motif execution always "
             "runs on the remote"
+        ),
+    )
+    parser.add_argument(
+        "--replay-smoke",
+        action="store_true",
+        default=parse_env_default("MOTIF_DIFF_REPLAY", "0").lower()
+        in ("1", "yes", "true"),
+        help=(
+            "also run replay-based Motif UI interactions on system-X11 and "
+            "libx11-compat; currently includes the fileview Done-button path"
         ),
     )
     args = parser.parse_args()

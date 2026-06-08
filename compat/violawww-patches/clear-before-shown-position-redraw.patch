@@ -1,0 +1,16 @@
+--- a/src/viola/cl_txtDisp.c
++++ b/src/viola/cl_txtDisp.c
+@@ -1090,6 +1090,13 @@ int help_txtDisp_shownPositionV(VObj* self, int newPosition)
+         return newPosition;
+     /* textFieldJumpToLine(self, destLine);*/
+     GLPrepareObjColor(self);
++    /*
++     * Wheel scrolling and Motif scrollbar dragging both enter through
++     * shownPositionV. Clear the backing window before jump/redraw so stale
++     * glyphs from the old viewport are not left under the new text frame.
++     */
++    if (GET_window(self))
++        GLClearWindow(GET_window(self));
+     tfed_jumpToOffsetLine(self, destLine);
+ 
+     SET_shownPositionV(self, newPosition);

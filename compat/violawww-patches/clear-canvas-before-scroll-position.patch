@@ -1,0 +1,59 @@
+--- a/src/vw/callbacks.c
++++ b/src/vw/callbacks.c
+@@ -816,6 +816,17 @@
+                   (positionPercent * maximum / SBAR_MAGNITUDE), NULL);
+ }
+ 
++static void clearDocViewBeforeScroll(DocViewInfo* dvi, VObj* violaObj) {
++    if (dvi && dvi->canvas && XtIsRealized(dvi->canvas)) {
++        XClearArea(XtDisplay(dvi->canvas), XtWindow(dvi->canvas), 0, 0, 0, 0, False);
++    }
++    if (violaObj && GET_window(violaObj)) {
++        XClearArea(display, GET_window(violaObj), 0, 0, 0, 0, False);
++    } else if (dvi && dvi->violaDocViewWindow) {
++        XClearArea(display, dvi->violaDocViewWindow, 0, 0, 0, 0, False);
++    }
++}
++
+ void scrollBarDrag(Widget sbar, XtPointer clientData, XtPointer callData) {
+     XmScrollBarCallbackStruct* sbData = (XmScrollBarCallbackStruct*)callData;
+     VObj* violaObj = (VObj*)clientData;
+@@ -826,8 +837,11 @@
+     XtVaGetValues(sbar, XmNsliderSize, &sliderSize, XmNmaximum, &maximum, NULL);
+     percent = SBAR_MAGNITUDE * sbData->value / (maximum - sliderSize);
+ 
+-    if (violaObj)
++    if (violaObj) {
++        clearDocViewBeforeScroll(mainViewInfo(), violaObj);
+         sendTokenMessageN1int(violaObj, STR_shownPositionV, percent);
++        sendMessage1(violaObj, "render");
++    }
+ 
+     calledDrag++;
+ }
+@@ -879,8 +893,11 @@
+ 
+         XtVaGetValues(sbar, XmNsliderSize, &sliderSize, XmNmaximum, &maximum, NULL);
+         percent = SBAR_MAGNITUDE * sbData->value / (maximum - sliderSize);
+-        if (violaObj)
++        if (violaObj) {
++            clearDocViewBeforeScroll(mainViewInfo(), violaObj);
+             sendTokenMessageN1int(violaObj, STR_shownPositionV, percent);
++            sendMessage1(violaObj, "render");
++        }
+     }
+ }
+ 
+@@ -940,10 +957,12 @@
+     }
+     
+     /* Notify Viola about the position change */
++    clearDocViewBeforeScroll(dvi, dvi->violaDocViewObj);
+     sendTokenMessageN1int(dvi->violaDocViewObj, STR_shownPositionV, percent);
+     
+     /* Update scrollbar position */
+     XtVaSetValues(dvi->scrollBar, XmNvalue, newValue, NULL);
++    sendMessage1(dvi->violaDocViewObj, "render");
+ }
+ 
+ /*

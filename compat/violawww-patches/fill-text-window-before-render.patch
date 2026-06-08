@@ -1,0 +1,10 @@
+--- a/src/viola/tfed.c
++++ b/src/viola/tfed.c
+@@ -5522,6 +5522,7 @@ int renderTF(TFStruct* tf)
+         GLPrepareObjColor(tf->self);
+ 
+         XClearWindow(display, TFWINDOW);
++        XFillRectangle(display, TFWINDOW, gc_bg, 0, 0, tf->width, tf->height);
+ 
+         if (BDPixel == BGPixel) {
+             XSetForeground(display, gc_mesh, FGPixel);

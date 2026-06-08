@@ -53,6 +53,8 @@ def read_results(path):
         for row in reader:
             if not row.get("relative_path"):
                 continue
+            if row.get("status") == "ok" and not row.get("screenshot"):
+                continue
             results[screenshot_name_for_result(row)] = row
     return results
 

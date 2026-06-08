@@ -1,0 +1,52 @@
+diff --git a/Makefile b/Makefile
+index 65bfe86..7c3713b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -191,7 +191,7 @@ LAUNCHER_DIR = $(SRC_DIR)/launcher
+ 
+ # Library targets
+ LIBWWW = $(LIBWWW_DIR)/libwww.a
+-LIBXPM = $(LIBXPM_DIR)/libXpm.a
++LIBXPM =
+ LIBXPA = $(LIBXPA_DIR)/libXpa.a
+ LIBIMG = $(LIBIMG_DIR)/libIMG.a
+ LIBSTYLE = $(LIBSTYLE_DIR)/libstg.o
+diff --git a/src/viola/glib_x.c b/src/viola/glib_x.c
+index c634069..ed36f9c 100644
+--- a/src/viola/glib_x.c
++++ b/src/viola/glib_x.c
+@@ -46,7 +46,7 @@
+ #include <X11/extensions/shape.h>
+ #include <X11/extensions/Xrender.h>
+ 
+-#include "../libXPM/xpm.h"
++#include <X11/xpm.h>
+ 
+ #define USE_XLOADIMAGE_PACKAGE 1
+ 
+diff --git a/src/vw/catalog.c b/src/vw/catalog.c
+index be1d058..6fbed18 100644
+--- a/src/vw/catalog.c
++++ b/src/vw/catalog.c
+@@ -43,7 +43,7 @@
+ 
+ #include "../viola/cexec.h"
+ #include "../viola/misc.h"
+-#include "../libXPM/xpm.h"
++#include <X11/xpm.h>
+ 
+ /* Forward declarations */
+ static void forceDeleteFolder(Folder* folder, Catalog* catalog);
+diff --git a/src/vw/vw.c b/src/vw/vw.c
+index d7bca86..9734348 100644
+--- a/src/vw/vw.c
++++ b/src/vw/vw.c
+@@ -52,7 +52,7 @@
+ #include <dispatch/dispatch.h>
+ #endif
+ 
+-#include "../libXPM/xpm.h"
++#include <X11/xpm.h>
+ #include "../viola/ast.h"
+ #include "../viola/discovery.h"
+ #include "../viola/cexec.h"
