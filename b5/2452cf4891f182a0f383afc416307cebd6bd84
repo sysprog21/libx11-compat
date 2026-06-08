@@ -1,0 +1,28 @@
+README.md
+  s_f4f6b73902def8::t_2f082b092b6432 5
+  s_0397c8f3ed4d23::t_293fd02efc18bb 4,12,20-22,34,49-51,54-56,59-61,71-73,84-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "b52452cf4891f182a0f383afc416307cebd6bd84",
+  "prompts": {},
+  "sessions": {
+    "s_0397c8f3ed4d23": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ea91d-a56e-7c42-a899-23fa0f63f862",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_f4f6b73902def8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33005b24-802b-410b-92e1-26b4beaf241d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    }
+  }
+}
