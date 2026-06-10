@@ -1,6 +1,8 @@
 #include <X11/Xlib.h>
+#include <SDL2/SDL.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include "window.h"
 
 static double now_seconds(void)
 {
@@ -139,6 +141,39 @@ static void bench_visible_window_draw_strings(Display *display, Window root)
     XDestroyWindow(display, window);
 }
 
+static void bench_next_event_with_queued_motion(Display *display, Window root)
+{
+    Window window =
+        XCreateSimpleWindow(display, root, 0, 0, 400, 300, 0, 0, 0xFFFFFFFF);
+    XSelectInput(display, window, PointerMotionMask);
+    XMapWindow(display, window);
+    XSync(display, False);
+    while (XPending(display)) {
+        XEvent drain;
+        XNextEvent(display, &drain);
+    }
+
+    Uint32 windowId = SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    const int operations = 1000;
+    double start = now_seconds();
+    for (int i = 0; i < operations; i++) {
+        SDL_Event motion;
+        SDL_zero(motion);
+        motion.type = SDL_MOUSEMOTION;
+        motion.motion.windowID = windowId;
+        motion.motion.x = (i * 17) % 400;
+        motion.motion.y = (i * 29) % 300;
+        SDL_PushEvent(&motion);
+        XEvent out;
+        XNextEvent(display, &out);
+    }
+    double elapsed = now_seconds() - start;
+    printf("queued-motion-XNextEvent %.6f sec %.3f usec/op\n", elapsed,
+           elapsed * 1000000.0 / operations);
+
+    XDestroyWindow(display, window);
+}
+
 int main(void)
 {
     Display *display = XOpenDisplay(NULL);
@@ -159,6 +194,7 @@ int main(void)
     bench_idle_window_flush(display, root);
     bench_visible_window_fill_rectangles(display, root);
     bench_visible_window_draw_strings(display, root);
+    bench_next_event_with_queued_motion(display, root);
     XFreeGC(display, gc);
     XFreePixmap(display, pixmap);
     XCloseDisplay(display);

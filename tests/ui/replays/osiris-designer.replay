@@ -1,0 +1,5 @@
+# Osiris tools/designer representative smoke.
+delay 5000
+wait-window "Qt Designer by Trolltech" 5000
+screenshot designer-initial 0 0 940 740
+assert-image designer-initial common-visible.json

@@ -1,0 +1,5 @@
+# Osiris examples/fileiconview representative smoke.
+delay 3000
+wait-window "/" 3000
+screenshot fileiconview-initial 0 0 760 560
+assert-image fileiconview-initial common-visible.json

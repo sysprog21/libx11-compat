@@ -27,6 +27,13 @@ concurrency:
 env:
   COMMON_BUILD_PKGS: "clang ccache make pkg-config python3 libsdl2-dev libsdl2-ttf-dev libpixman-1-dev"
   MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4"
+  # Osiris (Qt 2.3.2 fork) configures with Meson and builds with Ninja,
+  # and Osiris itself hard-depends on libjpeg, libpng, and freetype for
+  # image loading + font rendering (the xft/opengl/sm probes are gated
+  # off by compat/osiris-patches/, but image/font are core). None of
+  # these are pulled in by COMMON_BUILD_PKGS, so install them in the
+  # motif job (the only job that runs `make osiris`).
+  OSIRIS_BUILD_PKGS: "meson ninja-build libjpeg-dev libpng-dev libfreetype-dev"
   DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
 
 jobs:
@@ -117,6 +124,7 @@ jobs:
             !build/upstream/**/*.d
             !build/upstream/motif
             !build/upstream/mosaic
+            !build/upstream/osiris
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -186,6 +194,7 @@ jobs:
             !build/upstream/**/*.d
             !build/upstream/motif
             !build/upstream/mosaic
+            !build/upstream/osiris
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -253,6 +262,7 @@ jobs:
             !build/upstream/**/*.d
             !build/upstream/motif
             !build/upstream/mosaic
+            !build/upstream/osiris
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -326,7 +336,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
-            ${{ env.DIFFERENTIAL_PKGS }}
+            ${{ env.OSIRIS_BUILD_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
         # Same cache as the other compile jobs use, scoped to
@@ -341,6 +351,7 @@ jobs:
             !build/upstream/**/*.d
             !build/upstream/motif
             !build/upstream/mosaic
+            !build/upstream/osiris
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -364,6 +375,15 @@ jobs:
         with:
           path: build/upstream/mosaic
           key: mosaic-src-${{ runner.os }}-${{ hashFiles('mk/mosaic.mk', 'compat/mosaic-patches/**') }}
+
+      - name: Cache Osiris source clone
+        # Exact-match key only. Patch inputs feed into the Osiris build
+        # stamp, so a fallback would risk applying an older patch set to
+        # the pinned revision; re-cloning is the safe default on drift.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/osiris
+          key: osiris-src-${{ runner.os }}-${{ hashFiles('mk/osiris.mk', 'compat/osiris-patches/**') }}
 
       - name: Cache ccache
         uses: actions/cache@v5
@@ -440,6 +460,28 @@ jobs:
         if: ${{ !cancelled() }}
         run: make mosaic
 
+      - name: Build Osiris against compat stack
+        id: osiris
+        # Fetch, patch, configure (Meson), and build (Ninja) the Osiris
+        # Qt 2.3.2 fork against libX11-compat, libXext-compat,
+        # libXmu-compat, and the link-only libICE-compat / libSM-compat
+        # shims. The build closure stays SDL2 + SDL2_ttf + pixman thanks
+        # to compat/osiris-patches/ disabling Xft/OpenGL/SM/MNG/GIF
+        # feature probes. Build log lives at build/osiris/build.log and
+        # is uploaded on failure.
+        if: ${{ !cancelled() }}
+        run: make osiris
+
+      - name: Run Osiris demo smoke checks
+        id: osiris-demos
+        # Launches each built tutorial / non-GL example long enough to
+        # catch startup crashes (validate-osiris-demos.sh). Headless
+        # under SDL's dummy driver, so no Xvfb is needed for this step.
+        if: ${{ !cancelled() && steps.osiris.outcome == 'success' }}
+        env:
+          SDL_VIDEODRIVER: dummy
+        run: make check-demos-osiris
+
       - name: Run Motif and ViolaWWW replay smoke checks
         # make check-smoke is intentionally usable without Xvfb/xdotool on a
         # developer machine. GitHub-hosted runners are headless, so CI opts
@@ -467,6 +509,17 @@ jobs:
           UI_REPLAY_SCREENSHOT_COMMAND: import
           UI_REPLAY_DISPLAY: 122
         run: make check-smoke-mosaic
+
+      - name: Run Osiris replay smoke checks
+        # Replay-driven t1 and Qt Designer menu smoke checks. Distinct
+        # display number from Motif (121) and Mosaic (122) so concurrent
+        # Xvfb instances on this runner do not collide.
+        if: ${{ !cancelled() && steps.osiris.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 123
+        run: make check-smoke-osiris
 
       - name: Run Motif differential screenshots
         id: motif-differential
@@ -516,6 +569,24 @@ jobs:
           MOSAIC_DIFF_COMPARE_LOCATION: remote
         run: make check-differential-mosaic
 
+      - name: Run Osiris differential screenshots
+        id: osiris-differential
+        # Qt2 differential gate. Runs only when Osiris built successfully
+        # and OSIRIS_DIFF_REMOTE is configured; the t1 + Designer
+        # screenshot compares against system libX11 under Xvfb on the
+        # remote host. OSIRIS_DIFF_MAE_THRESHOLD / *_CHANGED_THRESHOLD
+        # default to the values in mk/osiris.mk; override via repo vars
+        # when tightening or loosening per-revision.
+        if: ${{ !cancelled() && steps.osiris.outcome == 'success' && vars.OSIRIS_DIFF_REMOTE != '' }}
+        env:
+          OSIRIS_DIFF_REMOTE: ${{ vars.OSIRIS_DIFF_REMOTE }}
+          OSIRIS_DIFF_INSTALL_DEPS: ${{ vars.OSIRIS_DIFF_INSTALL_DEPS || '0' }}
+          OSIRIS_DIFF_JOBS: ${{ vars.OSIRIS_DIFF_JOBS || '1' }}
+          OSIRIS_DIFF_COMPARE_LOCATION: remote
+          OSIRIS_DIFF_MAE_THRESHOLD: ${{ vars.OSIRIS_DIFF_MAE_THRESHOLD || '0.16' }}
+          OSIRIS_DIFF_CHANGED_THRESHOLD: ${{ vars.OSIRIS_DIFF_CHANGED_THRESHOLD || '0.46' }}
+        run: make check-differential-osiris
+
       - name: Upload ViolaWWW build log on failure
         # Upload only when this specific step failed. A bare
         # `if: failure()` would also fire on an earlier failure (e.g.
@@ -535,6 +606,31 @@ jobs:
         with:
           name: mosaic-build-log
           path: build/mosaic/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Osiris build log on failure
+        # Captures the Meson configure + Ninja build log so a future
+        # patch / revision drift can be triaged without rerunning the
+        # whole job locally.
+        if: ${{ steps.osiris.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: osiris-build-log
+          path: |
+            build/osiris/build.log
+            build/osiris/build/meson-logs
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Osiris demo logs on failure
+        # validate-osiris-demos.sh writes one log per demo so a startup
+        # crash can be triaged from the actual stderr.
+        if: ${{ steps.osiris-demos.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: osiris-demo-logs
+          path: build/osiris-demo-logs
           if-no-files-found: warn
           retention-days: 7
 
@@ -589,6 +685,21 @@ jobs:
             build/mosaic-differential/diff
             build/mosaic-differential/system
             build/mosaic-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Osiris differential artifacts on failure
+        if: ${{ steps.osiris-differential.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: osiris-differential
+          path: |
+            build/osiris-differential/report.tsv
+            build/osiris-differential/junit.xml
+            build/osiris-differential/logs
+            build/osiris-differential/diff
+            build/osiris-differential/system
+            build/osiris-differential/compat
           if-no-files-found: warn
           retention-days: 7
 

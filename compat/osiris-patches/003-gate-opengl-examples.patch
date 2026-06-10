@@ -1,0 +1,63 @@
+diff --git a/examples/meson.build b/examples/meson.build
+index 00d5bd1..d03d517 100644
+--- a/examples/meson.build
++++ b/examples/meson.build
+@@ -44,7 +44,9 @@ subdir('action')
+ subdir('addressbook')
+ subdir('application')
+ subdir('biff')
+-subdir('box')
++if get_option('opengl').enabled()
++    subdir('box')
++endif
+ subdir('buttongroups')
+ subdir('canvas')
+ subdir('checklists')
+@@ -59,8 +61,10 @@ subdir('drawlines')
+ subdir('fileiconview')
+ subdir('forever')
+ subdir('ftpclient')
+-subdir('gear')
+-subdir('glpixmap')
++if get_option('opengl').enabled()
++    subdir('gear')
++    subdir('glpixmap')
++endif
+ if thread_support
+     subdir('guithreads')
+ endif
+@@ -80,8 +84,10 @@ subdir('mdi')
+ subdir('menu')
+ subdir('movies')
+ subdir('networkprotocol')
+-subdir('overlay')
+-subdir('overlay_x11')
++if get_option('opengl').enabled()
++    subdir('overlay')
++    subdir('overlay_x11')
++endif
+ subdir('picture')
+ subdir('popup')
+ subdir('progress')
+@@ -98,7 +104,9 @@ subdir('scrollview')
+ if thread_support
+     subdir('semaphores')
+ endif
+-subdir('sharedbox')
++if get_option('opengl').enabled()
++    subdir('sharedbox')
++endif
+ subdir('showimg')
+ subdir('sound')
+ subdir('splitter')
+@@ -106,7 +114,9 @@ subdir('statistics')
+ subdir('tabdialog')
+ subdir('table')
+ subdir('tetrix')
+-subdir('texture')
++if get_option('opengl').enabled()
++    subdir('texture')
++endif
+ subdir('themes')
+ subdir('tictac')
+ subdir('tooltip')

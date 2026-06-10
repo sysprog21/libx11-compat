@@ -1,0 +1,19 @@
+# Osiris Designer File menu popup placement smoke.
+#
+# motion uses host-screen coords. macOS shifts the SDL content area
+# down by ~28 px (title bar); Xvfb has no decoration, so host-screen
+# y=28 lands on the toolbar instead of the menubar. target-motion
+# resolves against the registered replay-target window (the Designer
+# top-level), so the same numbers hit the same widgets on either
+# host.
+delay 5000
+wait-window "Qt Designer by Trolltech" 5000
+screenshot initial 0 0 940 740
+target-motion 36 8
+button 1 press
+delay 200
+target-motion 36 50
+delay 1000
+screenshot file-menu 0 0 940 740
+assert-image file-menu osiris-designer-menu.json
+button 1 release

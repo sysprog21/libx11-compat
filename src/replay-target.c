@@ -1,5 +1,7 @@
 #include "replay-target.h"
 #include <SDL2/SDL_atomic.h>
+#include <limits.h>
+#include <stdint.h>
 #include "util.h"
 
 static SDL_atomic_t targetWindowId;
@@ -21,6 +23,15 @@ static unsigned long targetAreaHighWater = 0;
 
 #define REPLAY_TARGET_HIGH_WATER_NUMERATOR 1
 #define REPLAY_TARGET_HIGH_WATER_DENOMINATOR 2
+
+static int clampInt64ToInt(int64_t value)
+{
+    if (value > INT_MAX)
+        return INT_MAX;
+    if (value < INT_MIN)
+        return INT_MIN;
+    return (int) value;
+}
 
 static void rebasePointerToTargetRoot(int rootX, int rootY)
 {
@@ -139,6 +150,29 @@ Bool replayTargetTranslateRoot(int rootX,
             *localX = rootX - rx;
         if (localY)
             *localY = rootY - ry;
+        return True;
+    }
+    return False;
+}
+
+Bool replayTargetTranslateLocal(int localX, int localY, int *rootX, int *rootY)
+{
+    for (int attempt = 0; attempt < 8; attempt++) {
+        int seqBefore = SDL_AtomicGet(&targetSeq);
+        if (seqBefore & 1)
+            continue;
+        Uint32 id = (Uint32) SDL_AtomicGet(&targetWindowId);
+        int rx = SDL_AtomicGet(&targetRootX);
+        int ry = SDL_AtomicGet(&targetRootY);
+        int seqAfter = SDL_AtomicGet(&targetSeq);
+        if (seqBefore != seqAfter)
+            continue;
+        if (id == 0)
+            return False;
+        if (rootX)
+            *rootX = clampInt64ToInt((int64_t) rx + (int64_t) localX);
+        if (rootY)
+            *rootY = clampInt64ToInt((int64_t) ry + (int64_t) localY);
         return True;
     }
     return False;

@@ -1,0 +1,4 @@
+diff --git a/meson.options b/meson_options.txt
+similarity index 100%
+rename from meson.options
+rename to meson_options.txt

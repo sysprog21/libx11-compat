@@ -1,0 +1,5 @@
+# Osiris examples/listviews representative smoke.
+delay 2000
+wait-window "Qt Example - Listview" 3000
+screenshot listviews-initial 0 0 720 540
+assert-image listviews-initial common-visible.json

@@ -238,6 +238,102 @@ void registerWindowMapping(Window window, Uint32 sdlWindowId)
     unlockMappingList();
 }
 
+void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn)
+{
+    int x = 0;
+    int y = 0;
+    while (window != None && window != SCREEN_WINDOW) {
+        int wx = 0;
+        int wy = 0;
+        GET_WINDOW_POS(window, wx, wy);
+        x += wx;
+        y += wy;
+        window = GET_PARENT(window);
+    }
+    *xReturn = x;
+    *yReturn = y;
+}
+
+void translateWindowPoint(Window sourceWindow,
+                          Window destinationWindow,
+                          int sourceX,
+                          int sourceY,
+                          int *destinationXReturn,
+                          int *destinationYReturn)
+{
+    int sourceAbsX = 0;
+    int sourceAbsY = 0;
+    int destAbsX = 0;
+    int destAbsY = 0;
+    windowAbsoluteOrigin(sourceWindow, &sourceAbsX, &sourceAbsY);
+    windowAbsoluteOrigin(destinationWindow, &destAbsX, &destAbsY);
+    *destinationXReturn = sourceAbsX + sourceX - destAbsX;
+    *destinationYReturn = sourceAbsY + sourceY - destAbsY;
+}
+
+static Bool nativeDecoratedWindowOffset(int *offsetX, int *offsetY)
+{
+    *offsetX = 0;
+    *offsetY = 0;
+    if (SCREEN_WINDOW == None)
+        return False;
+
+    WindowStruct *screenStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    for (size_t i = 0; i < screenStruct->children.length; i++) {
+        Window child = children[i];
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+        if (!childStruct->sdlWindow || childStruct->overrideRedirect)
+            continue;
+
+        int hostX = 0;
+        int hostY = 0;
+        SDL_GetWindowPosition(childStruct->sdlWindow, &hostX, &hostY);
+        *offsetX = hostX - childStruct->x;
+        *offsetY = hostY - childStruct->y;
+        return True;
+    }
+    return False;
+}
+
+void topLevelWindowHostPosition(Window window,
+                                int logicalX,
+                                int logicalY,
+                                int *hostX,
+                                int *hostY)
+{
+    *hostX = logicalX;
+    *hostY = logicalY;
+    if (!IS_TOP_LEVEL(window) || !GET_WINDOW_STRUCT(window)->overrideRedirect)
+        return;
+
+    int offsetX = 0;
+    int offsetY = 0;
+    if (nativeDecoratedWindowOffset(&offsetX, &offsetY)) {
+        *hostX += offsetX;
+        *hostY += offsetY;
+    }
+}
+
+void topLevelWindowLogicalPosition(Window window,
+                                   int hostX,
+                                   int hostY,
+                                   int *logicalX,
+                                   int *logicalY)
+{
+    *logicalX = hostX;
+    *logicalY = hostY;
+    if (!IS_TOP_LEVEL(window) || !GET_WINDOW_STRUCT(window)->overrideRedirect)
+        return;
+
+    int offsetX = 0;
+    int offsetY = 0;
+    if (nativeDecoratedWindowOffset(&offsetX, &offsetY)) {
+        *logicalX -= offsetX;
+        *logicalY -= offsetY;
+    }
+}
+
 Window getWindowFromId(Uint32 sdlWindowId)
 {
     /* Read the Window value while holding the lock; returning the node
@@ -302,19 +398,39 @@ static void applyChildResizeGravity(Window child,
 
 Window getContainingWindow(Window window, int x, int y)
 {
-    int i, child_x, child_y, child_w, child_h;
-    Window *children = GET_CHILDREN(window);
-    for (i = GET_WINDOW_STRUCT(window)->children.length - 1; i >= 0; i--) {
-        if (!isWindowEffectivelyViewable(children[i]))
-            continue;
-        GET_WINDOW_POS(children[i], child_x, child_y);
-        GET_WINDOW_DIMS(children[i], child_w, child_h);
-        if (x >= child_x && x < child_x + child_w && y >= child_y &&
-            y < child_y + child_h) {
-            return getContainingWindow(children[i], x - child_x, y - child_y);
-        }
+    Window child = getDirectChildContainingPoint(window, x, y);
+    if (child != None) {
+        int childX = 0;
+        int childY = 0;
+        GET_WINDOW_POS(child, childX, childY);
+        return getContainingWindow(child, x - childX, y - childY);
     }
     return window;
+}
+
+Window getDirectChildContainingPoint(Window window, int x, int y)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return None;
+
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = GET_WINDOW_STRUCT(window)->children.length; i > 0; i--) {
+        Window child = children[i - 1];
+        if (!isWindowEffectivelyViewable(child))
+            continue;
+
+        int childX = 0;
+        int childY = 0;
+        int childW = 0;
+        int childH = 0;
+        GET_WINDOW_POS(child, childX, childY);
+        GET_WINDOW_DIMS(child, childW, childH);
+        if (x >= childX && x < childX + childW && y >= childY &&
+            y < childY + childH) {
+            return child;
+        }
+    }
+    return None;
 }
 
 void removeChildFromParent(Window child)
@@ -860,9 +976,17 @@ Bool configureWindow(Display *display,
             y = values->y;
         }
         if (isMappedTopLevelWindow) {
-            SDL_SetWindowPosition(windowStruct->sdlWindow, x, y);
-            SDL_GetWindowPosition(windowStruct->sdlWindow, &windowStruct->x,
-                                  &windowStruct->y);
+            int hostX = x;
+            int hostY = y;
+            topLevelWindowHostPosition(window, x, y, &hostX, &hostY);
+            SDL_SetWindowPosition(windowStruct->sdlWindow, hostX, hostY);
+            if (windowStruct->overrideRedirect) {
+                windowStruct->x = x;
+                windowStruct->y = y;
+            } else {
+                SDL_GetWindowPosition(windowStruct->sdlWindow, &windowStruct->x,
+                                      &windowStruct->y);
+            }
         } else {
             windowStruct->x = x;
             windowStruct->y = y;

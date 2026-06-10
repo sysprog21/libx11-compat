@@ -1,0 +1,13 @@
+diff --git a/meson.build b/meson.build
+index f67e547..191e02e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -520,7 +520,7 @@ opengl_sources = [
+     opengl_source_path / 'qgl_x11.cpp',
+ ]
+ 
+-x11_dep = dependency('X11', 'x11', required : true)
++x11_dep = dependency('x11', required : true)
+ xext_dep = dependency('xext', required : true)
+ xmu_dep = dependency('xmu', required : true)
+ png_dep = dependency('libpng', required : true)

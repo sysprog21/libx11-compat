@@ -3,6 +3,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/Xfuncproto.h>
 
 #define SHAPENAME "SHAPE"
 
@@ -36,6 +37,8 @@ typedef struct {
     Time time;
     Bool shaped;
 } XShapeEvent;
+
+_XFUNCPROTOBEGIN
 
 extern Bool XShapeQueryExtension(Display *dpy,
                                  int *event_basep,
@@ -98,5 +101,7 @@ extern XRectangle *XShapeGetRectangles(Display *dpy,
                                        int kind,
                                        int *count,
                                        int *ordering);
+
+_XFUNCPROTOEND
 
 #endif /* _SHAPE_H_ */

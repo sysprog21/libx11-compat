@@ -2,12 +2,13 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
               $(OUT)/tests/test-libxt-link $(OUT)/tests/test-libxt-micro \
               $(OUT)/tests/test-libxt-resources \
               $(OUT)/tests/test-xmu-link \
+              $(OUT)/tests/test-ice-sm-link \
               $(OUT)/tests/test-xinerama-link \
               $(OUT)/tests/test-libxpm-link \
               $(OUT)/tests/test-xtest
 BENCH_BINS := $(OUT)/tests/bench-paths
 
-.PHONY: check check-unit check-differential symbol-coverage api-symbol-coverage bench-paths
+.PHONY: check check-unit check-differential symbol-coverage api-symbol-coverage bench bench-paths
 
 ## Run only the in-tree binary regression tests + api-symbol coverage.
 ## This is the cheap, sanitizer-friendly subset: no motif autoconf, no
@@ -49,6 +50,14 @@ symbol-coverage: $(OUT)/tests/symbol-coverage api-symbol-coverage
 api-symbol-coverage: $(TARGET) tests/api-symbols.txt tests/check-api-symbols.py
 	$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
 
+## Run all local benchmark suites
+bench:
+	@printf "$(BLUE)RUN$(RESET) bench-paths\n"
+	$(Q)$(MAKE) --no-print-directory bench-paths
+	@printf "$(BLUE)RUN$(RESET) bench-x11perf\n"
+	$(Q)$(MAKE) --no-print-directory bench-x11perf
+
+## Run focused in-tree path/event microbenchmarks
 bench-paths: $(BENCH_BINS)
 	SDL_VIDEODRIVER=dummy $(OUT)/tests/bench-paths
 
@@ -97,6 +106,14 @@ $(OUT)/tests/test-xinerama-link: tests/test-xinerama-link.c $(XINERAMA_COMPAT_TA
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(XINERAMA_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) \
 	    -o $@
+
+$(OUT)/tests/test-ice-sm-link: tests/test-ice-sm-link.c \
+    $(SM_COMPAT_TARGET) $(ICE_COMPAT_TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(SM_COMPAT_TARGET) $(ICE_COMPAT_TARGET) $(LDLIBS) \
+	    $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)

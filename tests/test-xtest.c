@@ -130,6 +130,13 @@ int main(void)
      * the zero-initialized fake-motion cache. */
     Uint32 target_id = replayTargetWindowId();
     CHECK(target_id != 0, "XTest cached target window id");
+    int translated_root_x = 0;
+    int translated_root_y = 0;
+    CHECK(replayTargetTranslateLocal(25, 35, &translated_root_x,
+                                     &translated_root_y),
+          "replay target translated local coordinates to root coordinates");
+    CHECK(translated_root_x == 95, "replay target local-to-root translated x");
+    CHECK(translated_root_y == 115, "replay target local-to-root translated y");
     SDL_Window *target_sdl_window = SDL_GetWindowFromID(target_id);
     CHECK(target_sdl_window != NULL, "XTest cached target SDL window");
     SDL_WarpMouseInWindow(target_sdl_window, 40, 50);

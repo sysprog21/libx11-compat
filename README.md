@@ -11,6 +11,8 @@ Its goal is to keep legacy Xlib code building and running while it is being migr
 
 The build is Makefile-based and organized as small `mk/` fragments.
 The required dependencies are SDL2, SDL2_ttf, and pixman.
+Optional validation workloads may need their upstream build tools; Osiris uses
+Meson and Ninja at build time and links against libjpeg, libpng, and freetype.
 
 ```sh
 make
@@ -31,8 +33,6 @@ Clients link against it the same way they would link against the system `libX11.
 
 ## Examples
 
-<a href="assets/violawww.png"><img src="assets/violawww.png" alt="ViolaWWW running through libx11-compat on macOS" width="420"></a>
-
 `examples/` bundles real Xlib clients built against the local `libX11-compat.so`:
 
 ```sh
@@ -46,7 +46,7 @@ The screenshot above is from the larger ViolaWWW port described in [Larger Workl
 
 ## Larger Workloads Under Investigation
 
-Three ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
+Four ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
 They are still compatibility workloads rather than daily-use application ports,
 but each exercises behavior that small examples do not reach.
 
@@ -60,6 +60,8 @@ but each exercises behavior that small examples do not reach.
   and is covered by replay checks for scrolling, resize redraw, and the Help menu.
   Recent fixes corrected stale glyphs after wheel scrolling, scrollbar dragging, and resize reflow.
   HTTPS, complex modern HTML, and several interactive flows are known limitations of the application itself rather than the compatibility layer.
+
+  <a href="assets/violawww.png"><img src="assets/violawww.png" alt="ViolaWWW running through libx11-compat on macOS" width="420"></a>
 
   ```sh
   make violawww                          # build ViolaWWW (depends on motif)
@@ -81,17 +83,32 @@ but each exercises behavior that small examples do not reach.
   make check-differential-mosaic         # screenshot diff vs system libX11 (needs remote host)
   ```
 
-  The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
-  `make profile-ui` runs the same replay suite and prints the generated `metrics.tsv` and `render-stats.tsv` paths, making XTest/replay the shared basis for UI automation and performance profiling across Motif, ViolaWWW, and Mosaic.
-  They do not require `node11`, `xdotool`, or a native X11 reference run.
-  Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
+- [Osiris](https://centre.libranext.com/libranext/osiris): a maintained Qt 2.3.2 fork builds against `libX11-compat`, `libXext-compat`, `libXmu-compat`, and the link-only `libICE-compat` / `libSM-compat` shims.
+  This is the Qt2 validation target and exercises widget stacking, popup/menu placement, font metrics, timer delivery, expose handling, event-loop responsiveness, and Qt Designer behavior.
+  The in-tree build disables Osiris Xft, OpenGL, SM, MNG, and GIF feature probes so the default dependency boundary stays SDL2, SDL2_ttf, and pixman.
+  Building this workload requires Meson, Ninja, libjpeg, libpng, and freetype; override the Meson and Ninja paths with `OSIRIS_MESON=/path/to/meson` and `OSIRIS_NINJA=/path/to/ninja` if needed.
 
-The value of these targets is not that they replace a real X11/Motif install today,
-but that they keep legacy Xlib/Motif code building and running on platforms where no X server is available while migration is in progress.
+  <a href="assets/osiris.png"><img src="assets/osiris.png" alt="Osiris Qt Designer running through libx11-compat on macOS" width="420"></a>
 
-Both ports rely on community input.
+  ```sh
+  make osiris                            # fetch, patch, configure, and build Osiris
+  build/osiris/build/designer            # launch Qt Designer
+  make check-demos-osiris                # launch built tutorials/examples long enough to catch crashes
+  make check-smoke-osiris                # replay-driven t1 and Designer menu smoke checks
+  make check-differential-osiris         # screenshot diff vs system libX11 (needs remote host)
+  ```
+
+The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
+`make profile-ui` runs the same replay suite and prints the generated `metrics.tsv` and `render-stats.tsv` paths, making XTest/replay the shared basis for UI automation and performance profiling across Motif, ViolaWWW, Mosaic, and Osiris.
+They do not require `node11`, `xdotool`, or a native X11 reference run.
+Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
+
+The value of these targets is not that they replace a real X11, Motif, or Qt2 install today,
+but that they keep legacy Xlib clients building and running on platforms where no X server is available while migration is in progress.
+
+These ports rely on community input.
 Concrete reproducers, screenshot diffs, and small fixes posted to [GitHub Issues](https://github.com/sysprog21/libx11-compat/issues) are the most effective way to push these workloads forward.
-Specific gaps worth opening issues for include widget paths that misrender, Motif demos that crash or differ visibly from the native baseline, and ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did.
+Specific gaps worth opening issues for include widget paths that misrender, Motif demos that crash or differ visibly from the native baseline, Osiris/Qt2 menu or Designer interactions that differ from native X11, and ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did.
 
 ## Coverage and Compatibility
 

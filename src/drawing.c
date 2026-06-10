@@ -25,6 +25,8 @@ static SDL_atomic_t presentWakePending = {False};
 static SDL_atomic_t presentWakeTimerPending = {False};
 static SDL_atomic_t presentWakeEventType = {-1};
 
+#define PRESENT_WAKE_DELAY_MS 16
+
 static unsigned long opaqueColorIfAlphaUnset(unsigned long color);
 static Bool getDrawableSize(Drawable drawable, int *width, int *height);
 static void resolveWindowBackground(Window window,
@@ -108,6 +110,26 @@ static Uint32 presentWakeTimerCallback(Uint32 interval, void *param)
     return 0;
 }
 
+Bool presentWakeOwnsEventType(Uint32 eventType)
+{
+    int registered = SDL_AtomicGet(&presentWakeEventType);
+    return registered != -1 && eventType == (Uint32) registered;
+}
+
+static Bool hasPendingWindowPresent(void)
+{
+    if (SCREEN_WINDOW == None)
+        return False;
+    WindowStruct *screenWindow = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    for (size_t i = 0; i < screenWindow->children.length; i++) {
+        WindowStruct *child = GET_WINDOW_STRUCT(children[i]);
+        if (child->sdlWindow && child->needsPresent)
+            return True;
+    }
+    return False;
+}
+
 static void schedulePresentWake(void)
 {
     if (SDL_AtomicGet(&presentWakePending) ||
@@ -117,15 +139,24 @@ static void schedulePresentWake(void)
         Uint32 eventType = SDL_RegisterEvents(1);
         if (eventType == ((Uint32) -1))
             return;
-        SDL_AtomicSet(&presentWakeEventType, (int) eventType);
+        /* Losers of the CAS already installed a different registered
+         * event type; the registration we just won is unused but harmless,
+         * and pushing it would slip past presentWakeOwnsEventType. */
+        SDL_AtomicCAS(&presentWakeEventType, -1, (int) eventType);
     }
     SDL_AtomicSet(&presentWakeTimerPending, True);
-    if (SDL_AddTimer(8, presentWakeTimerCallback, NULL) == 0)
+    if (SDL_AddTimer(PRESENT_WAKE_DELAY_MS, presentWakeTimerCallback, NULL) ==
+        0)
         SDL_AtomicSet(&presentWakeTimerPending, False);
 }
 
 void drawWindowDataToScreen()
 {
+    if (!hasPendingWindowPresent()) {
+        SDL_AtomicSet(&presentWakePending, False);
+        return;
+    }
+
     SDL_Renderer *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
     if (!screen)
         return;

@@ -619,15 +619,10 @@ static void fillCrossingEvent(Display *display,
     event->x = event->x_root;
     event->y = event->y_root;
     if (window != SCREEN_WINDOW && IS_TYPE(window, WINDOW)) {
-        int translatedX = event->x_root;
-        int translatedY = event->y_root;
-        Window child = None;
-        XTranslateCoordinates(display, SCREEN_WINDOW, window, event->x_root,
-                              event->y_root, &translatedX, &translatedY,
-                              &child);
-        event->x = translatedX;
-        event->y = translatedY;
-        event->subwindow = child;
+        translateWindowPoint(SCREEN_WINDOW, window, event->x_root,
+                             event->y_root, &event->x, &event->y);
+        event->subwindow =
+            getDirectChildContainingPoint(window, event->x, event->y);
     }
     event->mode = mode;
     event->detail = detail;
@@ -654,10 +649,10 @@ static void fillCrossingEventAt(Display *display,
     event->x = rootX;
     event->y = rootY;
     if (window != SCREEN_WINDOW && IS_TYPE(window, WINDOW)) {
-        Window child = None;
-        XTranslateCoordinates(display, SCREEN_WINDOW, window, rootX, rootY,
-                              &event->x, &event->y, &child);
-        event->subwindow = child;
+        translateWindowPoint(SCREEN_WINDOW, window, rootX, rootY, &event->x,
+                             &event->y);
+        event->subwindow =
+            getDirectChildContainingPoint(window, event->x, event->y);
     }
 }
 
@@ -669,12 +664,11 @@ static void translateRootPointToWindow(Display *display,
                                        int *windowX,
                                        int *windowY)
 {
+    (void) display;
     *windowX = rootX;
     *windowY = rootY;
     if (window != None && window != root && IS_TYPE(window, WINDOW)) {
-        Window child = None;
-        XTranslateCoordinates(display, root, window, rootX, rootY, windowX,
-                              windowY, &child);
+        translateWindowPoint(root, window, rootX, rootY, windowX, windowY);
     }
 }
 
@@ -685,13 +679,13 @@ static void translateSdlPointToRoot(Display *display,
                                     int *rootX,
                                     int *rootY)
 {
+    (void) display;
     *rootX = localX;
     *rootY = localY;
     if (sdlWindow != None && sdlWindow != SCREEN_WINDOW &&
         IS_TYPE(sdlWindow, WINDOW)) {
-        Window child = None;
-        XTranslateCoordinates(display, sdlWindow, SCREEN_WINDOW, localX, localY,
-                              rootX, rootY, &child);
+        translateWindowPoint(sdlWindow, SCREEN_WINDOW, localX, localY, rootX,
+                             rootY);
     }
 }
 
@@ -699,27 +693,6 @@ static Bool windowSelectsAny(Window window, long mask)
 {
     return IS_TYPE(window, WINDOW) &&
            (GET_WINDOW_STRUCT(window)->eventMask & mask) != 0;
-}
-
-static Window directChildContainingPoint(Window window, int x, int y)
-{
-    if (!IS_TYPE(window, WINDOW))
-        return None;
-
-    Window *children = GET_CHILDREN(window);
-    for (size_t i = GET_WINDOW_STRUCT(window)->children.length; i > 0; i--) {
-        Window child = children[i - 1];
-        if (!isWindowEffectivelyViewable(child))
-            continue;
-        int childX, childY, childW, childH;
-        GET_WINDOW_POS(child, childX, childY);
-        GET_WINDOW_DIMS(child, childW, childH);
-        if (x >= childX && x < childX + childW && y >= childY &&
-            y < childY + childH) {
-            return child;
-        }
-    }
-    return None;
 }
 
 static Window selectPointerEventWindow(Display *display,
@@ -743,7 +716,7 @@ static Window selectPointerEventWindow(Display *display,
     translateRootPointToWindow(display, root, eventWindow, rootX, rootY,
                                eventXReturn, eventYReturn);
     if (subwindowReturn)
-        *subwindowReturn = directChildContainingPoint(
+        *subwindowReturn = getDirectChildContainingPoint(
             eventWindow, *eventXReturn, *eventYReturn);
     return eventWindow;
 }
@@ -779,8 +752,8 @@ static Bool routePointerGrabEvent(Display *display,
     translateRootPointToWindow(display, root, grabWindow, rootX, rootY,
                                eventXReturn, eventYReturn);
     if (subwindowReturn) {
-        *subwindowReturn = directChildContainingPoint(grabWindow, *eventXReturn,
-                                                      *eventYReturn);
+        *subwindowReturn = getDirectChildContainingPoint(
+            grabWindow, *eventXReturn, *eventYReturn);
     }
     return True;
 }
@@ -1664,7 +1637,7 @@ int convertEvent(Display *display,
                     display, xEvent->xbutton.root, eventWindow,
                     xEvent->xbutton.x_root, xEvent->xbutton.y_root,
                     &xEvent->xbutton.x, &xEvent->xbutton.y);
-                xEvent->xbutton.subwindow = directChildContainingPoint(
+                xEvent->xbutton.subwindow = getDirectChildContainingPoint(
                     eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
             } else {
                 eventWindow = selectPointerEventWindow(
@@ -1738,7 +1711,7 @@ int convertEvent(Display *display,
                     display, xEvent->xmotion.root, eventWindow,
                     xEvent->xmotion.x_root, xEvent->xmotion.y_root,
                     &xEvent->xmotion.x, &xEvent->xmotion.y);
-                xEvent->xmotion.subwindow = directChildContainingPoint(
+                xEvent->xmotion.subwindow = getDirectChildContainingPoint(
                     eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
             } else {
                 eventWindow = selectPointerEventWindow(
@@ -1799,8 +1772,12 @@ int convertEvent(Display *display,
             LOG("Window %d moved to %d,%d\n", sdlEvent->window.windowID,
                 sdlEvent->window.data1, sdlEvent->window.data2);
             if (eventWindow != None) {
-                GET_WINDOW_STRUCT(eventWindow)->x = sdlEvent->window.data1;
-                GET_WINDOW_STRUCT(eventWindow)->y = sdlEvent->window.data2;
+                int logicalX = sdlEvent->window.data1;
+                int logicalY = sdlEvent->window.data2;
+                topLevelWindowLogicalPosition(eventWindow, logicalX, logicalY,
+                                              &logicalX, &logicalY);
+                GET_WINDOW_STRUCT(eventWindow)->x = logicalX;
+                GET_WINDOW_STRUCT(eventWindow)->y = logicalY;
             }
             /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
              * ConfigureNotify dispatch below; the unified handler keys off
@@ -1825,10 +1802,20 @@ int convertEvent(Display *display,
             if (sdlEvent->window.event == SDL_WINDOWEVENT_MOVED) {
                 xEvent->xconfigure.x = sdlEvent->window.data1;
                 xEvent->xconfigure.y = sdlEvent->window.data2;
+                if (eventWindow != None) {
+                    topLevelWindowLogicalPosition(
+                        eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
+                        &xEvent->xconfigure.x, &xEvent->xconfigure.y);
+                }
             } else {
                 SDL_GetWindowPosition(
                     SDL_GetWindowFromID(sdlEvent->window.windowID),
                     &xEvent->xconfigure.x, &xEvent->xconfigure.y);
+                if (eventWindow != None) {
+                    topLevelWindowLogicalPosition(
+                        eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
+                        &xEvent->xconfigure.x, &xEvent->xconfigure.y);
+                }
             }
             if (sdlEvent->window.event == SDL_WINDOWEVENT_RESIZED ||
                 sdlEvent->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -2205,7 +2192,8 @@ int convertEvent(Display *display,
                 snapshotHandleResizeEvent(display, sdlEvent);
                 return -1;
             }
-            if (sdlEvent->user.code == PRESENT_EVENT_CODE) {
+            if (presentWakeOwnsEventType(sdlEvent->type) &&
+                sdlEvent->user.code == PRESENT_EVENT_CODE) {
                 drawWindowDataToScreen();
                 return -1;
             }
@@ -2431,6 +2419,29 @@ static void printEventInfo(XEvent *event)
     LOG("%s\n", msg);
 }
 
+static Bool isPresentWakeEvent(const SDL_Event *event)
+{
+    return event->type >= SDL_USEREVENT && event->type <= SDL_LASTEVENT &&
+           presentWakeOwnsEventType(event->type) &&
+           event->user.code == PRESENT_EVENT_CODE;
+}
+
+static Bool isInteractiveSdlEvent(const SDL_Event *event)
+{
+    switch (event->type) {
+    case SDL_MOUSEMOTION:
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP:
+    case SDL_MOUSEWHEEL:
+    case SDL_KEYDOWN:
+    case SDL_KEYUP:
+    case SDL_WINDOWEVENT:
+        return True;
+    default:
+        return False;
+    }
+}
+
 int XNextEvent(Display *display, XEvent *event_return)
 {
     // https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XNextEvent.html
@@ -2444,20 +2455,41 @@ int XNextEvent(Display *display, XEvent *event_return)
         getEventQueueLength(&qlen);
         LOG("Events in queue = %d, qlen = %d\n", qlen,
             displayEventQueueLength(display));
-        /* Real X11 implicitly flushes the request queue when the client
-         * blocks on input. Mirror that here so accumulated drawing
-         * reaches the screen before we go to sleep. */
-        drawWindowDataToScreen();
         if (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
                            SDL_LASTEVENT) != 1) {
             pumpEventsSafe();
             if (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
                                SDL_LASTEVENT) != 1) {
+                /* Real X11 implicitly flushes the request queue when the
+                 * client blocks on input. If input is already queued, handle
+                 * it first so heavy readback/present work does not sit in
+                 * front of mouse and keyboard events.
+                 */
+                drawWindowDataToScreen();
                 int putBackCount = countPutBackEvents(display);
                 if (displayEventQueueLength(display) > putBackCount)
                     resetEventWakeups(display, putBackCount);
                 SDL_Delay(1);
                 continue;
+            }
+        }
+        if (isPresentWakeEvent(&event)) {
+            SDL_Event next;
+            if (SDL_PeepEvents(&next, 1, SDL_PEEKEVENT, SDL_FIRSTEVENT,
+                               SDL_LASTEVENT) == 1 &&
+                isInteractiveSdlEvent(&next)) {
+                if (SDL_PeepEvents(&next, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
+                                   SDL_LASTEVENT) != 1)
+                    continue;
+                /* We already removed the present wake from SDL's queue.
+                 * Drain its old pipe byte before pushing it to the tail, then
+                 * let the normal path below drain the interactive event's byte.
+                 * This keeps select(ConnectionNumber) aligned with SDL's queue
+                 * while still keeping input ahead of deferred readback.
+                 */
+                READ_EVENT_IN_PIPE(display);
+                SDL_PushEvent(&event);
+                event = next;
             }
         }
         /* Drain the wake-up byte the SDL filter wrote for this event so

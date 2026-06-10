@@ -86,13 +86,18 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         windowStruct->eventMask & KeyReleaseMask) {
         flags |= SDL_WINDOW_INPUT_FOCUS;
     }
-    LOG("realizeTopLevelWindow: window=%lu pos=(%d,%d) size=(%ux%u) "
+    int hostX = windowStruct->x;
+    int hostY = windowStruct->y;
+    topLevelWindowHostPosition(window, windowStruct->x, windowStruct->y, &hostX,
+                               &hostY);
+    LOG("realizeTopLevelWindow: window=%lu pos=(%d,%d) host=(%d,%d) "
+        "size=(%ux%u) "
         "borderless=%d\n",
-        window, windowStruct->x, windowStruct->y, windowStruct->w,
+        window, windowStruct->x, windowStruct->y, hostX, hostY, windowStruct->w,
         windowStruct->h, (flags & SDL_WINDOW_BORDERLESS) != 0);
-    SDL_Window *sdlWindow = SDL_CreateWindow(
-        windowStruct->windowName, windowStruct->x, windowStruct->y,
-        windowStruct->w, windowStruct->h, flags);
+    SDL_Window *sdlWindow =
+        SDL_CreateWindow(windowStruct->windowName, hostX, hostY,
+                         windowStruct->w, windowStruct->h, flags);
     if (!sdlWindow) {
         LOG("SDL_CreateWindow failed in %s: %s\n", __func__, SDL_GetError());
         handleError(0, display, None, 0, BadMatch, 0);
@@ -720,22 +725,6 @@ int indexInWindowList(Window *windowList, int numWindows, Window window)
     return -1;
 }
 
-static void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn)
-{
-    int x = 0;
-    int y = 0;
-    while (window != None && window != SCREEN_WINDOW) {
-        int wx = 0;
-        int wy = 0;
-        GET_WINDOW_POS(window, wx, wy);
-        x += wx;
-        y += wy;
-        window = GET_PARENT(window);
-    }
-    *xReturn = x;
-    *yReturn = y;
-}
-
 Bool XTranslateCoordinates(Display *display,
                            Window sourceWindow,
                            Window destinationWindow,
@@ -749,33 +738,15 @@ Bool XTranslateCoordinates(Display *display,
     SET_X_SERVER_REQUEST(display, X_TranslateCoords);
     TYPE_CHECK(sourceWindow, WINDOW, display, False);
     TYPE_CHECK(destinationWindow, WINDOW, display, False);
-    int x, y, width, height;
-    int sourceAbsX = 0;
-    int sourceAbsY = 0;
-    int destAbsX = 0;
-    int destAbsY = 0;
-    windowAbsoluteOrigin(sourceWindow, &sourceAbsX, &sourceAbsY);
-    windowAbsoluteOrigin(destinationWindow, &destAbsX, &destAbsY);
-    int currX = sourceAbsX + sourceX - destAbsX;
-    int currY = sourceAbsY + sourceY - destAbsY;
+    int currX = 0;
+    int currY = 0;
+    translateWindowPoint(sourceWindow, destinationWindow, sourceX, sourceY,
+                         &currX, &currY);
     *destinationXReturn = currX;
     *destinationYReturn = currY;
     if (childReturn) {
-        *childReturn = None;
-        Window *children = GET_CHILDREN(destinationWindow);
-        for (size_t i = GET_WINDOW_STRUCT(destinationWindow)->children.length;
-             i > 0; i--) {
-            Window child = children[i - 1];
-            if (!isWindowEffectivelyViewable(child))
-                continue;
-            GET_WINDOW_POS(child, x, y);
-            GET_WINDOW_DIMS(child, width, height);
-            if (x <= currX && x + width > currX && y <= currY &&
-                y + height > currY) {
-                *childReturn = child;
-                break;
-            }
-        }
+        *childReturn =
+            getDirectChildContainingPoint(destinationWindow, currX, currY);
     }
     return True;
 }
@@ -1137,6 +1108,11 @@ int XGetWindowProperty(Display *display,
         handleError(0, display, property, 0, BadAtom, 0);
         return BadAtom;
     }
+    *actual_type_return = None;
+    *actual_format_return = 0;
+    *numberOfItems_return = 0;
+    *bytes_after_return = 0;
+    *prop_return = NULL;
     WindowProperty *windowProperty =
         findProperty(&windowStruct->properties, property, NULL);
     if (windowProperty) {
@@ -1327,10 +1303,7 @@ int XGetWindowProperty(Display *display,
         *bytes_after_return = 0;
         *prop_return = (unsigned char *) values;
     } else {
-        *actual_type_return = None;
-        *actual_format_return = 0;
-        *bytes_after_return = 0;
-        *numberOfItems_return = 0;
+        *prop_return = NULL;
     }
     return Success;
 }
