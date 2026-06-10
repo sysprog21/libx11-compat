@@ -78,7 +78,9 @@ Bool setGcClipForIteration(SDL_Renderer *renderer, GC gc, int iteration);
 void clearRendererClip(SDL_Renderer *renderer);
 void drawWindowDataToScreen(void);
 void markWindowNeedsPresent(Window window);
+void markWindowNeedsPresentRect(Window window, const SDL_Rect *rect);
 void presentDrawableIfVisible(Drawable drawable);
+void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect);
 
 /* Single-slot (renderer, gc, generation) cache. The shim is single
  * threaded and tends to issue runs of draw calls against one renderer

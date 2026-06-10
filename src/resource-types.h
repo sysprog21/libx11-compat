@@ -1,6 +1,8 @@
 #ifndef _RESOURCE_TYPES_H_
 #define _RESOURCE_TYPES_H_
 
+#include "X11/Xlib.h"
+
 typedef enum {
     WINDOW = 1,
     DRAWABLE = 2,
@@ -9,7 +11,9 @@ typedef enum {
     FONT = 5,
     CURSOR = 6,
     COLORMAP = 7,
-    CLOSED_FONT = 8
+    CLOSED_FONT = 8,
+    CLOSED_PIXMAP = 9,
+    CLOSED_WINDOW = 10
 } XResourceType;
 
 typedef struct {
@@ -17,16 +21,19 @@ typedef struct {
     void *dataPointer;
 } XID_Struct;
 
-#include "X11/Xlib.h"
+XID allocXidResource(void);
+void freeXidResource(XID id);
+XID_Struct *getXidStruct(XID id);
+
 #include "errors.h"
 #include "window.h"
 
-#define ALLOC_XID() ((XID) malloc(sizeof(XID_Struct)))
-#define FREE_XID(id) free((XID_Struct *) (id))
-#define SET_XID_TYPE(id, typeId) ((XID_Struct *) (id))->type = typeId
-#define SET_XID_VALUE(id, value) ((XID_Struct *) (id))->dataPointer = value
-#define GET_XID_TYPE(id) (((XID_Struct *) (id))->type)
-#define GET_XID_VALUE(id) (((XID_Struct *) (id))->dataPointer)
+#define ALLOC_XID() allocXidResource()
+#define FREE_XID(id) freeXidResource(id)
+#define SET_XID_TYPE(id, typeId) getXidStruct(id)->type = typeId
+#define SET_XID_VALUE(id, value) getXidStruct(id)->dataPointer = value
+#define GET_XID_TYPE(id) (getXidStruct(id)->type)
+#define GET_XID_VALUE(id) (getXidStruct(id)->dataPointer)
 
 /* GET_WINDOW_STRUCT dereferences the XID's data pointer with no NULL
  * guard. Debug builds trip an abort on misuse so the offending call

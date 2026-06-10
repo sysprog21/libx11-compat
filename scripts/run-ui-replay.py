@@ -192,6 +192,10 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None):
             if len(parts) != 3:
                 raise ReplayError(f"{source_path}:{lineno}: motion expects x y")
             lines.append(f"motion {int(parts[1])} {int(parts[2])}")
+        elif command == "target-motion":
+            if len(parts) != 3:
+                raise ReplayError(f"{source_path}:{lineno}: target-motion expects x y")
+            lines.append(f"target-motion {int(parts[1])} {int(parts[2])}")
         elif command == "button":
             if len(parts) != 3:
                 raise ReplayError(
@@ -683,6 +687,23 @@ def run_replay(args):
                             )
                         else:
                             xdotool(env, "mousemove", "--sync", parts[1], parts[2])
+                elif command == "target-motion":
+                    if len(parts) != 3:
+                        raise ReplayError("target-motion expects x y")
+                    if args.input_backend == "xdotool":
+                        if target_window_id is None:
+                            raise ReplayError(
+                                "target-motion requires a prior wait-window"
+                            )
+                        xdotool(
+                            env,
+                            "mousemove",
+                            "--sync",
+                            "--window",
+                            target_window_id,
+                            parts[1],
+                            parts[2],
+                        )
                 elif command == "button":
                     if len(parts) != 3:
                         raise ReplayError("button expects n press|release|click")

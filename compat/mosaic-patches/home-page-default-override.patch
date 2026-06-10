@@ -1,0 +1,15 @@
+diff --git a/src/mosaic.h b/src/mosaic.h
+index 9c2d392..fe57407 100644
+--- a/src/mosaic.h
++++ b/src/mosaic.h
+@@ -124,8 +124,9 @@ extern mo_window *current_win;
+ /* ------------------------------ */
+ /* Defaults. */
+ 
+-#undef HOME_PAGE_DEFAULT
++#ifndef HOME_PAGE_DEFAULT
+ #define HOME_PAGE_DEFAULT "http://web.archive.org/web/19970117154957/http://www.ncsa.uiuc.edu./SDG/Software/Mosaic/NCSAMosaicHome.html"
++#endif
+ 
+ #define DOCUMENTS_MENU_COUNT 10
+ 

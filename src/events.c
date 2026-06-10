@@ -1567,7 +1567,8 @@ int convertEvent(Display *display,
             type = KeyRelease;
         }
         FILL_STANDARD_VALUES(xkey);
-        xEvent->xkey.root = getWindowFromId(sdlEvent->key.windowID);
+        Window sdlKeyWindow = getWindowFromId(sdlEvent->key.windowID);
+        xEvent->xkey.root = SCREEN_WINDOW;
         xEvent->xkey.state = convertModifierState(sdlEvent->key.keysym.mod);
         xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.sym & 0xFF;
         /* Route priority for key events:
@@ -1591,10 +1592,15 @@ int convertEvent(Display *display,
         xEvent->xkey.window = eventWindow;
         xEvent->xkey.subwindow = None;
         xEvent->xkey.time = sdlEvent->key.timestamp;
-        SDL_GetMouseState(&xEvent->xkey.x, &xEvent->xkey.y);
-        xEvent->xkey.x_root =
-            xEvent->xkey.x;  // Because root and window are the same.
-        xEvent->xkey.y_root = xEvent->xkey.y;
+        int pointerX = 0;
+        int pointerY = 0;
+        if (!replayTargetReadPointer(&pointerX, &pointerY))
+            SDL_GetMouseState(&pointerX, &pointerY);
+        translateSdlPointToRoot(display, sdlKeyWindow, pointerX, pointerY,
+                                &xEvent->xkey.x_root, &xEvent->xkey.y_root);
+        translateRootPointToWindow(display, SCREEN_WINDOW, eventWindow,
+                                   xEvent->xkey.x_root, xEvent->xkey.y_root,
+                                   &xEvent->xkey.x, &xEvent->xkey.y);
         // xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.scancode;
         xEvent->xkey.same_screen = True;
         break;

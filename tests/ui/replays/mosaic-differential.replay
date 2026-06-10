@@ -1,0 +1,14 @@
+# System-X11 and libx11-compat Mosaic hyperlink differential capture.
+#
+# Keep this replay focused on externally driven input and screenshots. Pixel
+# similarity is evaluated by the differential comparison after both captures.
+delay 3000
+wait-window "Mosaic|NCSA" 5000
+delay 5000
+screenshot initial
+assert-image initial common-visible.json
+motion 80 178
+button 1 click
+delay 3000
+screenshot linked
+assert-image linked common-visible.json

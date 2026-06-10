@@ -136,6 +136,11 @@ static inline Uint32 xColorToRgba8888(unsigned long color)
            (Uint32) GET_ALPHA_FROM_COLOR(color);
 }
 
+static unsigned long oneBitPixelFromRgba(Uint32 pixel)
+{
+    return (pixel & 0xFFFFFF00u) != 0 ? 1 : 0;
+}
+
 void invalidatePutImageStagingTexture(SDL_Renderer *renderer)
 {
     SDL_mutex *lock = lockPutImageScratch();
@@ -902,8 +907,13 @@ XImage *XGetImage(Display *display,
     } else {
         for (unsigned int currX = 0; currX < width; currX++) {
             for (unsigned int currY = 0; currY < height; currY++) {
+                Uint32 sourcePixel = getPixel(drawableSurface, currX, currY);
+                unsigned long imagePixel =
+                    image->bits_per_pixel == 1
+                        ? oneBitPixelFromRgba(sourcePixel)
+                        : sourcePixel;
                 XPutPixel(image, (int) currX, (int) currY,
-                          plane_mask & getPixel(drawableSurface, currX, currY));
+                          plane_mask & imagePixel);
             }
         }
     }

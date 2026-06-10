@@ -47,7 +47,7 @@ if [ -n "${MOTIF_DEMO_SOURCE_DIR:-}" ]; then
     fi
     motif_src_dir=$(cd "$MOTIF_DEMO_SOURCE_DIR" && pwd)
 else
-    for candidate in "$abs_build_dir/../upstream/motif-src" "$abs_build_dir/../motif-src"; do
+    for candidate in "$abs_build_dir/../upstream/motif" "$abs_build_dir/../motif-src"; do
         if [ -d "$candidate/demos" ]; then
             motif_src_dir=$(cd "$candidate" && pwd)
             break
@@ -117,12 +117,12 @@ while IFS= read -r exe; do
     case "$rel" in
         doc/programGuide/ch17/simple_drop/simple_drop)
             set -- "$exe" \
-                "$abs_build_dir/../upstream/motif-src/demos/programs/IconB/small.bm"
+                "$abs_build_dir/../upstream/motif/demos/programs/IconB/small.bm"
             ;;
         unsupported/uilsymdump/uilsymdump)
             input_dir="$log_dir/uilsymdump-input"
             mkdir -p "$input_dir"
-            cp "$abs_build_dir/../upstream/motif-src/demos/programs/hellomotif/hellomotif.uil" \
+            cp "$abs_build_dir/../upstream/motif/demos/programs/hellomotif/hellomotif.uil" \
                 "$input_dir/hellomotif.uil"
             input_file="$input_dir/uilsymdump.stdin"
             printf '%s/hellomotif\n' "$input_dir" >"$input_file"

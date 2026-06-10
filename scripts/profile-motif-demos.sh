@@ -9,7 +9,7 @@ profile_dir=${MOTIF_DEMO_PROFILE_DIR:-"$out_dir/motif-demo-profiles"}
 abs_build_dir=$(cd "$build_dir" && pwd)
 abs_out_dir=$(cd "$out_dir" && pwd)
 motif_src_dir=
-for candidate in "$abs_build_dir/../upstream/motif-src" "$abs_build_dir/../motif-src"; do
+for candidate in "$abs_build_dir/../upstream/motif" "$abs_build_dir/../motif-src"; do
     if [ -d "$candidate/demos" ]; then
         motif_src_dir=$(cd "$candidate" && pwd)
         break

@@ -1,0 +1,12 @@
+# Verify that the Mosaic URL text field accepts keyboard edits after click focus.
+delay 3000
+wait-window "Mosaic|NCSA" 5000
+delay 5000
+screenshot initial
+motion 305 92
+button 1 click
+delay 1000
+key 122
+delay 1000
+screenshot edited
+assert-image edited tests/ui/assertions/mosaic-url-edit.json

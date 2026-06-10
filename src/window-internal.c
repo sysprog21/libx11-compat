@@ -52,6 +52,8 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->sdlTexture = NULL;
     windowStruct->sdlWindow = NULL;
     windowStruct->needsPresent = False;
+    windowStruct->hasPresentRect = False;
+    windowStruct->presentRect = (SDL_Rect) {0, 0, 0, 0};
     windowStruct->hasPresented = False;
     windowStruct->contentsMergedToParent = False;
     windowStruct->sdlRenderer = NULL;
@@ -397,7 +399,8 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         removeChildFromParent(window);
     }
     free(windowStruct);
-    FREE_XID(window);
+    SET_XID_VALUE(window, NULL);
+    SET_XID_TYPE(window, CLOSED_WINDOW);
 }
 
 Bool addChildToWindow(Window parent, Window child)
@@ -617,7 +620,8 @@ static void postParentExposureForOldArea(Display *display,
                                          int oldHeight)
 {
     Window parent = GET_PARENT(window);
-    if (parent == None || GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
+    if (parent == None || IS_INPUT_ONLY(parent) ||
+        GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
         return;
     XClearArea(display, parent, oldX, oldY, (unsigned int) oldWidth,
                (unsigned int) oldHeight, False);
@@ -628,7 +632,8 @@ static void postParentExposureForOldArea(Display *display,
 static void postMovedWindowExposure(Display *display, Window window)
 {
     Window parent = GET_PARENT(window);
-    if (parent == None || GET_WINDOW_STRUCT(window)->mapState == UnMapped ||
+    if (parent == None || IS_INPUT_ONLY(window) ||
+        GET_WINDOW_STRUCT(window)->mapState == UnMapped ||
         GET_WINDOW_STRUCT(parent)->mapState == UnMapped) {
         return;
     }
@@ -665,6 +670,8 @@ static void postResizeExpose(Display *display,
                              int oldHeight)
 {
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (windowStruct->inputOnly)
+        return;
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
         SDL_Rect fullWindow = {
             0,
@@ -739,6 +746,8 @@ void resizeWindowTexture(Window window)
     SDL_RenderClear(windowRenderer);
     windowStruct->sdlTexture = newTexture;
     windowStruct->needsPresent = True;
+    windowStruct->hasPresentRect = False;
+    markWindowNeedsPresent(window);
     SDL_SetRenderTarget(windowRenderer,
                         prevTarget == oldTexture ? newTexture : prevTarget);
     SDL_DestroyTexture(oldTexture);
@@ -762,6 +771,7 @@ Bool mergeWindowDrawables(Window parent, Window child)
                        &destRect) != 0) {
         return False;
     }
+    presentDrawableRectIfVisible(parent, &destRect);
     SDL_DestroyTexture(childWindowStruct->sdlTexture);
     childWindowStruct->sdlTexture = NULL;
     childWindowStruct->contentsMergedToParent = True;
@@ -792,9 +802,11 @@ void mapRequestedChildren(Display *display, Window window)
                 }
             }
             childStruct->contentsMergedToParent = False;
-            XClearArea(display, children[i], 0, 0, 0, 0, False);
-            SDL_Rect exposeRect = {0, 0, childStruct->w, childStruct->h};
-            postExposeEvent(display, children[i], &exposeRect, 1);
+            if (!childStruct->inputOnly) {
+                XClearArea(display, children[i], 0, 0, 0, 0, False);
+                SDL_Rect exposeRect = {0, 0, childStruct->w, childStruct->h};
+                postExposeEvent(display, children[i], &exposeRect, 1);
+            }
             mapRequestedChildren(display, children[i]);
         } else if (GET_WINDOW_STRUCT(children[i])->mapState == MapRequested) {
             if (!mergeWindowDrawables(window, children[i])) {
@@ -802,16 +814,16 @@ void mapRequestedChildren(Display *display, Window window)
                 return;
             }
             WindowStruct *childStruct = GET_WINDOW_STRUCT(children[i]);
-            GET_WINDOW_STRUCT(children[i])->mapState = Mapped;
-            if (childStruct->contentsMergedToParent) {
-                childStruct->contentsMergedToParent = False;
-            } else {
+            childStruct->mapState = Mapped;
+            if (!childStruct->inputOnly && !childStruct->contentsMergedToParent)
                 XClearArea(display, children[i], 0, 0, 0, 0, False);
-            }
+            childStruct->contentsMergedToParent = False;
             postEvent(display, children[i], MapNotify);
             postEvent(display, children[i], VisibilityNotify);
-            SDL_Rect exposeRect = {0, 0, childStruct->w, childStruct->h};
-            postExposeEvent(display, children[i], &exposeRect, 1);
+            if (!childStruct->inputOnly) {
+                SDL_Rect exposeRect = {0, 0, childStruct->w, childStruct->h};
+                postExposeEvent(display, children[i], &exposeRect, 1);
+            }
             mapRequestedChildren(display, children[i]);
         }
     }

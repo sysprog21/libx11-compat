@@ -1,6 +1,6 @@
 MOTIF_COMMIT := 11cd50b42991e8f11a13522fd820d736cc2f7fcf
 MOTIF_URL := https://github.com/thentenaar/motif
-MOTIF_SRC_DIR := $(OUT)/upstream/motif-src
+MOTIF_SRC_DIR := $(OUT)/upstream/motif
 MOTIF_SRC_STAMP := $(MOTIF_SRC_DIR)/.source-stamp
 MOTIF_PATCHES := $(sort $(wildcard compat/motif-patches/*.patch))
 # Snapshot the patch list so removals (not just edits) bump an mtime.
@@ -272,7 +272,7 @@ motif_ui_replay_env = \
     --env LD_LIBRARY_PATH=$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Xm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Mrm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/clients/uil/.libs:$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
     --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
 
-.PHONY: check-differential-motif check-differential-motif-full check-demos-motif motif-demos-screenshots check-smoke-motif FORCE
+.PHONY: check-differential-motif check-differential-motif-full check-demos-motif motif-demos-screenshots check-smoke-motif profile-ui FORCE
 ## Compare representative Motif demo screenshots for system libX11 vs libx11-compat on node11
 check-differential-motif:
 	$(Q)$(motif_diff_env) $(PYTHON) scripts/run-motif-differential-tests.py \
@@ -298,6 +298,11 @@ motif-demos-screenshots: $(MOTIF_DEMOS_BUILD_STAMP)
 ## Run replay-based local Motif UI smoke checks against libx11-compat
 check-smoke-motif: $(UI_SMOKE_OUT_ROOT)/motif-fileview-done/.stamp $(UI_SMOKE_OUT_ROOT)/motif-wsm-labels/.stamp
 
+## Run replay UI smoke checks and collect timing/render profiling artifacts
+profile-ui: check-smoke check-smoke-mosaic
+	@echo "UI replay profile artifacts under $(abspath $(UI_SMOKE_OUT_ROOT))"
+	$(Q)find $(abspath $(UI_SMOKE_OUT_ROOT)) \( -name metrics.tsv -o -name render-stats.tsv \) -print | sort
+
 # Pin fileview's main window to a deterministic origin so the
 # in-process snapshot helper and screenshot region line up. Motif
 # applies the -geometry hint to the main shell; the language-selection
@@ -315,6 +320,8 @@ $(UI_SMOKE_OUT_ROOT)/motif-fileview-done/.stamp: FORCE $(MOTIF_DEMOS_BUILD_STAMP
 	    --display $(UI_REPLAY_DISPLAY) \
 	    --geometry $(UI_REPLAY_GEOMETRY) \
 	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --in-process-snapshots \
+	    --render-stats $(abspath $(UI_SMOKE_OUT_ROOT))/motif-fileview-done/render-stats.tsv \
 	    $(UI_REPLAY_XVFB) \
 	    $(motif_ui_replay_env) \
 	    --env XAPPLRESDIR=$(abspath $(MOTIF_SRC_DIR))/demos/programs/fileview \
@@ -343,6 +350,7 @@ $(UI_SMOKE_OUT_ROOT)/motif-wsm-labels/.stamp: FORCE $(MOTIF_DEMOS_BUILD_STAMP)
 	    --display $(UI_REPLAY_DISPLAY) \
 	    --geometry $(UI_REPLAY_GEOMETRY) \
 	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --render-stats $(abspath $(UI_SMOKE_OUT_ROOT))/motif-wsm-labels/render-stats.tsv \
 	    $(UI_REPLAY_XVFB) \
 	    $(motif_ui_replay_env) \
 	    --env HOME=$(abspath $(UI_SMOKE_OUT_ROOT))/motif-wsm-home \

@@ -6,6 +6,7 @@
 #include <X11/Xmu/Converters.h>
 #include <X11/Xmu/Misc.h>
 #include <X11/Xmu/StdCmap.h>
+#include <X11/Xmu/StdSel.h>
 #include <X11/Xmu/SysUtil.h>
 #include <X11/Xmu/WinUtil.h>
 

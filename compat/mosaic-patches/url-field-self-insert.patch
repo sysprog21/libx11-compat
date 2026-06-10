@@ -1,0 +1,8 @@
+diff --git a/src/gui.c b/src/gui.c
+--- a/src/gui.c
++++ b/src/gui.c
+@@ -350,3 +350,4 @@
+ 	Meta ~Ctrl<Key>osfDelete:	delete-next-word()		\n\
+ 	 Alt ~Ctrl<Key>osfDelete:	delete-next-word()              \n\
++                      <Key>:            self-insert()                   \n\
+                       <Btn1Down>:       take_focus() grab-focus()";

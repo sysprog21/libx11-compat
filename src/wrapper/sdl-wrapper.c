@@ -446,6 +446,10 @@ SDL_WRAP(int,
          (texture, rect, pixels, pitch))
 SDL_WRAP(int, SDL_UpdateWindowSurface, (SDL_Window * window), (window))
 SDL_WRAP(int,
+         SDL_UpdateWindowSurfaceRects,
+         (SDL_Window * window, const SDL_Rect *rects, int numrects),
+         (window, rects, numrects))
+SDL_WRAP(int,
          SDL_UpperBlit,
          (SDL_Surface * src,
           const SDL_Rect *srcrect,

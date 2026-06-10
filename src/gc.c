@@ -481,7 +481,8 @@ int XSetPlaneMask(Display *dpy, GC gc, unsigned long planemask)
 int XSetFont(Display *display, GC gc, Font font)
 {
     // http://www.net.uom.gr/Books/Manuals/xlib/GC/convenience-functions/XSetFont.html
-    if (font == None || font == (Font) ~0UL || (uintptr_t) font < 4096) {
+    if (font == None || font == (Font) ~0UL || font == (Font) 0xffffffffUL ||
+        (uintptr_t) font < 4096) {
         handleError(0, display, font, 0, BadFont, 0);
         return 0;
     }

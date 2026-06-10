@@ -217,6 +217,8 @@ run_motif_replay() {{
 }}
 
 {clean_remote}
+rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
+    "$remote_root/report.tsv" "$remote_root/junit.xml" "$remote_root"/replay-*
 mkdir -p "$system_build" "$system_out" "$system_screens" "$compat_screens" \\
     "$system_logs" "$compat_logs"
 : >"$system_build_log"
@@ -224,7 +226,7 @@ mkdir -p "$system_build" "$system_out" "$system_screens" "$compat_screens" \\
 cd "$repo"
 make -j{q(args.jobs)} CC=gcc motif-demos
 
-motif_src="$repo/build/upstream/motif-src"
+motif_src="$repo/build/upstream/motif"
 cd "$system_build"
 if [ ! -f .configure-stamp ]; then
     : >"$system_config_log"

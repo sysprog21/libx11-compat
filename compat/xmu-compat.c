@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,9 @@
 #include <unistd.h>
 
 #include <X11/Intrinsic.h>
+#include <X11/IntrinsicP.h>
+#include <X11/Shell.h>
+#include <X11/ShellP.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xmu/Atoms.h>
@@ -58,6 +62,42 @@ static void copyISOLatin1Case(char *dst, const char *src, int size, int upper)
         dst[i++] = (char) (upper ? toupper(ch) : tolower(ch));
     }
     dst[i] = '\0';
+}
+
+static Widget findWMShell(Widget w)
+{
+    for (Widget current = w; current; current = XtParent(current)) {
+        if (XtIsSubclass(current, wmShellWidgetClass))
+            return current;
+    }
+    return NULL;
+}
+
+static Widget findApplicationShell(Widget w)
+{
+    for (Widget current = w; current; current = XtParent(current)) {
+        if (XtIsApplicationShell(current))
+            return current;
+    }
+    return NULL;
+}
+
+/* Populate the selection-conversion return slots with a freshly duplicated
+ * STRING value. Returns True only when XtNewString succeeded. */
+static Boolean returnStringSelection(const char *value,
+                                     Atom *type_return,
+                                     XPointer *value_return,
+                                     unsigned long *length_return,
+                                     int *format_return)
+{
+    char *dup = XtNewString(value);
+    if (!dup)
+        return False;
+    *value_return = (XPointer) dup;
+    *type_return = XA_STRING;
+    *length_return = strlen(dup);
+    *format_return = 8;
+    return True;
 }
 
 Atom XmuInternAtom(Display *dpy, AtomPtr atom_ptr)
@@ -166,6 +206,161 @@ void XmuCvtFunctionToCallback(XrmValue *args,
         toVal->addr = (XPointer) callbacks;
     }
     toVal->size = sizeof(XtCallbackList);
+}
+
+Boolean XmuConvertStandardSelection(Widget w,
+                                    Time time,
+                                    Atom *selection,
+                                    Atom *target,
+                                    Atom *type_return,
+                                    XPointer *value_return,
+                                    unsigned long *length_return,
+                                    int *format_return)
+{
+    (void) selection;
+    if (!w || !target || !type_return || !value_return || !length_return ||
+        !format_return)
+        return False;
+
+    Display *dpy = XtDisplay(w);
+    if (!dpy)
+        return False;
+
+    if (*target == XA_TIMESTAMP(dpy)) {
+        Time *value = (Time *) XtMalloc(sizeof(*value));
+        if (!value)
+            return False;
+        *value = time;
+        *value_return = (XPointer) value;
+        *type_return = XA_INTEGER;
+        *length_return = 1;
+        *format_return = 32;
+        return True;
+    }
+
+    if (*target == XA_HOSTNAME(dpy)) {
+        char hostname[256];
+        if (gethostname(hostname, sizeof(hostname)) != 0)
+            hostname[0] = '\0';
+        hostname[sizeof(hostname) - 1] = '\0';
+        return returnStringSelection(hostname, type_return, value_return,
+                                     length_return, format_return);
+    }
+
+    if (*target == XA_USER(dpy)) {
+        const char *user = getenv("USER");
+        if (!user)
+            user = getenv("LOGNAME");
+        if (!user)
+            return False;
+        return returnStringSelection(user, type_return, value_return,
+                                     length_return, format_return);
+    }
+
+    if (*target == XA_CLASS(dpy)) {
+        Widget classShell = findApplicationShell(w);
+        if (!classShell) {
+            classShell = w;
+            while (XtParent(classShell))
+                classShell = XtParent(classShell);
+        }
+
+        const char *instance = XtName(classShell);
+        if (!instance)
+            instance = XtName(w);
+        if (!instance)
+            instance = "";
+
+        const char *class_name = NULL;
+        if (XtIsApplicationShell(classShell))
+            class_name = ((ApplicationShellWidget) classShell)->application.class;
+        if (!class_name)
+            class_name = XtClass(classShell)->core_class.class_name;
+        if (!class_name)
+            class_name = instance[0] ? instance : "Widget";
+
+        size_t instance_len = strlen(instance);
+        size_t class_len = strlen(class_name);
+        /* XtMalloc takes Cardinal (unsigned int); guard against size_t
+         * truncation before allocating the two-NUL packed buffer. */
+        if (instance_len > (size_t) INT_MAX - 2 ||
+            class_len > (size_t) INT_MAX - 2 - instance_len)
+            return False;
+        size_t value_len = instance_len + class_len + 2;
+        char *value = (char *) XtMalloc(value_len);
+        if (!value)
+            return False;
+
+        memcpy(value, instance, instance_len + 1);
+        memcpy(value + instance_len + 1, class_name, class_len + 1);
+        *value_return = (XPointer) value;
+        *type_return = XA_STRING;
+        *length_return = value_len;
+        *format_return = 8;
+        return True;
+    }
+
+    if (*target == XA_NAME(dpy)) {
+        Widget shell = findWMShell(w);
+        const char *name = NULL;
+        if (shell)
+            XtVaGetValues(shell, XtNtitle, &name, NULL);
+        if (!name && shell)
+            name = XtName(shell);
+        if (!name)
+            name = XtName(w);
+        if (!name)
+            return False;
+        return returnStringSelection(name, type_return, value_return,
+                                     length_return, format_return);
+    }
+
+    if (*target == XA_CLIENT_WINDOW(dpy)) {
+        Widget shell = findWMShell(w);
+        if (!shell)
+            return False;
+        Window *value = (Window *) XtMalloc(sizeof(*value));
+        if (!value)
+            return False;
+        *value = XtWindow(shell);
+        *value_return = (XPointer) value;
+        *type_return = XA_WINDOW;
+        *length_return = 1;
+        *format_return = 32;
+        return True;
+    }
+
+    if (*target == XA_OWNER_OS(dpy)) {
+        const char *os_name =
+#if defined(__APPLE__)
+            "Darwin";
+#elif defined(__linux__)
+            "Linux";
+#else
+            "Unknown";
+#endif
+        return returnStringSelection(os_name, type_return, value_return,
+                                     length_return, format_return);
+    }
+
+    if (*target == XA_TARGETS(dpy)) {
+        Atom advertised[] = {
+            XA_TARGETS(dpy),  XA_TIMESTAMP(dpy),     XA_HOSTNAME(dpy),
+            XA_USER(dpy),     XA_CLASS(dpy),         XA_NAME(dpy),
+            XA_CLIENT_WINDOW(dpy), XA_OWNER_OS(dpy),
+        };
+        Atom *targets = (Atom *) XtMalloc(sizeof(advertised));
+        if (!targets)
+            return False;
+        memcpy(targets, advertised, sizeof(advertised));
+        *value_return = (XPointer) targets;
+        *type_return = XA_ATOM;
+        *length_return = sizeof(advertised) / sizeof(advertised[0]);
+        *format_return = 32;
+        return True;
+    }
+
+    return False;
 }
 
 static Bool windowHasProperty(Display *dpy, Window win, Atom property)

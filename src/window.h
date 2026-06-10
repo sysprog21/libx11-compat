@@ -41,6 +41,8 @@ typedef struct {
      * SDL_Window surface on the next flush/sync.
      */
     Bool needsPresent;
+    Bool hasPresentRect;
+    SDL_Rect presentRect;
     /* True after a mapped top-level window has completed at least one
      * successful update to its SDL_Window surface.
      */

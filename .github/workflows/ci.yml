@@ -7,8 +7,8 @@
 # All five top-level jobs (lint, build, debug-build, sanitize, motif) run
 # in parallel. Cross-run state that's deterministic by content hash is
 # cached: the upstream tarball + extracted-header tree under
-# build/upstream/, the thentenaar/motif clone, and per-job ccache
-# directories for C object reuse.
+# build/upstream/, the thentenaar/motif and thentenaar/mosaic-ng clones,
+# and per-job ccache directories for C object reuse.
 name: CI
 
 on:
@@ -115,7 +115,8 @@ jobs:
             build/upstream
             !build/upstream/**/*.o
             !build/upstream/**/*.d
-            !build/upstream/motif-src
+            !build/upstream/motif
+            !build/upstream/mosaic
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -183,7 +184,8 @@ jobs:
             build/upstream
             !build/upstream/**/*.o
             !build/upstream/**/*.d
-            !build/upstream/motif-src
+            !build/upstream/motif
+            !build/upstream/mosaic
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -249,7 +251,8 @@ jobs:
             build/upstream
             !build/upstream/**/*.o
             !build/upstream/**/*.d
-            !build/upstream/motif-src
+            !build/upstream/motif
+            !build/upstream/mosaic
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -298,13 +301,13 @@ jobs:
       - name: ccache stats
         run: ccache --show-stats
 
-  # ---- Motif, ViolaWWW integration and validation ----
+  # ---- Motif, ViolaWWW, Mosaic integration and validation ----
   #
   # Build the thentenaar/motif libXm and libMrm against the compat stack,
   # build every Motif demo program, and run the demo smoke checks
   # (validate-motif-demos.sh launches each demo briefly and asserts no
-  # fatal output / abnormal exit). ViolaWWW is built locally and, when a
-  # remote differential host is configured, Motif and ViolaWWW are
+  # fatal output / abnormal exit). ViolaWWW and Mosaic are built locally and,
+  # when a remote differential host is configured, Motif, ViolaWWW, and Mosaic are
   # screenshot-compared against system libX11 under Xvfb.
   motif:
     runs-on: ubuntu-24.04
@@ -336,7 +339,8 @@ jobs:
             build/upstream
             !build/upstream/**/*.o
             !build/upstream/**/*.d
-            !build/upstream/motif-src
+            !build/upstream/motif
+            !build/upstream/mosaic
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -349,8 +353,17 @@ jobs:
         # from scratch is the safer default for any drift.
         uses: actions/cache@v5
         with:
-          path: build/upstream/motif-src
+          path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache Mosaic source clone
+        # Exact-match key only. Mosaic patches are applied to a throwaway
+        # work tree, but the source stamp is pinned by mk/mosaic.mk, so a
+        # stale fallback clone would hide revision or patch-input drift.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/mosaic
+          key: mosaic-src-${{ runner.os }}-${{ hashFiles('mk/mosaic.mk', 'compat/mosaic-patches/**') }}
 
       - name: Cache ccache
         uses: actions/cache@v5
@@ -417,7 +430,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: make violawww
 
-      - name: Run Xvfb-backed replay smoke checks
+      - name: Build Mosaic against compat stack
+        id: mosaic
+        # Builds thentenaar/mosaic-ng at the pinned revision against
+        # libx11-compat, libXt-compat, libXmu-compat, libXpm-compat,
+        # libXext-compat, and the bundled Motif. Keep this separate
+        # from check-smoke so the documented smoke aggregate remains
+        # the Motif + ViolaWWW gate developers expect locally.
+        if: ${{ !cancelled() }}
+        run: make mosaic
+
+      - name: Run Motif and ViolaWWW replay smoke checks
         # make check-smoke is intentionally usable without Xvfb/xdotool on a
         # developer machine. GitHub-hosted runners are headless, so CI opts
         # into Xvfb explicitly for deterministic screenshots while still using
@@ -432,6 +455,18 @@ jobs:
           UI_REPLAY_DISPLAY: 121
           VIOLAWWW_SMOKE_DEPS: ""
         run: make check-smoke
+
+      - name: Run Mosaic replay smoke checks
+        # Mosaic has a dedicated smoke target so adding the browser as a
+        # validation target does not make make check-smoke heavier or
+        # network-dependent for local users. The replays exercise initial
+        # paint, scrolling, hyperlink navigation, and URL-field editing.
+        if: ${{ !cancelled() && steps.mosaic.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 122
+        run: make check-smoke-mosaic
 
       - name: Run Motif differential screenshots
         id: motif-differential
@@ -466,6 +501,21 @@ jobs:
           VIOLAWWW_DIFF_COMPARE_LOCATION: remote
         run: make check-differential-violawww
 
+      - name: Run Mosaic differential screenshots
+        id: mosaic-differential
+        # Companion browser differential gate for thentenaar/mosaic-ng.
+        # Runs only when Mosaic built successfully and MOSAIC_DIFF_REMOTE
+        # is configured, keeping normal CI independent of the SSH host
+        # while allowing browser-visible regressions to be compared
+        # against system libX11 under Xvfb.
+        if: ${{ !cancelled() && steps.mosaic.outcome == 'success' && vars.MOSAIC_DIFF_REMOTE != '' }}
+        env:
+          MOSAIC_DIFF_REMOTE: ${{ vars.MOSAIC_DIFF_REMOTE }}
+          MOSAIC_DIFF_INSTALL_DEPS: ${{ vars.MOSAIC_DIFF_INSTALL_DEPS || '0' }}
+          MOSAIC_DIFF_JOBS: ${{ vars.MOSAIC_DIFF_JOBS || '1' }}
+          MOSAIC_DIFF_COMPARE_LOCATION: remote
+        run: make check-differential-mosaic
+
       - name: Upload ViolaWWW build log on failure
         # Upload only when this specific step failed. A bare
         # `if: failure()` would also fire on an earlier failure (e.g.
@@ -476,6 +526,15 @@ jobs:
         with:
           name: violawww-build-log
           path: build/violawww/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Mosaic build log on failure
+        if: ${{ steps.mosaic.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mosaic-build-log
+          path: build/mosaic/build.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -515,6 +574,21 @@ jobs:
             build/violawww-differential/diff
             build/violawww-differential/system
             build/violawww-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Mosaic differential artifacts on failure
+        if: ${{ steps.mosaic-differential.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mosaic-differential
+          path: |
+            build/mosaic-differential/report.tsv
+            build/mosaic-differential/junit.xml
+            build/mosaic-differential/logs
+            build/mosaic-differential/diff
+            build/mosaic-differential/system
+            build/mosaic-differential/compat
           if-no-files-found: warn
           retention-days: 7
 
