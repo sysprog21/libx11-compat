@@ -15,12 +15,13 @@
 #ifndef _LIBX11_COMPAT_SMLIB_H_
 #define _LIBX11_COMPAT_SMLIB_H_
 
+#include <X11/ICE/ICElib.h>
 #include <X11/Xfuncproto.h>
 #include <X11/Xosdefs.h>
 
 typedef struct _SmcConn *SmcConn;
 typedef struct _SmsConn *SmsConn;
-typedef void *SmPointer;
+typedef IcePointer SmPointer;
 
 typedef struct {
     int length;
@@ -34,7 +35,40 @@ typedef struct {
     SmPropValue *vals;
 } SmProp;
 
-typedef int SmcCallbacks;
+typedef enum {
+    SmcClosedNow = 0,
+    SmcClosedASAP = 1,
+    SmcConnectionInUse = 2
+} SmcCloseStatus;
+
+typedef void (*SmcSaveYourselfProc)(SmcConn smcConn,
+                                    SmPointer clientData,
+                                    int saveType,
+                                    Bool shutdown,
+                                    int interactStyle,
+                                    Bool fast);
+typedef void (*SmcDieProc)(SmcConn smcConn, SmPointer clientData);
+typedef void (*SmcSaveCompleteProc)(SmcConn smcConn, SmPointer clientData);
+typedef void (*SmcShutdownCancelledProc)(SmcConn smcConn, SmPointer clientData);
+
+typedef struct {
+    struct {
+        SmcSaveYourselfProc callback;
+        SmPointer client_data;
+    } save_yourself;
+    struct {
+        SmcDieProc callback;
+        SmPointer client_data;
+    } die;
+    struct {
+        SmcSaveCompleteProc callback;
+        SmPointer client_data;
+    } save_complete;
+    struct {
+        SmcShutdownCancelledProc callback;
+        SmPointer client_data;
+    } shutdown_cancelled;
+} SmcCallbacks;
 
 /* Real libSM ships these as #define macros, so we mirror the same shape
  * with #ifndef guards. Using `enum { SmProtoMajor = 1, ... }` here would
@@ -111,5 +145,31 @@ typedef int SmcCallbacks;
 #define SmARRAY8 "ARRAY8"
 #define SmCARD8 "CARD8"
 #define SmLISTofARRAY8 "LISTofARRAY8"
+
+_XFUNCPROTOBEGIN
+
+SmcConn SmcOpenConnection(char *networkIdsList,
+                          SmPointer context,
+                          int xsmpMajorRev,
+                          int xsmpMinorRev,
+                          unsigned long mask,
+                          SmcCallbacks *callbacks,
+                          char *previousId,
+                          char **clientIdRet,
+                          int errorLength,
+                          char *errorStringRet);
+SmcCloseStatus SmcCloseConnection(SmcConn smcConn,
+                                  int count,
+                                  char **reasonMsgs);
+IceConn SmcGetIceConnection(SmcConn smcConn);
+char *SmcClientID(SmcConn smcConn);
+Status SmcRegisterClient(SmcConn smcConn,
+                         SmPointer assignedID,
+                         char **clientIdRet);
+void SmcSetProperties(SmcConn smcConn, int numProps, SmProp **props);
+void SmcDeleteProperties(SmcConn smcConn, int numProps, char **propNames);
+void SmcSaveYourselfDone(SmcConn smcConn, Bool success);
+
+_XFUNCPROTOEND
 
 #endif /* _LIBX11_COMPAT_SMLIB_H_ */

@@ -77,6 +77,7 @@ void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip);
 Bool setGcClipForIteration(SDL_Renderer *renderer, GC gc, int iteration);
 void clearRendererClip(SDL_Renderer *renderer);
 void drawWindowDataToScreen(void);
+Bool presentWakeOwnsEventType(Uint32 eventType);
 void markWindowNeedsPresent(Window window);
 void markWindowNeedsPresentRect(Window window, const SDL_Rect *rect);
 void presentDrawableIfVisible(Drawable drawable);

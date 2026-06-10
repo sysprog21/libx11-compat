@@ -254,7 +254,9 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None):
                 raise ReplayError(
                     f"{source_path}:{lineno}: wait-window expects pattern timeout_ms"
                 )
-            lines.append(f"delay {int(parts[2])}")
+            wait_ms = int(parts[2])
+            if wait_ms > 0:
+                lines.append(f"delay {wait_ms}")
         elif command in ("assert-image", "assert-exit"):
             continue
         else:

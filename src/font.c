@@ -1846,7 +1846,8 @@ char *decodeString(const char *string, int count)
 
 static int getTextWidthForChars(XFontStruct *font_struct,
                                 const char *string,
-                                size_t fixedCharCount)
+                                size_t fixedCharCount,
+                                size_t byteLength)
 {
     if (!font_struct || !string)
         return 0;
@@ -1865,7 +1866,12 @@ static int getTextWidthForChars(XFontStruct *font_struct,
             "Returning max width of font.\n",
             TTF_GetError());
         int64_t product = (int64_t) font_struct->max_bounds.rbearing *
-                          (int64_t) strlen(string);
+                          (int64_t) fixedCharCount;
+        return product > INT_MAX ? INT_MAX : (int) product;
+    }
+    if (strlen(string) != byteLength) {
+        int64_t product = (int64_t) font_struct->max_bounds.rbearing *
+                          (int64_t) fixedCharCount;
         return product > INT_MAX ? INT_MAX : (int) product;
     }
     return width;
@@ -1875,7 +1881,8 @@ int getTextWidth(XFontStruct *font_struct, const char *string)
 {
     if (!string)
         return 0;
-    return getTextWidthForChars(font_struct, string, strlen(string));
+    size_t length = strlen(string);
+    return getTextWidthForChars(font_struct, string, length, length);
 }
 
 static size_t utf8LengthForCodepoint(unsigned int codepoint)
@@ -1927,6 +1934,19 @@ static char *decodeChar2bString(const XChar2b *string,
     return text;
 }
 
+static char *makeMissingGlyphFallbackText(int count)
+{
+    if (count < 0)
+        return NULL;
+    char *text = malloc((size_t) count + 1);
+    if (!text)
+        return NULL;
+    for (int i = 0; i < count; i++)
+        text[i] = '?';
+    text[count] = '\0';
+    return text;
+}
+
 int XTextWidth16(XFontStruct *font_struct, _Xconst XChar2b *string, int count)
 {
     // https://tronche.com/gui/x/xlib/graphics/font-metrics/XTextWidth16.html
@@ -1938,8 +1958,8 @@ int XTextWidth16(XFontStruct *font_struct, _Xconst XChar2b *string, int count)
             __func__);
         return font_struct->max_bounds.rbearing * count;
     }
-    int width =
-        getTextWidthForChars(font_struct, text, count > 0 ? (size_t) count : 0);
+    int width = getTextWidthForChars(font_struct, text,
+                                     count > 0 ? (size_t) count : 0, length);
     free(text);
     return width;
 }
@@ -1954,7 +1974,8 @@ int XTextWidth(XFontStruct *font_struct, _Xconst char *string, int count)
         return font_struct->max_bounds.rbearing * count;
     }
     int width =
-        getTextWidthForChars(font_struct, text, count > 0 ? (size_t) count : 0);
+        getTextWidthForChars(font_struct, text, count > 0 ? (size_t) count : 0,
+                             count > 0 ? (size_t) count : 0);
     free(text);
     return width;
 }
@@ -2536,18 +2557,34 @@ int XDrawString16(Display *display,
         handleError(0, display, drawable, 0, BadMatch, 0);
         return 0;
     }
-    int res = 1;
     SDL_Rect damage = {0, 0, 0, 0};
-    if (!renderText(display, drawable, renderer, gc, x, y, text, size,
-                    &damage)) {
-        LOG("Rendering the text failed in %s: %s\n", __func__, SDL_GetError());
-        handleError(0, display, drawable, 0, BadMatch, 0);
-        res = 0;
-    }
-    free(text);
-    if (res)
+    if (renderText(display, drawable, renderer, gc, x, y, text, size,
+                   &damage)) {
+        free(text);
         finishTextDamage(display, drawable, &damage);
-    return res;
+        return 1;
+    }
+
+    LOG("Rendering 16-bit text failed in %s, retrying with fallback glyphs: "
+        "%s\n",
+        __func__, SDL_GetError());
+    char *fallback = makeMissingGlyphFallbackText(length);
+    if (fallback) {
+        SDL_Rect fallbackDamage = {0, 0, 0, 0};
+        if (renderText(display, drawable, renderer, gc, x, y, fallback,
+                       (size_t) length, &fallbackDamage)) {
+            free(fallback);
+            free(text);
+            finishTextDamage(display, drawable, &fallbackDamage);
+            return 1;
+        }
+        free(fallback);
+    }
+
+    LOG("Rendering the text failed in %s: %s\n", __func__, SDL_GetError());
+    handleError(0, display, drawable, 0, BadMatch, 0);
+    free(text);
+    return 0;
 }
 
 int XDrawString(Display *display,

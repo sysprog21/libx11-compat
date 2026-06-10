@@ -17,6 +17,7 @@
 #include <SDL2/SDL.h>
 
 #include "drawing.h"
+#include "events.h"
 #include "gc.h"
 #include "image.h"
 #include "input.h"
@@ -2665,13 +2666,27 @@ static int test_events(Display *display)
     CHECK(XTranslateCoordinates(display, offsetWindow, offsetWindow, 5, 16,
                                 &translatedX, &translatedY, &translatedChild),
           "XTranslateCoordinates same-window failed");
+    CHECK(translatedX == 5 && translatedY == 16,
+          "XTranslateCoordinates same-window changed coordinates");
     CHECK(translatedChild == None,
           "XTranslateCoordinates returned child outside y bounds");
     CHECK(XTranslateCoordinates(display, offsetWindow, offsetWindow, 5, 6,
                                 &translatedX, &translatedY, &translatedChild),
           "XTranslateCoordinates child lookup failed");
+    CHECK(translatedX == 5 && translatedY == 6,
+          "XTranslateCoordinates child lookup changed coordinates");
     CHECK(translatedChild == offsetChild,
           "XTranslateCoordinates did not return containing child");
+    CHECK(XTranslateCoordinates(display, offsetChild, root, 2, 3, &translatedX,
+                                &translatedY, &translatedChild),
+          "XTranslateCoordinates child-to-root failed");
+    CHECK(translatedX == 76 && translatedY == 88,
+          "XTranslateCoordinates child-to-root used wrong absolute origin");
+    CHECK(XTranslateCoordinates(display, root, offsetChild, 76, 88,
+                                &translatedX, &translatedY, &translatedChild),
+          "XTranslateCoordinates root-to-child failed");
+    CHECK(translatedX == 2 && translatedY == 3,
+          "XTranslateCoordinates root-to-child used wrong relative origin");
 
     Window lowerOverlap =
         XCreateSimpleWindow(display, offsetWindow, 6, 6, 8, 8, 0, 0, 0);
@@ -2816,6 +2831,44 @@ static int test_events(Display *display)
     CHECK(out.xany.window == window || out.xany.window == resetWindow,
           "reset-induced Expose used an unexpected window");
     SDL_FlushEvent(SDL_MOUSEMOTION);
+    while (XPending(display)) {
+        XNextEvent(display, &out);
+    }
+
+    SDL_zero(motionEvent);
+    motionEvent.type = SDL_MOUSEMOTION;
+    motionEvent.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    motionEvent.motion.x = 7;
+    motionEvent.motion.y = 8;
+    unsigned long requestBeforeMotion = XNextRequest(display);
+    SDL_PushEvent(&motionEvent);
+    XNextEvent(display, &out);
+    CHECK(out.type == MotionNotify,
+          "synthetic SDL motion did not convert to MotionNotify");
+    CHECK(XNextRequest(display) == requestBeforeMotion,
+          "internal event coordinate translation changed request serial");
+
+    Uint32 presentType = SDL_RegisterEvents(1);
+    CHECK(presentType != (Uint32) -1,
+          "failed to register present wake test event");
+    SDL_Event presentEvent;
+    SDL_zero(presentEvent);
+    presentEvent.type = presentType;
+    presentEvent.user.code = PRESENT_EVENT_CODE;
+    SDL_PushEvent(&presentEvent);
+    SDL_zero(motionEvent);
+    motionEvent.type = SDL_MOUSEMOTION;
+    motionEvent.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    motionEvent.motion.x = 5;
+    motionEvent.motion.y = 6;
+    SDL_PushEvent(&motionEvent);
+    XNextEvent(display, &out);
+    CHECK(out.type == MotionNotify,
+          "present wake was not deferred behind queued motion");
+    CHECK(XEventsQueued(display, QueuedAfterReading) == 0,
+          "deferred present wake left a phantom queued event");
 
     SDL_zero(resetEvent);
     resetEvent.type = SDL_RENDER_DEVICE_RESET;
@@ -4685,6 +4738,9 @@ static int test_fonts(Display *display)
         CHECK(XTextWidth16(nineByThirteen, wideA, 1) ==
                   XTextWidth(nineByThirteen, "A", 1),
               "XTextWidth16 ASCII decoding mismatch");
+        XChar2b wideWithNul[] = {{0, 0}, {0, 'A'}};
+        CHECK(XTextWidth16(nineByThirteen, wideWithNul, 2) > 0,
+              "XTextWidth16 ignored length-counted text after U+0000");
         XFreeFont(display, nineByThirteen);
 
         XFontStruct *nineByFifteen = XLoadQueryFont(display, "9x15");

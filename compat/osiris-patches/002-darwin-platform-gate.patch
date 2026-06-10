@@ -1,0 +1,13 @@
+diff --git a/src/tools/qglobal.h b/src/tools/qglobal.h
+index 63eb443..aa717d5 100644
+--- a/src/tools/qglobal.h
++++ b/src/tools/qglobal.h
+@@ -105,6 +105,8 @@
+ # define _OS_NETBSD_
+ #elif defined(__OpenBSD__)
+ # define _OS_OPENBSD_
++#elif defined(__APPLE__) && defined(__MACH__)
++# define _OS_DARWIN_
+ #elif defined(sgi) || defined(__sgi)
+ # define _OS_IRIX_
+ #elif defined(__osf__)

@@ -1,0 +1,22 @@
+diff --git a/meson.build b/meson.build
+index 191e02e..28e4cab 100644
+--- a/meson.build
++++ b/meson.build
+@@ -526,6 +526,7 @@ png_dep = dependency('libpng', required : true)
+ jpeg_dep = dependency('libjpeg', required : true)
+ freetype2_dep =  dependency('freetype2', required : true)
+ 
++threads_dep = dependency('threads')
+ osiris_deps = [
+     x11_dep,
+     xext_dep,
+@@ -535,7 +536,8 @@ osiris_deps = [
+     xmu_dep,
+     png_dep,
+     jpeg_dep,
+-    freetype2_dep
++    freetype2_dep,
++    threads_dep
+ ]
+ 
+ if get_option('xft').enabled()

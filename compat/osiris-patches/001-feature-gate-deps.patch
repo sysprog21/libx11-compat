@@ -1,0 +1,116 @@
+diff --git a/meson.build b/meson.build
+index 0c49def..f67e547 100644
+--- a/meson.build
++++ b/meson.build
+@@ -227,9 +227,12 @@ moc_header_file_roots = [
+     [network_source_path, 'qsocket'],
+     [canvas_source_path, 'qcanvas'],
+     [table_source_path, 'qtable'],
+-    [opengl_source_path, 'qgl'],
+ ]
+ 
++if get_option('opengl').enabled()
++    moc_header_file_roots += [[opengl_source_path, 'qgl']]
++endif
++
+ moc_generated_files = []
+ 
+ foreach root_tuple : moc_header_file_roots
+@@ -260,7 +263,6 @@ moc_source_file_roots = [
+     [iconview_source_path, 'qiconview'],
+     [kernel_source_path, 'qmovie'],
+     [kernel_source_path, 'qthread_unix'],
+-    [opengl_source_path, 'qgl_x11'],
+     [widgets_source_path, 'qeffects'],
+     [widgets_source_path, 'qmainwindow'],
+     [widgets_source_path, 'qtoolbar'],
+@@ -269,6 +271,10 @@ moc_source_file_roots = [
+     [workspaces_source_path, 'qworkspace'],
+ ]
+ 
++if get_option('opengl').enabled()
++    moc_source_file_roots += [[opengl_source_path, 'qgl_x11']]
++endif
++
+ foreach root_tuple : moc_source_file_roots
+     directory_path = root_tuple[0]
+     filename_root = root_tuple[1]
+@@ -515,37 +521,42 @@ opengl_sources = [
+ ]
+ 
+ x11_dep = dependency('X11', 'x11', required : true)
+-xft_dep = dependency('xft', required : true)
+-fontconfig_dep = dependency('fontconfig', required : true)
+ xext_dep = dependency('xext', required : true)
+-glu_dep = dependency('glu', required : true)
+-gl_dep = dependency('gl', required : true)
+ xmu_dep = dependency('xmu', required : true)
+-glx_dep = dependency('glx', required : true)
+ png_dep = dependency('libpng', required : true)
+ jpeg_dep = dependency('libjpeg', required : true)
+-sm_dep = dependency('sm', required : true)
+-ice_sound_dep =  dependency('ice', required : true)
+ freetype2_dep =  dependency('freetype2', required : true)
+ 
+ osiris_deps = [
+     x11_dep,
+-    gl_dep,
+-    xft_dep,
+-    fontconfig_dep,
+     xext_dep,
+     m_dep,
+     z_dep,
+-    glu_dep,
+     xmu_dep,
+-    glx_dep,
+     png_dep,
+     jpeg_dep,
+-    sm_dep,
+-    ice_sound_dep,
+     freetype2_dep
+ ]
+ 
++if get_option('xft').enabled()
++    xft_dep = dependency('xft', required : true)
++    fontconfig_dep = dependency('fontconfig', required : true)
++    osiris_deps += [xft_dep, fontconfig_dep]
++endif
++
++if get_option('opengl').enabled()
++    glu_dep = dependency('glu', required : true)
++    gl_dep = dependency('gl', required : true)
++    glx_dep = dependency('glx', required : true)
++    osiris_deps += [gl_dep, glu_dep, glx_dep]
++endif
++
++if get_option('sm').enabled()
++    sm_dep = dependency('sm', required : true)
++    ice_sound_dep =  dependency('ice', required : true)
++    osiris_deps += [sm_dep, ice_sound_dep]
++endif
++
+ osiris_sources = tools_sources
+ 
+ osiris_sources += kernel_sources
+@@ -557,7 +568,9 @@ osiris_sources += network_sources
+ osiris_sources += canvas_sources
+ osiris_sources += table_sources
+ osiris_sources += xml_sources
+-osiris_sources += opengl_sources
++if get_option('opengl').enabled()
++    osiris_sources += opengl_sources
++endif
+ osiris_sources += moc_generated_files
+ 
+ osiris_lib_version = meson.project_version()
+@@ -944,7 +957,9 @@ osiris_includes += workspace_headers
+ osiris_includes += canvas_headers
+ osiris_includes += iconview_headers
+ osiris_includes += table_headers
+-osiris_includes += opengl_headers
++if get_option('opengl').enabled()
++    osiris_includes += opengl_headers
++endif
+ osiris_includes += compat_headers
+ osiris_includes += network_headers
+ osiris_includes += extension_headers

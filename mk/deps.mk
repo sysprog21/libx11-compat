@@ -6,7 +6,9 @@
 ALL_DEPS := $(OBJS:.o=.d) \
             $(OUT)/xext-compat.d \
             $(OUT)/xmu-compat.d \
-            $(OUT)/xinerama-compat.d
+            $(OUT)/xinerama-compat.d \
+            $(OUT)/ice-compat.d \
+            $(OUT)/sm-compat.d
 ifdef LIBXT_OBJS
   ALL_DEPS += $(LIBXT_OBJS:.o=.d)
 endif

@@ -28,6 +28,7 @@ Bool replayTargetTranslateRoot(int rootX,
                                Uint32 *winId,
                                int *localX,
                                int *localY);
+Bool replayTargetTranslateLocal(int localX, int localY, int *rootX, int *rootY);
 void replayTargetRememberPointer(int x, int y);
 Bool replayTargetReadPointer(int *x, int *y);
 

@@ -20,6 +20,7 @@ X11PERF_SRCS := \
     $(X11PERF_DIR)/do_windows.c \
     $(X11PERF_DIR)/x11perf.c
 X11PERF_BIN := $(OUT)/examples/x11perf
+X11PERF_BENCH_ARGS ?= -all -repeat 1 -reps 1
 EXAMPLE_LDFLAGS :=
 ifeq ($(UNAME_S),Linux)
   EXAMPLE_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
@@ -28,10 +29,14 @@ ifeq ($(UNAME_S),Darwin)
   EXAMPLE_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
 endif
 
-.PHONY: examples
+.PHONY: examples bench-x11perf
 
 ## Build the bundled Xlib client examples (linked against libX11-compat.so)
 examples: $(EXAMPLE_BINS) $(X11PERF_BIN)
+
+## Run the bundled x11perf benchmark in short regression mode
+bench-x11perf: $(X11PERF_BIN)
+	SDL_VIDEODRIVER=dummy $(X11PERF_BIN) $(X11PERF_BENCH_ARGS)
 
 $(OUT)/examples/%: examples/%.c $(TARGET)
 	@mkdir -p $(dir $@)

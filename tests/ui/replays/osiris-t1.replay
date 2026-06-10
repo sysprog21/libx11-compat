@@ -1,0 +1,11 @@
+# Osiris tutorial/t1 smoke test.
+delay 1000
+wait-window "t1" 1000
+motion 20 20
+delay 100
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial osiris-t1.json
+motion 80 48
+button 1 click
+delay 1000

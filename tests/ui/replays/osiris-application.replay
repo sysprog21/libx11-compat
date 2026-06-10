@@ -1,0 +1,5 @@
+# Osiris examples/application representative smoke.
+delay 2000
+wait-window "Qt Example - Application" 3000
+screenshot application-initial 0 0 520 680
+assert-image application-initial common-visible.json

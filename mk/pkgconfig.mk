@@ -5,7 +5,9 @@ PKGCONFIG_FILES := \
     $(PKGCONFIG_DIR)/xt.pc \
     $(PKGCONFIG_DIR)/xmu.pc \
     $(PKGCONFIG_DIR)/xext.pc \
-    $(PKGCONFIG_DIR)/xinerama.pc
+    $(PKGCONFIG_DIR)/xinerama.pc \
+    $(PKGCONFIG_DIR)/ice.pc \
+    $(PKGCONFIG_DIR)/sm.pc
 
 $(PKGCONFIG_DIR):
 	@mkdir -p $@
@@ -50,6 +52,14 @@ $(PKGCONFIG_DIR)/xext.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFI
 $(PKGCONFIG_DIR)/xinerama.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
 	$(call write_pc,xinerama,1.1,-lXinerama-compat -lX11-compat,)
+
+$(PKGCONFIG_DIR)/ice.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,ice,1.1,-lICE-compat,)
+
+$(PKGCONFIG_DIR)/sm.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,sm,1.2,-lSM-compat -lICE-compat,)
 
 .PHONY: pkgconfig
 ## Generate pkg-config files for the compatibility libraries

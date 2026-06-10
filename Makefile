@@ -26,6 +26,7 @@ include mk/pkgconfig.mk
 include mk/motif.mk
 include mk/violawww.mk
 include mk/mosaic.mk
+include mk/osiris.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/upstream-headers.mk
