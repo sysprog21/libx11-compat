@@ -167,7 +167,7 @@ def capture_remote(args):
     remote_script_dir = f"{remote_root}/scripts"
 
     run(["ssh", args.remote, "mkdir", "-p", remote_root, remote_script_dir])
-    rsync(str(ROOT / "build/upstream/motif-src") + "/", f"{args.remote}:{remote_src}")
+    rsync(str(ROOT / "build/upstream/motif") + "/", f"{args.remote}:{remote_src}")
     rsync(
         ROOT / "scripts/capture-motif-demo-screenshots.sh",
         f"{args.remote}:{remote_script_dir}/capture-motif-demo-screenshots.sh",

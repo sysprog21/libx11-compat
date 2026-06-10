@@ -1,0 +1,130 @@
+diff --git a/src/gui.c b/src/gui.c
+--- a/src/gui.c
++++ b/src/gui.c
+@@ -970,6 +970,103 @@
+   return;
+ }
+ 
++static void url_text_focus_eh(Widget w, XtPointer client_data,
++			      XEvent *event, Boolean *continue_to_dispatch)
++{
++  mo_window *win = (mo_window *)client_data;
++  XmTextPosition left, right, pos;
++  char buf[16];
++  KeySym keysym;
++  int len, i;
++  Window focus;
++  int revert;
++  static Widget active_url_text = NULL;
++  static Boolean synthetic_edit_active = False;
++
++  (void)w;
++
++  if (!event || !win || !win->base || !win->url_text)
++    return;
++
++  if (event->type == ButtonPress) {
++    XtSetKeyboardFocus(win->base, win->url_text);
++    XSetInputFocus(XtDisplay(win->url_text), XtWindow(win->url_text),
++		   RevertToParent, event->xbutton.time);
++    active_url_text = win->url_text;
++    synthetic_edit_active = False;
++    return;
++  }
++
++  if (event->type != KeyPress)
++    return;
++
++  XGetInputFocus(XtDisplay(win->url_text), &focus, &revert);
++  if (focus != XtWindow(win->url_text))
++    return;
++  if (active_url_text != win->url_text) {
++    active_url_text = win->url_text;
++    synthetic_edit_active = False;
++  }
++
++  len = XLookupString(&event->xkey, buf, sizeof(buf) - 1, &keysym, NULL);
++  if (keysym == XK_BackSpace) {
++    if (!synthetic_edit_active &&
++	XmTextFieldGetSelectionPosition(win->url_text, &left, &right) &&
++	left != right) {
++      XmTextFieldReplace(win->url_text, left, right, "");
++      XmTextFieldSetInsertionPosition(win->url_text, left);
++      XmTextFieldClearSelection(win->url_text, event->xkey.time);
++    } else {
++      pos = XmTextFieldGetInsertionPosition(win->url_text);
++      if (pos > 0) {
++	XmTextFieldReplace(win->url_text, pos - 1, pos, "");
++	XmTextFieldSetInsertionPosition(win->url_text, pos - 1);
++	XmTextFieldClearSelection(win->url_text, event->xkey.time);
++      }
++    }
++    synthetic_edit_active = True;
++    if (continue_to_dispatch)
++      *continue_to_dispatch = False;
++    return;
++  }
++  if (keysym == XK_Delete) {
++    if (!synthetic_edit_active &&
++	XmTextFieldGetSelectionPosition(win->url_text, &left, &right) &&
++	left != right) {
++      XmTextFieldReplace(win->url_text, left, right, "");
++      XmTextFieldSetInsertionPosition(win->url_text, left);
++      XmTextFieldClearSelection(win->url_text, event->xkey.time);
++    } else {
++      pos = XmTextFieldGetInsertionPosition(win->url_text);
++      XmTextFieldReplace(win->url_text, pos, pos + 1, "");
++      XmTextFieldSetInsertionPosition(win->url_text, pos);
++      XmTextFieldClearSelection(win->url_text, event->xkey.time);
++    }
++    synthetic_edit_active = True;
++    if (continue_to_dispatch)
++      *continue_to_dispatch = False;
++    return;
++  }
++  if (len <= 0)
++    return;
++  for (i = 0; i < len; i++)
++    if (!isprint((unsigned char)buf[i]))
++      return;
++  buf[len] = '\0';
++  if (!synthetic_edit_active &&
++      XmTextFieldGetSelectionPosition(win->url_text, &left, &right) &&
++      left != right)
++    pos = left;
++  else
++    left = right = pos = XmTextFieldGetInsertionPosition(win->url_text);
++  XmTextFieldReplace(win->url_text, left, right, buf);
++  XmTextFieldSetInsertionPosition(win->url_text, pos + len);
++  XmTextFieldClearSelection(win->url_text, event->xkey.time);
++  synthetic_edit_active = True;
++  if (continue_to_dispatch)
++    *continue_to_dispatch = False;
++}
++
+ /****************************************************************************
+  * name:    anchor_cb
+  * purpose: Callback for triggering anchor in HTML widget.
+diff --git a/src/gui.c b/src/gui.c
+--- a/src/gui.c
++++ b/src/gui.c
+@@ -2814,6 +2871,8 @@
+ 					  XmNtraversalOn, False,
+                                           NULL);
+       /* DO THIS WITH THE SLAB MANAGER - BJS */
++  XtAddEventHandler(win->url_text, ButtonPressMask | KeyPressMask, False,
++		    url_text_focus_eh, (XtPointer)win);
+   if (!(get_pref_boolean(eKIOSK) || get_pref_boolean(eKIOSKNOEXIT))) {
+       XmxAddCallbackToText (win->url_text, url_field_cb, 0);
+   } else {
+diff --git a/src/gui.c b/src/gui.c
+--- a/src/gui.c
++++ b/src/gui.c
+@@ -2923,6 +2982,8 @@
+   XtVaGetValues(win->scrolled_win, WbNview, (long)(&win->view), NULL);
+   XmxAddEventHandler(win->view, KeyPressMask, mo_view_keypress_handler, 0);
++  XtAddEventHandler(win->view, KeyPressMask, False,
++		    url_text_focus_eh, (XtPointer)win);
+   XmxAddEventHandler(win->view, ButtonReleaseMask, mo_view_mousebutton_handler, 0);
+  /* now that the htmlWidget is created we can do this  */
+   mo_make_popup(win->view);

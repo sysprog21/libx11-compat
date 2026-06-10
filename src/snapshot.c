@@ -146,6 +146,7 @@ int snapshotRequestResizeAndWait(int width, int height)
     LOG("resize: request %dx%d pushRc=%d\n", width, height, pushRc);
     if (pushRc <= 0)
         return -2;
+    wakeEventPipeForExternalEvent(NULL);
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
     /* Resize triggers a full reflow in Motif/Xt clients (ViolaWWW
@@ -202,6 +203,7 @@ int snapshotRequestAndWait(const char *path)
         free(copy);
         return -2;
     }
+    wakeEventPipeForExternalEvent(NULL);
     /* Bound the wait so a stuck main thread doesn't hang the replay
      * indefinitely. The save itself is single-ms for a typical window,
      * but the main thread may not drain the SDL_USEREVENT for a while

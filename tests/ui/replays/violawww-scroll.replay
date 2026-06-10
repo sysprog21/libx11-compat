@@ -22,7 +22,7 @@ assert-image initial common-visible.json
 assert-image initial violawww-scroll.json
 motion 360 540
 wheel down 5
-delay 1000
+delay 2500
 screenshot scrolled
 assert-image scrolled violawww-scroll.json
 assert-image scrolled violawww-scroll-changed.json

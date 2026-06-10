@@ -1119,6 +1119,16 @@ static int test_pixmaps(Display *display)
     CHECK(pixel_is_rgb(surface, 1, 0, 0, 0, 0),
           "bitmap clear bit did not become black");
     SDL_FreeSurface(surface);
+    XImage *bitmapImage =
+        XGetImage(display, bitmap, 0, 0, 2, 2, AllPlanes, ZPixmap);
+    CHECK(bitmapImage != NULL, "XGetImage for bitmap failed");
+    CHECK(XGetPixel(bitmapImage, 0, 0) == 1,
+          "XGetImage lost the set bitmap bit");
+    CHECK(XGetPixel(bitmapImage, 1, 0) == 0,
+          "XGetImage turned a clear bitmap bit into one");
+    CHECK(XGetPixel(bitmapImage, 0, 1) == 0,
+          "XGetImage treated opaque black as a set bitmap bit");
+    XDestroyImage(bitmapImage);
 
     Pixmap planeDest =
         XCreatePixmap(display, root, 2, 2, DefaultDepth(display, 0));
@@ -1144,6 +1154,56 @@ static int test_pixmaps(Display *display)
     XFreeGC(display, planeGc);
     XFreePixmap(display, planeDest);
     XFreePixmap(display, bitmap);
+
+    Pixmap stalePixmap =
+        XCreatePixmap(display, root, 4, 4, DefaultDepth(display, 0));
+    Window staleDest = XCreateSimpleWindow(display, root, 0, 0, 4, 4, 0, 0, 0);
+    CHECK(stalePixmap != None && staleDest != None,
+          "stale pixmap XCopyArea setup failed");
+    CHECK(XMapWindow(display, staleDest),
+          "stale pixmap destination map failed");
+    GC staleGc = XCreateGC(display, staleDest, 0, NULL);
+    CHECK(staleGc != NULL, "stale pixmap GC creation failed");
+    CHECK(XFreePixmap(display, stalePixmap), "stale pixmap free failed");
+    last_error_code = 0;
+    oldErrorHandler = XSetErrorHandler(record_error);
+    CHECK(
+        !XCopyArea(display, stalePixmap, staleDest, staleGc, 0, 0, 1, 1, 0, 0),
+        "XCopyArea accepted a freed source pixmap");
+    XSetErrorHandler(oldErrorHandler);
+    CHECK(last_error_code == BadDrawable,
+          "XCopyArea freed source pixmap did not report BadDrawable");
+    XFreeGC(display, staleGc);
+    XDestroyWindow(display, staleDest);
+    while (XPending(display)) {
+        XEvent pending;
+        XNextEvent(display, &pending);
+    }
+
+    Window staleSource =
+        XCreateSimpleWindow(display, root, 0, 0, 4, 4, 0, 0, 0);
+    staleDest = XCreateSimpleWindow(display, root, 0, 0, 4, 4, 0, 0, 0);
+    CHECK(staleSource != None && staleDest != None,
+          "stale window XCopyArea setup failed");
+    CHECK(XMapWindow(display, staleSource), "stale source window map failed");
+    CHECK(XMapWindow(display, staleDest), "stale dest window map failed");
+    staleGc = XCreateGC(display, staleDest, 0, NULL);
+    CHECK(staleGc != NULL, "stale window GC creation failed");
+    CHECK(XDestroyWindow(display, staleSource), "stale source destroy failed");
+    last_error_code = 0;
+    oldErrorHandler = XSetErrorHandler(record_error);
+    CHECK(
+        !XCopyArea(display, staleSource, staleDest, staleGc, 0, 0, 1, 1, 0, 0),
+        "XCopyArea accepted a destroyed source window");
+    XSetErrorHandler(oldErrorHandler);
+    CHECK(last_error_code == BadDrawable,
+          "XCopyArea destroyed source window did not report BadDrawable");
+    XFreeGC(display, staleGc);
+    XDestroyWindow(display, staleDest);
+    while (XPending(display)) {
+        XEvent pending;
+        XNextEvent(display, &pending);
+    }
 
     Pixmap arcPixmap =
         XCreatePixmap(display, root, 16, 16, DefaultDepth(display, 0));
@@ -1220,12 +1280,18 @@ static int test_pixmaps(Display *display)
           "XCopyArea pixmap regression source mark color failed");
     CHECK(XFillRectangle(display, copySrc, copyGc, 2, 2, 3, 3),
           "XCopyArea pixmap regression source mark failed");
+    Drawable narrowedCopySrc = (Drawable) (unsigned int) copySrc;
+    CHECK(narrowedCopySrc == copySrc,
+          "allocated pixmap XID does not round-trip through 32 bits");
     CHECK(XSetForeground(display, copyGc, 0xFFFFFFFF),
           "XCopyArea pixmap regression destination clear color failed");
     CHECK(XFillRectangle(display, copyDest, copyGc, 0, 0, 8, 8),
           "XCopyArea pixmap regression destination clear failed");
     CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 2, 2, 3, 3, 0, 0),
           "XCopyArea to pixmap failed");
+    CHECK(
+        XCopyArea(display, narrowedCopySrc, copyDest, copyGc, 2, 2, 3, 3, 0, 0),
+        "XCopyArea rejected a 32-bit-round-tripped pixmap XID");
     GET_RENDERER(copyDest, renderer);
     surface = getRenderSurface(renderer);
     CHECK(surface != NULL,
@@ -1396,6 +1462,10 @@ static int test_pixmaps(Display *display)
 
     unlink(xbmPath);
     unlink(xbmOutPath);
+    while (XPending(display)) {
+        XEvent pending;
+        XNextEvent(display, &pending);
+    }
     return 1;
 }
 
@@ -2933,8 +3003,10 @@ static int test_events(Display *display)
           "top-level leave did not deliver parent LeaveNotify after child");
 
     XSelectInput(display, pointerParent, NoEventMask);
-    XSelectInput(display, pointerChild,
-                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+    XSelectInput(
+        display, pointerChild,
+        ButtonPressMask | ButtonReleaseMask | PointerMotionMask | KeyPressMask);
+    XSetInputFocus(display, pointerParent, RevertToParent, CurrentTime);
 
     SDL_Event buttonEvent;
     SDL_zero(buttonEvent);
@@ -2953,6 +3025,11 @@ static int test_events(Display *display)
           "SDL button coordinates were not child-local");
     CHECK((out.xbutton.state & Button1Mask) == 0,
           "ButtonPress state included the newly pressed button");
+    Window buttonFocus = None;
+    int buttonRevert = 0;
+    XGetInputFocus(display, &buttonFocus, &buttonRevert);
+    CHECK(buttonFocus == pointerParent,
+          "ButtonPress changed keyboard focus without an XSetInputFocus call");
 
     buttonEvent.type = SDL_MOUSEBUTTONUP;
     CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
@@ -3837,6 +3914,84 @@ static int test_windows(Display *display)
     CHECK(parent != None && child1 != None && child2 != None,
           "window creation failed");
 
+    Window normalTop =
+        XCreateSimpleWindow(display, root, 12, 12, 32, 24, 0, 0, 0);
+    CHECK(normalTop != None, "normal top-level window creation failed");
+    CHECK(XMapWindow(display, normalTop), "normal top-level map failed");
+    SDL_Window *normalSdl = GET_WINDOW_STRUCT(normalTop)->sdlWindow;
+    CHECK(normalSdl != NULL, "normal top-level did not realize");
+    CHECK((SDL_GetWindowFlags(normalSdl) & SDL_WINDOW_BORDERLESS) == 0,
+          "normal top-level with X border_width 0 became SDL borderless");
+
+    Window overrideTop =
+        XCreateSimpleWindow(display, root, 16, 16, 32, 24, 0, 0, 0);
+    CHECK(overrideTop != None, "override-redirect window creation failed");
+    XSetWindowAttributes overrideAttrs;
+    memset(&overrideAttrs, 0, sizeof(overrideAttrs));
+    overrideAttrs.override_redirect = True;
+    CHECK(XChangeWindowAttributes(display, overrideTop, CWOverrideRedirect,
+                                  &overrideAttrs),
+          "CWOverrideRedirect change failed");
+    CHECK(XMapWindow(display, overrideTop), "override-redirect map failed");
+    SDL_Window *overrideSdl = GET_WINDOW_STRUCT(overrideTop)->sdlWindow;
+    CHECK(overrideSdl != NULL, "override-redirect top-level did not realize");
+    CHECK((SDL_GetWindowFlags(overrideSdl) & SDL_WINDOW_BORDERLESS) != 0,
+          "override-redirect top-level was not SDL borderless");
+
+    Window partialTop =
+        XCreateSimpleWindow(display, root, 20, 20, 64, 48, 0, 0, 0);
+    Window partialChild =
+        XCreateSimpleWindow(display, partialTop, 5, 7, 20, 16, 0, 0, 0);
+    CHECK(partialTop != None && partialChild != None,
+          "partial present window setup failed");
+    CHECK(XMapWindow(display, partialTop), "partial present top map failed");
+    CHECK(XMapWindow(display, partialChild),
+          "partial present child map failed");
+    WindowStruct *partialTopStruct = GET_WINDOW_STRUCT(partialTop);
+    partialTopStruct->hasPresented = True;
+    partialTopStruct->needsPresent = False;
+    partialTopStruct->hasPresentRect = False;
+    SDL_Rect partialDamage = {2, 3, 4, 5};
+    presentDrawableRectIfVisible(partialChild, &partialDamage);
+    CHECK(partialTopStruct->needsPresent,
+          "child rectangle damage did not schedule top-level present");
+    CHECK(partialTopStruct->hasPresentRect,
+          "child rectangle damage did not store present rectangle");
+    CHECK(partialTopStruct->presentRect.x == 7 &&
+              partialTopStruct->presentRect.y == 10 &&
+              partialTopStruct->presentRect.w == 4 &&
+              partialTopStruct->presentRect.h == 5,
+          "child rectangle damage was not translated to top-level coordinates");
+    XDestroyWindow(display, partialTop);
+
+    Window wideRectTop =
+        XCreateSimpleWindow(display, root, 24, 24, 64, 48, 0, 0, 0);
+    CHECK(wideRectTop != None, "wide rectangle present window setup failed");
+    CHECK(XMapWindow(display, wideRectTop),
+          "wide rectangle present map failed");
+    GC wideRectGc = XCreateGC(display, wideRectTop, 0, NULL);
+    CHECK(wideRectGc != NULL, "wide rectangle present GC failed");
+    CHECK(XSetLineAttributes(display, wideRectGc, 9, LineSolid, CapButt,
+                             JoinMiter),
+          "wide rectangle line attributes failed");
+    WindowStruct *wideRectTopStruct = GET_WINDOW_STRUCT(wideRectTop);
+    wideRectTopStruct->hasPresented = True;
+    wideRectTopStruct->needsPresent = False;
+    wideRectTopStruct->hasPresentRect = False;
+    CHECK(XDrawRectangle(display, wideRectTop, wideRectGc, 16, 16, 8, 8),
+          "wide rectangle present draw failed");
+    CHECK(wideRectTopStruct->needsPresent,
+          "wide rectangle draw did not schedule a present");
+    CHECK(wideRectTopStruct->hasPresentRect,
+          "wide rectangle draw did not store a present rectangle");
+    CHECK(wideRectTopStruct->presentRect.x == 0 &&
+              wideRectTopStruct->presentRect.y == 0 &&
+              wideRectTopStruct->presentRect.w == 64 &&
+              wideRectTopStruct->presentRect.h == 48,
+          "wide rectangle draw used non-conservative partial present");
+    XFreeGC(display, wideRectGc);
+    XDestroyWindow(display, wideRectTop);
+
     Cursor fontCursor = XCreateFontCursor(display, XC_left_ptr);
     CHECK(fontCursor != None, "XCreateFontCursor failed");
     CHECK(XDefineCursor(display, parent, fontCursor), "XDefineCursor failed");
@@ -4104,6 +4259,62 @@ static int test_windows(Display *display)
           "mapped descendant remap Expose fields were wrong");
     XDestroyWindow(display, delayedParent);
 
+    Window inputParent =
+        XCreateSimpleWindow(display, root, 12, 12, 40, 40, 0, 0, 0);
+    CHECK(inputParent != None, "InputOnly map parent creation failed");
+    CHECK(XMapWindow(display, inputParent), "InputOnly map parent failed");
+    XSetWindowAttributes inputAttrs;
+    memset(&inputAttrs, 0, sizeof(inputAttrs));
+    Window directInput =
+        XCreateWindow(display, inputParent, 0, 0, 20, 20, 0, CopyFromParent,
+                      InputOnly, CopyFromParent, 0, &inputAttrs);
+    CHECK(directInput != None, "direct InputOnly child creation failed");
+    XSelectInput(display, directInput, StructureNotifyMask | ExposureMask);
+    last_error_code = 0;
+    oldErrorHandler = XSetErrorHandler(record_error);
+    CHECK(XMapRaised(display, directInput), "direct InputOnly map failed");
+    XSetErrorHandler(oldErrorHandler);
+    CHECK(last_error_code == 0,
+          "mapping direct InputOnly child generated an X error");
+    CHECK(expect_map_state(display, directInput, IsViewable),
+          "direct InputOnly child was not viewable after map");
+    CHECK(XCheckTypedWindowEvent(display, directInput, MapNotify, &visibility),
+          "direct InputOnly child did not receive MapNotify");
+    CHECK(!XCheckTypedWindowEvent(display, directInput, Expose, &visibility),
+          "direct InputOnly child received Expose");
+
+    Window delayedInputParent =
+        XCreateSimpleWindow(display, root, 14, 14, 40, 40, 0, 0, 0);
+    Window delayedInput = XCreateWindow(display, delayedInputParent, 0, 0, 20,
+                                        20, 0, CopyFromParent, InputOnly,
+                                        CopyFromParent, 0, &inputAttrs);
+    CHECK(delayedInputParent != None && delayedInput != None,
+          "delayed InputOnly setup failed");
+    XSelectInput(display, delayedInputParent, SubstructureNotifyMask);
+    XSelectInput(display, delayedInput, StructureNotifyMask | ExposureMask);
+    CHECK(XMapWindow(display, delayedInput),
+          "mapping InputOnly child under unmapped parent failed");
+    CHECK(expect_map_state(display, delayedInput, IsUnviewable),
+          "delayed InputOnly child should be unviewable before parent map");
+    last_error_code = 0;
+    oldErrorHandler = XSetErrorHandler(record_error);
+    CHECK(XMapWindow(display, delayedInputParent),
+          "mapping delayed InputOnly parent failed");
+    XSetErrorHandler(oldErrorHandler);
+    CHECK(last_error_code == 0,
+          "realizing delayed InputOnly child generated an X error");
+    CHECK(expect_map_state(display, delayedInput, IsViewable),
+          "delayed InputOnly child was not viewable after parent map");
+    CHECK(XCheckTypedWindowEvent(display, delayedInput, MapNotify, &visibility),
+          "delayed InputOnly child did not receive MapNotify");
+    CHECK(!XCheckTypedWindowEvent(display, delayedInput, Expose, &visibility),
+          "delayed InputOnly child received Expose");
+    XDestroyWindow(display, delayedInputParent);
+    XDestroyWindow(display, inputParent);
+    while (XPending(display)) {
+        XNextEvent(display, &visibility);
+    }
+
     Window delayedSubParent =
         XCreateSimpleWindow(display, root, 0, 0, 24, 24, 0, 0, 0);
     Window delayedSubChild =
@@ -4324,7 +4535,13 @@ static int test_windows(Display *display)
     XFree(children);
 
     XDestroyWindow(display, parent);
+    XDestroyWindow(display, normalTop);
+    XDestroyWindow(display, overrideTop);
     XFreeCursor(display, fontCursor);
+    while (XPending(display)) {
+        XEvent pending;
+        XNextEvent(display, &pending);
+    }
     return 1;
 }
 

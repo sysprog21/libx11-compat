@@ -10,7 +10,7 @@
 
 AtomStruct *atomStorageStart = NULL;
 static Atom lastUsedAtom = _NET_LAST_PREDEFINED;
-AtomStruct preDefAtomStructResult;
+static AtomStruct preDefAtomStructResult;
 
 static Bool predefinedAtomMatchesName(const char *predefinedName,
                                       const char *name)

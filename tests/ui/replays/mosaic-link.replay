@@ -1,0 +1,13 @@
+# NCSA Mosaic hyperlink navigation smoke test.
+delay 3000
+wait-window "Mosaic|NCSA" 5000
+delay 5000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial mosaic-home.json
+motion 80 178
+button 1 click
+delay 3000
+screenshot linked
+assert-image linked common-visible.json
+assert-image linked mosaic-linked.json

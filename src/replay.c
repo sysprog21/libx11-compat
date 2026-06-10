@@ -8,6 +8,7 @@
  * Supported commands:
  *   delay  <ms>
  *   motion <x> <y>
+ *   target-motion <x> <y> # x/y relative to the current replay target window
  *   button <n> press|release
  *   click  <x> <y>           # motion + button 1 press + release
  *   key    <scancode> press|release
@@ -36,7 +37,9 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
 #include <SDL2/SDL_atomic.h>
+#include "events.h"
 #include "replay.h"
+#include "replay-target.h"
 #include "snapshot.h"
 #include "util.h"
 
@@ -70,6 +73,23 @@ static void trim(char *s)
 static Bool isPressWord(const char *dir)
 {
     return strcasecmp(dir, "press") == 0 || strcasecmp(dir, "down") == 0;
+}
+
+static void pushTargetMotion(int x, int y)
+{
+    Uint32 winId = replayTargetWindowId();
+    if (winId == 0)
+        return;
+    replayTargetRememberPointer(x, y);
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_MOUSEMOTION;
+    ev.motion.timestamp = SDL_GetTicks();
+    ev.motion.windowID = winId;
+    ev.motion.x = x;
+    ev.motion.y = y;
+    if (SDL_PushEvent(&ev) == 1)
+        wakeEventPipeForExternalEvent(replayDisplay);
 }
 
 /* Replay diagnostics go to stderr unconditionally rather than through LOG().
@@ -146,6 +166,11 @@ static void runScript(const char *path)
             int x = 0, y = 0;
             if (sscanf(args, "%d %d", &x, &y) == 2) {
                 XTestFakeMotionEvent(replayDisplay, 0, x, y, 0);
+            }
+        } else if (!strcmp(cmd, "target-motion")) {
+            int x = 0, y = 0;
+            if (sscanf(args, "%d %d", &x, &y) == 2) {
+                pushTargetMotion(x, y);
             }
         } else if (!strcmp(cmd, "button")) {
             unsigned int btn = 0;

@@ -442,8 +442,10 @@ static Bool isFontAlias(const char *name)
            containsIgnoreCase(name, "helvetica") ||
            containsIgnoreCase(name, "helv") ||
            containsIgnoreCase(name, "courier") ||
+           containsIgnoreCase(name, "lucidatypewriter") ||
            containsIgnoreCase(name, "adobe-times") ||
            containsIgnoreCase(name, "times") ||
+           (name[0] == '-' && containsIgnoreCase(name, "iso8859")) ||
            ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
             strstr(name, "-p-"));
 }

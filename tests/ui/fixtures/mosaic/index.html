@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+<title>libx11-compat Mosaic smoke page</title>
+</head>
+<body>
+<h1>NCSA Mosaic smoke page</h1>
+<p>
+This offline page is used by libx11-compat to validate Mosaic startup,
+Motif chrome, document text rendering, and scroll repaint behavior without
+network access.
+</p>
+<h2>Links and text</h2>
+<p>
+The page intentionally uses simple HTML that Mosaic can parse. It includes
+enough repeated paragraphs to force a vertical scrollbar and make wheel
+input produce a visible document change.
+</p>
+<ul>
+<li><a href="#section-a">Jump to section A</a></li>
+<li><a href="#section-b">Jump to section B</a></li>
+<li><a href="file:index.html">Reload this page</a></li>
+<li><a href="second.html">Open linked page</a></li>
+</ul>
+<h2 id="section-a">Section A</h2>
+<p>Line 01: Mosaic should render this line in the document view.</p>
+<p>Line 02: Scrolling should not leave duplicate glyphs behind.</p>
+<p>Line 03: Expose handling should keep toolbar labels visible.</p>
+<p>Line 04: The document area should remain non-empty after repaint.</p>
+<p>Line 05: Forms, images, and live network access are not needed here.</p>
+<p>Line 06: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 07: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 08: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 09: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 10: This paragraph adds height for deterministic scrolling.</p>
+<h2 id="section-b">Section B</h2>
+<p>Line 11: The smoke test captures a baseline screenshot.</p>
+<p>Line 12: The replay then scrolls and captures a second screenshot.</p>
+<p>Line 13: Assertions compare visible regions between the two captures.</p>
+<p>Line 14: The fixture stays local so tests do not depend on the network.</p>
+<p>Line 15: The same fixture can support future dialog and selection checks.</p>
+<p>Line 16: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 17: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 18: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 19: This paragraph adds height for deterministic scrolling.</p>
+<p>Line 20: This paragraph adds height for deterministic scrolling.</p>
+<p>End of the Mosaic smoke fixture.</p>
+</body>
+</html>

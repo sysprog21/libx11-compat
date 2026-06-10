@@ -3,10 +3,14 @@
 #include <string.h>
 
 #include <X11/Intrinsic.h>
+#include <X11/Shell.h>
+#include <X11/StringDefs.h>
+#include <X11/Xatom.h>
 #include <X11/Xmu/Atoms.h>
 #include <X11/Xmu/CharSet.h>
 #include <X11/Xmu/Converters.h>
 #include <X11/Xmu/StdCmap.h>
+#include <X11/Xmu/StdSel.h>
 #include <X11/Xmu/SysUtil.h>
 #include <X11/Xmu/WinUtil.h>
 
@@ -31,6 +35,15 @@ static void callback_proc(Widget widget, XtPointer closure, XtPointer call_data)
     (void) closure;
     (void) call_data;
     callback_seen++;
+}
+
+static int atom_list_contains(const Atom *atoms, unsigned long count, Atom atom)
+{
+    for (unsigned long i = 0; i < count; i++) {
+        if (atoms[i] == atom)
+            return 1;
+    }
+    return 0;
 }
 
 int main(void)
@@ -73,6 +86,7 @@ int main(void)
         (void *) XmuCvtStringToOrientation,
         (void *) XmuCvtOrientationToString,
         (void *) XmuCvtStringToBitmap,
+        (void *) XmuConvertStandardSelection,
     };
     CHECK(converter_pins[0] != NULL, "converter pinning produced a NULL entry");
 
@@ -113,10 +127,100 @@ int main(void)
     CHECK(XmuGetHostname(hostname, (int) sizeof(hostname)) >= 0,
           "XmuGetHostname failed");
 
-    Display *display = XOpenDisplay(NULL);
-    CHECK(display != NULL, "XOpenDisplay failed");
+    int local_argc = 1;
+    char *local_argv[] = {(char *) "test_xmu_link", NULL};
+    XtToolkitInitialize();
+    XtAppContext app = XtCreateApplicationContext();
+    CHECK(app != NULL, "XtCreateApplicationContext failed");
+
+    Display *display = XtOpenDisplay(app, NULL, "xmuSmoke", "XmuSmoke", NULL, 0,
+                                     &local_argc, local_argv);
+    CHECK(display != NULL, "XtOpenDisplay failed");
+
+    Arg shell_args[1];
+    XtSetArg(shell_args[0], XtNtitle, "Xmu Smoke Title");
+    Widget shell =
+        XtAppCreateShell("xmuSmoke", "XmuSmoke", applicationShellWidgetClass,
+                         display, shell_args, 1);
+    CHECK(shell != NULL, "XtAppCreateShell failed");
+    Widget child =
+        XtCreateManagedWidget("selectionChild", widgetClass, shell, NULL, 0);
+    CHECK(child != NULL, "XtCreateManagedWidget failed");
+
     Atom atom = XA_CLIENT_WINDOW(display);
     CHECK(atom != None, "XA_CLIENT_WINDOW returned None");
+
+    Atom selection = XA_PRIMARY;
+    Atom target = XA_CLASS(display);
+    Atom type = None;
+    XPointer value = NULL;
+    unsigned long length = 0;
+    int format = 0;
+    CHECK(XmuConvertStandardSelection(shell, CurrentTime, &selection, &target,
+                                      &type, &value, &length, &format),
+          "XmuConvertStandardSelection CLASS failed");
+    CHECK(type == XA_STRING && format == 8,
+          "XmuConvertStandardSelection CLASS returned wrong type or format");
+    CHECK(length == strlen("xmuSmoke") + strlen("XmuSmoke") + 2,
+          "XmuConvertStandardSelection CLASS returned wrong length");
+    CHECK(!strcmp((char *) value, "xmuSmoke"),
+          "XmuConvertStandardSelection CLASS returned wrong instance");
+    CHECK(!strcmp((char *) value + strlen("xmuSmoke") + 1, "XmuSmoke"),
+          "XmuConvertStandardSelection CLASS returned wrong class");
+    XtFree(value);
+
+    Widget second_shell =
+        XtAppCreateShell("secondarySmoke", "SecondaryClass",
+                         applicationShellWidgetClass, display, NULL, 0);
+    CHECK(second_shell != NULL, "secondary XtAppCreateShell failed");
+    Widget second_child = XtCreateManagedWidget("secondaryChild", widgetClass,
+                                                second_shell, NULL, 0);
+    CHECK(second_child != NULL, "secondary child creation failed");
+
+    value = NULL;
+    length = 0;
+    CHECK(XmuConvertStandardSelection(second_child, CurrentTime, &selection,
+                                      &target, &type, &value, &length, &format),
+          "XmuConvertStandardSelection secondary CLASS failed");
+    CHECK(type == XA_STRING && format == 8,
+          "secondary CLASS returned wrong type or format");
+    CHECK(length == strlen("secondarySmoke") + strlen("SecondaryClass") + 2,
+          "secondary CLASS returned wrong length");
+    CHECK(!strcmp((char *) value, "secondarySmoke"),
+          "secondary CLASS returned wrong instance");
+    CHECK(!strcmp((char *) value + strlen("secondarySmoke") + 1,
+                  "SecondaryClass"),
+          "secondary CLASS returned Display-wide class instead of shell class");
+    XtFree(value);
+
+    target = XA_NAME(display);
+    value = NULL;
+    length = 0;
+    CHECK(XmuConvertStandardSelection(child, CurrentTime, &selection, &target,
+                                      &type, &value, &length, &format),
+          "XmuConvertStandardSelection NAME failed");
+    CHECK(type == XA_STRING && format == 8,
+          "XmuConvertStandardSelection NAME returned wrong type or format");
+    CHECK(length == strlen("Xmu Smoke Title"),
+          "XmuConvertStandardSelection NAME returned wrong length");
+    CHECK(!strcmp((char *) value, "Xmu Smoke Title"),
+          "XmuConvertStandardSelection NAME returned wrong title");
+    XtFree(value);
+
+    target = XA_TARGETS(display);
+    value = NULL;
+    length = 0;
+    CHECK(XmuConvertStandardSelection(shell, CurrentTime, &selection, &target,
+                                      &type, &value, &length, &format),
+          "XmuConvertStandardSelection TARGETS failed");
+    CHECK(type == XA_ATOM && format == 32 && length == 8,
+          "XmuConvertStandardSelection TARGETS returned wrong shape");
+    CHECK(atom_list_contains((Atom *) value, length, XA_TARGETS(display)),
+          "XmuConvertStandardSelection TARGETS did not advertise TARGETS");
+    CHECK(atom_list_contains((Atom *) value, length, XA_CLASS(display)),
+          "XmuConvertStandardSelection TARGETS did not advertise CLASS");
+    XtFree(value);
+
     Atom rgb_default_map = XInternAtom(display, "RGB_DEFAULT_MAP", False);
     CHECK(
         XmuLookupStandardColormap(
@@ -131,7 +235,10 @@ int main(void)
           "XmuClientWindow should fall back to the input window");
     CHECK(XmuScreenOfWindow(display, root) == DefaultScreenOfDisplay(display),
           "XmuScreenOfWindow returned wrong screen");
-    XCloseDisplay(display);
+    XtDestroyWidget(second_shell);
+    XtDestroyWidget(shell);
+    XtCloseDisplay(display);
+    XtDestroyApplicationContext(app);
 
     puts("test_xmu_link: ok");
     return 0;

@@ -78,10 +78,8 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
      * at the end of XMapWindow brings it on screen with the first
      * frame already drawn. */
     Uint32 flags = SDL_WINDOW_HIDDEN;
-    if (windowStruct->borderWidth == 0) {
-        flags |= SDL_WINDOW_BORDERLESS;
-    }
     if (windowStruct->overrideRedirect) {
+        flags |= SDL_WINDOW_BORDERLESS;
         flags |= SDL_WINDOW_ALWAYS_ON_TOP;
     }
     if (windowStruct->eventMask & KeyPressMask ||
@@ -255,10 +253,6 @@ Window XCreateWindow(Display *display,
     if (valueMask != 0) {
         XChangeWindowAttributes(display, windowID, valueMask, attributes);
     }
-    LOG("!!! XCreateWindow %lu {x = %d, y = %d, w = %d, h = %d} TYPE %d PARENT "
-        "%lu\n",
-        windowID, x, y, width, height, GET_XID_TYPE(windowID),
-        GET_WINDOW_STRUCT(windowID)->parent);
     return windowID;
 }
 
@@ -452,9 +446,11 @@ int XMapWindow(Display *display, Window window)
                     SDL_GetError());
                 return 0;
             }
-            GET_WINDOW_STRUCT(window)->mapState = Mapped;
-            XClearArea(display, window, 0, 0, 0, 0, False);
-            GET_WINDOW_STRUCT(window)->contentsMergedToParent = False;
+            WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+            windowStruct->mapState = Mapped;
+            if (!windowStruct->inputOnly)
+                XClearArea(display, window, 0, 0, 0, 0, False);
+            windowStruct->contentsMergedToParent = False;
         } else { /* Parent not mapped */
             GET_WINDOW_STRUCT(window)->mapState = MapRequested;
             return 1;
@@ -466,8 +462,10 @@ int XMapWindow(Display *display, Window window)
     mapRequestedChildren(display, window);
 
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    SDL_Rect exposeRect = {0, 0, windowStruct->w, windowStruct->h};
-    postExposeEvent(display, window, &exposeRect, 1);
+    if (!windowStruct->inputOnly) {
+        SDL_Rect exposeRect = {0, 0, windowStruct->w, windowStruct->h};
+        postExposeEvent(display, window, &exposeRect, 1);
+    }
     if (windowStruct->sdlWindow) {
         /* Render first into the hidden SDL_Window so the user never
          * sees an empty frame, then show + raise. */
@@ -1575,10 +1573,6 @@ int XSetWindowBorderWidth(Display *display, Window window, unsigned int width)
     TYPE_CHECK(window, WINDOW, display, 0);
     if (window != SCREEN_WINDOW) {
         GET_WINDOW_STRUCT(window)->borderWidth = width;
-        if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
-            SDL_SetWindowBordered(GET_WINDOW_STRUCT(window)->sdlWindow,
-                                  width == 0 ? SDL_FALSE : SDL_TRUE);
-        }
     }
     return 1;
 }

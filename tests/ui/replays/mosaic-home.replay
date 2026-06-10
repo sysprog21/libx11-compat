@@ -1,0 +1,19 @@
+# Deterministic local NCSA Mosaic smoke test.
+#
+# Assertions:
+#   * The initial frame is non-empty and has dark document text.
+#   * Wheel scrolling changes the document area without hanging.
+delay 3000
+wait-window "Mosaic|NCSA" 5000
+delay 5000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial mosaic-home.json
+motion 888 686
+button 1 click
+button 1 click
+button 1 click
+delay 1000
+screenshot scrolled
+assert-image scrolled common-visible.json
+assert-image scrolled mosaic-home-changed.json

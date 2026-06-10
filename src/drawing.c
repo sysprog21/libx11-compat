@@ -58,6 +58,18 @@ static double nsToMs(uint64_t ns)
     return (double) ns / 1000000.0;
 }
 
+static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
+{
+    if (!windowStruct || !rect || rect->w <= 0 || rect->h <= 0)
+        return;
+    if (!windowStruct->hasPresentRect) {
+        windowStruct->presentRect = *rect;
+        windowStruct->hasPresentRect = True;
+        return;
+    }
+    unionRect(&windowStruct->presentRect, rect, &windowStruct->presentRect);
+}
+
 static FILE *renderStatsFile(void)
 {
     static Bool initialized = False;
@@ -70,7 +82,8 @@ static FILE *renderStatsFile(void)
             if (file) {
                 setvbuf(file, NULL, _IOLBF, 0);
                 fprintf(file,
-                        "event\telapsed_ms\treadback_ms\twindows\tpixels\n");
+                        "event\telapsed_ms\treadback_ms\tupdate_"
+                        "ms\twindows\tpixels\n");
             }
         }
     }
@@ -119,6 +132,7 @@ void drawWindowDataToScreen()
 
     uint64_t totalStart = monotonicNowNs();
     uint64_t readbackNs = 0;
+    uint64_t updateNs = 0;
     uint64_t presentedPixels = 0;
     size_t presentedWindows = 0;
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
@@ -153,6 +167,12 @@ void drawWindowDataToScreen()
 
         int w, h;
         GET_WINDOW_DIMS(children[i], w, h);
+        SDL_Rect presentRect = {0, 0, w, h};
+        if (child->hasPresented && child->hasPresentRect)
+            presentRect = child->presentRect;
+        SDL_Rect bounds = {0, 0, w, h};
+        if (!SDL_IntersectRect(&presentRect, &bounds, &presentRect))
+            continue;
         /* Clamp the readback rect to all three of the X11 logical size, the
          * backing texture size, and the SDL window surface size. Window surface
          * and X11 logical w/h can diverge during resize and on high-DPI setups;
@@ -160,13 +180,10 @@ void drawWindowDataToScreen()
          */
         int texW = 0, texH = 0;
         SDL_QueryTexture(child->sdlTexture, NULL, NULL, &texW, &texH);
-        int rw = w < texW ? w : texW;
-        int rh = h < texH ? h : texH;
-        if (rw > winSurface->w)
-            rw = winSurface->w;
-        if (rh > winSurface->h)
-            rh = winSurface->h;
-        if (rw <= 0 || rh <= 0)
+        SDL_Rect texBounds = {0, 0, texW, texH};
+        SDL_Rect surfaceBounds = {0, 0, winSurface->w, winSurface->h};
+        if (!SDL_IntersectRect(&presentRect, &texBounds, &presentRect) ||
+            !SDL_IntersectRect(&presentRect, &surfaceBounds, &presentRect))
             continue;
         if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
             LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
@@ -186,12 +203,6 @@ void drawWindowDataToScreen()
         screenTargetMutated = True;
         Uint32 winFmt = winSurface->format->format;
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
-        SDL_Rect r = {
-            .x = 0,
-            .y = 0,
-            .w = rw,
-            .h = rh,
-        };
         int readRc = -1;
         uint64_t readStart = monotonicNowNs();
         if (winFmt == readFmt) {
@@ -199,29 +210,38 @@ void drawWindowDataToScreen()
              * full-image memcpy on every present.
              */
             if (SDL_LockSurface(winSurface) == 0) {
-                readRc = SDL_RenderReadPixels(
-                    screen, &r, readFmt, winSurface->pixels, winSurface->pitch);
+                Uint8 *pixels =
+                    (Uint8 *) winSurface->pixels +
+                    (size_t) presentRect.y * (size_t) winSurface->pitch +
+                    (size_t) presentRect.x *
+                        (size_t) winSurface->format->BytesPerPixel;
+                readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
+                                              pixels, winSurface->pitch);
                 SDL_UnlockSurface(winSurface);
             }
         } else {
-            SDL_Surface *staging =
-                SDL_CreateRGBSurfaceWithFormat(0, rw, rh, 32, readFmt);
+            SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
+                0, presentRect.w, presentRect.h, 32, readFmt);
             if (staging) {
-                readRc = SDL_RenderReadPixels(screen, &r, readFmt,
+                readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
                                               staging->pixels, staging->pitch);
                 if (readRc == 0) {
-                    SDL_BlitSurface(staging, NULL, winSurface, NULL);
+                    SDL_BlitSurface(staging, NULL, winSurface, &presentRect);
                 }
                 SDL_FreeSurface(staging);
             }
         }
         readbackNs += monotonicNowNs() - readStart;
         if (readRc == 0) {
-            SDL_UpdateWindowSurface(child->sdlWindow);
+            uint64_t updateStart = monotonicNowNs();
+            SDL_UpdateWindowSurfaceRects(child->sdlWindow, &presentRect, 1);
+            updateNs += monotonicNowNs() - updateStart;
             child->needsPresent = False;
+            child->hasPresentRect = False;
             child->hasPresented = True;
             presentedWindows++;
-            presentedPixels += (uint64_t) rw * (uint64_t) rh;
+            presentedPixels +=
+                (uint64_t) presentRect.w * (uint64_t) presentRect.h;
         } else {
             LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -236,40 +256,76 @@ void drawWindowDataToScreen()
     printWindowsHierarchy();
 #endif
     FILE *stats = renderStatsFile();
-    if (stats) {
+    if (stats && presentedWindows > 0) {
         uint64_t totalEnd = monotonicNowNs();
-        fprintf(stats, "drawWindowDataToScreen\t%.3f\t%.3f\t%zu\t%" PRIu64 "\n",
+        fprintf(stats,
+                "drawWindowDataToScreen\t%.3f\t%.3f\t%.3f\t%zu\t%" PRIu64 "\n",
                 nsToMs(totalEnd - totalStart), nsToMs(readbackNs),
-                presentedWindows, presentedPixels);
+                nsToMs(updateNs), presentedWindows, presentedPixels);
     }
+}
+
+void markWindowNeedsPresentRect(Window window, const SDL_Rect *rect)
+{
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window) || !rect || rect->w <= 0 ||
+        rect->h <= 0)
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    int w, h;
+    GET_WINDOW_DIMS(window, w, h);
+    SDL_Rect bounds = {0, 0, w, h};
+    SDL_Rect clipped;
+    if (!SDL_IntersectRect(rect, &bounds, &clipped))
+        return;
+    windowStruct->needsPresent = True;
+    unionPresentRect(windowStruct, &clipped);
+    schedulePresentWake();
 }
 
 void markWindowNeedsPresent(Window window)
 {
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
         return;
-
-    GET_WINDOW_STRUCT(window)->needsPresent = True;
-    schedulePresentWake();
+    int w, h;
+    GET_WINDOW_DIMS(window, w, h);
+    SDL_Rect full = {0, 0, w, h};
+    markWindowNeedsPresentRect(window, &full);
 }
 
-void presentDrawableIfVisible(Drawable drawable)
+void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect)
 {
     if (!IS_TYPE(drawable, WINDOW))
         return;
 
+    Bool haveRect = rect && rect->w > 0 && rect->h > 0;
+    SDL_Rect topRect = haveRect ? *rect : (SDL_Rect) {0, 0, 0, 0};
     Window window = (Window) drawable;
     while (window != None && window != SCREEN_WINDOW) {
         if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
             WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
             Bool firstPresent = !windowStruct->hasPresented;
-            markWindowNeedsPresent(window);
+            if (haveRect)
+                markWindowNeedsPresentRect(window, &topRect);
+            else
+                markWindowNeedsPresent(window);
             if (firstPresent)
                 drawWindowDataToScreen();
             return;
         }
+        if (haveRect) {
+            int x = 0, y = 0;
+            GET_WINDOW_POS(window, x, y);
+            topRect.x += x;
+            topRect.y += y;
+        }
         window = GET_PARENT(window);
     }
+}
+
+void presentDrawableIfVisible(Drawable drawable)
+{
+    presentDrawableRectIfVisible(drawable, NULL);
 }
 
 static struct {
@@ -397,10 +453,6 @@ SDL_Renderer *getWindowRenderer(Window window)
         .h = clipAbs.h,
     };
     setRendererDrawableClip(renderer, &drawableClip);
-    if (drawWindow != SCREEN_WINDOW) {
-        GET_WINDOW_STRUCT(drawWindow)->needsPresent = True;
-        schedulePresentWake();
-    }
     return renderer;
 }
 

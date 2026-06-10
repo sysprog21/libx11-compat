@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUT_ROOT = ROOT / "build" / "violawww-differential"
+DEFAULT_OUT_ROOT = ROOT / "build" / "mosaic-differential"
 
 
 def run(cmd, *, cwd=ROOT, env=None, input_text=None):
@@ -64,9 +64,9 @@ def remote_script(args, remote_repo):
     clean_remote = ""
     if args.clean:
         clean_remote = (
-            f"rm -rf {q(remote_repo + '/build/violawww-system-motif')} "
-            f"{q(remote_repo + '/build/violawww-system-out')} "
-            f"{q(remote_repo + '/build/violawww-system')} "
+            f"rm -rf {q(remote_repo + '/build/mosaic-system-motif')} "
+            f"{q(remote_repo + '/build/mosaic-system-out')} "
+            f"{q(remote_repo + '/build/mosaic-system')} "
             f"{q(args.remote_root + '/screens')} "
             f"{q(args.remote_root + '/logs')} "
             f"{q(args.remote_root + '/diff')}\n"
@@ -82,7 +82,7 @@ if command -v apt-get >/dev/null 2>&1; then
         autoconf automake bison build-essential ca-certificates git \\
         imagemagick libtool make pkg-config python3-pil rsync xauth xvfb \\
         xdotool libice-dev libsm-dev libx11-dev libxext-dev libxmu-dev libxpm-dev \\
-        libxrender-dev libxt-dev
+        libxt-dev
 fi
 """
 
@@ -119,15 +119,16 @@ fi
 
 remote_root={q(args.remote_root)}
 repo={q(remote_repo)}
-system_build="$repo/build/violawww-system-motif"
-system_out="$repo/build/violawww-system-out"
-system_viola="$repo/build/violawww-system"
+system_build="$repo/build/mosaic-system-motif"
+system_out="$repo/build/mosaic-system-out"
+system_mosaic="$repo/build/mosaic-system"
 system_logs="$remote_root/logs/system"
 compat_logs="$remote_root/logs/compat"
 system_screens="$remote_root/screens/system"
 compat_screens="$remote_root/screens/compat"
-fixture="$remote_root/violawww-fixture.html"
+fixture="$repo/tests/ui/fixtures/mosaic/link-index.html"
 display=:{q(args.display)}
+replay={q(args.replay)}
 
 run_logged() {{
     log=$1
@@ -142,22 +143,22 @@ run_logged() {{
     fi
 }}
 
-capture_vw() {{
+capture_mosaic() {{
     name=$1
     bin=$2
     workdir=$3
     libpath=$4
     log_dir=$5
     screen_dir=$6
-    replay=$7
-    input_backend=$8
+    input_backend=$7
     replay_out="$remote_root/replay-$name"
-    rm -rf "$replay_out"
-    mkdir -p "$log_dir" "$screen_dir"
+    rm -rf "$replay_out" "$remote_root/home-$name"
+    mkdir -p "$log_dir" "$screen_dir" "$remote_root/home-$name"
     python3 "$repo/scripts/run-ui-replay.py" \\
-        --name "violawww-$name-scroll" \\
+        --name "mosaic-$name-link" \\
         --app "$bin" \\
-        --app-arg "file:$fixture" \\
+        --app-arg=-geometry --app-arg=900x720+0+0 \\
+        --app-arg "file://localhost$fixture" \\
         --workdir "$workdir" \\
         --replay "$repo/tests/ui/replays/$replay" \\
         --out-root "$replay_out" \\
@@ -165,10 +166,13 @@ capture_vw() {{
         --geometry {q(args.geometry)} \\
         --input-backend "$input_backend" \\
         --screenshot-command import \\
+        --screenshot-region 0,0,900,720 \\
         --env DISPLAY="$display" \\
         --env HOME="$remote_root/home-$name" \\
-        --env WWW_HOME="file:$fixture" \\
-        --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+        --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
+        --env XAPPLRESDIR="$workdir" \\
+        --env XFILESEARCHPATH="$workdir/%N:$workdir/%N.ad" \\
+        --env LIBX11_COMPAT_FONT_DIR="$repo/build/../fonts"
     cp "$replay_out"/screens/*.png "$screen_dir"/
     cp "$replay_out"/results.tsv "$log_dir/results.tsv"
     cp "$replay_out"/junit.xml "$log_dir/junit.xml"
@@ -178,57 +182,11 @@ capture_vw() {{
 {clean_remote}
 rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
     "$remote_root/report.tsv" "$remote_root/junit.xml" "$remote_root"/replay-*
-mkdir -p "$system_build" "$system_out" "$system_viola" "$system_logs" \\
-    "$compat_logs" "$system_screens" "$compat_screens" "$remote_root/home-system" \\
-    "$remote_root/home-compat" "$remote_root/logs"
-
-cat >"$fixture" <<'EOF'
-<!doctype html>
-<html>
-<head>
-<title>ViolaWWW libX11 differential fixture</title>
-</head>
-<body>
-<h1>ViolaWWW Differential</h1>
-<p>This local document exercises Motif chrome, Xlib drawing, text, links, lists,
-forms, and table layout without depending on network access.</p>
-<ul>
-<li><a href="https://info.cern.ch/">CERN home</a></li>
-<li><a href="https://web.archive.org/">Wayback</a></li>
-</ul>
-<table border="1">
-<tr><th>API</th><th>Expected visible result</th></tr>
-<tr><td>XDrawString</td><td>Readable proportional text</td></tr>
-<tr><td>XFillRectangle</td><td>Cell backgrounds and borders</td></tr>
-<tr><td>XDrawLine</td><td>Table grid lines remain aligned while scrolling</td></tr>
-<tr><td>XCopyArea</td><td>Viewport updates do not leave stale glyphs</td></tr>
-<tr><td>XClearArea</td><td>Rows repaint cleanly after expose and resize</td></tr>
-</table>
-<p>Scroll marker 01: this paragraph makes the page taller than the viewport.</p>
-<p>Scroll marker 02: text should move after wheel input on system X11.</p>
-<p>Scroll marker 03: text should move after wheel input on libx11-compat.</p>
-<p>Scroll marker 04: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 05: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 06: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 07: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 08: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 09: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 10: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 11: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 12: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 13: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 14: repeated rows exercise clipping and repaint.</p>
-<p>Scroll marker 15: repeated rows exercise clipping and repaint.</p>
-<form>
-<input type="text" value="typed text">
-<input type="submit" value="Submit">
-</form>
-</body>
-</html>
-EOF
+mkdir -p "$system_build" "$system_out" "$system_mosaic" "$system_logs" \\
+    "$compat_logs" "$system_screens" "$compat_screens" "$remote_root/logs"
 
 cd "$repo"
-make -j{q(args.jobs)} CC=gcc violawww
+make -j{q(args.jobs)} CC=gcc mosaic
 
 motif_src="$repo/build/upstream/motif"
 cd "$system_build"
@@ -256,35 +214,43 @@ run_logged "$remote_root/logs/system-motif-build.log" make -C config
 run_logged "$remote_root/logs/system-motif-build.log" make -C lib/Xm CFLAGS="-g -O0 -include stdlib.h"
 run_logged "$remote_root/logs/system-motif-build.log" make -C lib/Mrm CFLAGS="-g -O0 -include stdlib.h"
 
-rm -rf "$system_viola/source"
-mkdir -p "$system_viola/source"
-tar --exclude .git --exclude '*.o' --exclude '*.d' --exclude '*.a' \\
-    --exclude src/vw/vw --exclude src/viola/viola --exclude vplot_dir/vplot \\
-    -cf - -C "$repo/build/upstream/violawww-src" . | tar -xf - -C "$system_viola/source"
-for patch_file in "$repo"/compat/violawww-patches/*.patch; do
+rm -rf "$system_mosaic/source"
+mkdir -p "$system_mosaic/source"
+tar --exclude .git --exclude '*.o' --exclude '*.a' \\
+    --exclude '*.dSYM' --exclude src/Mosaic \\
+    -cf - -C "$repo/build/upstream/mosaic" . | tar -xf - -C "$system_mosaic/source"
+for patch_file in "$repo"/compat/mosaic-patches/*.patch; do
     [ -e "$patch_file" ] || continue
-    patch -d "$system_viola/source" -p1 < "$patch_file"
+    patch -d "$system_mosaic/source" -p1 < "$patch_file"
 done
+touch "$system_mosaic/source/config.h"
 
-x11_cflags=$(pkg-config --cflags x11 xext xmu xt sm ice xrender xpm 2>/dev/null || true)
-x11_libs=$(pkg-config --libs x11 xext xmu xt sm ice xrender xpm 2>/dev/null || \\
-    printf '%s\\n' "-lXext -lXmu -lXt -lSM -lICE -lX11 -lXrender -lXpm")
+x11_cflags=$(pkg-config --cflags x11 xext xmu xt xpm 2>/dev/null || true)
+x11_libs=$(pkg-config --libs x11 xext xmu xt xpm 2>/dev/null || \\
+    printf '%s\\n' "-lXext -lXmu -lXt -lXpm -lX11")
 motif_cflags="-I$motif_src/lib -I$system_build/lib"
 motif_libs="-L$system_build/lib/Xm/.libs -L$system_build/lib/Mrm/.libs"
-: "${{x11_cflags:=$motif_cflags}}"
-x11_cflags="$motif_cflags $x11_cflags"
-: >"$remote_root/logs/system-violawww-build.log"
-run_logged "$remote_root/logs/system-violawww-build.log" \\
-    make -C "$system_viola/source" \\
+: >"$remote_root/logs/system-mosaic-build.log"
+run_logged "$remote_root/logs/system-mosaic-build.log" \\
+    make -C "$system_mosaic/source" -f makefiles/Makefile.linux \\
+        MAKEFLAGS= MFLAGS= \\
         CC=gcc \\
-        OPENMOTIF_PREFIX="$system_out/motif-install" \\
-        CFLAGS="-O0 -g -std=gnu17 -funsigned-char -DVIOLA_LINUX -DNO_ALLOCA -Wno-everything" \\
-        CFLAGS_LIBS="-O0 -g -funsigned-char -DVIOLA_LINUX -DNO_ALLOCA -Wno-everything" \\
-        X11_CFLAGS="$x11_cflags" \\
-        X11_LIBS="$x11_libs" \\
-        LDFLAGS="$motif_libs -Wl,-rpath,$system_build/lib/Xm/.libs -Wl,-rpath,$system_build/lib/Mrm/.libs" \\
-        LIBS="-lXm $x11_libs -lm" \\
-        all
+        RANLIB=ranlib \\
+        CFLAGS="-O0 -g -std=gnu89 -fcommon -w -DMOTIF -DMOTIF1_2 -DLINUX -DXMOSAIC -D_GNU_SOURCE -D_DARWIN_C_SOURCE" \\
+        sysconfigflags="-DMOTIF -DMOTIF1_2 -DLINUX" \\
+        prereleaseflags="" \\
+        customflags='-DHOME_PAGE_DEFAULT=\\\\\\"http://info.cern.ch/\\\\\\"' \\
+        xinc="$motif_cflags $x11_cflags" \\
+        xlibs="-lXm $x11_libs" \\
+        ldflags="$motif_libs -Wl,-rpath,$system_build/lib/Xm/.libs -Wl,-rpath,$system_build/lib/Mrm/.libs" \\
+        pngflags="" \\
+        pnglibs="" \\
+        jpegflags="" \\
+        jpeglibs="" \\
+        krbflags="" \\
+        krblibs="" \\
+        syslibs="-lm" \\
+        default
 
 rm -f "/tmp/.X{q(args.display)}-lock"
 Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb.log" 2>&1 &
@@ -292,22 +258,20 @@ xvfb_pid=$!
 trap 'kill "$xvfb_pid" >/dev/null 2>&1 || true' EXIT
 sleep 1
 
-capture_vw system \\
-    "$system_viola/source/src/vw/vw" \\
-    "$system_viola/source" \\
+capture_mosaic system \\
+    "$system_mosaic/source/src/Mosaic" \\
+    "$system_mosaic/source" \\
     "$system_build/lib/Xm/.libs:$system_build/lib/Mrm/.libs" \\
     "$system_logs" \\
     "$system_screens" \\
-    violawww-scroll-system.replay \\
     xdotool
 
-capture_vw compat \\
-    "$repo/build/violawww/source/src/vw/vw" \\
-    "$repo/build/violawww/source" \\
+capture_mosaic compat \\
+    "$repo/build/mosaic/source/src/Mosaic" \\
+    "$repo/build/mosaic/source" \\
     "$repo/build:$repo/build/motif-install/lib" \\
     "$compat_logs" \\
     "$compat_screens" \\
-    violawww-scroll-system.replay \\
     internal
 
 """
@@ -389,36 +353,36 @@ def compare(args, system_dir, compat_dir, out_root):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Build ViolaWWW on a Linux SSH host against system libX11 and "
+            "Build Mosaic on a Linux SSH host against system libX11 and "
             "libx11-compat, capture screenshots under Xvfb, and compare output."
         )
     )
     parser.add_argument(
         "--remote",
-        default=parse_env_default("VIOLAWWW_DIFF_REMOTE", "node11"),
+        default=parse_env_default("MOSAIC_DIFF_REMOTE", "node11"),
     )
     parser.add_argument(
         "--remote-root",
         default=parse_env_default(
-            "VIOLAWWW_DIFF_REMOTE_ROOT",
-            "/tmp/libx11-compat-violawww-differential",
+            "MOSAIC_DIFF_REMOTE_ROOT",
+            "/tmp/libx11-compat-mosaic-differential",
         ),
     )
     parser.add_argument(
         "--display",
-        default=parse_env_default("VIOLAWWW_DIFF_DISPLAY", "120"),
+        default=parse_env_default("MOSAIC_DIFF_DISPLAY", "123"),
     )
     parser.add_argument(
         "--geometry",
-        default=parse_env_default("VIOLAWWW_DIFF_GEOMETRY", "1280x1024x24"),
+        default=parse_env_default("MOSAIC_DIFF_GEOMETRY", "1280x1024x24"),
     )
     parser.add_argument(
         "--jobs",
-        default=parse_env_default("VIOLAWWW_DIFF_JOBS", os.environ.get("JOBS", "1")),
+        default=parse_env_default("MOSAIC_DIFF_JOBS", os.environ.get("JOBS", "1")),
     )
     parser.add_argument(
-        "--seconds",
-        default=parse_env_default("VIOLAWWW_DIFF_SECONDS", "5"),
+        "--replay",
+        default=parse_env_default("MOSAIC_DIFF_REPLAY", "mosaic-differential.replay"),
     )
     parser.add_argument("--clean", action="store_true")
     parser.add_argument(
@@ -429,28 +393,28 @@ def main():
     parser.add_argument(
         "--mae-threshold",
         type=float,
-        default=float(parse_env_default("VIOLAWWW_DIFF_MAE_THRESHOLD", "0.12")),
+        default=float(parse_env_default("MOSAIC_DIFF_MAE_THRESHOLD", "0.16")),
     )
     parser.add_argument(
         "--changed-threshold",
         type=float,
-        default=float(parse_env_default("VIOLAWWW_DIFF_CHANGED_THRESHOLD", "0.35")),
+        default=float(parse_env_default("MOSAIC_DIFF_CHANGED_THRESHOLD", "0.42")),
     )
     parser.add_argument(
         "--top",
         type=int,
-        default=int(parse_env_default("VIOLAWWW_DIFF_TOP", "12")),
+        default=int(parse_env_default("MOSAIC_DIFF_TOP", "12")),
     )
     parser.add_argument(
         "--out-root",
         type=Path,
-        default=Path(parse_env_default("VIOLAWWW_DIFF_OUT_ROOT", DEFAULT_OUT_ROOT)),
+        default=Path(parse_env_default("MOSAIC_DIFF_OUT_ROOT", DEFAULT_OUT_ROOT)),
         help="local artifact directory for synced screenshots, diffs, TSV, and JUnit",
     )
     parser.add_argument(
         "--compare-location",
         choices=("remote", "local"),
-        default=parse_env_default("VIOLAWWW_DIFF_COMPARE_LOCATION", "remote"),
+        default=parse_env_default("MOSAIC_DIFF_COMPARE_LOCATION", "remote"),
     )
     args = parser.parse_args()
 
@@ -460,6 +424,8 @@ def main():
         parser.error("--jobs must be a positive integer")
     if int(args.jobs) <= 0:
         parser.error("--jobs must be a positive integer")
+    if "/" in args.replay or args.replay.startswith("."):
+        parser.error("--replay must name a replay file under tests/ui/replays")
 
     remote_repo = sync_repo(args)
     remote_status = 0
@@ -476,8 +442,6 @@ def main():
         except subprocess.CalledProcessError as error:
             compare_status = error.returncode
 
-    # Catch rsync failures here so an unrelated transfer hiccup can't
-    # mask the original remote/compare failure on the exit path below.
     try:
         system_dir, compat_dir, out_root = fetch_results(
             args,

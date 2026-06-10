@@ -1,0 +1,27 @@
+diff --git a/libhtmlw/HTML-PSformat.c b/libhtmlw/HTML-PSformat.c
+index 7c76ef0..b400045 100644
+--- a/libhtmlw/HTML-PSformat.c
++++ b/libhtmlw/HTML-PSformat.c
+@@ -74,7 +74,7 @@
+ #ifdef __bsdi__
+ #include <sys/malloc.h>
+ #else
+-#ifndef VAXC
++#if !defined(VAXC) && !defined(__APPLE__)
+ #include <malloc.h>
+ #endif
+ #endif
+diff --git a/src/proxy-dialogs.c b/src/proxy-dialogs.c
+index 91da3d8..0979d31 100644
+--- a/src/proxy-dialogs.c
++++ b/src/proxy-dialogs.c
+@@ -70,7 +70,9 @@
+ 
+ #ifdef __bsdi__
+ #include <sys/malloc.h>
++#elif defined(__APPLE__)
++#include <stdlib.h>
+ #else
+ #include <malloc.h>
+ #endif
+ #include <string.h>

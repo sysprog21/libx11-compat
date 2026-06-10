@@ -131,9 +131,10 @@ int XFreePixmap(Display *display, Pixmap pixmap)
     SET_X_SERVER_REQUEST(display, X_FreePixmap);
     TYPE_CHECK(pixmap, PIXMAP, display, 0);
     PixmapStruct *pixmapStruct = GET_PIXMAP_STRUCT(pixmap);
-    FREE_XID(pixmap);
     SDL_DestroyTexture(pixmapStruct->texture);
     free(pixmapStruct);
+    SET_XID_VALUE(pixmap, NULL);
+    SET_XID_TYPE(pixmap, CLOSED_PIXMAP);
     return 1;
 }
 

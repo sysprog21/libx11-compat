@@ -46,7 +46,7 @@ The screenshot above is from the larger ViolaWWW port described in [Larger Workl
 
 ## Larger Workloads Under Investigation
 
-Two ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
+Three ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
 They are still compatibility workloads rather than daily-use application ports,
 but each exercises behavior that small examples do not reach.
 
@@ -68,7 +68,21 @@ but each exercises behavior that small examples do not reach.
   make check-differential-violawww       # screenshot diff vs system libX11 (needs remote host)
   ```
 
+- [NCSA Mosaic](https://en.wikipedia.org/wiki/Mosaic_(web_browser)): the maintained [thentenaar/mosaic-ng](https://github.com/thentenaar/mosaic-ng) fork of the seminal 1993 graphical browser builds against the compat stack plus the bundled Motif.
+  It loads HTTP pages, lays out inline images and tables, and is covered by replay smoke checks for initial paint, scrolling, hyperlink navigation, and URL-field editing.
+  HTTPS and modern HTML/CSS remain application-level limitations.
+
+  <a href="assets/mosaic.png"><img src="assets/mosaic.png" alt="NCSA Mosaic running through libx11-compat" width="420"></a>
+
+  ```sh
+  make mosaic                            # build Mosaic (depends on motif)
+  build/mosaic/source/src/Mosaic         # launch the browser
+  make check-smoke-mosaic                # replay-driven smoke checks (paint + scroll + navigation)
+  make check-differential-mosaic         # screenshot diff vs system libX11 (needs remote host)
+  ```
+
   The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
+  `make profile-ui` runs the same replay suite and prints the generated `metrics.tsv` and `render-stats.tsv` paths, making XTest/replay the shared basis for UI automation and performance profiling across Motif, ViolaWWW, and Mosaic.
   They do not require `node11`, `xdotool`, or a native X11 reference run.
   Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
 
