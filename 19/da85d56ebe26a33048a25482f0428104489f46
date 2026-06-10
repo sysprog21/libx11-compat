@@ -1,0 +1,189 @@
+tests/ui/replays/mosaic-differential.replay
+  s_a3de0f03f8a0e4::t_a5f907e58031b4 1-14
+src/drawing.h
+  s_71169d1aad6c53::t_e25817635d9ed6 81,83
+mk/xcompat-libs.mk
+  s_71169d1aad6c53::t_e25817635d9ed6 13-14
+tests/ui/assertions/mosaic-linked.json
+  s_a3de0f03f8a0e4::t_9c38e93fbc5a59 9-15
+  s_a3de0f03f8a0e4::t_3a48708b9b02fd 1-8,16-18
+src/wrapper/sdl-wrapper.c
+  s_71169d1aad6c53::t_e25817635d9ed6 449-451
+src/snapshot.c
+  s_71169d1aad6c53::t_e25817635d9ed6 149,206
+scripts/profile-motif-demos.sh
+  s_71169d1aad6c53::t_d1ee5ef8ef3ddf 12
+compat/xmu-compat.c
+  s_a3de0f03f8a0e4::t_2075146711fcb2 10
+  s_71169d1aad6c53::t_e25817635d9ed6 2,11,67-75,85-102,211-260,269-273,279-363
+  s_a3de0f03f8a0e4::t_9c8fddb6f282bd 12,76-84,261-268,274-278
+src/font.c
+  s_71169d1aad6c53::t_e25817635d9ed6 445,448
+src/drawing.c
+  s_71169d1aad6c53::t_e25817635d9ed6 61-72,85-86,135,170-175,183-186,213-219,223-224,226,229,236-238,240,243-244,259,261-262,264,268,270-271,274-282,286-296,301-302,308-311,316-321,326-328
+tests/ui/assertions/mosaic-url-edit.json
+  s_a3de0f03f8a0e4::t_91e1c22507b0bf 1-11
+tests/ui/replays/motif-fileview-done.replay
+  s_71169d1aad6c53::t_e25817635d9ed6 1,4,9-14,16-19
+src/replay.c
+  s_71169d1aad6c53::t_e25817635d9ed6 11,40,42,78-94,170-173
+mk/mosaic.mk
+  s_a3de0f03f8a0e4::t_a0b5d8bede0add 158
+  s_a3de0f03f8a0e4::t_ceb2029f4bbedc 16
+  s_a3de0f03f8a0e4::t_181ac426bc6405 14
+  s_a3de0f03f8a0e4::t_b5866932c717cb 182,206-212,217,219-222,224-231,233-234
+  s_a3de0f03f8a0e4::t_6a9f77addec022 30,103
+  s_a3de0f03f8a0e4::t_80990e05e0bf01 187,215
+  s_a3de0f03f8a0e4::t_73c678b82006aa 189
+  s_a3de0f03f8a0e4::t_cdf3d4b7f94197 194,223
+  s_a3de0f03f8a0e4::t_2758e6dae9dc67 109
+  s_a3de0f03f8a0e4::t_bc6a85482fb67c 1-3,5-12,18-29,31-87,89,91-99,104-106,108,110-112,114-134,178-181,185-186,188,190-193,195-202,204-205,264-273
+  s_a3de0f03f8a0e4::t_76d45b8b25232d 213-214,218
+  s_a3de0f03f8a0e4::t_c78f70e9443866 203,232,261
+  s_a3de0f03f8a0e4::t_91e1c22507b0bf 183-184,235-244,246-260,262-263
+  s_a3de0f03f8a0e4::t_c54359ff4d7838 216,245
+  s_a3de0f03f8a0e4::t_94a376f0a876cb 88,146-157,159-176
+  s_a3de0f03f8a0e4::t_aae570168b4715 17,90,100-102
+  s_a3de0f03f8a0e4::t_b4c52e5ff61e66 137
+  s_a3de0f03f8a0e4::t_31d2ec7626ed7b 4
+  s_a3de0f03f8a0e4::t_0d02b593e10f66 13,15,113,135-136,138-145,177
+  s_a3de0f03f8a0e4::t_7ea02601002e66 107
+mk/violawww.mk
+  s_71169d1aad6c53::t_e25817635d9ed6 223
+tests/check.c
+  s_71169d1aad6c53::t_e25817635d9ed6 1122-1131,1158-1207,1283-1285,1292-1294,1465-1468,3006-3009,3028-3032,3917-3965,4261-4315,4537-4538,4540-4543
+  s_a3de0f03f8a0e4::t_7612daa005e44e 3967-3993
+  s_a3de0f03f8a0e4::t_d51ab796da7541 3966
+  s_a3de0f03f8a0e4::t_a356a0bdebbc9a 4316
+scripts/run-violawww-differential-tests.py
+  s_71169d1aad6c53::t_e25817635d9ed6 179-180
+  s_71169d1aad6c53::t_edeca08ca00739 233
+compat/mosaic-patches/url-field-click-focus.patch
+  s_a3de0f03f8a0e4::t_c8784eb95eeef9 1-3,5-11,21,25,32,36-37,103-110,112-114,116-119
+  s_a3de0f03f8a0e4::t_367edad46bfaa7 4
+  s_a3de0f03f8a0e4::t_1304e5ebacd07b 46
+  s_a3de0f03f8a0e4::t_f34bb59180d8fa 16-17,38-40,45,120-130
+  s_a3de0f03f8a0e4::t_babde977f430da 53,59,73,78,99
+  s_a3de0f03f8a0e4::t_089edb435e202d 41-44
+  s_a3de0f03f8a0e4::t_750c5736e966ef 12-15,20,22-24,26-27,33-35,47,50-52,54-58,60-61,63-67,70-72,74-77,79,81-90,93-98,101-102,111,115
+  s_a3de0f03f8a0e4::t_064e17cfd28071 28-29
+  s_a3de0f03f8a0e4::t_84a43ccdfc7f3e 18-19,30-31,48-49,62,68-69,80,91-92,100
+mk/motif.mk
+  s_71169d1aad6c53::t_e25817635d9ed6 275,301-305,323-324,353
+  s_71169d1aad6c53::t_fc38b448631f45 3
+tests/ui/assertions/mosaic-home.json
+  s_a3de0f03f8a0e4::t_bc6a85482fb67c 1-11
+tests/ui/assertions/mosaic-home-changed.json
+  s_a3de0f03f8a0e4::t_bc6a85482fb67c 1-11
+Makefile
+  s_71169d1aad6c53::t_e25817635d9ed6 28
+tests/ui/fixtures/mosaic/index.html
+  s_a3de0f03f8a0e4::t_bc25606b144ea4 23
+  s_a3de0f03f8a0e4::t_bc6a85482fb67c 1-22,24-49
+README.md
+  s_71169d1aad6c53::t_e25817635d9ed6 49,71-83,85
+scripts/run-mosaic-differential-tests.py
+  s_a3de0f03f8a0e4::t_7060f835674fc4 242
+  s_a3de0f03f8a0e4::t_6571503a8720b3 183-184
+  s_71169d1aad6c53::t_ebfbebd5a821c6 191
+  s_a3de0f03f8a0e4::t_b22c49edd4e85c 1-182,185-190,192-241,243-474
+scripts/compare-motif-reference.py
+  s_71169d1aad6c53::t_a2d656ba72fb75 170
+tests/test-xmu-link.c
+  s_71169d1aad6c53::t_e25817635d9ed6 6-8,13,40-48,89,130-149,152-171,198-225,241-243
+  s_a3de0f03f8a0e4::t_7b093b0e3c3fad 172-197,240
+compat/mosaic-patches/darwin-malloc-header.patch
+  s_a3de0f03f8a0e4::t_aae570168b4715 1-27
+.github/workflows/ci.yml
+  s_71169d1aad6c53::t_ecc5f1d875dc7d 356
+  s_71169d1aad6c53::t_e25817635d9ed6 10-11,119,188,255,304,309-310,343,359-367,433-443,459-470,504-518,532-540,580-591
+  s_71169d1aad6c53::t_39ec603b386a45 118,187,254,342
+src/pixmap.c
+  s_71169d1aad6c53::t_e25817635d9ed6 136-137
+include/X11/Xmu/StdSel.h
+  s_a3de0f03f8a0e4::t_f62083fe29471c 1-18
+src/resource-types.h
+  s_71169d1aad6c53::t_e25817635d9ed6 4-5,14-16,24-27,31-36
+src/window.c
+  s_71169d1aad6c53::t_e25817635d9ed6 82,449-453,465-468
+compat/mosaic-patches/home-page-default-override.patch
+  s_a3de0f03f8a0e4::t_d664d28e3e718d 1-15
+scripts/validate-motif-demos.sh
+  s_71169d1aad6c53::t_4c82f93e3e7ba6 120
+  s_71169d1aad6c53::t_97cb35fdf5e663 125
+  s_71169d1aad6c53::t_0cff4791900d39 50
+scripts/run-ui-replay.py
+  s_71169d1aad6c53::t_e25817635d9ed6 195-198,690-706
+src/events.c
+  s_71169d1aad6c53::t_e25817635d9ed6 1570-1571,1595-1603
+compat/mosaic-patches/url-field-self-insert.patch
+  s_a3de0f03f8a0e4::t_560900e4a08852 1-8
+scripts/capture-motif-demo-screenshots.sh
+  s_71169d1aad6c53::t_dc9efb0357030d 157
+include/X11/Xmu/Xmu.h
+  s_71169d1aad6c53::t_e25817635d9ed6 9
+src/image.c
+  s_71169d1aad6c53::t_e25817635d9ed6 139-143,910-914,916
+src/gc.c
+  s_71169d1aad6c53::t_e25817635d9ed6 484-485
+tests/ui/replays/mosaic-link.replay
+  s_a3de0f03f8a0e4::t_a46c10a35a2407 8
+  s_a3de0f03f8a0e4::t_332ffa9a2a01ca 1-3,5-7,9-13
+  s_a3de0f03f8a0e4::t_098571c86e5b84 4
+tests/ui/replays/mosaic-url-edit.replay
+  s_a3de0f03f8a0e4::t_91e1c22507b0bf 1-12
+src/window.h
+  s_71169d1aad6c53::t_e25817635d9ed6 44-45
+src/window-internal.c
+  s_71169d1aad6c53::t_e25817635d9ed6 55-56,402-403,623-624,635-636,673-674,749-750,774,805-809,817-818,820,823-826
+scripts/run-motif-differential-tests.py
+  s_71169d1aad6c53::t_e25817635d9ed6 220-221
+  s_71169d1aad6c53::t_5a5d94231b7c89 229
+tests/ui/fixtures/mosaic/second.html
+  s_a3de0f03f8a0e4::t_03811ef6699787 1-14
+tests/ui/replays/mosaic-home.replay
+  s_a3de0f03f8a0e4::t_bc6a85482fb67c 1-4,6-7,9-11
+  s_959cb37e9898c7::t_24f6bafbb3e2fe 5,16-19
+  s_959cb37e9898c7::t_774834e5fcc4ae 12-15
+  s_a3de0f03f8a0e4::t_098571c86e5b84 8
+src/atoms.c
+  s_71169d1aad6c53::t_e25817635d9ed6 13
+tests/ui/replays/violawww-scroll.replay
+  s_71169d1aad6c53::t_e25817635d9ed6 25
+tests/ui/fixtures/mosaic/link-index.html
+  s_a3de0f03f8a0e4::t_ceb2029f4bbedc 1-14
+src/resource-types.c
+  s_a3de0f03f8a0e4::t_b3dc5feba2e91a 1-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "19da85d56ebe26a33048a25482f0428104489f46",
+  "prompts": {},
+  "sessions": {
+    "s_71169d1aad6c53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8533999d-4769-4a1d-8e11-780905f93d7d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_959cb37e9898c7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eacd6-5038-7d72-bf1c-93d5a7876270",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_a3de0f03f8a0e4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eaa91-0a77-7f13-b98e-ceedb74f57b5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
