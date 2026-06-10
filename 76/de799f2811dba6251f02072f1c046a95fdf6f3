@@ -1,0 +1,19 @@
+mk/mosaic.mk
+  s_71169d1aad6c53::t_079e8b470eea2e 104-106,111
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "76de799f2811dba6251f02072f1c046a95fdf6f3",
+  "prompts": {},
+  "sessions": {
+    "s_71169d1aad6c53": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8533999d-4769-4a1d-8e11-780905f93d7d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
