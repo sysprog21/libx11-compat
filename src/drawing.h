@@ -88,16 +88,18 @@ void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect);
  * with the same GC, so a one-deep cache catches most redundant pushes.
  * applySdlDrawState pushes the requested blend mode + color only when
  * the cached state diverges; invalidateGcStateCache is called from
- * XFreeGC so stale GC pointers don't fool a future generation match. */
+ * XFreeGC so stale GC pointers don't fool a future generation match.
+ */
 void applySdlDrawState(SDL_Renderer *renderer,
                        GC gc,
                        SDL_BlendMode blendMode,
                        unsigned long color);
 void invalidateGcStateCache(GC gc);
 /* Call after any direct SDL_SetRenderDrawColor / SDL_SetRenderDrawBlendMode
- * that doesn't go through applySdlDrawState — otherwise the next cached
+ * that does not go through applySdlDrawState. Otherwise the next cached
  * apply may see a "matching" cache entry and skip the SDL push even
- * though the renderer's real state has drifted. */
+ * though the renderer's real state has drifted.
+ */
 void invalidateSdlDrawStateCache(void);
 
 /* Shape-mask post-process for draw primitives.
@@ -119,7 +121,8 @@ SDL_Surface *captureShapeMaskBaseline(Drawable d,
 /* Returns True on success (or when no work was needed). False means the
  * SDL readback / texture upload failed and masked pixels may still be
  * visible on screen; callers may want to skip presentDrawableIfVisible
- * or log a BadMatch in that case. */
+ * or log a BadMatch in that case.
+ */
 Bool applyShapeMaskOverDrawnRect(Drawable d,
                                  SDL_Renderer *renderer,
                                  SDL_Surface *baseline,
@@ -138,7 +141,8 @@ Bool applyShapeMaskOverDrawnRect(Drawable d,
  * If shapeGuardEnd returns False the shape composite failed; masked-out
  * pixels may still be visible, so callers should skip the present rather
  * than show that stale state (the next draw composes from a fresh
- * baseline). */
+ * baseline).
+ */
 typedef struct {
     SDL_Surface *baseline;
     SDL_Rect bbox;
@@ -159,7 +163,8 @@ static inline void shapeGuardBegin(ShapeGuard *g,
 
 /* Returns True on success (or when nothing was captured). False signals
  * that the post-draw composite failed and masked pixels may still show;
- * callers that care can suppress the subsequent present or raise BadMatch. */
+ * callers that care can suppress the subsequent present or raise BadMatch.
+ */
 static inline Bool shapeGuardEnd(ShapeGuard *g)
 {
     if (!g->baseline)
@@ -172,7 +177,8 @@ static inline Bool shapeGuardEnd(ShapeGuard *g)
 }
 
 /* Saturating cast from int64 to int. Used wherever a 64-bit overflow-safe
- * accumulator must land back in SDL_Rect's signed-int fields. */
+ * accumulator must land back in SDL_Rect's signed-int fields.
+ */
 static inline int clampToInt(int64_t value)
 {
     if (value < INT_MIN)
@@ -182,11 +188,12 @@ static inline int clampToInt(int64_t value)
     return (int) value;
 }
 
-/* SDL_UnionRect is not in our SDL wrapper shim's export list. Inline a
- * minimal equivalent: result becomes the smallest rect containing both
- * inputs (both assumed non-empty; w/h are width/height, not extents).
- * Use int64_t for extent and span math so caller-supplied coordinates near
- * INT_MAX/INT_MIN can't wrap into invalid SDL_Rects. */
+/* SDL_UnionRect is not in the SDL wrapper shim's export list. The inline
+ * equivalent below produces the smallest rect containing both inputs
+ * (both assumed non-empty; w/h are width/height, not extents). The
+ * extent and span math runs in int64_t so caller-supplied coordinates
+ * near INT_MAX/INT_MIN cannot wrap into invalid SDL_Rects.
+ */
 static inline void unionRect(const SDL_Rect *a,
                              const SDL_Rect *b,
                              SDL_Rect *out)

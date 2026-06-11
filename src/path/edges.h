@@ -1,4 +1,4 @@
-/* Fixed-point edge storage for libx11-compat path fills
+/* Fixed-point edge storage for path fills
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

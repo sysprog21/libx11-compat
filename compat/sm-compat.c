@@ -26,9 +26,7 @@ SmcConn SmcOpenConnection(char *networkIdsList,
     return 0;
 }
 
-SmcCloseStatus SmcCloseConnection(SmcConn smcConn,
-                                  int count,
-                                  char **reasonMsgs)
+SmcCloseStatus SmcCloseConnection(SmcConn smcConn, int count, char **reasonMsgs)
 {
     (void) smcConn;
     (void) count;
@@ -59,26 +57,21 @@ Status SmcRegisterClient(SmcConn smcConn,
     return 0;
 }
 
-void SmcSetProperties(SmcConn smcConn,
-                      int numProps,
-                      SmProp **props)
+void SmcSetProperties(SmcConn smcConn, int numProps, SmProp **props)
 {
     (void) smcConn;
     (void) numProps;
     (void) props;
 }
 
-void SmcDeleteProperties(SmcConn smcConn,
-                         int numProps,
-                         char **propNames)
+void SmcDeleteProperties(SmcConn smcConn, int numProps, char **propNames)
 {
     (void) smcConn;
     (void) numProps;
     (void) propNames;
 }
 
-void SmcSaveYourselfDone(SmcConn smcConn,
-                         Bool success)
+void SmcSaveYourselfDone(SmcConn smcConn, Bool success)
 {
     (void) smcConn;
     (void) success;

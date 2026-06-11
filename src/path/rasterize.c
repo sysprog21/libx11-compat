@@ -1,4 +1,4 @@
-/* Active-edge span rasterization for libx11-compat
+/* Active-edge span rasterization
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

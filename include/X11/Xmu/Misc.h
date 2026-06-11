@@ -3,7 +3,8 @@
 
 /* INT_MAX written as a hex literal. Computing it via (1 << 31) - 1
  * would shift into the sign bit of a signed int, which C99 6.5.7p4
- * leaves undefined. */
+ * leaves undefined.
+ */
 #define MAXDIMENSION 0x7FFFFFFF
 #define Max(x, y) (((x) > (y)) ? (x) : (y))
 #define Min(x, y) (((x) < (y)) ? (x) : (y))

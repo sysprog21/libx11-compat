@@ -22,7 +22,8 @@ void replayTargetRootToLocal(int rootX, int rootY, int *localX, int *localY);
  * and the local-coord translation should prefer this over the separate
  * replayTargetWindowId / replayTargetRootToLocal pair, since the latter
  * pair can read a half-retargeted state where id and root come from
- * different generations. */
+ * different generations.
+ */
 Bool replayTargetTranslateRoot(int rootX,
                                int rootY,
                                Uint32 *winId,

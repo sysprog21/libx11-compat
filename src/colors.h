@@ -39,7 +39,8 @@
  * transparent. Promote alpha == 0 to 0xFF to preserve the legacy
  * contract. Trade-off: callers that intentionally pass an ARGB pixel
  * value with alpha == 0 (a non-core Xrender/Composite usage) lose the
- * transparency. Use the XRender path when alpha is meaningful. */
+ * transparency. Use the XRender path when alpha is meaningful.
+ */
 static inline unsigned long colorWithOpaqueDefault(unsigned long color)
 {
     if ((color & (0xFFul << ALPHA_SHIFT)) == 0)

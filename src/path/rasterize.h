@@ -1,4 +1,4 @@
-/* Span rasterization for libx11-compat path fills
+/* Span rasterization for path fills
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

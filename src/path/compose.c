@@ -1,4 +1,4 @@
-/* Span composition helpers for libx11-compat
+/* Span composition helpers
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
@@ -114,7 +114,8 @@ Bool pathComposeSpansToBuffer(Uint32 *buffer,
 
     /* Promote core X11 pixels (alpha byte == 0) to opaque before they reach
      * the pixman fill or the per-span blend loop; otherwise primitives that
-     * use BlackPixel would write transparent destinations. */
+     * use BlackPixel would write transparent destinations.
+     */
     color = colorWithOpaqueDefault(color);
 
     Uint32 src = colorToRgba8888(color);

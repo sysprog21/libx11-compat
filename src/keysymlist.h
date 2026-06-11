@@ -193,7 +193,8 @@ static const struct {
     {XK_period, "period"},
     {XK_slash, "slash"},
     /* Keep digit aliases: canonical keysym headers expose XK_0..XK_9, and
-     * XStringToKeysym("0") style lookups depend on these printable names. */
+     * XStringToKeysym("0") style lookups depend on these printable names.
+     */
     {XK_0, "0"},
     {XK_1, "1"},
     {XK_2, "2"},

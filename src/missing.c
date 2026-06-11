@@ -26,11 +26,12 @@
 
 int _Xdebug;
 
-/* Saturating 64-bit multiply-add for geometry math. Real Xlib only ever
- * deals with display-scale pixels, but XParseGeometry happily accepts
- * UINT_MAX units which, multiplied by a UINT_MAX font cell, overshoots
- * int64_t. Saturate instead of wrapping so the caller's window placement
- * never lands at a nonsensical negative coordinate. */
+/* Saturating 64-bit multiply-add for geometry math. Real Xlib only ever deals
+ * with display-scale pixels, but XParseGeometry happily accepts UINT_MAX units
+ * which, multiplied by a UINT_MAX font cell, overshoots int64_t. Saturate
+ * instead of wrapping so the caller's window placement never lands at a
+ * nonsensical negative coordinate.
+ */
 static int64_t satMulAdd(int64_t a, int64_t b, int64_t c)
 {
     int64_t prod;
@@ -162,8 +163,9 @@ Status XAllocColorCells(
 
 int XQueryColor(register Display *dpy, Colormap cmap, XColor *def) /* RETURN */
 {
-    /* Same pixel-back-to-RGB decoding as XQueryColors. With TrueColor the
-     * pixel encodes the RGB directly, so no per-colormap cache is needed. */
+    /* Same pixel-back-to-RGB decoding as XQueryColors. With TrueColor the pixel
+     * encodes the RGB directly, so no per-colormap cache is needed.
+     */
     if (!def)
         return 0;
     return XQueryColors(dpy, cmap, def, 1);
@@ -208,9 +210,11 @@ void XUnsetICFocus(XIC ic)
     WARN_UNIMPLEMENTED;
 }
 
-/* Translate a single keysym to UTF-8. Covers ASCII, Latin-1, and the
- * X11 0x01000000 unicode keysym prefix. Returns the byte count written
- * (0 for keysyms with no associated character). */
+/* Translate a single keysym to UTF-8. Covers ASCII, Latin-1, and the X11
+ * 0x01000000 unicode keysym prefix.
+ *
+ * Returns the byte count written (0 for keysyms with no associated character).
+ */
 static int keysym_to_utf8(KeySym keysym, char *buffer, int nbytes)
 {
     unsigned long codepoint = 0;
@@ -297,8 +301,9 @@ int XmbLookupString(XIC ic,
 
 Bool XSupportsLocale(void)
 {
-    /* Quiet probe: GTK and Qt call this on startup. Returning True keeps
-     * them happy; our XmbDrawString family routes through XDrawString. */
+    /* Quiet probe: GTK and Qt call this on startup. Returning True keeps them
+     * happy; the XmbDrawString family routes through XDrawString.
+     */
     return True;
 }
 
@@ -406,21 +411,21 @@ Bool XkbSetDetectableAutoRepeat(Display *dpy, Bool detectable, Bool *supported)
 {
     (void) dpy;
     (void) detectable;
-    if (supported) {
+    if (supported)
         *supported = True;
-    }
     return True;
 }
 
-/* Synthetic XKB extension codes. We do not implement a real XKB protocol,
- * but Motif / GTK / xfreerdp probe XkbUseExtension and XkbQueryExtension
- * before any keyboard work. Reporting "available" with consistent base
- * codes from both probes keeps the downstream dispatch logic happy; the
- * actual XKB requests are still WARN_UNIMPLEMENTED stubs.
+/* Synthetic XKB extension codes. libx11-compat does not implement a real XKB
+ * protocol, but Motif / GTK / xfreerdp probe XkbUseExtension and
+ * XkbQueryExtension before any keyboard work. Reporting "available" with
+ * consistent base codes from both probes keeps the downstream dispatch logic
+ * happy; the actual XKB requests are still WARN_UNIMPLEMENTED stubs.
  *
- * The opcode/event/error bases are chosen above the core-protocol ranges
- * so a caller doing event.type - eventBase math doesn't collide with X
- * core events (0..34). */
+ * The opcode/event/error bases are chosen above the core-protocol ranges so a
+ * caller doing event.type - eventBase math does not collide with X core events
+ * (0..34).
+ */
 #define XKB_SYNTHETIC_OPCODE 135
 #define XKB_SYNTHETIC_EVENT_BASE 85
 #define XKB_SYNTHETIC_ERROR_BASE 137
@@ -524,14 +529,14 @@ int _XGetHostname(char *buf, int maxlen)
 
 /*
  * XSetWMProperties sets the following properties:
- *	WM_NAME		  type: TEXT		format: varies?
- *	WM_ICON_NAME	  type: TEXT		format: varies?
- *	WM_HINTS	  type: WM_HINTS	format: 32
- *	WM_COMMAND	  type: TEXT		format: varies?
- *	WM_CLIENT_MACHINE type: TEXT		format: varies?
- *	WM_NORMAL_HINTS	  type: WM_SIZE_HINTS 	format: 32
- *	WM_CLASS	  type: STRING/STRING	format: 8
- *	WM_LOCALE_NAME	  type: STRING		format: 8
+ * 	WM_NAME		  type: TEXT		format: varies?
+ * 	WM_ICON_NAME	  type: TEXT		format: varies?
+ * 	WM_HINTS	  type: WM_HINTS	format: 32
+ * 	WM_COMMAND	  type: TEXT		format: varies?
+ * 	WM_CLIENT_MACHINE type: TEXT		format: varies?
+ * 	WM_NORMAL_HINTS	  type: WM_SIZE_HINTS 	format: 32
+ * 	WM_CLASS	  type: STRING/STRING	format: 8
+ * 	WM_LOCALE_NAME	  type: STRING		format: 8
  */
 
 void XSetWMProperties(
@@ -559,8 +564,8 @@ void XSetWMProperties(
     /* set the command if given */
     if (argv) {
         /*
-         * for UNIX and other operating systems which use nul-terminated
-         * arrays of STRINGs.
+         * for UNIX and other operating systems which use nul-terminated arrays
+         * of STRINGs.
          */
         XSetCommand(dpy, w, argv, argc);
     }
@@ -584,8 +589,8 @@ void XSetWMProperties(
             tmp.res_name = getenv("RESOURCE_NAME");
             if (!tmp.res_name && argv && argv[0]) {
                 /*
-                 * UNIX uses /dir/subdir/.../basename; other operating
-                 * systems will have to change this.
+                 * UNIX uses /dir/subdir/.../basename; other operating systems
+                 * will have to change this.
                  */
                 char *cp = strrchr(argv[0], '/');
 #ifdef __UNIXOS2__
@@ -662,9 +667,8 @@ int XGetErrorText(register Display *dpy,
                   int nbytes)
 {
     (void) dpy;
-    if (buffer && nbytes > 0) {
+    if (buffer && nbytes > 0)
         snprintf(buffer, (size_t) nbytes, "X error %d", code);
-    }
     return 0;
 }
 
@@ -795,8 +799,9 @@ static void moveChildIndexToBottom(Array *children, size_t index)
     children->array[0] = child;
 }
 
-/* RaiseLowest: raise the lowest mapped child that is occluded by another
- * mapped sibling. If no such child exists, circulation is a no-op. */
+/* RaiseLowest: raise the lowest mapped child that is occluded by another mapped
+ * sibling. If no such child exists, circulation is a no-op.
+ */
 static void circulateChildrenUp(Window w)
 {
     Array *childArray = &GET_WINDOW_STRUCT(w)->children;
@@ -817,7 +822,8 @@ static void circulateChildrenUp(Window w)
 }
 
 /* LowerHighest: lower the highest mapped child that occludes another mapped
- * sibling. If none match, the stacking order must stay unchanged. */
+ * sibling. If none match, the stacking order must stay unchanged.
+ */
 static void circulateChildrenDown(Window w)
 {
     Array *childArray = &GET_WINDOW_STRUCT(w)->children;
@@ -865,7 +871,8 @@ int XCirculateSubwindows(register Display *dpy, Window w, int direction)
 int XInstallColormap(register Display *dpy, Colormap cmap)
 {
     /* The in-process model has a single TrueColor visual; "installing" a
-     * colormap is a no-op success. Real Xlib returns 0 on failure only. */
+     * colormap is a no-op success. Real Xlib returns 0 on failure only.
+     */
     SET_X_SERVER_REQUEST(dpy, X_InstallColormap);
     postEvent(dpy, RootWindow(dpy, DefaultScreen(dpy)), ColormapNotify, cmap,
               False, ColormapInstalled);
@@ -884,11 +891,12 @@ Status XAllocColorPlanes(register Display *dpy,
                          unsigned long *gmask,
                          unsigned long *bmask) /* CARD32 */ /* RETURN */
 {
-    /* TrueColor has only read-only cells, so XStoreColors against any
-     * pixels we hand back would be a no-op and produce visual artifacts
-     * instead of dynamic color updates. Real Xlib also fails this on
-     * read-only visuals — match that behavior so well-behaved clients
-     * fall back to XAllocColor. */
+    /* TrueColor has only read-only cells, so XStoreColors against any pixels
+     * XAllocColorPlanes would hand back would be a no-op and produce visual
+     * artifacts instead of dynamic color updates. Real Xlib also fails this on
+     * read-only visuals, so this entry point matches that behavior so
+     * well-behaved clients fall back to XAllocColor.
+     */
     SET_X_SERVER_REQUEST(dpy, X_AllocColorPlanes);
     (void) dpy;
     (void) cmap;
@@ -916,12 +924,14 @@ XIOErrorHandler XSetIOErrorHandler(XIOErrorHandler handler)
 void triggerIOError(Display *display)
 {
     if (ioErrorHandler) {
-        /* Per Xlib spec, the IO error handler is not expected to return; if
-         * it does, the client is killed. */
+        /* Per Xlib spec, the IO error handler is not expected to return; if it
+         * does, the client is killed.
+         */
         (void) ioErrorHandler(display);
     }
-    /* No handler, or handler returned: emulate the X server tearing down
-     * the connection. Real Xlib's default behavior here is _exit(1). */
+    /* No handler, or handler returned: emulate the X server tearing down the
+     * connection. Real Xlib's default behavior here is _exit(1).
+     */
     fprintf(stderr, "libX11-compat: connection torn down by host\n");
     exit(0);
 }
@@ -968,9 +978,10 @@ int XCirculateSubwindowsDown(register Display *dpy, Window w)
 
 int XSetCloseDownMode(register Display *dpy, int mode)
 {
-    /* No multi-client server state to preserve in our in-process model,
-     * so RetainPermanent / RetainTemporary / DestroyAll all collapse to
-     * a successful no-op. */
+    /* The in-process model holds no multi-client server state, so
+     * RetainPermanent / RetainTemporary / DestroyAll collapse to a successful
+     * no-op.
+     */
     SET_X_SERVER_REQUEST(dpy, X_SetCloseDownMode);
     (void) mode;
     return 1;
@@ -985,14 +996,13 @@ XcmsCCC XcmsCreateCCC(Display *dpy,
                       XcmsWhiteAdjustProc whitePtAdjProc,
                       XPointer whitePtAdjClientData)
 /*
- *	DESCRIPTION
- *		Given a Display, Screen, Visual, etc., this routine creates
- *		an appropriate Color Conversion Context.
+ * 	DESCRIPTION
+ * 		Given a Display, Screen, Visual, etc., this routine creates
+ * 		an appropriate Color Conversion Context.
  *
- *	RETURNS
- *		Returns NULL if failed; otherwise address of the newly
- *		created XcmsCCC.
- *
+ * 	RETURNS
+ * 		Returns NULL if failed; otherwise address of the newly
+ * 		created XcmsCCC.
  */
 {
     WARN_UNIMPLEMENTED;
@@ -1055,12 +1065,10 @@ Status XQueryBestSize(register Display *dpy,
     (void) dpy;
     (void) class;
     (void) drawable;
-    if (ret_width) {
+    if (ret_width)
         *ret_width = width;
-    }
-    if (ret_height) {
+    if (ret_height)
         *ret_height = height;
-    }
     return 1;
 }
 
@@ -1112,8 +1120,9 @@ int XQueryTextExtents(register Display *dpy,
     fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
     freeQueriedFontStruct(fs);
     /* Spec: Status nonzero on success. Returning 0 here made Motif and Xt
-     * widget measurement paths treat the filled metrics as invalid and
-     * fall back to zero-width text. */
+     * widget measurement paths treat the filled metrics as invalid and fall
+     * back to zero-width text.
+     */
     return 1;
 }
 
@@ -1260,26 +1269,27 @@ Status XcmsConvertColors(
     return 0;
 }
 
-Status XcmsTekHVCToCIEuvY(
-    XcmsCCC ccc,
-    XcmsColor *pHVC_WhitePt,
-    XcmsColor *pColors_in_out,
-    unsigned int
-        nColors) /* * DESCRIPTION * Transforms an array of TekHVC color
-                    specifications, given * their associated white point, to
-                    CIECIEuvY.color * specifications. * * RETURNS * XcmsFailure
-                    if failed, XcmsSuccess otherwise. * */
+/* Transforms an array of TekHVC color specifications, given their associated
+ * white point, to CIEuvY color specifications.
+ *
+ * Returns XcmsFailure on failure, XcmsSuccess otherwise.
+ */
+Status XcmsTekHVCToCIEuvY(XcmsCCC ccc,
+                          XcmsColor *pHVC_WhitePt,
+                          XcmsColor *pColors_in_out,
+                          unsigned int nColors)
 {
     WARN_UNIMPLEMENTED;
     return 0;
 }
 
+/* Sets the specified CCC's white_adjust function and client data; returns the
+ * previously installed white_adjust function.
+ */
 XcmsWhiteAdjustProc XcmsSetWhiteAdjustProc(
     XcmsCCC ccc,
     XcmsWhiteAdjustProc white_adjust_proc,
-    XPointer client_data) /* * DESCRIPTION * Set the specified CCC's
-                             white_adjust function and client data. * * RETURNS
-                             * Returns the old white_adjust function. * */
+    XPointer client_data)
 {
     WARN_UNIMPLEMENTED;
     return NULL;
@@ -1335,9 +1345,9 @@ static void fillTextExtents(XFontStruct *fs,
     if (font_descent)
         *font_descent = fs ? fs->descent : 0;
     if (overall) {
-        /* Real Xlib XCharStruct uses short for bearing/width/ascent;
-         * clamp instead of letting a wide string or huge font silently
-         * wrap negative. */
+        /* Real Xlib XCharStruct uses short for bearing/width/ascent; clamp
+         * instead of letting a wide string or huge font silently wrap negative.
+         */
         int fsAscent = fs ? fs->ascent : 0;
         int fsDescent = fs ? fs->descent : 0;
         memset(overall, 0, sizeof(*overall));
@@ -1468,7 +1478,7 @@ int XQueryTextExtents16(register Display *dpy,
     int width = string && nchars > 0 ? XTextWidth16(fs, string, nchars) : 0;
     fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
     freeQueriedFontStruct(fs);
-    /* See XQueryTextExtents — Status must be nonzero on success. */
+    /* See XQueryTextExtents: Status must be nonzero on success. */
     return 1;
 }
 
@@ -1559,16 +1569,17 @@ int XAllowEvents(register Display *dpy, int mode, Time time)
 int XUninstallColormap(register Display *dpy, Colormap cmap)
 {
     /* Mirror of XInstallColormap: a successful no-op in the in-process
-     * TrueColor model. */
+     * TrueColor model.
+     */
     SET_X_SERVER_REQUEST(dpy, X_UninstallColormap);
     postEvent(dpy, RootWindow(dpy, DefaultScreen(dpy)), ColormapNotify, cmap,
               False, ColormapUninstalled);
     return 1;
 }
 
-/* XGrabKey / XUngrabKey live in src/input.c next to the rest of the
- * keyboard surface so the grab table and findKeyGrabWindow helper can
- * share state. */
+/* XGrabKey / XUngrabKey live in src/input.c next to the rest of the keyboard
+ * surface so the grab table and findKeyGrabWindow helper can share state.
+ */
 
 int XDisableAccessControl(register Display *dpy)
 {
@@ -1713,9 +1724,10 @@ void XmbDrawText(Display *dpy,
                  XmbTextItem *text_items,
                  int nitems)
 {
-    /* TextItem chains apply font set / delta offsets per chunk. Our font
-     * stack only honors the GC's font, so concatenate the strings and
-     * advance x by the requested delta between chunks. */
+    /* TextItem chains apply font set / delta offsets per chunk. The font stack
+     * only honors the GC's font, so concatenate the strings and advance x by
+     * the requested delta between chunks.
+     */
     if (!text_items || nitems <= 0)
         return;
     int cursor = x;
@@ -1809,8 +1821,9 @@ int XmbTextEscapement(XFontSet font_set, _Xconst char *text, int text_len)
     if (set && set->font) {
         w = XTextWidth(set->font, text, text_len);
     } else {
-        /* 8 px-per-byte fallback runs through int64 so a long text_len
-         * cannot wrap the returned int. */
+        /* 8 px-per-byte fallback runs through int64 so a long text_len cannot
+         * wrap the returned int.
+         */
         int64_t fallback = (int64_t) text_len * 8;
         w = clampInt64ToInt(fallback);
     }
@@ -1982,9 +1995,10 @@ int XWMGeometry(
             heightInc = hints->height_inc;
     }
 
-    /* All pixel math runs in int64_t and routes through satMulAdd so a
-     * UINT_MAX geometry-units value times UINT_MAX width_inc cannot wrap
-     * before we clamp into the returned int. */
+    /* All pixel math runs in int64_t and routes through satMulAdd so a UINT_MAX
+     * geometry-units value times UINT_MAX width_inc cannot wrap before the
+     * function clamps into the returned int.
+     */
     int64_t widthUnits = (umask & WidthValue)
                              ? (int64_t) uwidth
                              : ((dmask & WidthValue) ? (int64_t) dwidth : 1);
@@ -2074,8 +2088,7 @@ int XGeometry(Display *dpy,
               int *width_return,
               int *height_return)
 {
-    int x = 0;
-    int y = 0;
+    int x = 0, y = 0;
     unsigned int width = 0;
     unsigned int height = 0;
     int mask = default_position
@@ -2085,8 +2098,7 @@ int XGeometry(Display *dpy,
     unsigned int defaultWidth = width;
     unsigned int defaultHeight = height;
 
-    int userX = 0;
-    int userY = 0;
+    int userX = 0, userY = 0;
     unsigned int userWidth = 0;
     unsigned int userHeight = 0;
     int userMask = position ? XParseGeometry(position, &userX, &userY,
@@ -2105,14 +2117,14 @@ int XGeometry(Display *dpy,
         mask = (mask & ~YNegative) | (userMask & YNegative) | YValue;
     }
 
-    /* Anchor dimensions feed the (-x, -y) corner math. Match upstream
-     * X.org XGeometry: when the USER spec supplies a position, anchor
-     * with the merged width (user override if any, else default).
-     * When the user spec has NO position, the default-position branch
-     * anchors with the DEFAULT width even if the user changed width.
-     * This matches xterm-style command-line geometry handling.
-     * Routing through satMulAdd so a pathological spec cannot wrap
-     * int64_t before the clamp. */
+    /* Anchor dimensions feed the (-x, -y) corner math. Match upstream X.org
+     * XGeometry: when the USER spec supplies a position, anchor with the merged
+     * width (user override if any, else default). When the user spec has NO
+     * position, the default-position branch anchors with the DEFAULT width even
+     * if the user changed width. This matches xterm-style command-line geometry
+     * handling. Routing through satMulAdd so a pathological spec cannot wrap
+     * int64_t before the clamp.
+     */
     unsigned int xAnchorWidth =
         (userMask & XValue) || !(defaultMask & WidthValue) ? width
                                                            : defaultWidth;
@@ -2187,9 +2199,10 @@ Status XGetCommand(Display *dpy, Window w, char ***argvp, int *argcp)
         return 0;
     }
 
-    /* Count NUL-terminated strings inside the property. A malformed
-     * payload that does not end in NUL would advance offset past nitems;
-     * cap the step so the second pass cannot read past the buffer. */
+    /* Count NUL-terminated strings inside the property. A malformed payload
+     * that does not end in NUL would advance offset past nitems; cap the step
+     * so the second pass cannot read past the buffer.
+     */
     int argc = 0;
     unsigned long offset = 0;
     while (offset < nitems) {
@@ -2303,12 +2316,12 @@ void XwcFreeStringList(wchar_t **list)
     WARN_UNIMPLEMENTED;
 }
 
-/* Per ICCCM section 6.4, the RGB_COLOR_MAP family of properties stores
- * a list of XStandardColormap entries serialized as ten CARD32 fields
- * each in this fixed order: visualid, killid, colormap, red_max,
- * red_mult, green_max, green_mult, blue_max, blue_mult, base_pixel.
- * The C struct's field order is different from the wire order, so the
- * Get/Set helpers translate explicitly. */
+/* Per ICCCM section 6.4, the RGB_COLOR_MAP family of properties stores a list
+ * of XStandardColormap entries serialized as ten CARD32 fields each in this
+ * fixed order: visualid, killid, colormap, red_max, red_mult, green_max,
+ * green_mult, blue_max, blue_mult, base_pixel. The C struct's field order is
+ * different from the wire order, so the Get/Set helpers translate explicitly.
+ */
 #define XRGB_CMAP_FIELDS 10
 
 void XSetRGBColormaps(Display *dpy,
@@ -2362,9 +2375,9 @@ int XWriteBitmapFile(Display *display,
     (void) display;
     if (!filename || width == 0 || height == 0)
         return BitmapOpenFailed;
-    /* Overflow-safe scanline math: (width + 7) wraps before the divide if
-     * width is close to UINT_MAX, so guard the add and the multiply
-     * separately. */
+    /* Overflow-safe scanline math: (width + 7) wraps before the divide if width
+     * is close to UINT_MAX, so guard the add and the multiply separately.
+     */
     if (width > UINT_MAX - 7u)
         return BitmapNoMemory;
     size_t bytesPerRow = (width + 7u) / 8u;
@@ -2392,8 +2405,9 @@ int XWriteBitmapFile(Display *display,
         free(bits);
         return BitmapOpenFailed;
     }
-    /* X11 convention names the symbols based on the file's basename; we
-     * use a fixed "image" prefix to keep the writer deterministic. */
+    /* X11 convention names the symbols based on the file's basename; the writer
+     * pins a fixed "image" prefix to stay deterministic.
+     */
     fprintf(f, "#define image_width %u\n#define image_height %u\n", width,
             height);
     if (x_hot >= 0 && y_hot >= 0) {
@@ -2471,8 +2485,9 @@ int XReadBitmapFile(Display *display,
     char line[512];
     long bitsOffset = -1;
     /* Tolerate both prefixed identifiers (foo_width) and bare identifiers
-     * (width); match the trailing keyword instead of assuming an
-     * underscore is present. */
+     * (width); match the trailing keyword instead of assuming an underscore is
+     * present.
+     */
     while (fgets(line, sizeof(line), f)) {
         unsigned int v;
         char *p;
@@ -2610,9 +2625,10 @@ int XReadBitmapFileData(_Xconst char *filename,
     }
     fclose(f);
     if (read < total) {
-        /* Short data: the file declared an X-by-Y bitmap but ran out of
-         * hex bytes before filling it. Reporting BitmapSuccess here would
-         * leave the caller drawing uninitialized regions. */
+        /* Short data: the file declared an X-by-Y bitmap but ran out of hex
+         * bytes before filling it. Reporting BitmapSuccess here would leave the
+         * caller drawing uninitialized regions.
+         */
         free(bits);
         return BitmapFileInvalid;
     }
@@ -2824,9 +2840,8 @@ int XGetErrorDatabaseText(Display *dpy,
     (void) dpy;
     (void) name;
     (void) type;
-    if (buffer && nbytes > 0) {
+    if (buffer && nbytes > 0)
         snprintf(buffer, (size_t) nbytes, "%s", defaultp ? defaultp : "");
-    }
     return 0;
 }
 
@@ -3017,9 +3032,11 @@ Status XcmsAllocNamedColor(Display *dpy,
 }
 
 /* Convert a plain C string into an XTextProperty. The encoding picks
- * UTF8_STRING when isUtf8 is True, XA_STRING otherwise. Returns True on
- * success and stores a heap-allocated value the caller must free with
- * Xfree(tp.value). */
+ * UTF8_STRING when isUtf8 is True, XA_STRING otherwise.
+ *
+ * Returns True on success and stores a heap-allocated value the caller must
+ * free with Xfree(tp.value).
+ */
 static Bool textPropertyFromString(Display *dpy,
                                    _Xconst char *str,
                                    Bool isUtf8,
@@ -3054,12 +3071,10 @@ static void setWMPropertiesCommon(Display *dpy,
     XTextProperty iconProp;
     Bool haveWin = False;
     Bool haveIcon = False;
-    if (windowName) {
+    if (windowName)
         haveWin = textPropertyFromString(dpy, windowName, isUtf8, &winProp);
-    }
-    if (iconName) {
+    if (iconName)
         haveIcon = textPropertyFromString(dpy, iconName, isUtf8, &iconProp);
-    }
     XSetWMProperties(dpy, w, haveWin ? &winProp : NULL,
                      haveIcon ? &iconProp : NULL, argv, argc, sizeHints,
                      wmHints, classHints);
@@ -3422,7 +3437,8 @@ Status XmbTextPerCharExtents(XFontSet font_set,
 {
     CompatFontSet *set = GET_FONT_SET(font_set);
     /* Clamp both sides at zero: a negative buffer_size would otherwise
-     * propagate into count and report a negative num_chars. */
+     * propagate into count and report a negative num_chars.
+     */
     int count = text_len > 0 ? text_len : 0;
     int cap = buffer_size > 0 ? buffer_size : 0;
     if (count > cap)
@@ -3521,9 +3537,10 @@ XModifierKeymap *XDeleteModifiermapEntry(XModifierKeymap *map,
 
 /* Internal-connection plumbing used by libXt and IM clients to fold extra
  * descriptors into the Xlib event loop. The SDL-backed display owns no
- * auxiliary sockets, so there is nothing to watch and nothing to drain:
- * report an empty fd set and acknowledge watcher registration without
- * recording the callback. */
+ * auxiliary sockets, so there is nothing to watch and nothing to drain: report
+ * an empty fd set and acknowledge watcher registration without recording the
+ * callback.
+ */
 Status XInternalConnectionNumbers(Display *dpy,
                                   int **fd_return,
                                   int *count_return)

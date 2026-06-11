@@ -107,6 +107,7 @@ while IFS= read -r exe; do
     lib_path="$abs_build_dir/lib/Xm/.libs:$abs_build_dir/lib/Mrm/.libs:$abs_build_dir/clients/uil/.libs:$abs_out_dir"
     input_file=
     home_dir=
+    extra_lang=
     app_res_dir=$(motif_app_resource_dir "$rel")
     xappresdir="$app_res_dir"
     xfile_search_path=$(motif_xfile_search_path "$app_res_dir")
@@ -144,13 +145,26 @@ occupyShell_WSM*allWorkspaces:True
 EOF
             ;;
         programs/hellomotifi18n/helloint)
+            # The demo ships UID files under locale subdirs named C, english,
+            # french, hebrew, japan, japanese, swedish. Mrm's XtResolvePathname
+            # expands %L from the active LANG, so a host LANG like
+            # en_US.UTF-8 has no matching subdir and the lookup falls through to
+            # MrmNOT_FOUND. Pin LANG=C so XtResolvePathname picks C/uid/.
             xappresdir=.
+            extra_lang=C
             ;;
     esac
 
     set +e
     (
         cd "$work_dir"
+        # The shell parses env-var assignments before parameter expansion, so a
+        # ${var:+KEY=val} prefix on the command line gets treated as a command
+        # token, not an assignment. Export inside the subshell instead.
+        if [ -n "$extra_lang" ]; then
+            export LANG="$extra_lang"
+            export LC_ALL="$extra_lang"
+        fi
         if [ -n "$input_file" ]; then
             DYLD_LIBRARY_PATH="$lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
                 LD_LIBRARY_PATH="$lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \

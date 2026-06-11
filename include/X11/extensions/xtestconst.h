@@ -1,4 +1,4 @@
-/* XTest protocol constants — kept here so libx11-compat consumers can
+/* XTest protocol constants kept here so libx11-compat consumers can
  * include <X11/extensions/XTest.h> without depending on a host
  * xorgproto / libXtst dev install. The pinned upstream tarball also
  * provides this file (synced into build/upstream/include/) but the

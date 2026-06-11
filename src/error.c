@@ -12,11 +12,11 @@ errorHandlerFunction error_handler = defaultErrorHandler;
  * connections record their last request without clobbering each other.
  *
  * The list is guarded by lastRequestLock so concurrent threads sharing a
- * Display (a multi-threaded client that called XInitThreads) can safely
- * record, look up, and drop entries without racing on the linked-list
- * links or on the inserted entry's code field. The lock is lazily
- * allocated on first use; if SDL_CreateMutex fails we run unsynchronized
- * rather than crash. Lock and unlock are no-ops on NULL.
+ * Display (a multi-threaded client that called XInitThreads) can safely record,
+ * look up, and drop entries without racing on the linked-list links or on the
+ * inserted entry's code field. The lock is lazily allocated on first use; if
+ * SDL_CreateMutex fails the request-list helpers run unsynchronized rather than
+ * crash. Lock and unlock are no-ops on NULL.
  *
  * Typical clients open one Display; a linked list is plenty. The fallback for
  * an unknown Display returns X_NoOperation, matching the previous behavior when
@@ -35,10 +35,9 @@ static SDL_mutex *lastRequestLock = NULL;
 /* Return a stable mutex pointer for the side table. The pointer is published
  * exactly once via atomic CAS so concurrent first-callers don't create and leak
  * duplicate mutexes (the prior naive single-check assignment could split
- * callers across different mutexes).
- * The returned pointer must be used for both lock and unlock; re-reading the
- * global between Lock and Unlock would risk unlocking a different mutex if a
- * publication happened in between.
+ * callers across different mutexes). The returned pointer must be used for both
+ * lock and unlock; re-reading the global between Lock and Unlock would risk
+ * unlocking a different mutex if a publication happened in between.
  */
 static SDL_mutex *acquireLastRequestLock(void)
 {
@@ -57,7 +56,7 @@ static SDL_mutex *acquireLastRequestLock(void)
     if (__atomic_compare_exchange_n(&lastRequestLock, &expected, fresh, 0,
                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
         return fresh;
-    /* Lost the publish race; free our mutex and use the winner. */
+    /* Lost the publish race; free the local mutex and use the winner. */
     SDL_DestroyMutex(fresh);
     return expected;
 }
@@ -107,9 +106,10 @@ unsigned char getLastRequestCode(Display *display)
     SDL_mutex *lk = acquireLastRequestLock();
     lockSide(lk);
     LastRequestEntry *entry = findLastRequestEntryLocked(display);
-    /* Read the byte under the lock. Returning the pointer would let
-     * another thread (releaseLastRequestCode) free the node between our
-     * unlock and the caller's deref. */
+    /* Read the byte under the lock. Returning the pointer would let another
+     * thread (releaseLastRequestCode) free the node between the unlock and the
+     * caller's deref.
+     */
     unsigned char code = entry ? entry->code : (unsigned char) X_NoOperation;
     unlockSide(lk);
     return code;
@@ -136,9 +136,10 @@ void releaseLastRequestCode(Display *display)
     unlockSide(lk);
 }
 
-/* Called from XCloseDisplay's "last display closing" branch BEFORE
- * SDL_Quit so the destroy reaches a still-valid SDL subsystem. The
- * function is idempotent and safe when no entries remain. */
+/* Called from XCloseDisplay's "last display closing" branch BEFORE SDL_Quit so
+ * the destroy reaches a still-valid SDL subsystem. The function is idempotent
+ * and safe when no entries remain.
+ */
 void freeLastRequestStorage(void)
 {
     SDL_mutex *lk =
@@ -155,8 +156,8 @@ void freeLastRequestStorage(void)
         SDL_UnlockMutex(lk);
         SDL_DestroyMutex(lk);
     } else {
-        /* Lock never created (SDL_CreateMutex failed); still drain the
-         * list. */
+        /* Lock never created (SDL_CreateMutex failed); still drain the list.
+         */
         LastRequestEntry *e = lastRequestList;
         lastRequestList = NULL;
         while (e) {
@@ -171,9 +172,8 @@ errorHandlerFunction XSetErrorHandler(errorHandlerFunction handler)
 {
     // https://tronche.com/gui/x/xlib/event-handling/protocol-errors/XSetErrorHandler.html
     errorHandlerFunction prev_error_handler = error_handler;
-    if (!handler) {
+    if (!handler)
         handler = defaultErrorHandler;
-    }
     error_handler = handler;
     return prev_error_handler;
 }

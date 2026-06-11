@@ -1,4 +1,4 @@
-/* Arc-to-cubic path conversion for libx11-compat
+/* Arc-to-cubic path conversion
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

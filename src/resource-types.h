@@ -40,7 +40,8 @@ XID_Struct *getXidStruct(XID id);
  * site shows up in the test log instead of a SIGSEGV in unrelated
  * frames. Release builds keep the bare deref to avoid any overhead on
  * the hot path. Uses a GCC/Clang statement expression to evaluate the
- * argument once. */
+ * argument once.
+ */
 #ifdef DEBUG_LIBX11_COMPAT
 #include <stdio.h>
 #include <stdlib.h>

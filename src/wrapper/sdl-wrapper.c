@@ -11,7 +11,8 @@
  * RTLD_DEEPBIND because deep binding bypasses their symbol interception.
  * Drop the flag in sanitizer builds. The escape hatch
  * LIBX11_COMPAT_NO_RTLD_DEEPBIND lets the build system force the same
- * downgrade when a sanitizer variant we don't auto-detect is in play.
+ * downgrade when a sanitizer variant the wrapper does not auto-detect
+ * is in play.
  *
  * Caveat: RTLD_DEEPBIND was protecting against the real libSDL2 looking
  * up SDL_* symbols via RTLD_DEFAULT and finding this wrapper's exports
@@ -23,7 +24,8 @@
  * its link time) rather than via RTLD_DEFAULT, so the recursion has not
  * been observed. If a future SDL release reintroduces RTLD_DEFAULT
  * lookups for its own symbols, sanitizer runs will need to link the
- * real libSDL2 directly and skip the wrapper. */
+ * real libSDL2 directly and skip the wrapper.
+ */
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
@@ -44,7 +46,8 @@
  * reference-counts the underlying library and dlsym is idempotent, so
  * both racers see the same handle and pointer; the atomics give the
  * compiler permission to reason about it instead of folding the load
- * into a single read. */
+ * into a single read.
+ */
 static void *realSdlHandle(void)
 {
     static void *handle;
@@ -82,7 +85,8 @@ static void *realSdlHandle(void)
      * dlopen refcount alive. The loser dlcloses to balance its dlopen
      * and uses the winner's handle. POSIX dlopen reference-counts the
      * underlying library, so the loser's dlclose just decrements that
-     * count back to where the winner left it. */
+     * count back to where the winner left it.
+     */
     void *expected = NULL;
     if (__atomic_compare_exchange_n(&handle, &expected, opened, 0,
                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
@@ -284,6 +288,7 @@ SDL_WRAP(Uint32,
          SDL_MapRGBA,
          (const SDL_PixelFormat *format, Uint8 r, Uint8 g, Uint8 b, Uint8 a),
          (format, r, g, b, a))
+SDL_WRAP_VOID(SDL_MaximizeWindow, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_MinimizeWindow, (SDL_Window * window), (window))
 SDL_WRAP(int,
          SDL_PeepEvents,
@@ -372,6 +377,7 @@ SDL_WRAP(int,
          SDL_RenderSetViewport,
          (SDL_Renderer * renderer, const SDL_Rect *rect),
          (renderer, rect))
+SDL_WRAP_VOID(SDL_RestoreWindow, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_SetCursor, (SDL_Cursor * cursor), (cursor))
 SDL_WRAP(int, SDL_SetClipboardText, (const char *text), (text))
 SDL_WRAP_VOID(SDL_SetEventFilter,
@@ -411,6 +417,20 @@ SDL_WRAP_VOID(SDL_SetWindowAlwaysOnTop,
 SDL_WRAP_VOID(SDL_SetWindowBordered,
               (SDL_Window * window, SDL_bool bordered),
               (window, bordered))
+SDL_WRAP(int,
+         SDL_SetWindowFullscreen,
+         (SDL_Window * window, Uint32 flags),
+         (window, flags))
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+SDL_WRAP(int, SDL_SetWindowInputFocus, (SDL_Window * window), (window))
+SDL_WRAP(int,
+         SDL_SetWindowModalFor,
+         (SDL_Window * modalWindow, SDL_Window *parentWindow),
+         (modalWindow, parentWindow))
+SDL_WRAP_VOID(SDL_SetWindowResizable,
+              (SDL_Window * window, SDL_bool resizable),
+              (window, resizable))
+#endif
 SDL_WRAP_VOID(SDL_SetWindowGrab,
               (SDL_Window * window, SDL_bool grabbed),
               (window, grabbed))

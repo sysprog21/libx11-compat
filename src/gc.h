@@ -27,7 +27,8 @@ typedef struct _GraphicContext {
     Pixmap clipMask;
     /* Stored clip rectangles from XSetClipRectangles / XSetRegion.
      * clipRectanglesSet distinguishes an empty clip region from no rectangle
-     * clip region. */
+     * clip region.
+     */
     Bool clipRectanglesSet;
     XRectangle *clipRects;
     int clipRectCount;
@@ -48,7 +49,8 @@ typedef struct _GraphicContext {
 
 /* Debug-only NULL guard. Production keeps the bare deref so well-formed
  * callers pay nothing; misbehaving callers (or future regressions like
- * the round-6 XCopyArea NULL gc finding) abort with file:line. */
+ * the round-6 XCopyArea NULL gc finding) abort with file:line.
+ */
 #ifdef DEBUG_LIBX11_COMPAT
 #include <stdio.h>
 #include <stdlib.h>

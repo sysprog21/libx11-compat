@@ -4,13 +4,15 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+
 #include "drawing.h"
 #include "display.h"
 #include "resource-types.h"
 
 /* The X Shape extension reshapes windows from rectangles to arbitrary regions.
- * SDL-managed windows remain rectangular, so we store masks locally and apply
- * them while drawing or querying shape state. */
+ * SDL-managed windows remain rectangular, so the compat layer stores masks
+ * locally and applies them while drawing or querying shape state.
+ */
 
 Bool XShapeQueryExtension(Display *dpy, int *event_basep, int *error_basep)
 {
@@ -53,6 +55,7 @@ static SDL_Surface *createShapeSurface(int w, int h)
         w = 1;
     if (h == 0)
         h = 1;
+
     SDL_Surface *surface = SDL_CreateRGBSurface(
         0, w, h, SDL_SURFACE_DEPTH, DEFAULT_RED_MASK, DEFAULT_GREEN_MASK,
         DEFAULT_BLUE_MASK, DEFAULT_ALPHA_MASK);
@@ -79,8 +82,7 @@ static Bool shapeSurfaceContains(SDL_Surface *mask,
                                  int64_t x,
                                  int64_t y)
 {
-    int64_t mx = x - (int64_t) offsetX;
-    int64_t my = y - (int64_t) offsetY;
+    int64_t mx = x - (int64_t) offsetX, my = y - (int64_t) offsetY;
     if (mx < 0 || my < 0 || mx > INT_MAX || my > INT_MAX)
         return False;
     return maskPixelActive(mask, (int) mx, (int) my);
@@ -224,11 +226,12 @@ static SDL_Surface *combineShapeSurfaces(WindowStruct *window,
         return NULL;
 
     Uint32 white = SDL_MapRGBA(out->format, 255, 255, 255, 255);
-    /* Track whether the produced mask actually excludes any window pixel.
-     * A combine that ends up admitting every window pixel within the
-     * mask bbox AND whose bbox covers the whole window is a no-op — the
-     * mask in that case is functionally "no mask installed" and should
-     * not flip the window into shaped state. */
+    /* Track whether the produced mask actually excludes any window pixel. A
+     * combine that ends up admitting every window pixel within the mask bbox
+     * AND whose bbox covers the whole window is a no-op. The mask in that case
+     * is functionally "no mask installed" and should not flip the window into
+     * shaped state.
+     */
     Bool excludesAny = False;
     for (int y = 0; y < out->h; y++) {
         int64_t wy = minY + y;
@@ -267,17 +270,18 @@ static SDL_Surface *combineShapeSurfaces(WindowStruct *window,
                         maxX >= (int64_t) window->w - 1 &&
                         maxY >= (int64_t) window->h - 1;
     if (!excludesAny && coversWindow) {
-        /* The combine produced a mask that admits every window pixel —
-         * functionally equivalent to no mask installed. Drop the surface
-         * and flag the no-op so the caller can clear any existing mask
-         * without leaving the window flagged as shaped. */
+        /* The combine produced a mask that admits every window pixel,
+         * functionally equivalent to no mask installed. Drop the surface and
+         * flag the no-op so the caller can clear any existing mask without
+         * leaving the window flagged as shaped.
+         */
         SDL_FreeSurface(out);
         if (outNoop)
             *outNoop = True;
         return NULL;
     }
-    *outOffsetX = (int) minX;
-    *outOffsetY = (int) minY;
+
+    *outOffsetX = (int) minX, *outOffsetY = (int) minY;
     return out;
 }
 
@@ -434,7 +438,8 @@ void XShapeCombineMask(Display *dpy,
         return;
 
     /* src == None clears an installed mask for ShapeSet. For other combine
-     * operations it is an empty source region. */
+     * operations it is an empty source region.
+     */
     if (src == None && op == ShapeSet) {
         if (*maskSlot) {
             SDL_FreeSurface(*maskSlot);
@@ -452,8 +457,10 @@ void XShapeCombineMask(Display *dpy,
         PixmapStruct *pixmap = GET_PIXMAP_STRUCT(src);
         if (!pixmap)
             return;
+
         /* SDL_Rect uses signed int; reject pixmaps whose dimensions would
-         * alias. */
+         * alias.
+         */
         if (pixmap->width > (unsigned int) INT_MAX ||
             pixmap->height > (unsigned int) INT_MAX)
             return;
@@ -473,8 +480,7 @@ void XShapeCombineMask(Display *dpy,
             return;
     }
 
-    int newOffsetX = 0;
-    int newOffsetY = 0;
+    int newOffsetX = 0, newOffsetY = 0;
     Bool combineNoop = False;
     SDL_Surface *newMask = combineShapeSurfaces(
         window, *maskSlot, *offsetXSlot, *offsetYSlot, srcSurface, xOff, yOff,
@@ -482,9 +488,9 @@ void XShapeCombineMask(Display *dpy,
     SDL_FreeSurface(srcSurface);
     /* NULL with combineNoop == False means the combine failed; keep the
      * existing mask. NULL with combineNoop == True (or the explicit
-     * ShapeSet/None clear) means the result admits every window pixel —
-     * drop any installed mask so the window stops being treated as
-     * shaped. */
+     * ShapeSet/None clear) means the result admits every window pixel, so drop
+     * any installed mask and stop treating the window as shaped.
+     */
     if (!newMask && !combineNoop && !(op == ShapeSet && src == None))
         return;
 

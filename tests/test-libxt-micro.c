@@ -1,15 +1,14 @@
-/* libXt Tier 1 micro-tests for libx11-compat
+/* libXt Tier 1 micro-tests
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
  */
 
-/* Exercise the chokepoints Motif depends on, one per Xt subsystem. Each
- * subtest is independent and stops the binary at the first failure with
- * a specific diagnostic so make check fails loudly. The order matters:
- * subsystems with no Display dependency run first (keysyms), then init
- * happens once, then everything that needs an app context or widget runs
- * against the shared shell.
+/* Exercise the chokepoints Motif depends on, one per Xt subsystem. Each subtest
+ * is independent and stops the binary at the first failure with a specific
+ * diagnostic so make check fails loudly. The order matters: subsystems with no
+ * Display dependency run first (keysyms), then init happens once, then
+ * everything that needs an app context or widget runs against the shared shell.
  *
  *   keysyms     - XConvertCase across ASCII, Latin-1, and function keys.
  *   events      - XtAppMainLoop drains an XtAppAddTimeOut without spin.
@@ -18,9 +17,9 @@
  *   pointer     - XtGrabPointer accepts same-client regrabs.
  *   resources   - XtVaGetValues against an XtAppSetFallbackResources entry.
  *
- * The resources path drives the full XrmQGetSearchResource ->
- * XrmGetResource bridge introduced in src/xrm.c. If that bridge ever
- * regresses, the resources subtest is what catches it first.
+ * The resources path drives the full XrmQGetSearchResource -> XrmGetResource
+ * bridge introduced in src/xrm.c. If that bridge ever regresses, the resources
+ * subtest is what catches it first.
  */
 
 #include <assert.h>
@@ -51,7 +50,7 @@
             FAIL(name, __VA_ARGS__); \
     } while (0)
 
-/* --------------------------------------------------------------- keysyms */
+/* keysyms */
 
 static void test_keysyms(void)
 {
@@ -85,7 +84,7 @@ static void test_keysyms(void)
     OK("keysyms");
 }
 
-/* ---------------------------------------------------------------- events */
+/* events */
 
 static int tick_count = 0;
 static XtAppContext tick_app = NULL;
@@ -96,8 +95,9 @@ static void tick_proc(XtPointer baton, XtIntervalId *id)
     (void) id;
     tick_count++;
     /* Setting the exit flag is checked by XtAppMainLoop after the current
-     * callback returns, so this drops us out cleanly with no further
-     * event processing. */
+     * callback returns, so this drops the loop out cleanly with no further
+     * event processing.
+     */
     XtAppSetExitFlag(tick_app);
 }
 
@@ -105,20 +105,22 @@ static void test_events(XtAppContext app)
 {
     tick_count = 0;
     tick_app = app;
-    /* 10ms is short enough to keep make check fast but long enough that
-     * the SDL dummy backend has a real interval to wait through. */
+    /* 10ms is short enough to keep make check fast but long enough that the SDL
+     * dummy backend has a real interval to wait through.
+     */
     XtAppAddTimeOut(app, 10, tick_proc, NULL);
     XtAppMainLoop(app);
     MUST(tick_count == 1, "events",
          "timeout fired %d times, expected exactly 1", tick_count);
     /* The exit flag is sticky inside XtAppMainLoop but does not reset; a
-     * follow-up loop would return immediately. Confirm by asking. */
+     * follow-up loop would return immediately. Confirm by asking.
+     */
     MUST(XtAppGetExitFlag(app), "events",
          "XtAppGetExitFlag is False after XtAppSetExitFlag in callback");
     OK("events");
 }
 
-/* ------------------------------------------------------------- callbacks */
+/* callbacks */
 
 static int cb_calls = 0;
 static XtPointer cb_last_call_data = (XtPointer) (-1);
@@ -144,7 +146,8 @@ static void test_callbacks(Widget shell)
          "call_data passthrough: got %p expected 0xBEEF", cb_last_call_data);
 
     /* Removing the same (proc, client_data) pair makes a follow-up
-     * CallCallbacks a no-op. */
+     * CallCallbacks a no-op.
+     */
     XtRemoveCallback(shell, XtNdestroyCallback, cb_proc, (XtPointer) 0x1234);
     XtCallCallbacks(shell, XtNdestroyCallback, NULL);
     MUST(cb_calls == 1, "callbacks", "callback fired after remove (now %d)",
@@ -153,7 +156,7 @@ static void test_callbacks(Widget shell)
     OK("callbacks");
 }
 
-/* -------------------------------------------------------------------- gc */
+/* gc */
 
 static void test_gc(Widget shell)
 {
@@ -165,21 +168,23 @@ static void test_gc(Widget shell)
     GC gc1 = XtAllocateGC(shell, 0, GCForeground | GCBackground, &values, 0, 0);
     MUST(gc1 != NULL, "gc", "XtAllocateGC returned NULL");
 
-    /* Same widget + same value mask + same values should hit the shared
-     * GC cache. We do not strictly require pointer equality (libXt is
-     * allowed to return a fresh GC), but the allocation must succeed. */
+    /* Same widget + same value mask + same values should hit the shared GC
+     * cache. The test does not strictly require pointer equality (libXt is
+     * allowed to return a fresh GC), but the allocation must succeed.
+     */
     GC gc2 = XtAllocateGC(shell, 0, GCForeground | GCBackground, &values, 0, 0);
     MUST(gc2 != NULL, "gc", "second XtAllocateGC returned NULL");
 
-    /* XtReleaseGC must accept GCs allocated via XtAllocateGC without
-     * crashing the GC cache bookkeeping. */
+    /* XtReleaseGC must accept GCs allocated via XtAllocateGC without crashing
+     * the GC cache bookkeeping.
+     */
     XtReleaseGC(shell, gc1);
     XtReleaseGC(shell, gc2);
 
     OK("gc");
 }
 
-/* --------------------------------------------------------------- pointer */
+/* pointer */
 
 static void test_pointer(Widget shell)
 {
@@ -190,8 +195,9 @@ static void test_pointer(Widget shell)
          "initial XtGrabPointer returned %d, expected GrabSuccess", status);
 
     /* Motif menu posting can grab the pointer while libXt already owns an
-     * active pointer grab for the same client. X11 treats this as a regrab
-     * that updates the active grab, not as AlreadyGrabbed. */
+     * active pointer grab for the same client. X11 treats this as a regrab that
+     * updates the active grab, not as AlreadyGrabbed.
+     */
     status = XtGrabPointer(shell, True, ButtonMotionMask, GrabModeAsync,
                            GrabModeAsync, None, None, CurrentTime);
     MUST(status == GrabSuccess, "pointer",
@@ -202,13 +208,14 @@ static void test_pointer(Widget shell)
     OK("pointer");
 }
 
-/* --------------------------------------------------------- resources */
+/* resources */
 
-/* Fallback resources are merged into the per-screen database the first
- * time XtScreenDatabase runs, then cached. Set them before XtOpenDisplay
- * in main() (not here) so the database we query is the one that includes
- * them. The class name "MicroLibxtTier1" is unique enough that no real
- * X11 app-defaults file is going to shadow it. */
+/* Fallback resources are merged into the per-screen database the first time
+ * XtScreenDatabase runs, then cached. Set them before XtOpenDisplay in main()
+ * (not here) so the database the test queries is the one that includes them.
+ * The class name "MicroLibxtTier1" is unique enough that no real X11
+ * app-defaults file is going to shadow it.
+ */
 static String fallback_resources[] = {
     "*microLibxtTier1.smokeProbeValue: ResourceBridgeOk",
     NULL,
@@ -216,10 +223,11 @@ static String fallback_resources[] = {
 
 static void test_resources(Widget shell)
 {
-    /* Look up the fallback through the screen-level database the same way
-     * any Xt widget initialization would. This is the path Motif uses for
-     * every widget resource and the one that crashes hardest when the
-     * XrmQGetSearchResource bridge regresses. */
+    /* Look up the fallback through the screen-level database the same way any
+     * Xt widget initialization would. This is the path Motif uses for every
+     * widget resource and the one that crashes hardest when the
+     * XrmQGetSearchResource bridge regresses.
+     */
     XrmDatabase db = XtScreenDatabase(XtScreen(shell));
     MUST(db != NULL, "resources", "XtScreenDatabase NULL");
 
@@ -241,7 +249,7 @@ static void test_resources(Widget shell)
     OK("resources");
 }
 
-/* ----------------------------------------------------------------- main */
+/* main */
 
 int main(int argc, char *argv[])
 {
@@ -259,7 +267,8 @@ int main(int argc, char *argv[])
 
     /* Fallbacks must be set before the first XtScreenDatabase build, which
      * happens transitively through XtAppCreateShell. Otherwise the cached
-     * per-screen database skips the fallback merge entirely. */
+     * per-screen database skips the fallback merge entirely.
+     */
     XtAppSetFallbackResources(app, fallback_resources);
 
     Display *dpy =
@@ -283,7 +292,8 @@ int main(int argc, char *argv[])
     test_resources(shell);
 
     /* Hold off destroy until the shell-using tests finish so a callback
-     * accidentally triggered during teardown does not corrupt cb_calls. */
+     * accidentally triggered during teardown does not corrupt cb_calls.
+     */
     XtDestroyWidget(shell);
     XtCloseDisplay(dpy);
     XtDestroyApplicationContext(app);

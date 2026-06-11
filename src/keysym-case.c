@@ -1,24 +1,24 @@
-/* KeySym case folding for libx11-compat
+/* KeySym case folding
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
  */
 
 /* UCSConvertCase and XConvertCase below are derived verbatim from libX11's
- * src/KeyBind.c (Unicode Data version 4.0.0, updated through UD 14.0 for
- * the Greek mapping tables). The original upstream code is:
+ * src/KeyBind.c (Unicode Data version 4.0.0, updated through UD 14.0 for the
+ * Greek mapping tables). The original upstream code is:
  *
  *     Copyright 1985, 1987, 1990, 1998 The Open Group
  *     Copyright 2004 Sun Microsystems, Inc.
  *
- * See the libX11 source tree's COPYING for the full notice; the MIT-style
- * terms there are compatible with this project's own MIT license. libXt's
- * translation tables and Motif's case-insensitive accelerators both reach
- * for XConvertCase, so the surface needs the upstream-equivalent semantics
- * rather than an ASCII-only shortcut. The surrounding KeyBind.c overlaps
- * heavily with src/input.c (XLookupKeysym, XKeysymToKeycode, ...), so
- * carving out just the case-fold portion avoids duplicate-symbol link
- * errors against the SDL-backed key handling.
+ * See the libX11 source tree's COPYING for the full notice; the MIT-style terms
+ * there are compatible with this project's own MIT license. libXt's translation
+ * tables and Motif's case-insensitive accelerators both reach for XConvertCase,
+ * so the surface needs the upstream-equivalent semantics rather than an
+ * ASCII-only shortcut. The surrounding KeyBind.c overlaps heavily with
+ * src/input.c (XLookupKeysym, XKeysymToKeycode, ...), so carving out just the
+ * case-fold portion avoids duplicate-symbol link errors against the SDL-backed
+ * key handling.
  */
 
 #include <X11/Xlib.h>

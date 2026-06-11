@@ -47,9 +47,8 @@ KeySym getKeySymForChar(char c)
     if (c >= '0' && c <= '9')
         return XK_0 + (c - '0');
     for (size_t i = 0; i < sizeof(charMapping) / sizeof(charMapping[0]); i++) {
-        if (charMapping[i].character == c) {
+        if (charMapping[i].character == c)
             return charMapping[i].keySym;
-        }
     }
     LOG("Did not Found mapping for char '%c' (%d)\n", c, c);
     return NoSymbol;
@@ -86,17 +85,15 @@ XIM XOpenIM(Display *display,
             char *res_class)
 {
     char *envXModifiers = getenv("XMODIFIERS");
-    if (envXModifiers) {
+    if (envXModifiers)
         XSetLocaleModifiers(envXModifiers);
-    }
     return (XIM) display;
 }
 
 void XDestroyIC(XIC inputConnection)
 {
-    if (GET_XIC_STRUCT(inputConnection)->inputRect) {
+    if (GET_XIC_STRUCT(inputConnection)->inputRect)
         free(GET_XIC_STRUCT(inputConnection)->inputRect);
-    }
     SDL_StopTextInput();
     free(inputConnection);
 }
@@ -323,9 +320,8 @@ static char *setICListValues(XIC inputConnection,
                 return key;
             }
             Window topLevel = clientWindow;
-            while (GET_PARENT(topLevel) != SCREEN_WINDOW) {
+            while (GET_PARENT(topLevel) != SCREEN_WINDOW)
                 topLevel = GET_PARENT(topLevel);
-            }
             if (IS_MAPPED_TOP_LEVEL_WINDOW(topLevel)) {
                 SDL_Window *sdlWindow = GET_WINDOW_STRUCT(topLevel)->sdlWindow;
                 SDL_RaiseWindow(sdlWindow);
@@ -375,9 +371,8 @@ char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
             if (failed)
                 return failed;
         } else if (!strcmp(key, XNInputStyle)) {
-            if (!allowSetReadOnly) {
+            if (!allowSetReadOnly)
                 break;
-            }
             GET_XIC_STRUCT(inputConnection)->style =
                 va_arg(arguments, XIMStyle);
             if (!styleIsSupported(GET_XIC_STRUCT(inputConnection)->style))
@@ -389,9 +384,8 @@ char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
                 break;
             }
             Window topLevel = clientWindow;
-            while (GET_PARENT(topLevel) != SCREEN_WINDOW) {
+            while (GET_PARENT(topLevel) != SCREEN_WINDOW)
                 topLevel = GET_PARENT(topLevel);
-            }
             if (IS_MAPPED_TOP_LEVEL_WINDOW(topLevel)) {
                 SDL_Window *sdlWindow = GET_WINDOW_STRUCT(topLevel)->sdlWindow;
                 SDL_RaiseWindow(sdlWindow);
@@ -400,7 +394,8 @@ char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
                         GET_XIC_STRUCT(inputConnection)->inputRect);
                 }
                 /* SDL text input tracks the focused IC; XSelectInput restarts
-                 * it when the selected key masks require text events. */
+                 * it when the selected key masks require text events.
+                 */
                 SDL_StopTextInput();
             }
             GET_XIC_STRUCT(inputConnection)->client = clientWindow;
@@ -408,9 +403,8 @@ char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
                 GET_XIC_STRUCT(inputConnection)->focus = clientWindow;
         } else if (!strcmp(key, XNFocusWindow)) {
             Window focusWindow = va_arg(arguments, Window);
-            if (!IS_TYPE(focusWindow, WINDOW) || focusWindow == SCREEN_WINDOW) {
+            if (!IS_TYPE(focusWindow, WINDOW) || focusWindow == SCREEN_WINDOW)
                 break;
-            }
             GET_XIC_STRUCT(inputConnection)->focus = focusWindow;
         } else if (!strcmp(key, XNPreeditAttributes)) {
             if (!parsePreEditAttributes(inputConnection,
@@ -490,18 +484,16 @@ XVaNestedList XVaCreateNestedList(int dummy, ...)
     void *item;
     va_start(argumentList, dummy);
     va_copy(argCount, argumentList);
-    while (va_arg(argCount, void *)) {
+    while (va_arg(argCount, void *))
         nArgs++;
-    }
     va_end(argCount);
     void **list = malloc(sizeof(void *) * (nArgs + 1));
     if (!list) {
         va_end(argumentList);
         return NULL;
     }
-    while ((item = va_arg(argumentList, void *))) {
+    while ((item = va_arg(argumentList, void *)))
         list[i++] = item;
-    }
     va_end(argumentList);
     list[i] = NULL;
     return list;
@@ -549,8 +541,8 @@ char *XGetICValues(XIC inputConnection, ...)
 
 void XSetICFocus(XIC inputConnection)
 {
-    // http://www.x.org/archive/X11R7.6/doc/man/man3/XSetICFocus.3.
-    // Nothing to do, focus management handled by SDL.
+    // http://www.x.org/archive/X11R7.6/doc/man/man3/XSetICFocus.3. Nothing to
+    // do, focus management handled by SDL.
 }
 
 char *XGetIMValues(XIM inputMethod, ...)
@@ -561,9 +553,8 @@ char *XGetIMValues(XIM inputMethod, ...)
     while ((key = va_arg(argumentList, char *))) {
         if (!strcmp(key, XNQueryInputStyle)) {
             XIMStyles **styles = va_arg(argumentList, XIMStyles **);
-            if (!styles) {
+            if (!styles)
                 break;
-            }
             XIMStyles *copy = malloc(sizeof(*copy) + sizeof(SUPPORTED_STYLES));
             if (!copy)
                 break;
@@ -667,10 +658,11 @@ XFontSet XCreateFontSet(Display *display,
     char *pattern = firstFontSetPattern(base_font_name_list);
     if (!pattern)
         return NULL;
-    /* Try the alias first when one exists; if it fails (or there's no
-     * alias) try the original caller-supplied pattern before falling
-     * back to "fixed" — otherwise an alias miss silently downgrades a
-     * loadable user pattern to the default font. */
+    /* Try the alias first when one exists; if it fails (or there is no alias)
+     * try the original caller-supplied pattern before falling back to "fixed".
+     * Otherwise an alias miss silently downgrades a loadable user pattern to
+     * the default font.
+     */
     char *loadName = nativeLikeFontSetAlias(pattern);
     XFontStruct *font = NULL;
     if (loadName)

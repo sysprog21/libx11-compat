@@ -22,7 +22,7 @@ assert-image initial common-visible.json
 assert-image initial violawww-scroll.json
 motion 360 540
 wheel down 5
-delay 2500
+delay 6000
 screenshot scrolled
 assert-image scrolled violawww-scroll.json
 assert-image scrolled violawww-scroll-changed.json
@@ -30,7 +30,7 @@ assert-image scrolled violawww-scroll-changed.json
 # aspect ratio so the document reflows visibly: line-wrap moves, the
 # scrollbar resizes, and the Motif chrome rectangles adjust width.
 resize 640 720
-delay 5000
+delay 10000
 screenshot resized
 assert-image resized common-visible.json
 assert-image resized violawww-scroll-resized-changed.json

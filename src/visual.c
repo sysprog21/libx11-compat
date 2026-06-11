@@ -9,9 +9,9 @@
 Visual *VISUAL_LIST = NULL;
 size_t NUM_VISUALS = 0;
 static int VISUAL_DEPTH = 24;
-/* The shared Visual table is screen-0 visuals; a per-screen variant would
- * need a separate entry per screen. Keeping this a constant avoids global
- * mutation racing with concurrent visual lookups.
+/* The shared Visual table is screen-0 visuals; a per-screen variant would need
+ * a separate entry per screen. Keeping this a constant avoids global mutation
+ * racing with concurrent visual lookups.
  */
 static const int VISUAL_SCREEN = 0;
 
@@ -22,9 +22,9 @@ Bool initVisuals()
         LOG("Warn: Visual memory already allocated!\n");
         return True;
     }
-    /* Defer NUM_VISUALS so a malloc failure leaves the two globals
-     * consistent. freeVisuals() walks NUM_VISUALS entries of VISUAL_LIST,
-     * and would otherwise dereference NULL during failure cleanup.
+    /* Defer NUM_VISUALS so a malloc failure leaves the two globals consistent.
+     * freeVisuals() walks NUM_VISUALS entries of VISUAL_LIST, and would
+     * otherwise dereference NULL during failure cleanup.
      */
     VISUAL_LIST = malloc(sizeof(Visual));
     if (!VISUAL_LIST) {
@@ -175,8 +175,8 @@ Status XMatchVisualInfo(Display *display,
         return 0;
     }
     /* Only the default screen has visuals registered; for any other screen
-     * report no match rather than returning a visual whose `screen` field
-     * would silently be rewritten to 0 by fillVisualInfo.
+     * report no match rather than returning a visual whose `screen` field would
+     * silently be rewritten to 0 by fillVisualInfo.
      */
     if (screen != VISUAL_SCREEN || screen >= ScreenCount(display) ||
         depth != VISUAL_DEPTH)

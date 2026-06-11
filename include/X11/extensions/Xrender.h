@@ -13,12 +13,14 @@ typedef int XFixed;
  * [-32768, +32768). A bare cast of an out-of-range double to int is
  * undefined in C, which upstream Xrender's macro form invites. Clamp
  * to the representable range so misbehaving clients cannot trigger UB
- * inside the compat layer. */
+ * inside the compat layer.
+ */
 static inline XFixed _xCompatDoubleToFixed(double f)
 {
     double scaled = f * 65536.0;
     /* NaN compares false to every numeric, so the clamp below would let
-     * it fall through to a (XFixed) cast, which is also UB. */
+     * it fall through to a (XFixed) cast, which is also UB.
+     */
     if (scaled != scaled)
         return 0;
     if (scaled >= 2147483647.0)

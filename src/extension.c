@@ -11,9 +11,8 @@
 static _XExtension *findExtension(Display *display, int extension)
 {
     for (_XExtension *ext = display->ext_procs; ext; ext = ext->next) {
-        if (ext->codes.extension == extension) {
+        if (ext->codes.extension == extension)
             return ext;
-        }
     }
     return NULL;
 }
@@ -21,9 +20,8 @@ static _XExtension *findExtension(Display *display, int extension)
 XExtCodes *XAddExtension(Display *display)
 {
     _XExtension *ext = calloc(1, sizeof(_XExtension));
-    if (!ext) {
+    if (!ext)
         return NULL;
-    }
     ext->codes.extension = ++display->ext_number;
     ext->codes.major_opcode = 128 + ext->codes.extension;
     ext->codes.first_event = 64 + ext->codes.extension;
@@ -44,16 +42,14 @@ XExtCodes *XInitExtension(Display *display, _Xconst char *name)
     }
 
     XExtCodes *codes = XAddExtension(display);
-    if (!codes) {
+    if (!codes)
         return NULL;
-    }
     codes->major_opcode = majorOpcode;
     codes->first_event = firstEvent;
     codes->first_error = firstError;
     _XExtension *ext = findExtension(display, codes->extension);
-    if (ext && name) {
+    if (ext && name)
         ext->name = strdup(name);
-    }
     return codes;
 }
 
@@ -84,15 +80,12 @@ Bool XQueryExtension(Display *display,
     }
 
     LOG("Ignoring unsupported extension probe: %s\n", name ? name : "(null)");
-    if (major_opcode_return) {
+    if (major_opcode_return)
         *major_opcode_return = 0;
-    }
-    if (first_event_return) {
+    if (first_event_return)
         *first_event_return = 0;
-    }
-    if (first_error_return) {
+    if (first_error_return)
         *first_error_return = 0;
-    }
     return False;
 }
 
@@ -133,8 +126,9 @@ Bool XRRQueryExtension(Display *dpy,
 }
 
 /* Each XESet* hook is a pointer-typed get-and-swap on a different field of
- * _XExtension. The differences are: (1) hook type, (2) struct member, and
- * (3) function name -- everything else is identical. */
+ * _XExtension. The differences are: (1) hook type, (2) struct member, and (3)
+ * function name -- everything else is identical.
+ */
 #define DEFINE_XESET_HOOK(funcName, hookType, field)                  \
     hookType funcName(Display *display, int extension, hookType proc) \
     {                                                                 \
@@ -231,9 +225,8 @@ void freeExtensionStorage(Display *display)
     _XExtension *ext = display->ext_procs;
     while (ext) {
         _XExtension *next = ext->next;
-        if (ext->close_display) {
+        if (ext->close_display)
             ext->close_display(display, &ext->codes);
-        }
         free(ext->name);
         free(ext);
         ext = next;

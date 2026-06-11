@@ -50,16 +50,18 @@ typedef struct {
 #define ASCII_RENDER_PROBE_TEXT "Aa0 "
 #define FIXED_BITMAP_WIDTH 6
 #define FIXED_BITMAP_HEIGHT 13
-/* Match the core metrics reported for Xvfb's "fixed" alias. The bundled
- * 6x13 bitmap has 13 rows, so drawing it in an 11/2 box keeps every glyph
- * pixel inside the row extent clients use when clearing scrolled text. */
+/* Match the core metrics reported for Xvfb's "fixed" alias. The bundled 6x13
+ * bitmap has 13 rows, so drawing it in an 11/2 box keeps every glyph pixel
+ * inside the row extent clients use when clearing scrolled text.
+ */
 #define FIXED_BITMAP_ASCENT 11
 #define FIXED_BITMAP_DESCENT 2
 #define FIXED_BITMAP_CHAR_COUNT 128
-/* Minimum decoded glyphs before we declare the BDF usable. ASCII printable
- * is 0x20..0x7E (95 glyphs); requiring 64 keeps a partially trimmed file
- * out of the renderer while still tolerating glyphs that are intentionally
- * blank (e.g. space). */
+/* Minimum decoded glyphs before the loader declares the BDF usable. ASCII
+ * printable is 0x20..0x7E (95 glyphs); requiring 64 keeps a partially trimmed
+ * file out of the renderer while still tolerating glyphs that are intentionally
+ * blank (e.g. space).
+ */
 #define FIXED_BITMAP_MIN_GLYPHS 64
 
 typedef struct {
@@ -81,8 +83,9 @@ static void finishTextDamage(Display *display,
 }
 
 /* Project-bundled "fonts" wins for self-contained checkouts; the remaining
- * entries let normal Xlib clients pick up host-system fonts without having
- * to call XSetFontPath. Missing directories are filtered out at scan time. */
+ * entries let normal Xlib clients pick up host-system fonts without having to
+ * call XSetFontPath. Missing directories are filtered out at scan time.
+ */
 static const char *DEFAULT_FONT_SEARCH_PATHS[] = {
     "fonts",
 #if defined(__APPLE__)
@@ -95,13 +98,14 @@ static const char *DEFAULT_FONT_SEARCH_PATHS[] = {
 #endif
 };
 
-// This are the custom search paths for fonts can be set via XSetFontPath.
-// Has to be initialized via XSetFontPath(display, NULL, 0);
+// This are the custom search paths for fonts can be set via XSetFontPath. Has
+// to be initialized via XSetFontPath(display, NULL, 0);
 Array *fontSearchPaths = NULL;
 Array *fontCache = NULL;
 
 /* coreFontMetricsForName needs to consult loadFixedBitmapFont() (defined
- * further down) to decide whether to advertise the bitmap-font metrics. */
+ * further down) to decide whether to advertise the bitmap-font metrics.
+ */
 static Bool loadFixedBitmapFont(void);
 static Array *fontAliasNames = NULL;
 
@@ -120,8 +124,9 @@ Bool checkFontPath(const char *path)
 char *getFontXLFDName(TTF_Font *font)
 {
     /* FOUNDRY - FAMILY_NAME - WEIGHT_NAME - SLANT - SETWIDTH_NAME - ADD_STYLE -
-       PIXEL_SIZE - POINT_SIZE - RESOLUTION_X - RESOLUTION_Y - SPACING -
-       AVERAGE_WIDTH - CHARSET_REGISTRY - CHARSET_ENCODING */
+     * PIXEL_SIZE - POINT_SIZE - RESOLUTION_X - RESOLUTION_Y - SPACING -
+     * AVERAGE_WIDTH - CHARSET_REGISTRY - CHARSET_ENCODING
+     */
     int fontStyle = TTF_GetFontStyle(font);
     static const char *const emptyValue = "";
     const char *foundry = emptyValue;
@@ -142,9 +147,10 @@ char *getFontXLFDName(TTF_Font *font)
 
     char *name = malloc(sizeof(char) * nameLength);
     if (name) {
-        /* Tk rejects the empty ADD_STYLE field form (`...-normal--0-...`) for
-         * these generated names, so keep the compact `...-normal-0-...`
-         * variant while preserving charset registry/encoding fields. */
+        /* Tk rejects the empty ADD_STYLE field form ("...-normal--0-...") for
+         * these generated names, so keep the compact `...-normal-0-...` variant
+         * while preserving charset registry/encoding fields.
+         */
         snprintf(name, nameLength, "-%s-%s-%s-%c-%s-0-%d-0-0-%c-%hd-%s-%d",
                  foundry, familyName, weightName, slant, setWidth, pointSize,
                  spacing, averageWidth, charset, charsetEncoding);
@@ -279,9 +285,8 @@ Bool updateFontCache()
                     }
                     index = fontCache->length - 1;
                 }
-                if ((size_t) index != fontCacheIndex) {
+                if ((size_t) index != fontCacheIndex)
                     swapArray(fontCache, (size_t) index, fontCacheIndex);
-                }
                 fontCacheIndex++;
             }
         }
@@ -306,12 +311,10 @@ Bool initFontStorage()
     struct dirent *entry;
     fontSearchPaths = malloc(sizeof(Array));
 
-    if (!fontSearchPaths) {
+    if (!fontSearchPaths)
         return False;
-    }
-    if (!initArray(fontSearchPaths, ARRAY_LENGTH(DEFAULT_FONT_SEARCH_PATHS))) {
+    if (!initArray(fontSearchPaths, ARRAY_LENGTH(DEFAULT_FONT_SEARCH_PATHS)))
         return False;
-    }
 
     for (size_t i = 0; i < ARRAY_LENGTH(DEFAULT_FONT_SEARCH_PATHS); i++) {
         const char *path = DEFAULT_FONT_SEARCH_PATHS[i];
@@ -325,21 +328,18 @@ Bool initFontStorage()
             insertArray(fontSearchPaths, (char *) path);
             // Count the font files in the directory
             while ((entry = readdir(fontDirectory))) {
-                if (isSupportedFontFileName(entry->d_name)) {
+                if (isSupportedFontFileName(entry->d_name))
                     fontCount++;
-                }
             }
             closedir(fontDirectory);
         }
     }
 
     fontCache = malloc(sizeof(Array));
-    if (!fontCache) {
+    if (!fontCache)
         return False;
-    }
-    if (!initArray(fontCache, fontCount)) {
+    if (!initArray(fontCache, fontCount))
         return False;
-    }
     fontAliasNames = malloc(sizeof(Array));
     if (!fontAliasNames) {
         freeArray(fontCache);
@@ -361,14 +361,14 @@ Bool initFontStorage()
 void freeFontStorage()
 {
     /* Drop cached text textures before any renderer or font goes away;
-     * destroyScreenWindow runs SDL_DestroyRenderer right after this call
-     * and any retained texture from the cache would dangle. */
+     * destroyScreenWindow runs SDL_DestroyRenderer right after this call and
+     * any retained texture from the cache would dangle.
+     */
     freeTextCache();
     if (fontSearchPaths) {
         // Clear the array and free the data
-        while (fontSearchPaths->length > 0) {
+        while (fontSearchPaths->length > 0)
             free(removeArray(fontSearchPaths, 0, False));
-        }
         freeArray(fontSearchPaths);
         free(fontSearchPaths);
         fontSearchPaths = NULL;
@@ -386,9 +386,8 @@ void freeFontStorage()
         fontCache = NULL;
     }
     if (fontAliasNames) {
-        while (fontAliasNames->length > 0) {
+        while (fontAliasNames->length > 0)
             free(removeArray(fontAliasNames, 0, False));
-        }
         freeArray(fontAliasNames);
         free(fontAliasNames);
         fontAliasNames = NULL;
@@ -405,8 +404,7 @@ static Bool containsIgnoreCase(const char *text, const char *needle)
     for (const char *p = text; *p; p++) {
         size_t i = 0;
         while (i < needleLen && p[i]) {
-            char a = p[i];
-            char b = needle[i];
+            char a = p[i], b = needle[i];
             if (a >= 'A' && a <= 'Z')
                 a = (char) (a - 'A' + 'a');
             if (b >= 'A' && b <= 'Z')
@@ -425,13 +423,13 @@ static Bool isFontAlias(const char *name)
 {
     if (!name)
         return False;
-    /* Discrete short aliases plus a few XLFD prefixes that real X11
-     * clients request when there is no font server. findFontCacheEntry
-     * ByName checks the cache first, so an XLFD that does happen to be
-     * scanned in is honored verbatim; this list is only the fallback
-     * after exact match misses. -adobe-times- is not fixed-width, but
-     * x11perf requests it for TR10/TR24 tests and would otherwise abort
-     * on XOpenFont(None). */
+    /* Discrete short aliases plus a few XLFD prefixes that real X11 clients
+     * request when there is no font server. findFontCacheEntry ByName checks
+     * the cache first, so an XLFD that does happen to be scanned in is honored
+     * verbatim; this list is only the fallback after exact match misses.
+     * -adobe-times- is not fixed-width, but x11perf requests it for TR10/TR24
+     * tests and would otherwise abort on XOpenFont(None).
+     */
     return !strcmp(name, "fixed") || !strcmp(name, "variable") ||
            !strcmp(name, "cursor") || !strcmp(name, "6x13") ||
            !strcmp(name, "8x13") || !strcmp(name, "7x14") ||
@@ -450,12 +448,12 @@ static Bool isFontAlias(const char *name)
             strstr(name, "-p-"));
 }
 
-/* Probe paths for a monospace face when the search-path scan didn't pick
- * one up — e.g. macOS keeps its fonts as .ttc which our .ttf-only scan
- * skips, and minimal Linux containers may have only freefont present in
- * a deeper subdirectory. The first path that TTF_OpenFont accepts is
- * adopted into the cache so subsequent XLoadFont calls hit the fast
- * path. */
+/* Probe paths for a monospace face when the search-path scan does not pick one
+ * up. For example, macOS keeps its fonts as .ttc which the .ttf-only scan
+ * skips, and minimal Linux containers may have only freefont present in a
+ * deeper subdirectory. The first path that TTF_OpenFont accepts is adopted into
+ * the cache so subsequent XLoadFont calls hit the fast path.
+ */
 static const char *MONOSPACE_PROBE_PATHS[] = {
 #if defined(__APPLE__)
     "/System/Library/Fonts/Menlo.ttc",
@@ -523,7 +521,8 @@ static int decipointsToPixelSize(int decipoints)
 {
     /* Xvfb resolves wildcard-resolution XLFD requests against its 100 DPI
      * core-font catalog. SDL_ttf takes a pixel-sized request here, so convert
-     * decipoints with the same default DPI: pixels = points * 100 / 72. */
+     * decipoints with the same default DPI: pixels = points * 100 / 72.
+     */
     return clampFontSize((decipoints * 100 + 360) / 720);
 }
 
@@ -538,11 +537,11 @@ static Bool parsePositiveIntBounded(const char *text,
         if (*p < '0' || *p > '9')
             return False;
         int digit = *p - '0';
-        /* XLFD numeric fields are caller-controlled. Reject the multiply
-         * before it can wrap, and saturate once the running value exceeds
-         * the caller's cap. The remaining digits are drained without
-         * arithmetic so a bogus trailing non-digit still flags the whole
-         * field as non-numeric. */
+        /* XLFD numeric fields are caller-controlled. Reject the multiply before
+         * it can wrap, and saturate once the running value exceeds the caller's
+         * cap. The remaining digits are drained without arithmetic so a bogus
+         * trailing non-digit still flags the whole field as non-numeric.
+         */
         if (value > (INT_MAX - digit) / 10 || value > saturationCap) {
             value = saturationCap;
             for (++p; *p; p++) {
@@ -656,7 +655,8 @@ static int requestedFontSize(const char *name)
                  * from pixels and must not be clamped to MAX_FONT_SIZE here.
                  * Cap the parsed value just below the point where
                  * decipointsToPixelSize's `decipoints * 100 + 360` could
-                 * overflow, then let clampFontSize cap the pixel result. */
+                 * overflow, then let clampFontSize cap the pixel result.
+                 */
                 int decipointCap = (INT_MAX - 360) / 100;
                 if (parsePositiveIntBounded(buffer, decipointCap, &decipoints))
                     pointSizeFallback = decipointsToPixelSize(decipoints);
@@ -681,7 +681,8 @@ static int requestedFontSize(const char *name)
  * matches on "times" and "iso8859-1" were too permissive: legitimate
  * proportional Times-Bold-Italic 14pt requests got rerouted to the 6x13
  * fixed-width font. Anchor on the dashed field markers so non-medium,
- * non-roman, non-normal, or wildcarded foundry-but-not-times XLFDs miss. */
+ * non-roman, non-normal, or wildcarded foundry-but-not-times XLFDs miss.
+ */
 static Bool isMotifTimesIso14Fallback(const char *name)
 {
     if (!name)
@@ -700,15 +701,15 @@ static Bool coreFontMetricsForName(const char *name,
 {
     if (!name)
         return False;
-    /* Xvfb's built-in "fixed" resolves to a 6x13 bitmap font:
-     * ascent=11, descent=2, width=6. Motif uses this alias in fallback
-     * fontLists; reporting smaller TTF metrics lets widgets pack too many
-     * text rows compared with native libX11.
+    /* Xvfb's built-in "fixed" resolves to a 6x13 bitmap font: ascent=11,
+     * descent=2, width=6. Motif uses this alias in fallback fontLists;
+     * reporting smaller TTF metrics lets widgets pack too many text rows
+     * compared with native libX11.
      */
     /* Only advertise bitmap-font metrics when the BDF actually loaded;
-     * otherwise the renderer falls back to TTF and the layout engine
-     * would lay out at 11/2 while glyphs draw at TTF size, overlapping
-     * adjacent lines. */
+     * otherwise the renderer falls back to TTF and the layout engine would lay
+     * out at 11/2 while glyphs draw at TTF size, overlapping adjacent lines.
+     */
     Bool haveBitmap = loadFixedBitmapFont();
     if (haveBitmap && (!strcmp(name, "fixed") || !strcmp(name, "cursor") ||
                        !strcmp(name, "6x13"))) {
@@ -737,18 +738,19 @@ static Bool coreFontMetricsForName(const char *name,
     }
     /* thentenaar/motif's hellomotifi18n demo asks Mrm for
      * -*-times-medium-r-normal--14-*-iso8859-1. The native Xvfb baseline on
-     * node11 does not have that font and Motif falls back to the default
-     * core font. Match that geometry only when we can actually render to
-     * it via the BDF; without BDF, we'd lie to the layout engine. */
+     * node11 does not have that font and Motif falls back to the default core
+     * font. Match that geometry only when the BDF can actually render to it;
+     * without BDF, the answer would lie to the layout engine.
+     */
     if (haveBitmap && isMotifTimesIso14Fallback(name)) {
         *ascent = 11;
         *descent = 2;
         *width = 6;
         return True;
     }
-    /* XLFD family names are case-insensitive per the X11 spec, so
-     * "-Helvetica-" / "-HELVETICA-" must take the same override path as
-     * the lowercase form. */
+    /* XLFD family names are case-insensitive per the X11 spec, so "-Helvetica-"
+     * / "-HELVETICA-" must take the same override path as the lowercase form.
+     */
     if (containsIgnoreCase(name, "-helvetica-") &&
         requestedFontSize(name) == 16) {
         *ascent = 16;
@@ -779,7 +781,8 @@ static Bool usesFixedFallbackFont(const char *name)
 /* Treat as a bitmap row only when the line is a single hex token of the
  * expected 1-byte width. Rejects COMMENT lines that happen to fall inside a
  * BITMAP block and tails of fgets-truncated long lines, both of which would
- * otherwise be misread as glyph pixel data. */
+ * otherwise be misread as glyph pixel data.
+ */
 static Bool isFixedBitmapRowLine(const char *line)
 {
     while (*line == ' ' || *line == '\t')
@@ -800,9 +803,10 @@ static Bool isFixedBitmapRowLine(const char *line)
 
 static void useEmbeddedFixedBitmap(void)
 {
-    /* The renderer reads fixedBitmapFont.rows directly, so a one-shot
-     * memcpy from the generated table is enough. Same width / height /
-     * char-count contract as the BDF reader below. */
+    /* The renderer reads fixedBitmapFont.rows directly, so a one-shot memcpy
+     * from the generated table is enough. Same width / height / char-count
+     * contract as the BDF reader below.
+     */
     memcpy(fixedBitmapFont.rows, EMBEDDED_FIXED_BITMAP_ROWS,
            sizeof(EMBEDDED_FIXED_BITMAP_ROWS));
     fixedBitmapFont.available = True;
@@ -818,11 +822,12 @@ static Bool loadFixedBitmapFont(void)
         return result;
     }
 
-    /* Prefer an external BDF when LIBX11_COMPAT_FONT_DIR points at one;
-     * this lets a downstream user swap in a different fixed font without
+    /* Prefer an external BDF when LIBX11_COMPAT_FONT_DIR points at one; this
+     * lets a downstream user swap in a different fixed font without
      * recompiling. Otherwise fall through to the in-tree embedded font
-     * generated from 6x13.bdf so CI hosts and packagers do not need to
-     * stage a separate data file. */
+     * generated from 6x13.bdf so CI hosts and packagers do not need to stage a
+     * separate data file.
+     */
     char path[PATH_MAX];
     const char *fontDir = getenv("LIBX11_COMPAT_FONT_DIR");
     FILE *fp = NULL;
@@ -849,8 +854,9 @@ static Bool loadFixedBitmapFont(void)
             continue;
         }
         if (!strncmp(line, "ENCODING ", 9)) {
-            /* strtol over atoi so a malformed BDF line cannot quietly
-             * decode to 0; .ci/check-security.sh also bans atoi. */
+            /* strtol over atoi so a malformed BDF line cannot quietly decode to
+             * 0; .ci/check-security.sh also bans atoi.
+             */
             char *end = NULL;
             long enc = strtol(&line[9], &end, 10);
             currentEncoding =
@@ -1072,13 +1078,13 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
 
 static FontCacheEntry *findFontCacheEntryByName(const char *name)
 {
-    /* Exact cache match wins so a real scanned font is never shadowed
-     * by an alias prefix. Aliases only kick in when no entry matches. */
+    /* Exact cache match wins so a real scanned font is never shadowed by an
+     * alias prefix. Aliases only kick in when no entry matches.
+     */
     for (size_t i = 0; i < fontCache->length; i++) {
         FontCacheEntry *entry = fontCache->array[i];
-        if (!strcmp(entry->XLFName, name)) {
+        if (!strcmp(entry->XLFName, name))
             return entry;
-        }
     }
     if (strchr(name, '*') || strchr(name, '?')) {
         Bool aliasRequest = isFontAlias(name);
@@ -1091,9 +1097,8 @@ static FontCacheEntry *findFontCacheEntryByName(const char *name)
             FontCacheEntry *entry = fontCache->array[i];
             if (aliasRequest && !entry->asciiMetrics)
                 continue;
-            if (matchWildcard(name, entry->XLFName)) {
+            if (matchWildcard(name, entry->XLFName))
                 return entry;
-            }
         }
     }
     if (isFontAlias(name)) {
@@ -1113,9 +1118,10 @@ Font XLoadFont(Display *display, _Xconst char *name)
         return None;
     }
     SET_XID_TYPE(font, FONT);
-    /* Use the unified lookup so XLoadFont and the rest of the font code
-     * agree on cache-first, alias-second ordering. Open-coding the
-     * alias check here used to shadow exact XLFD matches. */
+    /* Use the unified lookup so XLoadFont and the rest of the font code agree
+     * on cache-first, alias-second ordering. Open-coding the alias check here
+     * used to shadow exact XLFD matches.
+     */
     FontCacheEntry *fontEntry = findFontCacheEntryByName(name);
     if (!fontEntry) {
         FREE_XID(font);
@@ -1364,12 +1370,10 @@ char **XListFonts(Display *display,
 {
     // https://tronche.com/gui/x/xlib/graphics/font-metrics/XListFonts.html
     SET_X_SERVER_REQUEST(display, X_ListFonts);
-    if (actual_count_return) {
+    if (actual_count_return)
         *actual_count_return = 0;
-    }
-    if (!actual_count_return || maxnames <= 0) {
+    if (!actual_count_return || maxnames <= 0)
         return NULL;
-    }
     Array names;
     initArray(&names, 0);
     static char *aliases[] = {"fixed", "cursor", "9x13", "9x15"};
@@ -1388,9 +1392,8 @@ char **XListFonts(Display *display,
         char *aliasName = aliasPatternNeedsSyntheticName(pattern)
                               ? concreteAliasNameForPattern(pattern)
                               : (aliased ? aliased->XLFName : NULL);
-        if (aliased && aliasName && !stringArrayContains(&names, aliasName)) {
+        if (aliased && aliasName && !stringArrayContains(&names, aliasName))
             insertArray(&names, aliasName);
-        }
     }
     size_t i;
     for (i = 0; i < fontCache->length && (int) names.length < maxnames; i++) {
@@ -1398,16 +1401,15 @@ char **XListFonts(Display *display,
         if (aliasPattern && !entry->asciiMetrics)
             continue;
         char *name = entry->XLFName;
-        if (aliasPattern && stringArrayContains(&names, name)) {
+        if (aliasPattern && stringArrayContains(&names, name))
             continue;
-        }
-        if (matchWildcard(pattern, name)) {
+        if (matchWildcard(pattern, name))
             insertArray(&names, name);
-        }
     }
-    /* Resolve aliases to a stable cache-owned name. Returning the
-     * caller's pattern would alias caller-owned memory and could embed
-     * wildcards in the result list. */
+    /* Resolve aliases to a stable cache-owned name. Returning the caller's
+     * pattern would alias caller-owned memory and could embed wildcards in the
+     * result list.
+     */
     if (names.length == 0 && isFontAlias(pattern)) {
         FontCacheEntry *aliased = findAliasedFontForName(pattern);
         char *aliasName = aliasPatternNeedsSyntheticName(pattern)
@@ -1419,11 +1421,11 @@ char **XListFonts(Display *display,
     *actual_count_return = (int) names.length;
     if (names.length == 0)
         return NULL;
-    /* Copy names into caller-owned storage. Returning raw cache or
-     * alias-intern pointers would dangle after XSetFontPath rebuilds
-     * the font cache, so each entry is duplicated. The trailing NULL
-     * lets XFreeFontNames walk the list without needing a separate
-     * count. */
+    /* Copy names into caller-owned storage. Returning raw cache or alias-intern
+     * pointers would dangle after XSetFontPath rebuilds the font cache, so each
+     * entry is duplicated. The trailing NULL lets XFreeFontNames walk the list
+     * without needing a separate count.
+     */
     char **list = malloc(sizeof(char *) * (names.length + 1));
     if (!list) {
         freeArray(&names);
@@ -1459,9 +1461,8 @@ int XFreeFontNames(char **list)
 
 static void freeFontStructContents(XFontStruct *font_struct)
 {
-    if (!font_struct) {
+    if (!font_struct)
         return;
-    }
     free(font_struct->properties);
     free(font_struct->per_char);
     font_struct->properties = NULL;
@@ -1470,9 +1471,8 @@ static void freeFontStructContents(XFontStruct *font_struct)
 
 static void freeFontStruct(XFontStruct *font_struct)
 {
-    if (!font_struct) {
+    if (!font_struct)
         return;
-    }
     freeFontStructContents(font_struct);
     free(font_struct);
 }
@@ -1481,12 +1481,10 @@ int XFreeFont(Display *display, XFontStruct *font_struct)
 {
     // https://tronche.com/gui/x/xlib/graphics/font-metrics/XFreeFont.html
     SET_X_SERVER_REQUEST(display, X_CloseFont);
-    if (!font_struct) {
+    if (!font_struct)
         return 1;
-    }
-    if (font_struct->fid != None) {
+    if (font_struct->fid != None)
         compatFontClose(display, font_struct->fid);
-    }
     freeFontStruct(font_struct);
     return 1;
 }
@@ -1496,9 +1494,8 @@ int XFreeFontInfo(char **names, XFontStruct *free_info, int actual_count)
     if (names)
         XFreeFontNames(names);
     if (free_info) {
-        for (int i = 0; i < actual_count; i++) {
+        for (int i = 0; i < actual_count; i++)
             freeFontStructContents(free_info + i);
-        }
         free(free_info);
     }
     return 1;
@@ -1549,37 +1546,27 @@ Bool fillXCharStruct(TTF_Font *font,
 
 static void updateBounds(XFontStruct *fontStruct, XCharStruct *charStruct)
 {
-    if (charStruct->lbearing < fontStruct->min_bounds.lbearing) {
+    if (charStruct->lbearing < fontStruct->min_bounds.lbearing)
         fontStruct->min_bounds.lbearing = charStruct->lbearing;
-    }
-    if (charStruct->rbearing < fontStruct->min_bounds.rbearing) {
+    if (charStruct->rbearing < fontStruct->min_bounds.rbearing)
         fontStruct->min_bounds.rbearing = charStruct->rbearing;
-    }
-    if (charStruct->width < fontStruct->min_bounds.width) {
+    if (charStruct->width < fontStruct->min_bounds.width)
         fontStruct->min_bounds.width = charStruct->width;
-    }
-    if (charStruct->ascent < fontStruct->min_bounds.ascent) {
+    if (charStruct->ascent < fontStruct->min_bounds.ascent)
         fontStruct->min_bounds.ascent = charStruct->ascent;
-    }
-    if (charStruct->descent < fontStruct->min_bounds.descent) {
+    if (charStruct->descent < fontStruct->min_bounds.descent)
         fontStruct->min_bounds.descent = charStruct->descent;
-    }
 
-    if (charStruct->lbearing > fontStruct->max_bounds.lbearing) {
+    if (charStruct->lbearing > fontStruct->max_bounds.lbearing)
         fontStruct->max_bounds.lbearing = charStruct->lbearing;
-    }
-    if (charStruct->rbearing > fontStruct->max_bounds.rbearing) {
+    if (charStruct->rbearing > fontStruct->max_bounds.rbearing)
         fontStruct->max_bounds.rbearing = charStruct->rbearing;
-    }
-    if (charStruct->width > fontStruct->max_bounds.width) {
+    if (charStruct->width > fontStruct->max_bounds.width)
         fontStruct->max_bounds.width = charStruct->width;
-    }
-    if (charStruct->ascent > fontStruct->max_bounds.ascent) {
+    if (charStruct->ascent > fontStruct->max_bounds.ascent)
         fontStruct->max_bounds.ascent = charStruct->ascent;
-    }
-    if (charStruct->descent > fontStruct->max_bounds.descent) {
+    if (charStruct->descent > fontStruct->max_bounds.descent)
         fontStruct->max_bounds.descent = charStruct->descent;
-    }
 }
 
 static short fallbackPrintableWidth(const XFontStruct *fontStruct)
@@ -1731,20 +1718,16 @@ char **XListFontsWithInfo(Display *display,
 {
     // https://tronche.com/gui/x/xlib/graphics/font-metrics/XListFontsWithInfo.html
     SET_X_SERVER_REQUEST(display, X_ListFontsWithInfo);
-    if (actual_count_return) {
+    if (actual_count_return)
         *actual_count_return = 0;
-    }
-    if (info_return) {
+    if (info_return)
         *info_return = NULL;
-    }
-    if (!actual_count_return || !info_return) {
+    if (!actual_count_return || !info_return)
         return NULL;
-    }
 
     char **names = XListFonts(display, pattern, maxnames, actual_count_return);
-    if (!names || *actual_count_return == 0) {
+    if (!names || *actual_count_return == 0)
         return names;
-    }
 
     XFontStruct *infos =
         calloc((size_t) *actual_count_return, sizeof(XFontStruct));
@@ -1757,14 +1740,12 @@ char **XListFontsWithInfo(Display *display,
 
     for (int i = 0; i < *actual_count_return; i++) {
         FontCacheEntry *entry = findFontCacheEntryByName(names[i]);
-        if (!entry) {
+        if (!entry)
             continue;
-        }
         TTF_Font *font =
             TTF_OpenFont(entry->filePath, requestedFontSize(names[i]));
-        if (!font) {
+        if (!font)
             continue;
-        }
         fillFontStructFromTTF(display, None, font, &infos[i]);
         short ascent;
         short descent;
@@ -1784,13 +1765,11 @@ XFontStruct *XLoadQueryFont(Display *display, _Xconst char *name)
     if (!findFontCacheEntryByName(name))
         return NULL;
     Font fontId = XLoadFont(display, name);
-    if (fontId == None) {
+    if (fontId == None)
         return NULL;
-    }
     XFontStruct *fontStruct = XQueryFont(display, fontId);
-    if (!fontStruct) {
+    if (!fontStruct)
         compatFontClose(display, fontId);
-    }
     return fontStruct;
 }
 
@@ -1825,12 +1804,13 @@ XFontStruct *XQueryFont(Display *display, XID fontId)
     return fontStruct;
 }
 
-/* XDrawString and friends take a length-bounded buffer that may or may
- * not be NUL-terminated. Downstream SDL_ttf calls expect a C string, so
- * we copy `count` bytes into a fresh allocation and NUL-terminate. The
- * payload is rendered as-is: real Xlib treats every byte as a glyph
- * index into the font, so escape interpretation (\n, \xHH, ...) would
- * silently mangle legitimate Latin-1/file-path input. */
+/* XDrawString and friends take a length-bounded buffer that may or may not be
+ * NUL-terminated. Downstream SDL_ttf calls expect a C string, so decodeString
+ * copies "count" bytes into a fresh allocation and NUL-terminates. The payload
+ * is rendered as-is: real Xlib treats every byte as a glyph index into the
+ * font, so escape interpretation (\n, \xHH, ...) would silently mangle
+ * legitimate Latin-1/file-path input.
+ */
 char *decodeString(const char *string, int count)
 {
     if (!string || count < 0)
@@ -1853,8 +1833,9 @@ static int getTextWidthForChars(XFontStruct *font_struct,
         return 0;
     if (!font_struct->per_char &&
         font_struct->min_bounds.width == font_struct->max_bounds.width) {
-        /* Promote to 64-bit so a wide font times a long string can't wrap
-         * the int return; clamp at INT_MAX on overflow. */
+        /* Promote to 64-bit so a wide font times a long string can't wrap the
+         * int return; clamp at INT_MAX on overflow.
+         */
         int64_t product =
             (int64_t) font_struct->max_bounds.width * (int64_t) fixedCharCount;
         return product > INT_MAX ? INT_MAX : (int) product;
@@ -1898,8 +1879,9 @@ static char *decodeChar2bString(const XChar2b *string,
                                 int count,
                                 size_t *length)
 {
-    /* Reject negative counts and bound the buffer so the worst-case 3
-     * bytes per codepoint plus the NUL cannot wrap size_t on 32-bit. */
+    /* Reject negative counts and bound the buffer so the worst-case 3 bytes per
+     * codepoint plus the NUL cannot wrap size_t on 32-bit.
+     */
     if (!string || count < 0)
         return NULL;
     if ((size_t) count > (SIZE_MAX - 1) / 3)
@@ -1981,13 +1963,14 @@ int XTextWidth(XFontStruct *font_struct, _Xconst char *string, int count)
 }
 
 /* Text-render cache. Motif's expose-driven repaints hit XDrawString with
- * identical (font, string, color) tuples per label/menu/button on every
- * frame; round-tripping through TTF_RenderUTF8_Blended +
- * SDL_CreateTextureFromSurface per call costs milliseconds and shows up
- * as visible jitter in panner/file-manager demos. The cache memoizes
- * the GPU texture per (font, foreground, renderer, string), with LRU
- * eviction so memory stays bounded. Entries are invalidated when their
- * renderer is destroyed (see destroyWindow paths). */
+ * identical (font, string, color) tuples per label/menu/button on every frame;
+ * round-tripping through TTF_RenderUTF8_Blended + SDL_CreateTextureFromSurface
+ * per call costs milliseconds and shows up as visible jitter in
+ * panner/file-manager demos. The cache memoizes the GPU texture per (font,
+ * foreground, renderer, string), with LRU eviction so memory stays bounded.
+ * Entries are invalidated when their renderer is destroyed (see destroyWindow
+ * paths).
+ */
 #define TEXT_CACHE_CAPACITY 128
 #define TEXT_CACHE_MAX_STRLEN 256
 
@@ -2006,17 +1989,17 @@ typedef struct {
 
 static TextCacheEntry textCache[TEXT_CACHE_CAPACITY];
 static Uint64 textCacheClock = 0;
-/* The cache is shared global state, but renderText, the
- * invalidate*ForRenderer / *ForFont helpers, and freeTextCache can be
- * called from multiple X Display threads concurrently. Without a lock
- * a concurrent LRU eviction could free a texture while another thread
- * is mid-SDL_RenderCopy on it; the in-use flag could also tear when
- * two threads race to claim the same empty slot. A single mutex
- * covering every entry into the cache is coarse but matches the cost
- * of a 128-slot linear walk and keeps the eviction lifecycle simple.
+/* The cache is shared global state, but renderText, the invalidate*ForRenderer
+ * / *ForFont helpers, and freeTextCache can be called from multiple X Display
+ * threads concurrently. Without a lock a concurrent LRU eviction could free a
+ * texture while another thread is mid-SDL_RenderCopy on it; the in-use flag
+ * could also tear when two threads race to claim the same empty slot. A single
+ * mutex covering every entry into the cache is coarse but matches the cost of a
+ * 128-slot linear walk and keeps the eviction lifecycle simple.
  *
- * Held during SDL_RenderCopy as well, so cache evictions cannot free
- * a texture out from under an in-flight draw. */
+ * Held during SDL_RenderCopy as well, so cache evictions cannot free a texture
+ * out from under an in-flight draw.
+ */
 static SDL_mutex *textCacheMutex = NULL;
 static SDL_SpinLock textCacheMutexInitLock = 0;
 
@@ -2130,9 +2113,9 @@ static TextCacheEntry *textCacheReserveSlot(void)
 
 static Bool fixedBitmapCanRenderText(const char *string, size_t length)
 {
-    /* Length-counted: a 16-bit request with a {0,0} XChar2b decodes to a
-     * NUL byte mid-buffer that must still render as glyph 0, not end the
-     * scan. */
+    /* Length-counted: a 16-bit request with a {0,0} XChar2b decodes to a NUL
+     * byte mid-buffer that must still render as glyph 0, not end the scan.
+     */
     const unsigned char *bytes = (const unsigned char *) string;
     for (size_t i = 0; i < length; i++) {
         if (bytes[i] >= FIXED_BITMAP_CHAR_COUNT)
@@ -2169,9 +2152,10 @@ static Bool renderFixedBitmapText(Drawable drawable,
     unsigned long foreground = colorWithOpaqueDefault(gContext->foreground);
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE, foreground);
 
-    /* Cap so (int)(len * FIXED_BITMAP_WIDTH) cannot overflow SDL_Rect's
-     * int width. Pathological inputs would otherwise wrap negative and
-     * either skip clipping or paint outside the intended damage area. */
+    /* Cap so (int)(len * FIXED_BITMAP_WIDTH) cannot overflow SDL_Rect's int
+     * width. Pathological inputs would otherwise wrap negative and either skip
+     * clipping or paint outside the intended damage area.
+     */
     size_t len = length;
     if (len > (size_t) (INT_MAX / FIXED_BITMAP_WIDTH))
         len = (size_t) (INT_MAX / FIXED_BITMAP_WIDTH);
@@ -2195,9 +2179,10 @@ static Bool renderFixedBitmapText(Drawable drawable,
             int charX = x + (int) i * FIXED_BITMAP_WIDTH;
             for (int row = 0; row < FIXED_BITMAP_HEIGHT && ok; row++) {
                 unsigned char bits = fixedBitmapFont.rows[ch][row];
-                /* Pack consecutive set bits on this row into a single
-                 * SDL_Rect with w>1. A glyph with full ink on a row used to
-                 * emit 6 rects; now it emits 1. */
+                /* Pack consecutive set bits on this row into a single SDL_Rect
+                 * with w>1. A glyph with full ink on a row used to emit 6
+                 * rects; now it emits 1.
+                 */
                 int col = 0;
                 while (col < FIXED_BITMAP_WIDTH && ok) {
                     if (!(bits & (0x80 >> col))) {
@@ -2224,9 +2209,10 @@ static Bool renderFixedBitmapText(Drawable drawable,
     return ok;
 }
 
-/* Returns True if the cache took ownership of `texture`. False if the
- * caller is responsible for destroying it (e.g., string too long or
- * out-of-memory key allocation). */
+/* Returns True if the cache took ownership of "texture". False if the caller is
+ * responsible for destroying it (e.g., string too long or out-of-memory key
+ * allocation).
+ */
 static Bool textCacheInsert(Font fontXid,
                             Uint32 foreground,
                             SDL_Renderer *renderer,
@@ -2268,9 +2254,8 @@ Bool renderText(Display *display,
                 size_t length,
                 SDL_Rect *drawnBounds)
 {
-    if (!string || length == 0) {
+    if (!string || length == 0)
         return True;
-    }
     LOG("Rendering text (length=%zu): '%s'\n", length, string);
     GraphicContext *gContext = GET_GC(gc);
     unsigned long foreground = colorWithOpaqueDefault(gContext->foreground);
@@ -2282,11 +2267,11 @@ Bool renderText(Display *display,
     };
     if (gContext->font == None) {
         /* Lazily match Xlib's default-GC behavior: a GC without an explicit
-         * font still draws with the server's fixed font. */
+         * font still draws with the server's fixed font.
+         */
         gContext->font = XLoadFont(display, "fixed");
-        if (gContext->font == None) {
+        if (gContext->font == None)
             return False;
-        }
         if (!compatFontRetainForGC(gContext->font)) {
             compatFontClose(display, gContext->font);
             gContext->font = None;
@@ -2300,11 +2285,12 @@ Bool renderText(Display *display,
         return True;
     }
 
-    /* TTF_RenderUTF8_Solid stops at the first NUL, so embedded NULs only
-     * render their prefix here (the fixed-bitmap path above covers Motif's
-     * default "fixed" font, which is the realistic case). The cache key
-     * uses strdup, so skip lookup and insert when length != strlen to
-     * avoid storing or mis-hitting a truncated key. */
+    /* TTF_RenderUTF8_Solid stops at the first NUL, so embedded NULs only render
+     * their prefix here (the fixed-bitmap path above covers Motif's default
+     * "fixed" font, which is the realistic case). The cache key uses strdup, so
+     * skip lookup and insert when length != strlen to avoid storing or
+     * mis-hitting a truncated key.
+     */
     Bool stringHasEmbeddedNul = strlen(string) != length;
     SDL_Texture *fontTexture = NULL;
     int textureWidth = 0;
@@ -2313,7 +2299,8 @@ Bool renderText(Display *display,
     Bool textureOwned = False; /* True means caller frees. */
     /* Hold the cache lock across lookup, possible insert, and the
      * SDL_RenderCopy loop. Releasing earlier would let a concurrent
-     * invalidate-eviction free the texture out from under us. */
+     * invalidate-eviction free the texture out from under the active blit.
+     */
     textCacheLock();
     TextCacheEntry *hit =
         stringHasEmbeddedNul
@@ -2392,9 +2379,8 @@ static int drawImageString(Display *display,
         handleError(0, display, None, 0, BadGC, 0);
         return 0;
     }
-    if (!text || length == 0) {
+    if (!text || length == 0)
         return 1;
-    }
 
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(drawable, renderer);
@@ -2407,9 +2393,8 @@ static int drawImageString(Display *display,
     GraphicContext *gContext = GET_GC(gc);
     if (gContext->font == None) {
         gContext->font = XLoadFont(display, "fixed");
-        if (gContext->font == None) {
+        if (gContext->font == None)
             return 0;
-        }
         if (!compatFontRetainForGC(gContext->font)) {
             compatFontClose(display, gContext->font);
             gContext->font = None;
@@ -2421,9 +2406,10 @@ static int drawImageString(Display *display,
     int ascent = 0;
     int descent = 0;
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
-    /* The clear box must match the renderer that will actually run. Use
-     * the bitmap 11/2 box only when renderFixedBitmapText will fire;
-     * otherwise the TTF fallback box is needed to cover its glyphs. */
+    /* The clear box must match the renderer that will actually run. Use the
+     * bitmap 11/2 box only when renderFixedBitmapText will fire; otherwise the
+     * TTF fallback box is needed to cover its glyphs.
+     */
     if (fontResource && fontResource->useFixedBitmap &&
         fixedBitmapCanRenderText(text, length) && loadFixedBitmapFont()) {
         size_t textLen = length;
@@ -2481,9 +2467,8 @@ int XDrawImageString(Display *display,
 {
     // https://tronche.com/gui/x/xlib/graphics/drawing-text/XDrawImageString.html
     SET_X_SERVER_REQUEST(display, X_ImageText8);
-    if (length <= 0 || !string) {
+    if (length <= 0 || !string)
         return 1;
-    }
     char *text = decodeString(string, length);
     if (!text) {
         handleError(0, display, drawable, 0, BadAlloc, 0);
@@ -2505,12 +2490,12 @@ int XDrawImageString16(Display *display,
 {
     // https://tronche.com/gui/x/xlib/graphics/drawing-text/XDrawImageString16.html
     SET_X_SERVER_REQUEST(display, X_ImageText16);
-    /* Length-counted Xlib API: glyph U+0000 is still part of the
-     * request and must be drawn. Only short-circuit on a missing buffer
-     * or zero length, never on a leading NUL glyph. */
-    if (length <= 0 || !string) {
+    /* Length-counted Xlib API: glyph U+0000 is still part of the request and
+     * must be drawn. Only short-circuit on a missing buffer or zero length,
+     * never on a leading NUL glyph.
+     */
+    if (length <= 0 || !string)
         return 1;
-    }
     size_t size;
     char *text = decodeChar2bString(string, length, &size);
     if (!text) {
@@ -2539,9 +2524,8 @@ int XDrawString16(Display *display,
         return 0;
     }
     /* See XDrawImageString16: a leading U+0000 glyph is real data. */
-    if (length <= 0 || !string) {
+    if (length <= 0 || !string)
         return 1;
-    }
     SDL_Renderer *renderer;
     GET_RENDERER(drawable, renderer);
     if (!renderer) {
@@ -2603,9 +2587,8 @@ int XDrawString(Display *display,
         handleError(0, display, None, 0, BadGC, 0);
         return 0;
     }
-    if (length <= 0 || !string) {
+    if (length <= 0 || !string)
         return 1;
-    }
     SDL_Renderer *renderer;
     GET_RENDERER(drawable, renderer);
     if (!renderer) {

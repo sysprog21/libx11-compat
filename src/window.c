@@ -2,6 +2,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+
 #include "atoms.h"
 #include "display.h"
 #include "drawing.h"
@@ -49,18 +50,16 @@ static void postVisibilityForWindowAndSiblings(Display *display, Window window)
         return;
     }
     Window *children = GET_CHILDREN(parent);
-    for (size_t i = 0; i < GET_WINDOW_STRUCT(parent)->children.length; i++) {
+    for (size_t i = 0; i < GET_WINDOW_STRUCT(parent)->children.length; i++)
         postEvent(display, children[i], VisibilityNotify);
-    }
 }
 
 static Bool hasUnmappedAncestor(Window window)
 {
     Window parent = GET_PARENT(window);
     while (parent != None) {
-        if (GET_WINDOW_STRUCT(parent)->mapState == UnMapped) {
+        if (GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
             return True;
-        }
         parent = GET_PARENT(parent);
     }
     return False;
@@ -72,11 +71,11 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     if (windowStruct->sdlWindow)
         return True;
 
-    /* Start hidden so XMapWindow controls the show timing. Without
-     * this, SDL_CreateWindow flashes an empty window before
-     * drawWindowDataToScreen renders content; the SDL_ShowWindow call
-     * at the end of XMapWindow brings it on screen with the first
-     * frame already drawn. */
+    /* Start hidden so XMapWindow controls the show timing. Without this,
+     * SDL_CreateWindow flashes an empty window before drawWindowDataToScreen
+     * renders content; the SDL_ShowWindow call at the end of XMapWindow brings
+     * it on screen with the first frame already drawn.
+     */
     Uint32 flags = SDL_WINDOW_HIDDEN;
     if (windowStruct->overrideRedirect) {
         flags |= SDL_WINDOW_BORDERLESS;
@@ -86,8 +85,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         windowStruct->eventMask & KeyReleaseMask) {
         flags |= SDL_WINDOW_INPUT_FOCUS;
     }
-    int hostX = windowStruct->x;
-    int hostY = windowStruct->y;
+    int hostX = windowStruct->x, hostY = windowStruct->y;
     topLevelWindowHostPosition(window, windowStruct->x, windowStruct->y, &hostX,
                                &hostY);
     LOG("realizeTopLevelWindow: window=%lu pos=(%d,%d) host=(%d,%d) "
@@ -103,6 +101,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         handleError(0, display, None, 0, BadMatch, 0);
         return False;
     }
+
     registerWindowMapping(window, SDL_GetWindowID(sdlWindow));
     windowStruct->sdlWindow = sdlWindow;
     if (windowStruct->overrideRedirect) {
@@ -112,16 +111,48 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     }
     windowStruct->needsPresent = True;
     windowStruct->hasPresented = False;
-    if (windowStruct->cursor != None) {
+    if (windowStruct->cursor != None)
         XDefineCursor(display, window, windowStruct->cursor);
-    }
-    if (windowStruct->icon) {
+    if (windowStruct->icon)
         SDL_SetWindowIcon(windowStruct->sdlWindow, windowStruct->icon);
-    }
+
     /* Prime the X backing store while the native window is still hidden.
-     * XMapWindow will present and show it after map/expose state is ready. */
+     * XMapWindow will present and show it after map/expose state is ready.
+     */
     (void) getWindowRenderer(window);
+
     return True;
+}
+
+static void replayDeferredWmProperties(Display *display, Window window)
+{
+    /* Re-apply deferred WM hints after the top-level transition has made the
+     * window mapped. Motif and Xt write WM_TRANSIENT_FOR / _MOTIF_WM_HINTS
+     * during widget realization, well before the shell turns into a real native
+     * window. The WM helpers intentionally no-op until the top-level window is
+     * both realized and mapped.
+     */
+    applyMotifWmHintsFromProperty(window);
+    applyNetWmStateFromProperty(window);
+    applyTransientForRelationship(display, window);
+
+    /* This window may itself be the deferred parent for one or more
+     * earlier-realized modal children. Walk SCREEN_WINDOW's top-level siblings
+     * and re-resolve any whose deferredTransientParent points here so the modal
+     * pairing finally binds.
+     */
+    if (SCREEN_WINDOW != None && IS_TYPE(SCREEN_WINDOW, WINDOW)) {
+        Window *siblings = GET_CHILDREN(SCREEN_WINDOW);
+        size_t count = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+        for (size_t i = 0; i < count; i++) {
+            Window sibling = siblings[i];
+            if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                continue;
+
+            if (GET_WINDOW_STRUCT(sibling)->deferredTransientParent == window)
+                applyTransientForRelationship(display, sibling);
+        }
+    }
 }
 
 static void unrealizeTopLevelWindow(Window window)
@@ -131,7 +162,8 @@ static void unrealizeTopLevelWindow(Window window)
         return;
 
     /* If this top-level was the replay/XTest injection target, retire the
-     * cached ID so the next mapped shell can take its place. */
+     * cached ID so the next mapped shell can take its place.
+     */
     Uint32 destroyedId = SDL_GetWindowID(windowStruct->sdlWindow);
     replayTargetForgetWindow(destroyedId);
 
@@ -255,9 +287,8 @@ Window XCreateWindow(Display *display,
     if (HAS_VALUE(valueMask, CWEventMask))
         windowStruct->eventMask = attributes->event_mask;
     postEvent(display, windowID, CreateNotify);
-    if (valueMask != 0) {
+    if (valueMask != 0)
         XChangeWindowAttributes(display, windowID, valueMask, attributes);
-    }
     return windowID;
 }
 
@@ -299,9 +330,8 @@ Status XIconifyWindow(Display *display, Window window, int screen_number)
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XIconifyWindow.html
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+    if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
         SDL_MinimizeWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
-    }
     return 1;
 }
 
@@ -386,14 +416,13 @@ int XMapWindow(Display *display, Window window)
     // https://tronche.com/gui/x/xlib/window/XMapWindow.html
     SET_X_SERVER_REQUEST(display, X_MapWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (GET_WINDOW_STRUCT(window)->mapState == Mapped) {
+    if (GET_WINDOW_STRUCT(window)->mapState == Mapped)
         return 1;
-    }
 
     /* libx11-compat has no separate window-manager client to service
      * SubstructureRedirect requests. Some Motif paths select redirect-style
-     * masks internally; if we stop at MapRequest, top-level shells never become
-     * SDL windows. Keep mapping in-process.
+     * masks internally; stopping at MapRequest would leave top-level shells
+     * from ever becoming SDL windows. Keep mapping in-process.
      */
     if (IS_TOP_LEVEL(window)) {
         if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
@@ -410,7 +439,7 @@ int XMapWindow(Display *display, Window window)
          * just associating the SDL_Window; the texture is unchanged and stays
          * on the same renderer. Presentation to the actual SDL_Window happens
          * later in drawWindowDataToScreen.
-         * */
+         */
         windowStruct->mapState = Mapped;
 
         /* On macOS a command-line launched SDL app does not get keyboard focus
@@ -424,18 +453,20 @@ int XMapWindow(Display *display, Window window)
         }
         if (windowStruct->eventMask & KeyPressMask ||
             windowStruct->eventMask & KeyReleaseMask) {
-            /* Keep SDL text input off so KeyPress events are not doubled
-             * by SDL_TEXTINPUT. No setKeyboardFocus here: focus is owned
-             * by XSetInputFocus and its callers; XMapWindow auto-focus
-             * stole focus from the active Motif dialog and prevented
-             * popup shells from finishing their map sequence. */
+            /* Keep SDL text input off so KeyPress events are not doubled by
+             * SDL_TEXTINPUT. No setKeyboardFocus here: focus is owned by
+             * XSetInputFocus and its callers; XMapWindow auto-focus stole focus
+             * from the active Motif dialog and prevented popup shells from
+             * finishing their map sequence.
+             */
             SDL_StopTextInput();
         }
-        /* First top-level mapping is the canonical "window is up" signal
-         * for an external test script. Snapshot the SDL window ID now,
-         * on the main thread, so XTest's off-thread injection has a
-         * stable target without scanning the live window tree. Then
-         * arm the replay engine. */
+
+        /* First top-level mapping is the canonical "window is up" signal for an
+         * external test script. Snapshot the SDL window ID now, on the main
+         * thread, so XTest's off-thread injection has a stable target without
+         * scanning the live window tree. Then arm the replay engine.
+         */
         if (windowStruct->sdlWindow) {
             int wid = 0, hgt = 0;
             SDL_GetWindowSize(windowStruct->sdlWindow, &wid, &hgt);
@@ -472,12 +503,14 @@ int XMapWindow(Display *display, Window window)
         postExposeEvent(display, window, &exposeRect, 1);
     }
     if (windowStruct->sdlWindow) {
-        /* Render first into the hidden SDL_Window so the user never
-         * sees an empty frame, then show + raise. */
+        /* Render first into the hidden SDL_Window so the user never sees an
+         * empty frame, then show + raise.
+         */
         windowStruct->needsPresent = True;
         drawWindowDataToScreen();
         SDL_ShowWindow(windowStruct->sdlWindow);
         SDL_RaiseWindow(windowStruct->sdlWindow);
+        replayDeferredWmProperties(display, window);
     }
 
     // SDL_UpdateWindowSurface(GET_WINDOW_STRUCT(window)->sdlWindow);
@@ -533,9 +566,8 @@ int XMapSubwindows(Display *display, Window window)
     }
     memcpy(children, GET_CHILDREN(window), sizeof(Window) * count);
     for (size_t i = 0; i < count; i++) {
-        if (GET_WINDOW_STRUCT(children[i])->mapState != Mapped) {
+        if (GET_WINDOW_STRUCT(children[i])->mapState != Mapped)
             XMapWindow(display, children[i]);
-        }
     }
     free(children);
     return 1;
@@ -553,9 +585,8 @@ int XUnmapSubwindows(Display *display, Window window)
     }
     memcpy(children, GET_CHILDREN(window), sizeof(Window) * count);
     for (size_t i = count; i > 0; i--) {
-        if (GET_WINDOW_STRUCT(children[i - 1])->mapState != UnMapped) {
+        if (GET_WINDOW_STRUCT(children[i - 1])->mapState != UnMapped)
             XUnmapWindow(display, children[i - 1]);
-        }
     }
     free(children);
     return 1;
@@ -655,14 +686,14 @@ int XReparentWindow(Display *display,
     MapState mapState = windowStruct->mapState;
     Window oldParent = GET_PARENT(window);
     Bool wasTopLevel = IS_TOP_LEVEL(window);
+
     /* Snapshot pre-mutation geometry so every failure path can restore the
      * window to its original parent, position, and map state. removeArray
      * shrinks length but never reduces capacity, so the subsequent
-     * addChildToWindow(oldParent, window) reuses the slot we just vacated and
+     * addChildToWindow(oldParent, window) reuses the slot just vacated and
      * cannot fail under OOM.
      */
-    int oldX = windowStruct->x;
-    int oldY = windowStruct->y;
+    int oldX = windowStruct->x, oldY = windowStruct->y;
     removeChildFromParent(window);
     if (!addChildToWindow(parent, window)) {
         LOG("Out of memory: Failed to reattach window in XReparentWindow!\n");
@@ -690,26 +721,32 @@ int XReparentWindow(Display *display,
                 windowStruct->mapState = mapState;
                 return 0;
             }
-            /* realizeTopLevelWindow creates the SDL_Window hidden so
-             * XMapWindow can control show timing. The reparent path
-             * doesn't go through XMapWindow, so the window stays
-             * hidden, and XGetWindowAttributes reports IsUnmapped
-             * even though mapState is Mapped. Show it now since the
-             * old child was already mapped before reparent. */
+
+            /* A child whose pre-reparent ancestor was unmapped sat at
+             * MapRequested. Its new parent (root) is always mapped, so promote
+             * it to Mapped now so XGetWindowAttributes and the rest of the
+             * map-state machinery agree that this top-level is viewable.
+             */
+            windowStruct->mapState = Mapped;
+
+            /* realizeTopLevelWindow creates the SDL_Window hidden so XMapWindow
+             * can control show timing. The reparent path doesn't go through
+             * XMapWindow, so the window stays hidden. Show it now since the old
+             * child was already considered mapped before reparent.
+             */
             if (windowStruct->sdlWindow) {
                 windowStruct->needsPresent = True;
                 drawWindowDataToScreen();
                 SDL_ShowWindow(windowStruct->sdlWindow);
+                replayDeferredWmProperties(display, window);
             }
         }
     }
-    if (mapState != UnMapped) {
+    if (mapState != UnMapped)
         postReparentUnmapNotify(display, window, oldParent);
-    }
     postEvent(display, window, ReparentNotify, oldParent);
-    if (mapState != UnMapped) {
+    if (mapState != UnMapped)
         postEvent(display, window, MapNotify);
-    }
     return 1;
 }
 
@@ -717,9 +754,8 @@ int indexInWindowList(Window *windowList, int numWindows, Window window)
 {
     int i;
     for (i = 0; i < numWindows; i++) {
-        if (*windowList == window) {
+        if (*windowList == window)
             return i;
-        }
         windowList++;
     }
     return -1;
@@ -738,8 +774,7 @@ Bool XTranslateCoordinates(Display *display,
     SET_X_SERVER_REQUEST(display, X_TranslateCoords);
     TYPE_CHECK(sourceWindow, WINDOW, display, False);
     TYPE_CHECK(destinationWindow, WINDOW, display, False);
-    int currX = 0;
-    int currY = 0;
+    int currX = 0, currY = 0;
     translateWindowPoint(sourceWindow, destinationWindow, sourceX, sourceY,
                          &currX, &currY);
     *destinationXReturn = currX;
@@ -751,571 +786,21 @@ Bool XTranslateCoordinates(Display *display,
     return True;
 }
 
-static Bool isNetPropertyWithNoWindowSideEffects(Atom property)
-{
-    return property == _NET_WM_USER_TIME ||
-           property == _NET_WM_USER_TIME_WINDOW ||
-           property == _NET_WM_HANDLED_ICONS ||
-           property == _NET_WM_ICON_GEOMETRY ||
-           property == _NET_WM_ALLOWED_ACTIONS || property == _NET_WM_STRUT ||
-           property == _NET_WM_STRUT_PARTIAL;
-}
+/* XChangeProperty / XGetWindowProperty / XDeleteProperty live in
+ * src/window-property.c. The WM-state helpers (applyMotifWmHintsFromProperty,
+ * windowIsModal, applyTransientForRelationship, clearTransientForRelationship,
+ * applyNetWmStateAction) live in src/window-wm.c. Both are declared in
+ * window-internal.h which window.c already pulls in via window.h.
+ */
 
-int XChangeProperty(Display *display,
-                    Window window,
-                    Atom property,
-                    Atom type,
-                    int format,
-                    int mode,
-                    _Xconst unsigned char *data,
-                    int numberOfElements)
-{
-    // https://tronche.com/gui/x/xlib/window-information/XChangeProperty.html
-    SET_X_SERVER_REQUEST(display, X_ChangeProperty);
-    TYPE_CHECK(window, WINDOW, display, 0);
-    if (numberOfElements < 0) {
-        LOG("Bad parameter: XChangeProperty got negative element count %d "
-            "for property %lu (%s), type %lu (%s), format %d, mode %d.\n",
-            numberOfElements, property, getAtomName(display, property), type,
-            getAtomName(display, type), format, mode);
-        handleError(0, display, None, 0, BadValue, 0);
-        return 0;
-    }
-    if (format != 8 && format != 16 && format != 32) {
-        LOG("Bad parameter: XChangeProperty got invalid format %d for "
-            "property %lu (%s), type %lu (%s), elements %d, mode %d.\n",
-            format, property, getAtomName(display, property), type,
-            getAtomName(display, type), numberOfElements, mode);
-        handleError(0, display, None, 0, BadValue, 0);
-        return 0;
-    }
-    if (!isNetPropertyWithNoWindowSideEffects(property)) {
-        LOG("Changing window property %lu (%s).\n", property,
-            getAtomName(display, property));
-    }
-    if (!isValidAtom(property)) {
-        handleError(0, display, property, 0, BadAtom, 0);
-        return 0;
-    }
-    if (!isValidAtom(type)) {
-        handleError(0, display, type, 0, BadAtom, 0);
-        return 0;
-    }
-    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    WindowProperty *windowProperty =
-        findProperty(&windowStruct->properties, property, NULL);
-    unsigned char *combinedData = NULL;
-    unsigned char *previousData = NULL;
-    unsigned int previousDataLength = 0;
-    Bool propertyIsNew = !windowProperty;
-    size_t dataTypeSize = format == 8
-                              ? sizeof(char)
-                              : (format == 16 ? sizeof(short) : sizeof(long));
-    if (!propertyIsNew) {
-        previousDataLength = windowProperty->dataLength;
-        previousData = windowProperty->data;
-    } else {
-        windowProperty = malloc(sizeof(WindowProperty));
-        if (!windowProperty) {
-            handleOutOfMemory(0, display, 0, 0);
-            return 0;
-        }
-        if (!insertArray(&windowStruct->properties, windowProperty)) {
-            free(windowProperty);
-            handleOutOfMemory(0, display, 0, 0);
-            return 0;
-        }
-        windowProperty->dataFormat = format;
-        windowProperty->data = NULL;
-        windowProperty->dataLength = 0;
-        windowProperty->property = property;
-        windowProperty->type = type;
-    }
-    switch (mode) {
-    case PropModeAppend:
-    case PropModePrepend:
-        if (format != windowProperty->dataFormat ||
-            type != windowProperty->type) {
-            if (propertyIsNew) {
-                removeArray(&windowStruct->properties,
-                            windowStruct->properties.length - 1, False);
-                free(windowProperty);
-            }
-            handleError(0, display, None, 0, BadMatch, 0);
-            return 0;
-        }
-
-        /* Checked add then checked multiply: a malicious caller can craft
-         * previousDataLength + numberOfElements to wrap u32, undersizing
-         * the allocation before the memcpy of dataTypeSize bytes per
-         * element would write past the buffer. The element count is then
-         * stored back into an unsigned int dataLength field, so it must
-         * fit in UINT_MAX as well.
-         */
-        if ((size_t) numberOfElements >
-                SIZE_MAX - (size_t) previousDataLength ||
-            (size_t) previousDataLength + (size_t) numberOfElements >
-                UINT_MAX ||
-            (size_t) previousDataLength + (size_t) numberOfElements >
-                SIZE_MAX / dataTypeSize) {
-            if (propertyIsNew) {
-                removeArray(&windowStruct->properties,
-                            windowStruct->properties.length - 1, False);
-                free(windowProperty);
-            }
-            handleError(0, display, None, 0, BadAlloc, 0);
-            return 0;
-        }
-        combinedData = malloc(dataTypeSize * ((size_t) previousDataLength +
-                                              (size_t) numberOfElements));
-        if (!combinedData) {
-            if (propertyIsNew) {
-                removeArray(&windowStruct->properties,
-                            windowStruct->properties.length - 1, False);
-                free(windowProperty);
-            }
-            LOG("Out of memory: Failed to allocate space for combined data "
-                "in XChangeProperty!\n");
-            handleOutOfMemory(0, display, 0, 0);
-            return 0;
-        }
-        if (mode == PropModeAppend) {
-            if (previousData) {
-                memcpy(combinedData, previousData,
-                       dataTypeSize * previousDataLength);
-            }
-            memcpy(combinedData + dataTypeSize * previousDataLength, data,
-                   dataTypeSize * numberOfElements);
-        } else {
-            memcpy(combinedData, data, dataTypeSize * numberOfElements);
-            if (previousData) {
-                memcpy(combinedData + dataTypeSize * numberOfElements,
-                       previousData, dataTypeSize * previousDataLength);
-            }
-        }
-        windowProperty->data = combinedData;
-        windowProperty->dataLength = numberOfElements + previousDataLength;
-        break;
-    case PropModeReplace: {
-        /* Same overflow surface as the append/prepend path: a large
-         * numberOfElements times dataTypeSize (up to 8 for format == 32)
-         * can wrap size_t before malloc, and would then drive memcpy past
-         * the undersized buffer.
-         *
-         * Allocate into a temporary so an OOM here leaves the original
-         * windowProperty->data intact instead of orphaning it with the
-         * pointer overwritten to NULL. */
-        unsigned char *newData = NULL;
-        if (numberOfElements > 0) {
-            if ((size_t) numberOfElements > SIZE_MAX / dataTypeSize) {
-                if (propertyIsNew) {
-                    removeArray(&windowStruct->properties,
-                                windowStruct->properties.length - 1, False);
-                    free(windowProperty);
-                }
-                handleError(0, display, None, 0, BadAlloc, 0);
-                return 0;
-            }
-            newData = malloc(dataTypeSize * (size_t) numberOfElements);
-            if (!newData) {
-                if (propertyIsNew) {
-                    removeArray(&windowStruct->properties,
-                                windowStruct->properties.length - 1, False);
-                    free(windowProperty);
-                }
-                LOG("Out of memory: Failed to allocate space for data in "
-                    "XChangeProperty!\n");
-                handleOutOfMemory(0, display, 0, 0);
-                return 0;
-            }
-            memcpy(newData, data, dataTypeSize * (size_t) numberOfElements);
-        }
-        windowProperty->data = newData;
-        windowProperty->dataLength = (unsigned int) numberOfElements;
-        windowProperty->property = property;
-        windowProperty->type = type;
-        windowProperty->dataFormat = format;
-        break;
-    }
-    default:
-        if (propertyIsNew) {
-            removeArray(&windowStruct->properties,
-                        windowStruct->properties.length - 1, False);
-            free(windowProperty);
-        }
-        LOG("Bad parameter: Got unknown mode %d in XChangeProperty!\n", mode);
-        handleError(0, display, None, 0, BadMatch, 0);
-        return 0;
-    }
-    if (previousData) {
-        free(previousData);
-    }
-    if (property == _NET_WM_ICON && format == 32 && numberOfElements >= 2) {
-        // Find the icon with the highest resolution
-        unsigned long *pixelData = (unsigned long *) windowProperty->data;
-        unsigned long *icons[20];
-        int i = 0, bestIcon = 0;
-        size_t offset = 0;
-        unsigned long w;
-        unsigned long h;
-        while (i < 20 && offset + 2 <= (size_t) numberOfElements) {
-            w = pixelData[0];
-            h = pixelData[1];
-            /* _NET_WM_ICON pixel data is CARD32 width, height, then w*h
-             * BGRA pixels. Both w and h come straight from the client, so
-             * w*h plus the two-word header must be guarded against
-             * size_t wrap before it feeds the bounds check below.
-             */
-            if (w > 0 && h > (SIZE_MAX - 2) / w)
-                break;
-            size_t iconLength = 2 + (size_t) w * (size_t) h;
-            if (offset + iconLength > (size_t) numberOfElements)
-                break;
-            /* SDL_CreateRGBSurfaceFrom takes width, height and pitch as
-             * signed int. Reject candidates that would not fit before they
-             * can win the bestIcon selection: otherwise an oversized icon
-             * followed by a smaller valid icon would leave us with no
-             * usable surface at all.
-             */
-            Bool fitsSdl = w != 0 && h != 0 && w <= (unsigned long) INT_MAX &&
-                           h <= (unsigned long) INT_MAX &&
-                           w <= (unsigned long) INT_MAX / 4;
-            if (fitsSdl) {
-                icons[i] = pixelData;
-                if (i == 0 || w > icons[bestIcon][0] || h > icons[bestIcon][1])
-                    bestIcon = i;
-                i++;
-            }
-            pixelData += iconLength;
-            offset += iconLength;
-        }
-        if (i > 0) {
-            w = icons[bestIcon][0];
-            h = icons[bestIcon][1];
-            SDL_Surface *icon = SDL_CreateRGBSurfaceFrom(
-                &icons[bestIcon][2], (int) w, (int) h, 32, (int) (w * 4),
-                0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
-            if (windowStruct->icon)
-                SDL_FreeSurface(windowStruct->icon);
-            windowStruct->icon = icon;
-            if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
-                SDL_SetWindowIcon(windowStruct->sdlWindow, icon);
-        }
-    }
-    /* React to _NET_WM_WINDOW_TYPE: menu/popup/tooltip/splash/dock types
-     * normally come from a borderless window-manager decoration request. We
-     * have no WM, so the closest equivalent is dropping SDL's border. */
-    if (property == _NET_WM_WINDOW_TYPE && format == 32 &&
-        IS_MAPPED_TOP_LEVEL_WINDOW(window) && windowProperty->dataLength > 0) {
-        Atom *types = (Atom *) windowProperty->data;
-        Bool wantBorderless = False;
-        for (unsigned int t = 0; t < windowProperty->dataLength; t++) {
-            Atom ty = types[t];
-            if (ty == _NET_WM_WINDOW_TYPE_MENU ||
-                ty == _NET_WM_WINDOW_TYPE_DROPDOWN_MENU ||
-                ty == _NET_WM_WINDOW_TYPE_POPUP_MENU ||
-                ty == _NET_WM_WINDOW_TYPE_TOOLTIP ||
-                ty == _NET_WM_WINDOW_TYPE_SPLASH ||
-                ty == _NET_WM_WINDOW_TYPE_DOCK ||
-                ty == _NET_WM_WINDOW_TYPE_NOTIFICATION ||
-                ty == _NET_WM_WINDOW_TYPE_COMBO) {
-                wantBorderless = True;
-                break;
-            }
-        }
-        if (wantBorderless) {
-            SDL_SetWindowBordered(windowStruct->sdlWindow, SDL_FALSE);
-        }
-    }
-    /* Motif, GTK, and Qt set their window titles via XChangeProperty on
-     * WM_NAME / _NET_WM_NAME rather than calling XStoreName. Route any
-     * format-8 string-encoded write through XStoreName so SDL's window
-     * title reflects what the client just asked for. Non-string property
-     * types (e.g. atom lists) pass through untouched. */
-    if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME)) {
-        static Atom cachedUtf8 = None;
-        static Atom cachedCompound = None;
-        if (cachedUtf8 == None)
-            cachedUtf8 = XInternAtom(display, "UTF8_STRING", False);
-        if (cachedCompound == None)
-            cachedCompound = XInternAtom(display, "COMPOUND_TEXT", False);
-        if (type == XA_STRING || type == cachedUtf8 || type == cachedCompound) {
-            /* Property bytes are not required to be NUL-terminated. */
-            size_t copyLen = (size_t) numberOfElements;
-            char *titleBuf = malloc(copyLen + 1);
-            if (titleBuf) {
-                if (copyLen > 0 && windowProperty->data) {
-                    memcpy(titleBuf, windowProperty->data, copyLen);
-                }
-                titleBuf[copyLen] = '\0';
-                XStoreName(display, window, titleBuf);
-                free(titleBuf);
-            }
-        }
-    }
-    postEvent(display, window, PropertyNotify, property, PropertyNewValue);
-    return 1;
-}
-
-int XDeleteProperty(Display *display, Window window, Atom property)
-{
-    // https://tronche.com/gui/x/xlib/window-information/XDeleteProperty.html
-    SET_X_SERVER_REQUEST(display, X_DeleteProperty);
-    TYPE_CHECK(window, WINDOW, display, 0);
-    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    if (!isValidAtom(property)) {
-        handleError(0, display, property, 0, BadAtom, 0);
-        return 0;
-    }
-    if (property == _NET_WM_ICON) {
-        if (windowStruct->icon) {
-            SDL_FreeSurface(windowStruct->icon);
-            windowStruct->icon = NULL;
-            if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
-                SDL_SetWindowIcon(windowStruct->sdlWindow, NULL);
-            }
-        }
-    }
-    size_t index;
-    WindowProperty *windowProperty =
-        findProperty(&windowStruct->properties, property, &index);
-    if (windowProperty) {
-        removeArray(&windowStruct->properties, index, False);
-        freeWindowProperty(windowProperty);
-        postEvent(display, window, PropertyNotify, property, PropertyDelete);
-    }
-    return 1;
-}
-
-int XGetWindowProperty(Display *display,
-                       Window window,
-                       Atom property,
-                       long long_offset,
-                       long long_length,
-                       Bool delete,
-                       Atom req_type,
-                       Atom *actual_type_return,
-                       int *actual_format_return,
-                       unsigned long *numberOfItems_return,
-                       unsigned long *bytes_after_return,
-                       unsigned char **prop_return)
-{
-    // https://tronche.com/gui/x/xlib/window-information/XGetWindowProperty.html
-    SET_X_SERVER_REQUEST(display, X_GetProperty);
-    TYPE_CHECK(window, WINDOW, display, BadWindow);
-    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    if (!isValidAtom(property)) {
-        handleError(0, display, property, 0, BadAtom, 0);
-        return BadAtom;
-    }
-    *actual_type_return = None;
-    *actual_format_return = 0;
-    *numberOfItems_return = 0;
-    *bytes_after_return = 0;
-    *prop_return = NULL;
-    WindowProperty *windowProperty =
-        findProperty(&windowStruct->properties, property, NULL);
-    if (windowProperty) {
-        *actual_type_return = windowProperty->type;
-        *actual_format_return = windowProperty->dataFormat;
-        size_t storageTypeSize =
-            windowProperty->dataFormat == 8
-                ? sizeof(char)
-                : (windowProperty->dataFormat == 16 ? sizeof(short)
-                                                    : sizeof(long));
-        if (req_type == AnyPropertyType || req_type == windowProperty->type) {
-            /* Xlib specifies long_offset and long_length in 32-bit units,
-             * independent of the property format. */
-            size_t wireTypeSize = (size_t) windowProperty->dataFormat / 8;
-            size_t itemsPerLong = 4 / wireTypeSize;
-            size_t totalItems = windowProperty->dataLength;
-            if (long_offset < 0 || long_length < 0 ||
-                (size_t) long_offset > SIZE_MAX / itemsPerLong ||
-                (size_t) long_length > SIZE_MAX / itemsPerLong) {
-                handleError(0, display, None, 0, BadValue, 0);
-                return BadValue;
-            }
-            size_t offsetItems = (size_t) long_offset * itemsPerLong;
-            if (offsetItems > totalItems) {
-                handleError(0, display, None, 0, BadValue, 0);
-                return BadValue;
-            }
-            size_t remainingItems = totalItems - offsetItems;
-            size_t requestItems = (size_t) long_length * itemsPerLong;
-            size_t returnItems = MIN(remainingItems, requestItems);
-            /* dataReturnSize then dataReturnSize+1 must both fit in size_t. */
-            if (returnItems > (SIZE_MAX - 1) / storageTypeSize) {
-                handleError(0, display, None, 0, BadAlloc, 0);
-                return BadAlloc;
-            }
-            size_t dataReturnSize = returnItems * storageTypeSize;
-            *prop_return = malloc(dataReturnSize + 1);
-            if (!*prop_return) {
-                LOG("Out of memory: Failed to allocate space for "
-                    "the return value in XGetWindowProperty!\n");
-                handleOutOfMemory(0, display, 0, 0);
-                return BadAlloc;
-            }
-            memcpy(*prop_return,
-                   windowProperty->data + offsetItems * storageTypeSize,
-                   dataReturnSize);
-            (*prop_return)[dataReturnSize] = '\0';
-            *numberOfItems_return = returnItems;
-            *bytes_after_return = (remainingItems - returnItems) * wireTypeSize;
-            if (delete && *bytes_after_return == 0) {
-                XDeleteProperty(display, window, property);
-            }
-        } else {
-            *bytes_after_return = (unsigned long) windowProperty->dataLength *
-                                  ((size_t) windowProperty->dataFormat / 8);
-            *numberOfItems_return = 0;
-        }
-    } else if (property == _XSETTINGS_SETTINGS_ATOM &&
-               window == SCREEN_WINDOW &&
-               (req_type == AnyPropertyType ||
-                req_type == _XSETTINGS_SETTINGS_ATOM)) {
-        /* Publish the minimum settings GTK reads: a font name, the DPI in
-         * fixed-point 1024ths of a point, and an icon theme name. */
-        static const char *fontName = "Sans 10";
-        static const char *iconTheme = "default";
-        /* Each setting:
-         *   CARD8 type, CARD8 unused, CARD16 name_len, char name[name_len],
-         *   pad to 4, CARD32 last_change_serial, type-specific body.
-         * Header: CARD8 byte_order, 3*CARD8 unused, CARD32 serial,
-         *         CARD32 n_settings. */
-        size_t headerBytes = 12;
-        struct {
-            const char *name;
-            int type; /* 0=int, 1=string */
-            int intValue;
-            const char *strValue;
-        } items[] = {
-            {.name = "Gtk/FontName",
-             .type = 1,
-             .intValue = 0,
-             .strValue = fontName},
-            {.name = "Xft/DPI",
-             .type = 0,
-             .intValue = 96 * 1024,
-             .strValue = NULL},
-            {.name = "Net/IconThemeName",
-             .type = 1,
-             .intValue = 0,
-             .strValue = iconTheme},
-        };
-        const size_t nItems = sizeof(items) / sizeof(items[0]);
-        size_t total = headerBytes;
-        for (size_t i = 0; i < nItems; i++) {
-            size_t nameLen = strlen(items[i].name);
-            size_t entry = 1 + 1 + 2 + nameLen;
-            entry = (entry + 3) & ~3u;
-            entry += 4; /* serial */
-            if (items[i].type == 0) {
-                entry += 4;
-            } else {
-                size_t valLen = strlen(items[i].strValue);
-                size_t v = 4 + valLen;
-                v = (v + 3) & ~3u;
-                entry += v;
-            }
-            total += entry;
-        }
-        unsigned char *out = malloc(total + 1);
-        if (!out) {
-            handleOutOfMemory(0, display, 0, 0);
-            return BadAlloc;
-        }
-        unsigned char *p = out;
-        *p++ = 0; /* LSBFirst */
-        *p++ = 0;
-        *p++ = 0;
-        *p++ = 0;
-        uint32_t serial = 1;
-        memcpy(p, &serial, 4);
-        p += 4;
-        uint32_t nset = (uint32_t) nItems;
-        memcpy(p, &nset, 4);
-        p += 4;
-        for (size_t i = 0; i < nItems; i++) {
-            *p++ = (unsigned char) items[i].type;
-            *p++ = 0;
-            uint16_t nameLen = (uint16_t) strlen(items[i].name);
-            memcpy(p, &nameLen, 2);
-            p += 2;
-            memcpy(p, items[i].name, nameLen);
-            p += nameLen;
-            size_t pad = (4 - (nameLen & 3)) & 3;
-            memset(p, 0, pad);
-            p += pad;
-            uint32_t lastChange = 0;
-            memcpy(p, &lastChange, 4);
-            p += 4;
-            if (items[i].type == 0) {
-                int32_t iv = (int32_t) items[i].intValue;
-                memcpy(p, &iv, 4);
-                p += 4;
-            } else {
-                uint32_t valLen = (uint32_t) strlen(items[i].strValue);
-                memcpy(p, &valLen, 4);
-                p += 4;
-                memcpy(p, items[i].strValue, valLen);
-                p += valLen;
-                size_t spad = (4 - (valLen & 3)) & 3;
-                memset(p, 0, spad);
-                p += spad;
-            }
-        }
-        out[total] = '\0';
-        *actual_type_return = _XSETTINGS_SETTINGS_ATOM;
-        *actual_format_return = 8;
-        *numberOfItems_return = total;
-        *bytes_after_return = 0;
-        *prop_return = out;
-    } else if (property == _MOTIF_WM_HINTS &&
-               (req_type == AnyPropertyType || req_type == _MOTIF_WM_HINTS)) {
-        /* Synthesize a default hints reply when the app has not set one,
-         * so Motif/Tk/AWT clients that probe this property do not abort.
-         * X11 format=32 uses native long-sized client-side storage even
-         * though the wire encoding is 32 bits. */
-        enum {
-            MWM_HINTS_FUNCTIONS = (1L << 0),
-            MWM_HINTS_DECORATIONS = (1L << 1),
-            MWM_HINTS_INPUT_MODE = (1L << 2),
-            MWM_FUNC_ALL = (1L << 0),
-            MWM_DECOR_ALL = (1L << 0),
-            MWM_INPUT_MODELESS = 0,
-        };
-        size_t bytes = 5 * sizeof(long);
-        long *values = malloc(bytes + 1);
-        if (!values) {
-            handleOutOfMemory(0, display, 0, 0);
-            return BadAlloc;
-        }
-        values[0] =
-            MWM_HINTS_FUNCTIONS | MWM_HINTS_DECORATIONS | MWM_HINTS_INPUT_MODE;
-        values[1] = MWM_FUNC_ALL;
-        values[2] = MWM_DECOR_ALL;
-        values[3] = MWM_INPUT_MODELESS;
-        values[4] = 0;
-        *actual_type_return = _MOTIF_WM_HINTS;
-        *actual_format_return = 32;
-        *numberOfItems_return = 5;
-        *bytes_after_return = 0;
-        *prop_return = (unsigned char *) values;
-    } else {
-        *prop_return = NULL;
-    }
-    return Success;
-}
 
 int XRaiseWindow(Display *display, Window window)
 {
     // https://tronche.com/gui/x/xlib/window/XRaiseWindow.html
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+    if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
         SDL_RaiseWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
-    }
     moveChildToTop(window);
     postVisibilityForWindowAndSiblings(display, window);
     return 1;
@@ -1335,9 +820,8 @@ int XRestackWindows(Display *display, Window *windows, int nwindows)
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
     if (nwindows <= 0)
         return 1;
-    for (int i = 0; i < nwindows; i++) {
+    for (int i = 0; i < nwindows; i++)
         TYPE_CHECK(windows[i], WINDOW, display, 0);
-    }
     for (int i = nwindows - 1; i >= 0; i--) {
         moveChildToTop(windows[i]);
         postVisibilityForWindowAndSiblings(display, windows[i]);
@@ -1457,12 +941,10 @@ int XSetWindowBorderPixmap(Display *display,
     // https://tronche.com/gui/x/xlib/window/XSetWindowBorderPixmap.html
     SET_X_SERVER_REQUEST(display, X_ChangeWindowAttributes);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (border_pixmap != CopyFromParent) {
+    if (border_pixmap != CopyFromParent)
         TYPE_CHECK(border_pixmap, PIXMAP, display, 0);
-    }
-    if (window != SCREEN_WINDOW) {
+    if (window != SCREEN_WINDOW)
         GET_WINDOW_STRUCT(window)->borderPixmap = border_pixmap;
-    }
     return 1;
 }
 
@@ -1472,9 +954,8 @@ int XSetWindowColormap(Display *display, Window window, Colormap colormap)
     SET_X_SERVER_REQUEST(display, X_ChangeWindowAttributes);
     TYPE_CHECK(window, WINDOW, display, 0);
     TYPE_CHECK(colormap, COLORMAP, display, 0);
-    if (window != SCREEN_WINDOW) {
+    if (window != SCREEN_WINDOW)
         GET_WINDOW_STRUCT(window)->colormap = colormap;
-    }
     return 1;
 }
 
@@ -1495,12 +976,10 @@ int XChangeWindowAttributes(Display *display,
             XSetWindowBackgroundPixmap(display, window,
                                        attributes->background_pixmap);
         }
-        if (HAS_VALUE(valueMask, CWBackPixel)) {
+        if (HAS_VALUE(valueMask, CWBackPixel))
             XSetWindowBackground(display, window, attributes->background_pixel);
-        }
-        if (HAS_VALUE(valueMask, CWColormap)) {
+        if (HAS_VALUE(valueMask, CWColormap))
             XSetWindowColormap(display, window, attributes->colormap);
-        }
         if (HAS_VALUE(valueMask, CWEventMask)) {
             LOG("Change window attributes event: window=%lu mask=0x%lx "
                 "exposure=0x%lx structure=0x%lx substructure=0x%lx\n",
@@ -1514,12 +993,10 @@ int XChangeWindowAttributes(Display *display,
             GET_WINDOW_STRUCT(window)->overrideRedirect =
                 attributes->override_redirect ? True : False;
         }
-        if (HAS_VALUE(valueMask, CWBitGravity)) {
+        if (HAS_VALUE(valueMask, CWBitGravity))
             GET_WINDOW_STRUCT(window)->bitGravity = attributes->bit_gravity;
-        }
-        if (HAS_VALUE(valueMask, CWWinGravity)) {
+        if (HAS_VALUE(valueMask, CWWinGravity))
             GET_WINDOW_STRUCT(window)->winGravity = attributes->win_gravity;
-        }
     }
     return 1;
 }
@@ -1544,9 +1021,8 @@ int XSetWindowBorderWidth(Display *display, Window window, unsigned int width)
     // https://tronche.com/gui/x/xlib/window/XSetWindowBorderWidth.html
     SET_X_SERVER_REQUEST(display, X_ChangeWindowAttributes);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (window != SCREEN_WINDOW) {
+    if (window != SCREEN_WINDOW)
         GET_WINDOW_STRUCT(window)->borderWidth = width;
-    }
     return 1;
 }
 
@@ -1566,6 +1042,7 @@ Status XQueryTree(Display *display,
     *children_return = malloc(sizeof(Window) * (*nchildren_return));
     if (!*children_return && *nchildren_return > 0)
         return 0;
+
     memcpy(*children_return, GET_CHILDREN(window),
            sizeof(Window) * (*nchildren_return));
     return 1;

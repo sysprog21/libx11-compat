@@ -10,11 +10,12 @@
 #include "colors.h"
 #include "image.h"
 
-/* Cached scratch buffer and staging texture for XPutImage. x11perf
- * issues thousands of identically-sized XPutImage calls per benchmark;
- * a per-call malloc + SDL_CreateTexture + SDL_DestroyTexture chain
- * dominates the wall time, so we reuse both across calls and only grow
- * (or recreate) when the requested geometry or renderer changes. */
+/* Cached scratch buffer and staging texture for XPutImage. x11perf issues
+ * thousands of identically-sized XPutImage calls per benchmark; a per-call
+ * malloc + SDL_CreateTexture + SDL_DestroyTexture chain dominates the wall
+ * time, so XPutImage reuses both across calls and only grows (or recreates)
+ * when the requested geometry or renderer changes.
+ */
 static struct {
     Uint32 *pixels;
     size_t pixelCapacity;
@@ -24,13 +25,14 @@ static struct {
     int textureHeight;
 } putImageScratch;
 
-/* XPutImage from multiple threads would otherwise race on the scratch
- * pixel buffer's realloc and the staging texture's create/destroy. The
- * mutex is created lazily on first use and kept for the lifetime of
- * the process: tearing it down in freeImageStorage created a TOCTOU
- * window where ensurePutImageScratchLock could return a pointer that
- * freeImageStorage destroyed before the caller called SDL_LockMutex
- * on it. The memory cost is one SDL_mutex per process. */
+/* XPutImage from multiple threads would otherwise race on the scratch pixel
+ * buffer's realloc and the staging texture's create/destroy. The mutex is
+ * created lazily on first use and kept for the lifetime of the process: tearing
+ * it down in freeImageStorage created a TOCTOU window where
+ * ensurePutImageScratchLock could return a pointer that freeImageStorage
+ * destroyed before the caller called SDL_LockMutex on it. The memory cost is
+ * one SDL_mutex per process.
+ */
 static SDL_mutex *putImageScratchLock = NULL;
 static SDL_SpinLock putImageScratchLockInitLock = 0;
 static SDL_mutex *ensurePutImageScratchLock(void)
@@ -42,13 +44,13 @@ static SDL_mutex *ensurePutImageScratchLock(void)
     SDL_AtomicUnlock(&putImageScratchLockInitLock);
     return lock;
 }
-/* Return the acquired mutex so the caller pairs lock/unlock against
- * the exact pointer it locked. Reading putImageScratchLock unlocked at
- * unlock time would race against another thread initializing it (or,
- * if SDL_CreateMutex returned NULL on the first thread and succeeded
- * on the second, would try to unlock a mutex this thread never
- * locked). NULL return means "no lock was acquired" — pass NULL to
- * unlockPutImageScratch and the unlock is a no-op. */
+/* Return the acquired mutex so the caller pairs lock/unlock against the exact
+ * pointer it locked. Reading putImageScratchLock unlocked at unlock time would
+ * race against another thread initializing it (or, if SDL_CreateMutex returned
+ * NULL on the first thread and succeeded on the second, would try to unlock a
+ * mutex this thread never locked). A NULL return means "no lock was acquired";
+ * passing NULL to unlockPutImageScratch makes the unlock a no-op.
+ */
 static SDL_mutex *lockPutImageScratch(void)
 {
     SDL_mutex *lock = ensurePutImageScratchLock();
@@ -64,10 +66,11 @@ static void unlockPutImageScratch(SDL_mutex *lock)
 
 static Uint32 *ensurePutImageScratchBuffer(size_t pixelsNeeded)
 {
-    /* Refuse anything that would overflow size_t when scaled to bytes.
-     * Caller is also expected to validate width/height before this, but
-     * a second line of defense is cheap. Caller must hold
-     * putImageScratchLock around the buffer use. */
+    /* Refuse anything that would overflow size_t when scaled to bytes. Caller
+     * is also expected to validate width/height before this, but a second line
+     * of defense is cheap. Caller must hold putImageScratchLock around the
+     * buffer use.
+     */
     if (pixelsNeeded > SIZE_MAX / sizeof(Uint32))
         return NULL;
     if (pixelsNeeded > putImageScratch.pixelCapacity) {
@@ -107,9 +110,10 @@ static SDL_Texture *ensurePutImageStagingTexture(SDL_Renderer *renderer,
 
 void freeImageStorage(void)
 {
-    /* Release scratch payload but leave putImageScratchLock alive;
-     * destroying it here is racy with concurrent callers holding a
-     * pointer returned by ensurePutImageScratchLock(). */
+    /* Release scratch payload but leave putImageScratchLock alive; destroying
+     * it here is racy with concurrent callers holding a pointer returned by
+     * ensurePutImageScratchLock().
+     */
     SDL_mutex *lock = lockPutImageScratch();
     if (putImageScratch.texture) {
         SDL_DestroyTexture(putImageScratch.texture);
@@ -125,8 +129,9 @@ void freeImageStorage(void)
 }
 
 /* Pack an X11 pixel into SDL2's RGBA8888 layout. Routes through
- * colorWithOpaqueDefault so core-X11 pixels (alpha byte == 0) render
- * opaque instead of disappearing into SDL2's alpha-aware blend. */
+ * colorWithOpaqueDefault so core-X11 pixels (alpha byte == 0) render opaque
+ * instead of disappearing into SDL2's alpha-aware blend.
+ */
 static inline Uint32 xColorToRgba8888(unsigned long color)
 {
     color = colorWithOpaqueDefault(color);
@@ -181,9 +186,8 @@ SDL_Renderer *getPutImageStagingTextureRenderer(void)
 
 static int imageByteOrder(Display *display)
 {
-    if (display) {
+    if (display)
         return ImageByteOrder(display);
-    }
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
     return MSBFirst;
 #else
@@ -217,9 +221,10 @@ static int paddedBytesPerLine(unsigned int width,
         return 0;
     if (bitsPerPixel <= 0)
         return 0;
-    /* Compute in uint64_t so width * bitsPerPixel (worst case
-     * ~2^32 * 32) and the padding round-up cannot wrap. The final
-     * return is int, so reject anything that would not fit. */
+    /* Compute in uint64_t so width * bitsPerPixel (worst case ~2^32 * 32) and
+     * the padding round-up cannot wrap. The final return is int, so reject
+     * anything that would not fit.
+     */
     uint64_t bits = (uint64_t) width * (uint64_t) (unsigned int) bitsPerPixel;
     uint64_t pad = (uint64_t) (unsigned int) bitmapPad;
     if (bits > UINT64_MAX - (pad - 1))
@@ -243,9 +248,10 @@ XImage *XCreateImage(Display *display,
                      int bytes_per_line)
 {
     // https://tronche.com/gui/x/xlib/utilities/XCreateImage.html
-    /* Real Xlib only accepts bitmap_pad in {8, 16, 32}. Reject anything
-     * else with BadValue so callers find bugs early instead of silently
-     * getting a malformed scanline. */
+    /* Real Xlib only accepts bitmap_pad in {8, 16, 32}. Reject anything else
+     * with BadValue so callers find bugs early instead of silently getting a
+     * malformed scanline.
+     */
     if (!isValidBitmapPad(bitmap_pad)) {
         handleError(0, display, None, 0, BadValue, 0);
         return NULL;
@@ -271,10 +277,10 @@ XImage *XCreateImage(Display *display,
     image->bitmap_pad = bitmap_pad;
     image->bytes_per_line = bytes_per_line;
     image->bits_per_pixel = bitsPerPixelForDepth(depth, format);
-    /* Real Xlib happily accepts width==0 or bits_per_pixel==0 and
-     * returns an XImage whose bytes_per_line is zero. paddedBytesPerLine
-     * yields 0 in those cases now, so just trust its result rather than
-     * aborting. */
+    /* Real Xlib happily accepts width==0 or bits_per_pixel==0 and returns an
+     * XImage whose bytes_per_line is zero. paddedBytesPerLine yields 0 in those
+     * cases now, so just trust its result rather than aborting.
+     */
     if (bytes_per_line == 0) {
         image->bytes_per_line =
             paddedBytesPerLine(width, image->bits_per_pixel, bitmap_pad);
@@ -298,8 +304,9 @@ static unsigned char bitMaskForImage(XImage *image, int x)
 }
 
 /* XYPixmap stores each bit-plane in its own contiguous slab; cap the plane
- * count at the unsigned-long bit width so `1UL << plane` cannot trigger UB
- * on a malformed image->depth. */
+ * count at the unsigned-long bit width so `1UL << plane` cannot trigger UB on a
+ * malformed image->depth.
+ */
 static int xyPixmapPlaneCount(const XImage *image)
 {
     int maxPlane = (int) (sizeof(unsigned long) * CHAR_BIT);
@@ -320,12 +327,15 @@ static Bool imageCoordinatesValid(XImage *image, int x, int y)
            y < image->height;
 }
 
-/* Compute the data-buffer byte count for an internally-allocated XImage,
- * with overflow checks. Returns 0 on overflow or invalid input.
+/* Compute the data-buffer byte count for an internally-allocated XImage, with
+ * overflow checks.
+ *
+ * Returns 0 on overflow or invalid input.
  *
  * For XYPixmap, the X protocol stores each bit-plane in its own slab of
- * (bytes_per_line * height) bytes, so the total is multiplied by depth.
- * Our other formats use a single slab. */
+ * (bytes_per_line * height) bytes, so the total is multiplied by depth. The
+ * other formats use a single slab.
+ */
 static size_t imageDataBufferSize(int format,
                                   int bytesPerLine,
                                   unsigned int height,
@@ -458,15 +468,13 @@ unsigned long XGetPixel(XImage *image, int x, int y)
 
 static int addPixel(XImage *image, long value)
 {
-    if (!image || !image->data) {
+    if (!image || !image->data)
         return 0;
-    }
     for (int y = 0; y < image->height; y++) {
         for (int x = 0; x < image->width; x++) {
             unsigned long pixel = XGetPixel(image, x, y);
-            if (!XPutPixel(image, x, y, pixel + (unsigned long) value)) {
+            if (!XPutPixel(image, x, y, pixel + (unsigned long) value))
                 return 0;
-            }
         }
     }
     return 1;
@@ -478,9 +486,8 @@ XImage *XSubImage(XImage *image,
                   unsigned int width,
                   unsigned int height)
 {
-    if (!image || !image->data) {
+    if (!image || !image->data)
         return NULL;
-    }
     if (x < 0 || y < 0 || image->width < 0 || image->height < 0 ||
         (unsigned int) x > (unsigned int) image->width ||
         (unsigned int) y > (unsigned int) image->height ||
@@ -491,22 +498,20 @@ XImage *XSubImage(XImage *image,
 
     int bytesPerLine =
         paddedBytesPerLine(width, image->bits_per_pixel, image->bitmap_pad);
-    /* paddedBytesPerLine returns 0 either for a legitimately empty image
-     * or because the row would overflow int. The pixel loop below would
-     * still iterate width*height times on a calloc(0, height) buffer, so
-     * reject the overflow case explicitly. */
-    if (bytesPerLine == 0 && width != 0) {
+    /* paddedBytesPerLine returns 0 either for a legitimately empty image or
+     * because the row would overflow int. The pixel loop below would still
+     * iterate width*height times on a calloc(0, height) buffer, so reject the
+     * overflow case explicitly.
+     */
+    if (bytesPerLine == 0 && width != 0)
         return NULL;
-    }
     size_t dataBytes = imageDataBufferSize(image->format, bytesPerLine, height,
                                            (unsigned int) image->depth);
-    if (dataBytes == 0 && bytesPerLine != 0 && height != 0) {
+    if (dataBytes == 0 && bytesPerLine != 0 && height != 0)
         return NULL;
-    }
     char *data = dataBytes ? calloc(1, dataBytes) : NULL;
-    if (!data && dataBytes != 0) {
+    if (!data && dataBytes != 0)
         return NULL;
-    }
     XImage *subImage =
         XCreateImage(NULL, NULL, image->depth, image->format, image->xoffset,
                      data, width, height, image->bitmap_pad, bytesPerLine);
@@ -526,9 +531,8 @@ XImage *XSubImage(XImage *image,
 int destroyImage(XImage *image)
 {
     // https://tronche.com/gui/x/xlib/utilities/XDestroyImage.html
-    if (image->data) {
+    if (image->data)
         free(image->data);
-    }
     free(image);
     return 1;
 }
@@ -578,11 +582,11 @@ int XPutImage(Display *display,
         return -1;
     }
 
-    /* Reject geometries that would either overflow the scratch-buffer
-     * size or exceed what SDL_Rect (signed int) and SDL_UpdateTexture's
-     * pitch parameter (signed int) can address downstream. The width
-     * cap is INT_MAX / sizeof(Uint32) so width * 4 fits in the pitch
-     * argument. */
+    /* Reject geometries that would either overflow the scratch-buffer size or
+     * exceed what SDL_Rect (signed int) and SDL_UpdateTexture's pitch parameter
+     * (signed int) can address downstream. The width cap is INT_MAX /
+     * sizeof(Uint32) so width * 4 fits in the pitch argument.
+     */
     if (width > (unsigned int) (INT_MAX / sizeof(Uint32)) ||
         height > (unsigned int) INT_MAX ||
         (height != 0 && width > SIZE_MAX / sizeof(Uint32) / (size_t) height)) {
@@ -590,11 +594,12 @@ int XPutImage(Display *display,
         return -1;
     }
 
-    /* Reject requests whose source rectangle does not lie wholly inside
-     * the XImage. The old XGetPixel fallback silently returned 0 for
-     * out-of-bounds pixels; the new direct fast paths read raw bytes
-     * from image->data and would segfault. The width/height bound above
-     * guarantees the size_t addition cannot wrap. */
+    /* Reject requests whose source rectangle does not lie wholly inside the
+     * XImage. The old XGetPixel fallback silently returned 0 for out-of-bounds
+     * pixels; the new direct fast paths read raw bytes from image->data and
+     * would segfault. The width/height bound above guarantees the size_t
+     * addition cannot wrap.
+     */
     if (src_x < 0 || src_y < 0 || image->width < 0 || image->height < 0 ||
         (size_t) src_x + (size_t) width > (size_t) image->width ||
         (size_t) src_y + (size_t) height > (size_t) image->height) {
@@ -606,13 +611,14 @@ int XPutImage(Display *display,
         return -1;
     }
 
-    /* Stride sanity for every format that dereferences image->data.
-     * A negative or undersized bytes_per_line lets either the fast raw-
-     * byte paths or XGetPixel (which still uses bytes_per_line for the
-     * row offset) step past the caller's buffer. Caps:
+    /* Stride sanity for every format that dereferences image->data. A negative
+     * or undersized bytes_per_line lets either the fast raw- byte paths or
+     * XGetPixel (which still uses bytes_per_line for the row offset) step past
+     * the caller's buffer. Caps:
      *   ZPixmap : ceil(maxX * bits_per_pixel / 8) bytes per row
      *   XYBitmap: ceil(maxX / 8) bytes per row
-     *   XYPixmap: ceil(maxX / 8) bytes per plane row */
+     * XYPixmap: ceil(maxX / 8) bytes per plane row
+     */
     if (image->data && height > 0) {
         if (image->bytes_per_line < 0) {
             handleError(0, display, drawable, 0, BadMatch, 0);
@@ -636,9 +642,10 @@ int XPutImage(Display *display,
         }
     }
 
-    /* Hold the scratch lock across pixel build + texture upload +
-     * RenderCopy so a concurrent XPutImage cannot realloc the pixel
-     * buffer or destroy the staging texture mid-flight. */
+    /* Hold the scratch lock across pixel build + texture upload + RenderCopy so
+     * a concurrent XPutImage cannot realloc the pixel buffer or destroy the
+     * staging texture mid-flight.
+     */
     SDL_mutex *scratchLock = lockPutImageScratch();
     Uint32 *data =
         ensurePutImageScratchBuffer((size_t) width * (size_t) height);
@@ -662,10 +669,11 @@ int XPutImage(Display *display,
             memset(data, 0, sizeof(Uint32) * width * height);
         }
     } else if (image->format == ZPixmap && image->bits_per_pixel == 32) {
-        /* The fast 32-bit-load path requires the row base to be 4-byte
-         * aligned. Xlib does not promise that for caller-supplied data,
-         * so fall back to memcpy-per-pixel when either the stride or
-         * the base pointer is misaligned. */
+        /* The fast 32-bit-load path requires the row base to be 4-byte aligned.
+         * Xlib does not promise that for caller-supplied data, so fall back to
+         * memcpy-per-pixel when either the stride or the base pointer is
+         * misaligned.
+         */
         Bool aligned = (image->bytes_per_line % (int) sizeof(Uint32)) == 0 &&
                        (((uintptr_t) image->data) % sizeof(Uint32)) == 0;
         for (unsigned int y = 0; y < height; y++) {
@@ -676,9 +684,8 @@ int XPutImage(Display *display,
             Uint32 *dst = data + y * width;
             if (aligned) {
                 const Uint32 *src = (const Uint32 *) srcRow;
-                for (unsigned int x = 0; x < width; x++) {
+                for (unsigned int x = 0; x < width; x++)
                     dst[x] = xColorToRgba8888(src[x]);
-                }
             } else {
                 for (unsigned int x = 0; x < width; x++) {
                     Uint32 color;
@@ -691,9 +698,10 @@ int XPutImage(Display *display,
         Uint32 foreground = xColorToRgba8888(graphicContext->foreground);
         Uint32 background = xColorToRgba8888(graphicContext->background);
         Bool msbFirst = image->bitmap_bit_order == MSBFirst;
-        /* The 256-entry LUT below costs ~2us to build, only worth it
-         * when the image is large enough to amortize over many bytes.
-         * For small inputs the original per-pixel bit test wins. */
+        /* The 256-entry LUT below costs ~2us to build, only worth it when the
+         * image is large enough to amortize over many bytes. For small inputs
+         * the original per-pixel bit test wins.
+         */
         if ((size_t) width * (size_t) height >= 1024) {
             Uint32 lut[256][8];
             for (int byte = 0; byte < 256; byte++) {
@@ -715,8 +723,9 @@ int XPutImage(Display *display,
                     dst[x++] = lut[byte][srcBitX & 7];
                     srcBitX++;
                 }
-                /* Aligned middle: one source byte at a time produces
-                 * eight destination pixels per memcpy. */
+                /* Aligned middle: one source byte at a time produces eight
+                 * destination pixels per memcpy.
+                 */
                 while (x + 8 <= width) {
                     unsigned char byte = srcRow[srcBitX >> 3];
                     memcpy(&dst[x], lut[byte], sizeof(lut[byte]));
@@ -794,10 +803,10 @@ int XPutImage(Display *display,
         }
     }
     clearRendererClip(renderer);
-    /* If the shape composite failed mid-flight, mask-violating pixels
-     * may still be on the renderer; skip the present so the next draw
-     * recomposes from a fresh baseline rather than flashing stale
-     * output. */
+    /* If the shape composite failed mid-flight, mask-violating pixels may still
+     * be on the renderer; skip the present so the next draw recomposes from a
+     * fresh baseline rather than flashing stale output.
+     */
     Bool shapeOk = shapeGuardEnd(&sg);
     unlockPutImageScratch(scratchLock);
     if (shapeOk)
@@ -819,10 +828,11 @@ XImage *XGetImage(Display *display,
     LOG("%s: From %lu\n", __func__, drawable);
     if (IS_TYPE(drawable, WINDOW) && drawable == SCREEN_WINDOW) {
         /* Root-window readback would need a compositing pass: top-level
-         * SDL_Windows present independently, the SCREEN renderer's
-         * backing surface is never updated with their pixels, and there
-         * is no single root framebuffer to capture from. Returning NULL
-         * matches what Xlib does when the request is rejected. */
+         * SDL_Windows present independently, the SCREEN renderer's backing
+         * surface is never updated with their pixels, and there is no single
+         * root framebuffer to capture from. Returning NULL matches what Xlib
+         * does when the request is rejected.
+         */
         LOG("XGetImage on SCREEN_WINDOW is not supported by this shim.\n");
         return NULL;
     }
@@ -832,7 +842,8 @@ XImage *XGetImage(Display *display,
     }
     /* SDL_Rect carries signed int, and the per-row pointer math below uses
      * width and height as positive offsets; reject any dimension that would
-     * cast to a negative int before allocations are attempted. */
+     * cast to a negative int before allocations are attempted.
+     */
     if (width > (unsigned int) INT_MAX || height > (unsigned int) INT_MAX) {
         handleError(0, display, drawable, 0, BadValue, 0);
         return NULL;
@@ -848,10 +859,11 @@ XImage *XGetImage(Display *display,
     }
     int bitsPerPixel = bitsPerPixelForDepth((unsigned int) depth, format);
     int bytes_per_line = paddedBytesPerLine(width, bitsPerPixel, 32);
-    /* paddedBytesPerLine returns 0 either for a legitimately empty image
-     * or because the row size would overflow int. Either way, an extreme
-     * width could make calloc(0, height) succeed even though the
-     * width*height pixel loop below would walk off the buffer. */
+    /* paddedBytesPerLine returns 0 either for a legitimately empty image or
+     * because the row size would overflow int. Either way, an extreme width
+     * could make calloc(0, height) succeed even though the width*height pixel
+     * loop below would walk off the buffer.
+     */
     if (bytes_per_line == 0 && width != 0) {
         handleError(0, display, drawable, 0, BadValue, 0);
         return NULL;
@@ -899,9 +911,8 @@ XImage *XGetImage(Display *display,
             if (plane_mask == (unsigned long) ~0) {
                 memcpy(dst, src, width * sizeof(Uint32));
             } else {
-                for (unsigned int currX = 0; currX < width; currX++) {
+                for (unsigned int currX = 0; currX < width; currX++)
                     dst[currX] = (Uint32) (plane_mask & src[currX]);
-                }
             }
         }
     } else {
@@ -935,12 +946,10 @@ XImage *XGetSubImage(Display *display,
 {
     XImage *image =
         XGetImage(display, drawable, x, y, width, height, plane_mask, format);
-    if (!image) {
+    if (!image)
         return NULL;
-    }
-    if (!dest_image) {
+    if (!dest_image)
         return image;
-    }
     for (unsigned int currY = 0; currY < height; currY++) {
         for (unsigned int currX = 0; currX < width; currX++) {
             XPutPixel(dest_image, dest_x + (int) currX, dest_y + (int) currY,

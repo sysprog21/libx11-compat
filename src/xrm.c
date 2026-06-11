@@ -11,23 +11,23 @@
 
 /* X resource manager. Each entry stores its pattern as parallel quark and
  * binding arrays so query-time matching is integer compare instead of
- * strcmp+malloc. Entries are linked into two structures: an ordered
- * head/tail list for enumeration / file output / O(N) destroy, and a hash
- * bucket keyed by the leaf quark for O(1)-average lookup.
+ * strcmp+malloc. Entries are linked into two structures: an ordered head/tail
+ * list for enumeration / file output / O(N) destroy, and a hash bucket keyed by
+ * the leaf quark for O(1)-average lookup.
  *
- * Motif issues hundreds of resource lookups per widget at startup
- * (XmRendition lists, XmFontList chains, XmNbaseTranslations). The flat
- * linked-list + strcmp-per-component variant this replaces turned a
- * one-shot widget realize into seconds of CPU; bucketing by leaf gives
- * Motif's "lookup by leaf, score by cascade" pattern a near-direct path.
+ * Motif issues hundreds of resource lookups per widget at startup (XmRendition
+ * lists, XmFontList chains, XmNbaseTranslations). The flat linked-list +
+ * strcmp-per-component variant this replaces turned a one-shot widget realize
+ * into seconds of CPU; bucketing by leaf gives Motif's "lookup by leaf, score
+ * by cascade" pattern a near-direct path.
  */
 
 #define XRM_BUCKETS 256
 
 typedef struct XrmEntry {
-    XrmQuark *quarks;     /* complen entries (no terminator) */
-    XrmBinding *bindings; /* complen entries; bindings[i] is the binding
-                           * BEFORE quarks[i]. */
+    XrmQuark *quarks; /* complen entries (no terminator) */
+    /* complen entries; bindings[i] is the binding BEFORE quarks[i]. */
+    XrmBinding *bindings;
     int complen;
     XrmQuark leaf; /* quarks[complen - 1], cached for bucketing. */
     char *type;
@@ -43,15 +43,17 @@ struct _XrmHashBucketRec {
     XrmEntry *tail;
 };
 
-/* Xlib documents resource paths up to 100 components; round to 128 so we
- * accept the entire spec range without forcing libXt's _XtDisplayInitialize
- * doubling loop to give up on a legitimate deep widget tree. */
+/* Xlib documents resource paths up to 100 components; rounding to 128 accepts
+ * the entire spec range without forcing libXt's _XtDisplayInitialize doubling
+ * loop to give up on a legitimate deep widget tree.
+ */
 #define XRM_PREFIX_MAX 128
 
 static unsigned int quarkBucket(XrmQuark q)
 {
     /* Quarks are dense small integers; mix the high bits in so consecutive
-     * quark IDs do not all land in the same bucket. */
+     * quark IDs do not all land in the same bucket.
+     */
     unsigned int u = (unsigned int) q;
     u ^= u >> 8;
     return u & (XRM_BUCKETS - 1);
@@ -78,9 +80,11 @@ static Bool patternQuarkMatches(XrmQuark pattern,
 }
 
 /* Parse a pattern string into a (binding, quark) sequence. Mirrors
- * XrmStringToBindingQuarkList's semantics: leading `*` flips binding to
- * loose, `.` is tight, the binding of component i is determined by the
- * separator that preceded it. Returns the component count, or -1 on OOM.
+ * XrmStringToBindingQuarkList's semantics: leading "*" flips binding to loose,
+ * "." is tight, the binding of component i is determined by the separator that
+ * preceded it.
+ *
+ * Returns the component count, or -1 on OOM.
  */
 static int parsePattern(const char *pattern,
                         XrmQuark **quarks_out,
@@ -317,20 +321,20 @@ static XrmDatabase xrmNewDatabase(void)
 
 void XrmInitialize(void)
 {
-    /* Nothing to set up: the quark table lives in libX11's Quarks.c
-     * (staged under $(OUT)/upstream/src/) and initializes on first use. */
+    /* Nothing to set up: the quark table lives in libX11's Quarks.c (staged
+     * under $(OUT)/upstream/src/) and initializes on first use.
+     */
 }
 
-/* The XrmStringToQuarkList / XrmStringToBindingQuarkList implementations
- * below derive from libX11's src/Xrm.c (which we do not compile because
- * its surrounding database code is replaced by the simpler routines in
- * this file). The original upstream code is:
+/* The XrmStringToQuarkList / XrmStringToBindingQuarkList implementations below
+ * derive from libX11's src/Xrm.c (which we do not compile because its
+ * surrounding database code is replaced by the simpler routines in this file).
+ * The original upstream code is:
  *
  *     Copyright 1987, 1988, 1990, 1991, 1998 The Open Group
  *
- * See doc/COPYING in the libX11 source tree for the full notice; the
- * MIT-style terms there are compatible with this project's own MIT
- * license.
+ * See doc/COPYING in the libX11 source tree for the full notice; the MIT-style
+ * terms there are compatible with this project's own MIT license.
  */
 static XrmQuark quarkFromSegment(const char *start, size_t length)
 {
@@ -408,8 +412,8 @@ void XrmDestroyDatabase(XrmDatabase db)
     free(db);
 }
 
-/* Decode the X resource value escape sequences defined in the Xlib
- * spec (appendix "Resource Manager Specifications"):
+/* Decode the X resource value escape sequences defined in the Xlib spec
+ * (appendix "Resource Manager Specifications"):
  *
  *   \n           -> 0x0a
  *   \t           -> 0x09
@@ -418,11 +422,14 @@ void XrmDestroyDatabase(XrmDatabase db)
  *   \<3 octals>  -> the byte whose octal code is given
  *   \<other>     -> keep both chars verbatim
  *
- * Motif resource files (and any *.translations resource it consumes)
- * encode literal newlines as the two-character sequence "\n"; without
- * this decode XtParseTranslationTable receives a backslash-n token and
- * fails to split rules. Returns the decoded length. `dst` must be at
- * least `srcLen` bytes; decoded length is always <= srcLen. */
+ * Motif resource files (and any *.translations resource it consumes) encode
+ * literal newlines as the two-character sequence "\n"; without this decode
+ * XtParseTranslationTable receives a backslash-n token and fails to split
+ * rules.
+ *
+ * Returns the decoded length. "dst" must be at least "srcLen" bytes; decoded
+ * length is always <= srcLen.
+ */
 static size_t xrmDecodeValueEscapes(char *dst, const char *src, size_t srcLen)
 {
     size_t di = 0;
@@ -458,10 +465,11 @@ static size_t xrmDecodeValueEscapes(char *dst, const char *src, size_t srcLen)
     return di;
 }
 
-/* Split a resource line "name: value" (or "name*foo: value") into
- * pattern and value, ignoring leading whitespace and one ':'. The value
- * is decoded per xrmDecodeValueEscapes so stored bytes are the literal
- * characters Xt/Motif consumers expect. */
+/* Split a resource line "name: value" (or "name*foo: value") into pattern and
+ * value, ignoring leading whitespace and one ':'. The value is decoded per
+ * xrmDecodeValueEscapes so stored bytes are the literal characters Xt/Motif
+ * consumers expect.
+ */
 static int parseLine(const char *line, char **pattern_out, char **value_out)
 {
     while (*line == ' ' || *line == '\t')
@@ -552,17 +560,19 @@ void XrmPutResource(XrmDatabase *pdb,
 /* Strip trailing CR/LF in place; returns the new length. */
 static size_t rstripNewline(char *line, size_t len)
 {
-    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
         line[--len] = '\0';
-    }
     return len;
 }
 
-/* Join one logical line out of `data` starting at offset *off. Resource
- * file syntax (app-defaults, .Xresources) allows a backslash at end of
- * line to splice the next physical line; Motif's *XmLabel.fontList and
- * compound-string font specs lean on this. Returns a malloc'd joined
- * line, or NULL on EOF / OOM. Advances *off past the consumed bytes. */
+/* Join one logical line out of "data" starting at offset *off. Resource file
+ * syntax (app-defaults, .Xresources) allows a backslash at end of line to
+ * splice the next physical line; Motif's *XmLabel.fontList and compound-string
+ * font specs lean on this.
+ *
+ * Returns a malloc'd joined line, or NULL on EOF / OOM. Advances *off past the
+ * consumed bytes.
+ */
 static char *readJoinedLineFromString(const char *data, size_t *off)
 {
     size_t start = *off;
@@ -634,8 +644,9 @@ XrmDatabase XrmGetFileDatabase(_Xconst char *filename)
         fclose(f);
         return NULL;
     }
-    /* Buffer holds a logical line built from one or more continued
-     * physical lines. */
+    /* Buffer holds a logical line built from one or more continued physical
+     * lines.
+     */
     size_t cap = 1024;
     char *buf = malloc(cap);
     if (!buf) {
@@ -683,8 +694,9 @@ static char *entryPatternToString(const XrmEntry *e)
     for (int i = 0; i < e->complen; i++) {
         const char *seg = XrmQuarkToString(e->quarks[i]);
         size_t segLen = seg ? strlen(seg) : 0;
-        /* Every position can have a binding marker, including i == 0
-         * when bindings[0] is loose. */
+        /* Every position can have a binding marker, including i == 0 when
+         * bindings[0] is loose.
+         */
         size_t sepLen = (i == 0 && e->bindings[0] == XrmBindTightly) ? 0 : 1;
         total += sepLen + segLen;
     }
@@ -709,9 +721,11 @@ static char *entryPatternToString(const XrmEntry *e)
     return out;
 }
 
-/* Inverse of xrmDecodeValueEscapes: re-escape the bytes that would
- * otherwise corrupt the on-disk line format. Returns a malloc'd NUL-
- * terminated string. */
+/* Inverse of xrmDecodeValueEscapes: re-escape the bytes that would otherwise
+ * corrupt the on-disk line format.
+ *
+ * Returns a malloc'd NUL- terminated string.
+ */
 static char *xrmEncodeValueEscapes(const char *src, size_t srcLen)
 {
     /* Worst case: every byte becomes a 2-character escape. */
@@ -771,10 +785,10 @@ void XrmPutFileDatabase(XrmDatabase db, _Xconst char *fileName)
     fclose(f);
 }
 
-/* Per-query-position specificity code for one entry's match. Higher is
- * more specific, comparison is lexicographic from position 0 to the leaf
- * (memcmp on a uint8_t vector). The Xt resource precedence spec dictates
- * this ordering at every component:
+/* Per-query-position specificity code for one entry's match. Higher is more
+ * specific, comparison is lexicographic from position 0 to the leaf (memcmp on
+ * a uint8_t vector). The Xt resource precedence spec dictates this ordering at
+ * every component:
  *
  *   7 = tight-binding name match     ('.' on the dot, name quark)
  *   6 = tight-binding class match    ('.' on the dot, class quark)
@@ -787,11 +801,10 @@ void XrmPutFileDatabase(XrmDatabase db, _Xconst char *fileName)
  *                                     component matching here)
  *   0 = no match                     (only appears in unfilled slots)
  *
- * Flat-sum scoring (the previous variant) violated left-to-right
- * precedence because deeper tight matches could outweigh a higher-level
- * binding difference. lexcompare against the per-level vector reproduces
- * the spec rule "first differing position decides" used by every real
- * Xt/Motif build.
+ * Flat-sum scoring (the previous variant) violated left-to-right precedence
+ * because deeper tight matches could outweigh a higher-level binding
+ * difference. lexcompare against the per-level vector reproduces the spec rule
+ * "first differing position decides" used by every real Xt/Motif build.
  */
 typedef uint8_t XrmLevelScore;
 enum {
@@ -819,10 +832,12 @@ static XrmLevelScore matchCode(Bool tight, Bool nameMatch, Bool classMatch)
     return nameMatch ? XRM_LVL_LOOSE_NAME : XRM_LVL_LOOSE_CLASS;
 }
 
-/* Walk one entry's pattern against the query. The recursion explores all
- * legal loose-binding placements and keeps the lexicographically largest
- * complete-match vector in `best`. Returns True iff at least one complete
- * match was found. */
+/* Walk one entry's pattern against the query. The recursion explores all legal
+ * loose-binding placements and keeps the lexicographically largest
+ * complete-match vector in "best".
+ *
+ * Returns True iff at least one complete match was found.
+ */
 static Bool matchEntryWalk(const XrmEntry *e,
                            const XrmQuark *nameQ,
                            const XrmQuark *classQ,
@@ -845,8 +860,9 @@ static Bool matchEntryWalk(const XrmEntry *e,
     int remaining = e->complen - pi;
     if (e->bindings[pi] == XrmBindLoosely) {
         /* Each remaining pattern component consumes at least one query
-         * position, so the latest j that still leaves room is
-         * queryLen - remaining. */
+         * position, so the latest j that still leaves room is queryLen -
+         * remaining.
+         */
         int maxJ = queryLen - remaining;
         Bool any = False;
         for (int j = qi; j <= maxJ; j++) {
@@ -889,9 +905,12 @@ static Bool matchEntry(const XrmEntry *e,
     return haveBest;
 }
 
-/* Split a dotted name into a quark array (no bindings — query paths have
- * implicit tight binding throughout). Returns the count, or -1 on OOM.
- * Empty components from leading or trailing '.' are skipped. */
+/* Split a dotted name into a quark array (no bindings; query paths have
+ * implicit tight binding throughout).
+ *
+ * Returns the count, or -1 on OOM. Empty components from leading or trailing
+ * '.' are skipped.
+ */
 static int splitNameToQuarks(const char *s, XrmQuark *out, int max)
 {
     int n = 0;
@@ -964,10 +983,11 @@ Bool XrmGetResource(XrmDatabase db,
     XrmEntry *best = NULL;
     XrmLevelScore bestVec[XRM_QUERY_VEC_MAX] = {0};
 
-    /* Visit candidate entries via the leaf-quark buckets. A pattern can
-     * match only if its leaf matches the query's name leaf or class
-     * leaf. When name and class hash to the same bucket we walk it once;
-     * otherwise walk both. */
+    /* Visit candidate entries via the leaf-quark buckets. A pattern can match
+     * only if its leaf matches the query's name leaf or class leaf. When name
+     * and class hash to the same bucket the search walks it once; otherwise it
+     * walks both.
+     */
     unsigned int bucketName = quarkBucket(leafName);
     unsigned int bucketClass =
         leafClass != NULLQUARK ? quarkBucket(leafClass) : bucketName;
@@ -1020,19 +1040,20 @@ void XrmSetDatabase(Display *display, XrmDatabase database)
 {
     if (!display)
         return;
-    /* Caller owns the old database per Xlib convention: we do not free
-     * what was there. The standard pattern is XrmDestroyDatabase(old)
-     * before XrmSetDatabase. */
+    /* The caller owns the old database per Xlib convention; this function does
+     * not free what was there. The standard pattern is XrmDestroyDatabase(old)
+     * before XrmSetDatabase.
+     */
     display->db = database;
 }
 
-/* Move all entries from `from` into `into`, respecting override. Both
- * databases own their entries; on completion `from` is destroyed and
- * its entries are either folded into `into` or freed.
+/* Move all entries from "from" into "into", respecting override. Both databases
+ * own their entries; on completion "from" is destroyed and its entries are
+ * either folded into "into" or freed.
  *
- * Replacement scans the per-leaf bucket in `into` (O(N/buckets)) instead
- * of the whole list, so merging two N-entry databases is O(N) average
- * rather than the O(N^2) the previous flat list produced.
+ * Replacement scans the per-leaf bucket in "into" (O(N/buckets)) instead of the
+ * whole list, so merging two N-entry databases is O(N) average rather than the
+ * O(N^2) the previous flat list produced.
  */
 static void xrmCombineInto(XrmDatabase from, XrmDatabase into, Bool override)
 {
@@ -1054,15 +1075,16 @@ static void xrmCombineInto(XrmDatabase from, XrmDatabase into, Bool override)
             }
             xrmFreeEntry(e);
         } else {
-            /* Detach e from from->head (we're walking it). */
+            /* Detach e from from->head, which the loop is walking. */
             e->next = NULL;
             e->bnext = NULL;
             xrmLinkEntry(into, e);
         }
         e = next;
     }
-    /* All entries are now either reused in `into` or freed; clear `from`'s
-     * lists before destroying so XrmDestroyDatabase doesn't double-free. */
+    /* All entries are now either reused in "into" or freed; clear "from"'s
+     * lists before destroying so XrmDestroyDatabase doesn't double-free.
+     */
     memset(from->buckets, 0, sizeof(from->buckets));
     from->head = NULL;
     from->tail = NULL;
@@ -1191,11 +1213,11 @@ void XrmParseCommand(XrmDatabase *pdb,
         }
     }
     *argc = kept;
-    /* Mirror upstream libX11 ParseCmd.c: only NULL-terminate when
-     * compression actually freed a slot. libXt's _XtAppInit passes a
-     * heap-allocated argv sized exactly to *argc, so writing argv[*argc]
-     * unconditionally smashes the byte past the allocation (caught by
-     * AddressSanitizer in CI). */
+    /* Mirror upstream libX11 ParseCmd.c: only NULL-terminate when compression
+     * actually freed a slot. libXt's _XtAppInit passes a heap-allocated argv
+     * sized exactly to *argc, so writing argv[*argc] unconditionally smashes
+     * the byte past the allocation (caught by AddressSanitizer in CI).
+     */
     if (kept < original_argc)
         argv[kept] = NULL;
 }
@@ -1207,12 +1229,12 @@ const char *XrmLocaleOfDatabase(XrmDatabase db)
 }
 
 /* The bucket-based quark API (XrmQGetSearchList, XrmQGetSearchResource,
- * XrmQGetResource) is libXt's primary path into the resource database --
- * every widget Set/GetValues, every _XtDisplayInitialize boot probe, and
- * Motif's giant resource cascade all funnel through it. We hold the full
- * prefix and the database pointer inside the caller's slots, then
- * reassemble the (prefix + leaf) quark path and dispatch through
- * XrmQGetResource.
+ * XrmQGetResource) is libXt's primary path into the resource database: every
+ * widget Set/GetValues, every _XtDisplayInitialize boot probe, and Motif's
+ * giant resource cascade all funnel through it. XrmQGetSearchList holds the
+ * full prefix and the database pointer inside the caller's slots, then
+ * XrmQGetSearchResource reassembles the (prefix + leaf) quark path and
+ * dispatches through XrmQGetResource.
  *
  * Search-list layout:
  *
@@ -1222,9 +1244,10 @@ const char *XrmLocaleOfDatabase(XrmDatabase db)
  *     [2 + n .. 2 + 2n -1] -> class quarks
  *     [2 + 2n]             -> NULL terminator
  *
- * The caller-supplied list_length must hold 3 + 2 * n slots or we return
- * False so libXt's doubling loop in _XtDisplayInitialize widens the
- * buffer and retries. */
+ * The caller-supplied list_length must hold 3 + 2 * n slots or the call returns
+ * False so libXt's doubling loop in _XtDisplayInitialize widens the buffer and
+ * retries.
+ */
 
 Bool XrmQGetResource(XrmDatabase db,
                      XrmNameList quark_name,
@@ -1329,12 +1352,13 @@ Bool XrmQGetSearchList(XrmDatabase db,
                        XrmSearchList list_return,
                        int list_length)
 {
-    /* libXt callers interpret False as "buffer too small" and retry with
-     * larger storage. Pack the database pointer plus the prefix arrays
-     * into the caller's slots so XrmQGetSearchResource can reconstruct
-     * the full path; the layout is documented above. For unsupported
-     * over-deep prefixes, return a valid empty list so callers stop
-     * retrying and the follow-up resource lookup simply fails. */
+    /* libXt callers interpret False as "buffer too small" and retry with larger
+     * storage. Pack the database pointer plus the prefix arrays into the
+     * caller's slots so XrmQGetSearchResource can reconstruct the full path;
+     * the layout is documented above. For unsupported over-deep prefixes,
+     * return a valid empty list so callers stop retrying and the follow-up
+     * resource lookup simply fails.
+     */
     if (!list_return || list_length <= 0)
         return False;
     int n_names = countQuarkList(names);
@@ -1380,9 +1404,10 @@ Bool XrmQGetSearchResource(XrmSearchList searchList,
     if (name == NULLQUARK)
         return False;
 
-    /* Rebuild the full path: <prefix names...> + leaf name + NULLQUARK,
-     * matched by <prefix classes...> + leaf class + NULLQUARK. +2 for
-     * the leaf slot plus the terminator. */
+    /* Rebuild the full path: <prefix names...> + leaf name + NULLQUARK, matched
+     * by <prefix classes...> + leaf class + NULLQUARK. +2 for the leaf slot
+     * plus the terminator.
+     */
     XrmQuark full_names[XRM_PREFIX_MAX + 2];
     XrmQuark full_classes[XRM_PREFIX_MAX + 2];
     for (int i = 0; i < n; i++) {
@@ -1482,20 +1507,19 @@ void XrmQPutStringResource(XrmDatabase *pdb,
                     &xrmValue);
 }
 
-/* Test whether `e` could match SOME completion of the given prefix.
+/* Test whether "e" could match SOME completion of the given prefix.
  *
- * An entry's components 0..K-1 must consume the prefix (with loose
- * bindings allowed to elide query positions or absorb them entirely),
- * and the remaining components K..complen-1 form the "completion." For
- * XrmEnumAllLevels the completion may be any length >= 1; for
- * XrmEnumOneLevel exactly 1.
+ * An entry's components 0..K-1 must consume the prefix (with loose bindings
+ * allowed to elide query positions or absorb them entirely), and the remaining
+ * components K..complen-1 form the "completion." For XrmEnumAllLevels the
+ * completion may be any length >= 1; for XrmEnumOneLevel exactly 1.
  *
- * The previous implementation compared e->quarks[i] == prefix[i] 1:1
- * across the prefix and rejected any loose-binding entry that didn't
- * happen to line up, so resources like "*background" stored with a
- * leading wildcard were never returned. Xt/Motif resource walkers
- * depend on enumeration honoring loose bindings exactly the way lookup
- * does. */
+ * The previous implementation compared e->quarks[i] == prefix[i] 1:1 across the
+ * prefix and rejected any loose-binding entry that didn't happen to line up, so
+ * resources like "*background" stored with a leading wildcard were never
+ * returned. Xt/Motif resource walkers depend on enumeration honoring loose
+ * bindings exactly the way lookup does.
+ */
 static Bool enumPrefixMatches(const XrmEntry *e,
                               const XrmQuark *nameQ,
                               const XrmQuark *classQ,
@@ -1517,8 +1541,9 @@ static Bool enumPrefixMatches(const XrmEntry *e,
     if (pi == e->complen)
         return False;
     if (e->bindings[pi] == XrmBindLoosely) {
-        /* Try matching this loose component at any prefix position j;
-         * positions qi..j-1 are elided. */
+        /* Try matching this loose component at any prefix position j; positions
+         * qi..j-1 are elided.
+         */
         for (int j = qi; j < prefixLen; j++) {
             Bool nameMatch = False;
             Bool classMatch = False;
@@ -1531,9 +1556,10 @@ static Bool enumPrefixMatches(const XrmEntry *e,
                                   prefixLen, mode, pi + 1, j + 1))
                 return True;
         }
-        /* Alternative: the loose binding's matched component lands in
-         * the completion (j >= prefixLen), absorbing all remaining
-         * prefix positions as elisions. */
+        /* Alternative: the loose binding's matched component lands in the
+         * completion (j >= prefixLen), absorbing all remaining prefix positions
+         * as elisions.
+         */
         int remainingCompletion = e->complen - pi;
         if (mode == XrmEnumAllLevels)
             return remainingCompletion >= 1;
@@ -1582,8 +1608,9 @@ Bool XrmEnumerateDatabase(XrmDatabase db,
             v.addr = (XPointer) e->value;
             v.size = e->value_size;
             /* The caller's proc receives terminator-NULLQUARK arrays;
-             * stack-allocate the temporary buffers since complen is
-             * bounded by XRM_PREFIX_MAX in practice. */
+             * stack-allocate the temporary buffers since complen is bounded by
+             * XRM_PREFIX_MAX in practice.
+             */
             XrmQuark qbuf[XRM_PREFIX_MAX + 2];
             XrmBinding bbuf[XRM_PREFIX_MAX + 2];
             int cap = e->complen;

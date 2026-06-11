@@ -40,7 +40,8 @@ Bool snapshotOwnsEventType(Uint32 eventType);
 
 /* Handle a RESIZE_EVENT_CODE SDL_USEREVENT on the main thread.
  * Decodes width/height from data1/data2, calls SDL_SetWindowSize,
- * signals the waiter. Returns 0 on success. */
+ * signals the waiter. Returns 0 on success.
+ */
 int snapshotHandleResizeEvent(Display *display, const SDL_Event *event);
 
 #endif

@@ -17,8 +17,9 @@ static Bool predefinedAtomMatchesName(const char *predefinedName,
 {
     if (strcmp(predefinedName, name) == 0)
         return True;
-    /* The predefined list stores the C identifier (e.g. "XA_PRIMARY"); the
-     * X11 atom name strips the "XA_" prefix. */
+    /* The predefined list stores the C identifier (e.g. "XA_PRIMARY"); the X11
+     * atom name strips the "XA_" prefix.
+     */
     return strncmp(predefinedName, "XA_", 3) == 0 &&
            strcmp(&predefinedName[3], name) == 0;
 }
@@ -27,9 +28,8 @@ AtomStruct *getAtomStruct(Atom atom)
 {
     AtomStruct *atomStruct = atomStorageStart;
     while (atomStruct) {
-        if (atomStruct->atom == atom) {
+        if (atomStruct->atom == atom)
             return atomStruct;
-        }
         atomStruct = atomStruct->next;
     }
     return NULL;
@@ -47,9 +47,8 @@ AtomStruct *getAtomStructByName(const char *name)
     }
     AtomStruct *atomStruct = atomStorageStart;
     while (atomStruct) {
-        if (strcmp(atomStruct->name, name) == 0) {
+        if (strcmp(atomStruct->name, name) == 0)
             return atomStruct;
-        }
         atomStruct = atomStruct->next;
     }
     return NULL;
@@ -57,12 +56,10 @@ AtomStruct *getAtomStructByName(const char *name)
 
 Bool isValidAtom(Atom atom)
 {
-    if (atom == None || atom > MAX_ATOM_VALUE) {
+    if (atom == None || atom > MAX_ATOM_VALUE)
         return False;
-    }
-    if (atom <= _NET_LAST_PREDEFINED) {
+    if (atom <= _NET_LAST_PREDEFINED)
         return True;
-    }
     return getAtomStruct(atom) ? True : False;
 }
 
@@ -99,17 +96,17 @@ char *XGetAtomName(Display *display, Atom atom)
         return NULL;
     }
     char *result = strdup(atomName);
-    if (!result) {
+    if (!result)
         handleOutOfMemory(0, display, 0, 0);
-    }
     return result;
 }
 
+/* Returns a nonzero status if names are returned for all of the atoms;
+ * otherwise, it returns zero.
+ */
 Status XGetAtomNames(Display *dpy, Atom *atoms, int count, char **names_return)
 {
     // https://tronche.com/gui/x/xlib/window-information/XGetAtomNames.html
-    // This function returns a nonzero status if names are returned for all of
-    // the atoms; otherwise, it returns zero.
     int returned_names = 0;
     for (int i = 0; i < count; ++i) {
         char *name = XGetAtomName(dpy, atoms[i]);
@@ -166,9 +163,8 @@ Atom XInternAtom(Display *display, _Xconst char *atom_name, Bool only_if_exists)
     }
     Bool outOfMemory;
     Atom result = _internAtom(atom_name, only_if_exists, &outOfMemory);
-    if (outOfMemory) {
+    if (outOfMemory)
         handleOutOfMemory(0, display, 0, 0);
-    }
     return result;
 }
 

@@ -1,4 +1,4 @@
-/* libXt smoke test for libx11-compat
+/* libXt smoke test
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
@@ -18,9 +18,9 @@
  *      (XCreateWindow + class methods) without entering the event loop.
  *   5. Teardown is XtDestroyApplicationContext.
  *
- * The test does not enter XtAppMainLoop; the goal is link/init coverage, not
- * a steady-state UI session. Anything that returns NULL or 0 where success
- * is expected is fatal so make check fails loudly.
+ * The test does not enter XtAppMainLoop; the goal is link/init coverage, not a
+ * steady-state UI session. Anything that returns NULL or 0 where success is
+ * expected is fatal so make check fails loudly.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +40,9 @@ int main(int argc, char *argv[])
 
     if (!getenv("SDL_VIDEODRIVER")) {
         /* tests/check defaults to dummy via the make target. When a developer
-         * runs the binary directly without that wrapper, force dummy so we do
-         * not pop a real window. */
+         * runs the binary directly without that wrapper, force dummy so the
+         * test does not pop a real window.
+         */
         setenv("SDL_VIDEODRIVER", "dummy", 1);
     }
 
@@ -71,10 +72,11 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* Pin a size before realize so the shell does not refuse to map.
-     * The sentinel for XtVaSetValues is a literal NULL, not a cast: the
-     * cast hides the sentinel attribute from -Wsentinel and the va_list
-     * walker reads past the end. */
+    /* Pin a size before realize so the shell does not refuse to map. The
+     * sentinel for XtVaSetValues is a literal NULL, not a cast: the cast hides
+     * the sentinel attribute from -Wsentinel and the va_list walker reads past
+     * the end.
+     */
     XtVaSetValues(shell, XtNwidth, 64, XtNheight, 64, NULL);
 
     XtRealizeWidget(shell);

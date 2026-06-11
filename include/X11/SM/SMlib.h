@@ -1,4 +1,4 @@
-/* Stub X11/SM/SMlib.h for libx11-compat's libXt build
+/* Stub X11/SM/SMlib.h for the libXt build
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
@@ -74,7 +74,8 @@ typedef struct {
  * with #ifndef guards. Using `enum { SmProtoMajor = 1, ... }` here would
  * conflict at preprocess time if any consumer also pulled in the system
  * <X11/SM/SMlib.h>, because its `#define SmProtoMajor 1` would expand
- * inside our enum declaration to `1 = 1`. */
+ * inside our enum declaration to `1 = 1`.
+ */
 #ifndef SmProtoMajor
 #define SmProtoMajor 1
 #endif

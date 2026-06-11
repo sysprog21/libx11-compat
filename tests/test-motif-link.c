@@ -221,8 +221,9 @@ static int widget_center_in_sdl_window(Widget target,
 static int click_widget_until(XtAppContext app, Widget target, int *counter)
 {
     /* Generous wait windows: tests run under CI alongside the differential
-     * screenshot harness, where Xt realization can take 50-100ms under
-     * load. Tighter 20-50ms loops occasionally flaked. */
+     * screenshot harness, where Xt realization can take 50-100ms under load.
+     * Tighter 20-50ms loops occasionally flaked.
+     */
     for (int i = 0; i < 200 && target && !XtIsRealized(target); i++) {
         dispatch_pending(app);
         SDL_Delay(1);
@@ -262,9 +263,10 @@ static int click_widget_until(XtAppContext app, Widget target, int *counter)
         }
         return *counter > 0;
     }
-    /* No counter to wait on: drain just enough cycles to deliver the
-     * button-up and let the caller assert the real post-condition (e.g.
-     * XtIsRealized on the popped menu). */
+    /* No counter to wait on: drain just enough cycles to deliver the button-up
+     * and let the caller assert the real post-condition (e.g. XtIsRealized on
+     * the popped menu).
+     */
     for (int i = 0; i < 10; i++) {
         dispatch_pending(app);
         SDL_Delay(1);
@@ -302,8 +304,9 @@ static int move_pointer_to_widget(XtAppContext app, Widget target)
 
 static int menu_click_post_select(XtAppContext app, Widget cascade, Widget item)
 {
-    /* The cascade has no observable Xt callback we can wait on; rely on
-     * the XtIsRealized(item) check below as the real post-condition. */
+    /* The cascade has no observable Xt callback the test can wait on; the
+     * XtIsRealized(item) check below serves as the real post-condition.
+     */
     if (!click_widget_until(app, cascade, NULL)) {
         fprintf(stderr, "Motif Help cascade had no SDL-backed center point\n");
         return 0;
