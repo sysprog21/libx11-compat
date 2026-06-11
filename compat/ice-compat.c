@@ -12,8 +12,8 @@ int IceConnectionNumber(IceConn iceConn)
 }
 
 IceProcessMessagesStatus IceProcessMessages(IceConn iceConn,
-                                             IceReplyWaitInfo *replyWait,
-                                             Bool *replyReadyRet)
+                                            IceReplyWaitInfo *replyWait,
+                                            Bool *replyReadyRet)
 {
     (void) iceConn;
     (void) replyWait;

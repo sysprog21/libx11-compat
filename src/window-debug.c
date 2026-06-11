@@ -41,12 +41,10 @@ void printWindowHierarchyOfChild(Window window, char *prepend, int prependLen)
             "state: %s)",
             prepend, children[i], childStruct->debugId, x, y, w, h, mapState);
 
-        if (childStruct->sdlRenderer) {
+        if (childStruct->sdlRenderer)
             printf(", sdlRenderer = %p", childStruct->sdlRenderer);
-        }
-        if (childStruct->sdlWindow) {
+        if (childStruct->sdlWindow)
             printf(", sdlWindow = %d", SDL_GetWindowID(childStruct->sdlWindow));
-        }
         if (childStruct->sdlTexture) {
             int tw, th;
             SDL_QueryTexture(childStruct->sdlTexture, NULL, NULL, &tw, &th);
@@ -135,9 +133,8 @@ void drawDebugWindowChildSurfacePlanes(Window child)
     invalidateSdlDrawStateCache();
     SDL_RenderFillRect(renderer, &windowRect);
     Window *children = GET_CHILDREN(child);
-    for (i = 0; i < GET_WINDOW_STRUCT(child)->children.length; i++) {
+    for (i = 0; i < GET_WINDOW_STRUCT(child)->children.length; i++)
         drawDebugWindowChildSurfacePlanes(children[i]);
-    }
 }
 
 void drawDebugWindowSurfacePlanes()

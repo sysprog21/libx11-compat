@@ -20,7 +20,8 @@ typedef enum {
     /* A child mapped while an ancestor is unmapped keeps MapRequested until
      * that ancestor becomes mapped. Unmapping an ancestor does not demote
      * already mapped descendants; XGetWindowAttributes reports them as
-     * IsUnviewable while any ancestor is unmapped. */
+     * IsUnviewable while any ancestor is unmapped.
+     */
     MapRequested
 } MapState;
 
@@ -67,7 +68,8 @@ typedef struct {
      */
     char *windowName;
     /* The icon of this window. Only used if this window has a corresponding
-     * sdlWindow. */
+     * sdlWindow.
+     */
     SDL_Surface *icon;
     Cursor cursor;
     unsigned int borderWidth;
@@ -77,7 +79,8 @@ typedef struct {
     int bitGravity;
     int winGravity;
     /* Indicates if this window is Mapped, if mapping it is requested or if it
-     * is Unmapped. */
+     * is Unmapped.
+     */
     MapState mapState;
     long eventMask;
     Bool overrideRedirect;
@@ -87,6 +90,12 @@ typedef struct {
     SDL_Surface *shapeClipMask;
     int shapeClipOffsetX;
     int shapeClipOffsetY;
+    /* WM_TRANSIENT_FOR target stored before either window is realized;
+     * applyTransientForRelationship reads this at realize time to wire
+     * SDL_SetWindowModalFor once the modal flag is also set.
+     */
+    Window deferredTransientParent;
+    Bool deferredTransientApplied;
 #ifdef DEBUG_WINDOWS
     /* Random id used for debugging. */
     unsigned long debugId;

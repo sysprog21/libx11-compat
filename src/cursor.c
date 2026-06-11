@@ -15,10 +15,11 @@
 typedef struct {
     SDL_Cursor *sdlCursor;
     int hotspot_x, hotspot_y;
-    /* When non-NULL, srcBits/maskBits are stride-aligned packed bit
-     * arrays (1 bit per pixel) describing the original source and
-     * (optional) mask pixmaps. XRecolorCursor uses them to rebuild the
-     * SDL color cursor with new fg/bg colors. */
+    /* When non-NULL, srcBits/maskBits are stride-aligned packed bit arrays (1
+     * bit per pixel) describing the original source and (optional) mask
+     * pixmaps. XRecolorCursor uses them to rebuild the SDL color cursor with
+     * new fg/bg colors.
+     */
     unsigned char *srcBits;
     unsigned char *maskBits;
     int width;
@@ -79,10 +80,10 @@ static unsigned char *packBitsFromImage(XImage *image)
 {
     if (!image || image->width <= 0 || image->height <= 0)
         return NULL;
-    /* width + 7 must not signed-overflow, and stride * height must fit
-     * in size_t. Reject anything past those limits so the
-     * bits[py*stride + (px>>3)] write below can never run past the end
-     * of the allocation. */
+    /* width + 7 must not signed-overflow, and stride * height must fit in
+     * size_t. Reject anything past those limits so the bits[py*stride +
+     * (px>>3)] write below can never run past the end of the allocation.
+     */
     if (image->width > INT_MAX - 7)
         return NULL;
     size_t stride = (size_t) ((image->width + 7) / 8);
@@ -171,8 +172,9 @@ Cursor createPixmapCursor(Display *display,
                           unsigned int x,
                           unsigned int y)
 {
-    /* Custom cursor bitmaps are not yet rendered; fall back to the system
-     * arrow so the call always succeeds with a usable cursor. */
+    /* Custom cursor bitmaps are not yet rendered; fall back to the system arrow
+     * so the call always succeeds with a usable cursor.
+     */
     (void) source;
     (void) mask;
     (void) foreground_color;
@@ -192,15 +194,16 @@ Cursor XCreatePixmapCursor(Display *display,
     // https://tronche.com/gui/x/xlib/pixmap-and-cursor/XCreatePixmapCursor.html
     SET_X_SERVER_REQUEST(display, X_CreateCursor);
     TYPE_CHECK(source, PIXMAP, display, None);
-    /* Validate the mask up front so any error path runs before the
-     * srcImg allocation below. */
-    if (mask != None) {
+    /* Validate the mask up front so any error path runs before the srcImg
+     * allocation below.
+     */
+    if (mask != None)
         TYPE_CHECK(mask, PIXMAP, display, None);
-    }
 
     /* Pull the source (and optional mask) bits out via XGetImage so the
-     * conversion is independent of whether the pixmap lives in a renderer
-     * or a surface. */
+     * conversion is independent of whether the pixmap lives in a renderer or a
+     * surface.
+     */
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(source, renderer);
     if (!renderer)
@@ -212,10 +215,10 @@ Cursor XCreatePixmapCursor(Display *display,
     if (width <= 0 || height <= 0)
         return None;
 
-    /* The X11 spec requires the source and mask pixmaps to have the
-     * same dimensions. XGetImage trusts the (x, y, w, h) tuple, so a
-     * smaller mask would walk off its backing surface — reject the
-     * call here instead. */
+    /* The X11 spec requires the source and mask pixmaps to have the same
+     * dimensions. XGetImage trusts the (x, y, w, h) tuple, so a smaller mask
+     * would walk off its backing surface; reject the call here instead.
+     */
     if (mask != None) {
         SDL_Texture *maskTexture = GET_PIXMAP_TEXTURE(mask);
         int maskWidth = 0;
@@ -279,7 +282,8 @@ Cursor XCreateGlyphCursor(Display *display,
     // https://tronche.com/gui/x/xlib/pixmap-and-cursor/XCreateGlyphCursor.html
     SET_X_SERVER_REQUEST(display, X_CreateGlyphCursor);
     /* Glyph rasterization is not implemented; fall back to the same arrow
-     * placeholder as createPixmapCursor's NULL-source path. */
+     * placeholder as createPixmapCursor's NULL-source path.
+     */
     (void) source_font;
     (void) mask_font;
     (void) source_char;
@@ -307,9 +311,8 @@ int XDefineCursor(Display *display, Window window, Cursor cursor)
     // https://tronche.com/gui/x/xlib/window/XDefineCursor.html
     SET_X_SERVER_REQUEST(display, X_ChangeWindowAttributes);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (cursor != None) {
+    if (cursor != None)
         TYPE_CHECK(cursor, CURSOR, display, 0);
-    }
     GET_WINDOW_STRUCT(window)->cursor = cursor;
     if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
         SDL_Cursor *sdlCursor =
@@ -343,8 +346,9 @@ int XRecolorCursor(Display *display,
     SET_X_SERVER_REQUEST(display, X_RecolorCursor);
     TYPE_CHECK(cursor, CURSOR, display, 0);
     Cursor_ *c = GET_CURSOR(cursor);
-    /* Without the original bits (font / system / fallback cursors) we
-     * cannot recolor; preserve the existing cursor and report success. */
+    /* Without the original bits (font / system / fallback cursors) the cursor
+     * cannot be recolored; preserve the existing cursor and report success.
+     */
     if (!c->srcBits)
         return 1;
     SDL_Cursor *rebuilt = buildColorCursorFromBits(
@@ -354,8 +358,9 @@ int XRecolorCursor(Display *display,
         return 1;
     SDL_Cursor *previous = c->sdlCursor;
     c->sdlCursor = rebuilt;
-    /* Re-attach the new cursor everywhere the old one was active. SDL
-     * tracks one "current" cursor, so a SetCursor is enough. */
+    /* Re-attach the new cursor everywhere the old one was active. SDL tracks
+     * one "current" cursor, so a SetCursor is enough.
+     */
     if (SDL_GetCursor() == previous)
         SDL_SetCursor(rebuilt);
     if (previous)

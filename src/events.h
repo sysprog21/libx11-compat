@@ -11,13 +11,15 @@
  * main-thread handler). Used by the in-process smoke-snapshot path to
  * bypass macOS screencapture, which deactivates NSApp briefly and stalls
  * the SDL event pump just long enough that synthetic input goes
- * undelivered. */
+ * undelivered.
+ */
 #define SNAPSHOT_EVENT_CODE 3
 /* Resize the replay target window. user.data1 carries width, user.data2
  * carries height, each as intptr_t. Runs synchronously on the main thread
  * (SDL_SetWindowSize is main-thread only on macOS). Used by the replay
  * engine's resize command so the smoke can exercise ViolaWWW's
- * ConfigureNotify reflow without depending on the OS window manager. */
+ * ConfigureNotify reflow without depending on the OS window manager.
+ */
 #define RESIZE_EVENT_CODE 4
 /* Flush pending top-level backing textures to their SDL windows. Posted by the
  * drawing layer after X drawing operations that happen away from a blocking
@@ -49,7 +51,8 @@ Bool postFocusEvent(Display *display, Window window, int type, int detail);
 
 /* Focus-target classification. The window leaf stays collapsed to None
  * for routing, but postFocusChange needs the distinction to pick
- * NotifyDetailNone vs NotifyPointerRoot on the root events per Xlib 10.7. */
+ * NotifyDetailNone vs NotifyPointerRoot on the root events per Xlib 10.7.
+ */
 typedef enum {
     FocusKindNone,
     FocusKindPointerRoot,

@@ -61,4 +61,72 @@ Bool configureWindow(Display *display,
                      unsigned long value_mask,
                      XWindowChanges *values);
 
+/* Motif WM hints bit layout. Used by both the XChangeProperty _MOTIF_WM_HINTS
+ * write routing and the synthesized read in XGetWindowProperty; centralizing
+ * the constants here keeps the two paths in sync.
+ */
+enum {
+    MWM_HINTS_FUNCTIONS = (1L << 0),
+    MWM_HINTS_DECORATIONS = (1L << 1),
+    MWM_HINTS_INPUT_MODE = (1L << 2),
+    MWM_HINTS_STATUS = (1L << 3),
+
+    MWM_FUNC_ALL = (1L << 0),
+    MWM_FUNC_RESIZE = (1L << 1),
+    MWM_FUNC_MOVE = (1L << 2),
+    MWM_FUNC_MINIMIZE = (1L << 3),
+    MWM_FUNC_MAXIMIZE = (1L << 4),
+    MWM_FUNC_CLOSE = (1L << 5),
+
+    MWM_DECOR_ALL = (1L << 0),
+    MWM_DECOR_BORDER = (1L << 1),
+    MWM_DECOR_RESIZEH = (1L << 2),
+    MWM_DECOR_TITLE = (1L << 3),
+    MWM_DECOR_MENU = (1L << 4),
+    MWM_DECOR_MINIMIZE = (1L << 5),
+    MWM_DECOR_MAXIMIZE = (1L << 6),
+
+    MWM_INPUT_MODELESS = 0,
+    MWM_INPUT_PRIMARY_APPLICATION_MODAL = 1,
+    MWM_INPUT_SYSTEM_MODAL = 2,
+    MWM_INPUT_FULL_APPLICATION_MODAL = 3,
+};
+
+/* Decode a stored _MOTIF_WM_HINTS property and apply functions/decorations to
+ * the SDL window. Called from XChangeProperty after a write lands and from
+ * top-level map/reparent paths once the SDL window exists and is mapped.
+ * Safe to invoke when no _MOTIF_WM_HINTS property is stored: no-op.
+ */
+void applyMotifWmHintsFromProperty(Window window);
+
+/* Returns True when the window's stored hints declare it modal, either via
+ * _NET_WM_STATE_MODAL or MWM_INPUT_FULL_APPLICATION_MODAL.
+ */
+Bool windowIsModal(Window window);
+
+/* Resolve transient_for + modal hints and call SDL_SetWindowModalFor when both
+ * sides are realized and the child is marked modal. Defers via
+ * deferredTransientParent until both windows exist.
+ */
+void applyTransientForRelationship(Display *display, Window window);
+
+/* Drop the deferred transient_for record and any live SDL_SetWindowModalFor
+ * binding. Called from the WM_TRANSIENT_FOR property-delete path.
+ */
+void clearTransientForRelationship(Window window);
+
+/* Apply a single _NET_WM_STATE atom transition (add/remove) to the SDL window
+ * and mirror it into the stored _NET_WM_STATE property.
+ * action: 0 remove, 1 add, 2 toggle.
+ */
+void applyNetWmStateAction(Display *display,
+                           Window window,
+                           long action,
+                           Atom stateAtom);
+
+/* Decode the stored _NET_WM_STATE atom list and apply recognized state bits to
+ * the SDL window. Safe before realization: no-op until an SDL window exists.
+ */
+void applyNetWmStateFromProperty(Window window);
+
 #endif /* WINDOWINTERNAL_H */

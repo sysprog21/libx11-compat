@@ -1,4 +1,4 @@
-/* Span composition helpers for libx11-compat
+/* Span composition helpers
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

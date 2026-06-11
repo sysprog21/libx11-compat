@@ -98,9 +98,9 @@ static void installPointerGrab(Display *display,
     pointerGrab.cursorWasOverridden = False;
     pointerGrab.savedCursor = None;
     if (cursor != None && IS_TYPE(grab_window, WINDOW)) {
-        /* Capture the window's previous cursor so XUngrabPointer can
-         * restore it; XDefineCursor otherwise persists the grab cursor
-         * after ungrab. */
+        /* Capture the window's previous cursor so XUngrabPointer can restore
+         * it; XDefineCursor otherwise persists the grab cursor after ungrab.
+         */
         pointerGrab.savedCursor = GET_WINDOW_STRUCT(grab_window)->cursor;
         pointerGrab.cursorWasOverridden = True;
         XDefineCursor(display, grab_window, cursor);
@@ -238,8 +238,7 @@ static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
     if (focus) {
         Window focusWindow = getWindowFromId(SDL_GetWindowID(focus));
         if (focusWindow != None && IS_TYPE(focusWindow, WINDOW)) {
-            int local_x = 0;
-            int local_y = 0;
+            int local_x = 0, local_y = 0;
             SDL_GetMouseState(&local_x, &local_y);
             Window child = None;
             if (XTranslateCoordinates(display, focusWindow, SCREEN_WINDOW,
@@ -285,7 +284,8 @@ int XWarpPointer(Display *display,
             SDL_GetMouseState(&gx, &gy);
 #endif
             /* Spec: the source rectangle is in src_window coordinates, and a
-             * zero width/height means "to the edge of src_window". */
+             * zero width/height means "to the edge of src_window".
+             */
             int local_x, local_y;
             XTranslateCoordinates(display, SCREEN_WINDOW, src_window, gx, gy,
                                   &local_x, &local_y, NULL);
@@ -303,13 +303,13 @@ int XWarpPointer(Display *display,
                             : 0;
             }
             /* X rect containment is half-open: x <= p < x + width. The
-             * difference runs through int64 so a local_x of INT_MIN and
-             * src_x of INT_MAX cannot wrap before the unsigned compare. */
+             * difference runs through int64 so a local_x of INT_MIN and src_x
+             * of INT_MAX cannot wrap before the unsigned compare.
+             */
             int64_t dx = (int64_t) local_x - (int64_t) src_x;
             int64_t dy = (int64_t) local_y - (int64_t) src_y;
-            if (dx < 0 || dx >= (int64_t) w || dy < 0 || dy >= (int64_t) h) {
+            if (dx < 0 || dx >= (int64_t) w || dy < 0 || dy >= (int64_t) h)
                 return 1;
-            }
         }
         if (dest_window == SCREEN_WINDOW) {
 #if SDL_VERSION_ATLEAST(2, 0, 4)
@@ -322,8 +322,9 @@ int XWarpPointer(Display *display,
                                   &curr_x, &curr_y, NULL);
         }
     }
-    /* Compute final pointer in int64 and clamp to SDL's int arg range
-     * so callers cannot drive an overflow into the warp call. */
+    /* Compute final pointer in int64 and clamp to SDL's int arg range so
+     * callers cannot drive an overflow into the warp call.
+     */
     int64_t finalX = (int64_t) curr_x + (int64_t) dest_x;
     int64_t finalY = (int64_t) curr_y + (int64_t) dest_y;
     if (finalX > INT_MAX)
@@ -335,9 +336,8 @@ int XWarpPointer(Display *display,
     if (finalY < INT_MIN)
         finalY = INT_MIN;
 #if SDL_VERSION_ATLEAST(2, 0, 4)
-    if (SDL_WarpMouseGlobal((int) finalX, (int) finalY) != 0) {
+    if (SDL_WarpMouseGlobal((int) finalX, (int) finalY) != 0)
         LOG("Warning: SDL_WarpMouseGlobal failed: %s", SDL_GetError());
-    }
 #else
     SDL_WarpMouseInWindow(SDL_GetMouseFocus(), (int) finalX, (int) finalY);
 #endif
@@ -376,10 +376,11 @@ Bool XQueryPointer(Display *display,
     if (child_return)
         *child_return = child;
     if (mask_return) {
-        /* Real XQueryPointer reports modifier state in the low byte
-         * and pressed button state in the high byte (Button[1-5]Mask).
-         * SDL_GetMouseState returns a per-button bitmask; project each
-         * SDL button bit onto the matching X mask. */
+        /* Real XQueryPointer reports modifier state in the low byte and pressed
+         * button state in the high byte (Button[1-5]Mask). SDL_GetMouseState
+         * returns a per-button bitmask; project each SDL button bit onto the
+         * matching X mask.
+         */
         unsigned int mask = convertModifierState(SDL_GetModState());
         Uint32 sdlButtons = SDL_GetMouseState(NULL, NULL);
         if (sdlButtons & SDL_BUTTON(SDL_BUTTON_LEFT))
@@ -409,14 +410,14 @@ int XGrabPointer(Display *display,
 {
     // https://tronche.com/gui/x/xlib/input/XGrabPointer.html
     SET_X_SERVER_REQUEST(display, X_GrabPointer);
-    /* Xlib status codes: GrabSuccess == 0, AlreadyGrabbed == 1,
-     * GrabInvalidTime == 2, GrabNotViewable == 3, GrabFrozen == 4.
+    /* Xlib status codes: GrabSuccess == 0, AlreadyGrabbed == 1, GrabInvalidTime
+     * == 2, GrabNotViewable == 3, GrabFrozen == 4.
      *
-     * Do not use SDL relative mouse mode for an X pointer grab. SDL
-     * relative mode hides the system cursor and reports relative
-     * deltas; an X grab only redirects/freezes pointer events while
-     * preserving normal cursor visibility. Motif pulldown menus rely
-     * on that distinction. */
+     * Do not use SDL relative mouse mode for an X pointer grab. SDL relative
+     * mode hides the system cursor and reports relative deltas; an X grab only
+     * redirects/freezes pointer events while preserving normal cursor
+     * visibility. Motif pulldown menus rely on that distinction.
+     */
     if (grab_window == None || !IS_TYPE(grab_window, WINDOW))
         return BadWindow;
     if (!isWindowEffectivelyViewable(grab_window))
@@ -427,19 +428,20 @@ int XGrabPointer(Display *display,
     /* AlreadyGrabbed applies when another client owns the active grab. This
      * SDL-backed implementation has a single in-process client, so a second
      * explicit grab is a same-client regrab and must update the active grab.
-     * Motif menu bars use that to switch pointer modes while posting a menu. */
+     * Motif menu bars use that to switch pointer modes while posting a menu.
+     */
     if (pointerGrab.active && !pointerGrab.passive) {
         replacePointerGrab(display, grab_window, owner_events, event_mask,
                            pointer_mode, keyboard_mode, confine_to, cursor);
         return GrabSuccess;
     }
-    /* GrabInvalidTime: the requested time must be CurrentTime or no
-     * later than the last server time. Compare as CARD32 with a
-     * signed delta so a 32-bit tick rollover (every ~49 days of
-     * uptime) doesn't spuriously fire. Time is unsigned long (LP64:
-     * 64 bits) but server time is delivered as a 32-bit X protocol
-     * value, so masking to 32 bits before the compare keeps both
-     * sides in the same domain. */
+    /* GrabInvalidTime: the requested time must be CurrentTime or no later than
+     * the last server time. Compare as CARD32 with a signed delta so a 32-bit
+     * tick rollover (every ~49 days of uptime) doesn't spuriously fire. Time is
+     * unsigned long (LP64: 64 bits) but server time is delivered as a 32-bit X
+     * protocol value, so masking to 32 bits before the compare keeps both sides
+     * in the same domain.
+     */
     if (time != CurrentTime) {
         Uint32 now = SDL_GetTicks();
         Uint32 requested = (Uint32) time;
@@ -467,9 +469,9 @@ int XGrabButton(Display *display,
     SET_X_SERVER_REQUEST(display, X_GrabButton);
     TYPE_CHECK(grab_window, WINDOW, display, BadWindow);
     /* Xlib semantics: a passive grab on the same (button, modifiers,
-     * grab_window) triple replaces the previous one. Appending would
-     * silently leak the prior grab and route events through whichever
-     * matched first. */
+     * grab_window) triple replaces the previous one. Appending would silently
+     * leak the prior grab and route events through whichever matched first.
+     */
     ButtonGrab *grab = NULL;
     for (ButtonGrab *existing = buttonGrabs; existing;
          existing = existing->next) {
@@ -521,9 +523,10 @@ int XUngrabButton(Display *display,
     return Success;
 }
 
-/* Drop any passive button grabs that reference `window` so a later
- * XID reuse cannot misroute events through a stale grab entry.
- * Called from destroyWindow when a window is torn down. */
+/* Drop any passive button grabs that reference "window" so a later XID reuse
+ * cannot misroute events through a stale grab entry. Called from destroyWindow
+ * when a window is torn down.
+ */
 void releaseButtonGrabsForWindow(Window window)
 {
     ButtonGrab **p = &buttonGrabs;

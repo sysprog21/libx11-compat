@@ -1,11 +1,10 @@
 /* In-tree regression for the XTest fake-event path in src/xtest.c.
  *
- * Opens a display, maps a top-level window with mouse + key event masks,
- * then drives synthetic events via XTestFakeMotionEvent /
- * XTestFakeButtonEvent / XTestFakeKeyEvent and asserts the matching X
- * events come back out of the queue. Without this test the XTest path
- * is exercised only by ViolaWWW + the replay engine, neither of which
- * runs from make check.
+ * Opens a display, maps a top-level window with mouse + key event masks, then
+ * drives synthetic events via XTestFakeMotionEvent / XTestFakeButtonEvent /
+ * XTestFakeKeyEvent and asserts the matching X events come back out of the
+ * queue. Without this test the XTest path is exercised only by ViolaWWW + the
+ * replay engine, neither of which runs from make check.
  *
  * Runs under SDL_VIDEODRIVER=dummy so it works on headless CI.
  */
@@ -32,7 +31,8 @@
     } while (0)
 
 /* Pull count events from the queue, waiting on each one via XNextEvent.
- * Returns the number of events of wanted_type that appeared. */
+ * Returns the number of events of wanted_type that appeared.
+ */
 static int drain_until(Display *dpy, int wanted_type, int max_iterations)
 {
     int hits = 0;
@@ -119,15 +119,17 @@ int main(void)
     XMapWindow(dpy, win);
     XSync(dpy, False);
 
-    /* Drain the initial Expose / MapNotify burst so the assertions below
-     * count only XTest-driven events. */
+    /* Drain the initial Expose / MapNotify burst so the assertions below count
+     * only XTest-driven events.
+     */
     while (XPending(dpy) > 0) {
         XEvent ev;
         XNextEvent(dpy, &ev);
     }
 
     /* Button-only callers should click at the current pointer location, not at
-     * the zero-initialized fake-motion cache. */
+     * the zero-initialized fake-motion cache.
+     */
     Uint32 target_id = replayTargetWindowId();
     CHECK(target_id != 0, "XTest cached target window id");
     int translated_root_x = 0;
@@ -245,10 +247,11 @@ int main(void)
     CHECK(release.xbutton.x == 30, "ButtonRelease converts to window-local x");
     CHECK(release.xbutton.y == 40, "ButtonRelease converts to window-local y");
 
-    /* KeyPress path. The exact keysym mapping is host-locale-dependent in
-     * the SDL_GetKeyFromScancode path; assert only that *some* KeyPress
-     * shows up for a non-zero code so a future regression that drops the
-     * push entirely would still fail this test. */
+    /* KeyPress path. The exact keysym mapping is host-locale-dependent in the
+     * SDL_GetKeyFromScancode path; assert only that *some* KeyPress shows up
+     * for a non-zero code so a future regression that drops the push entirely
+     * would still fail this test.
+     */
     CHECK(XTestFakeKeyEvent(dpy, 'a', True, 0) == 1, "XTestFakeKeyEvent press");
     CHECK(XTestFakeKeyEvent(dpy, 'a', False, 0) == 1,
           "XTestFakeKeyEvent release");
@@ -270,20 +273,21 @@ int main(void)
     CHECK(target_id != 0, "XTest re-cached target after remap");
 
     /* Target re-adoption after retire: XDestroyWindow the big window, then map
-     * a small popup followed by a similarly-sized main window. The high
-     * water mark floor in replayTargetOfferWindow must reject the popup so
-     * the subsequent main wins the cache, instead of the popup grabbing
-     * the slot just because it raced the new main into the queue. This
-     * is the gap surfaced by check-smoke-motif: when fileview's
-     * language dialog dismisses, several Motif drag popups (10x10
-     * override-redirect) map alongside the new XmMainWindow and would
-     * otherwise become the smoke target. */
+     * a small popup followed by a similarly-sized main window. The high water
+     * mark floor in replayTargetOfferWindow must reject the popup so the
+     * subsequent main wins the cache, instead of the popup grabbing the slot
+     * just because it raced the new main into the queue. This is the gap
+     * surfaced by check-smoke-motif: when fileview's language dialog dismisses,
+     * several Motif drag popups (10x10 override-redirect) map alongside the new
+     * XmMainWindow and would otherwise become the smoke target.
+     */
     XDestroyWindow(dpy, win);
     XSync(dpy, False);
     CHECK(replayTargetWindowId() != target_id,
           "XDestroyWindow retired cached XTest target");
-    /* Pump events so the destroyed-window cleanup propagates through the
-     * queue before mapping replacement windows. */
+    /* Pump events so the destroyed-window cleanup propagates through the queue
+     * before mapping replacement windows.
+     */
     while (XPending(dpy) > 0) {
         XEvent ev;
         XNextEvent(dpy, &ev);
@@ -328,10 +332,11 @@ int main(void)
     CHECK(successor_press.xbutton.y == 120,
           "post-retire cached-position ButtonPress rebased local y");
 
-    /* Fire a synthetic motion and confirm we get a MotionNotify on the
-     * successor and not on the popup. The popup did not select
-     * PointerMotionMask, so even if xtest accidentally targeted it the
-     * event would be silently dropped instead of arriving here. */
+    /* Fire a synthetic motion and confirm the test receives a MotionNotify on
+     * the successor and not on the popup. The popup did not select
+     * PointerMotionMask, so even if xtest accidentally targeted it the event
+     * would be silently dropped instead of arriving here.
+     */
     CHECK(XTestFakeMotionEvent(dpy, screen, 80, 90, 0) == 1,
           "post-retire fake motion returned 1");
     XSync(dpy, False);
@@ -348,9 +353,10 @@ int main(void)
     XDestroyWindow(dpy, successor);
     XSync(dpy, False);
 
-    /* Idempotence: a fake event after the target window is destroyed
-     * must not fault, and XTestForgetTargetWindow inside libx11-compat
-     * unrealizeTopLevelWindow should leave subsequent calls inert. */
+    /* Idempotence: a fake event after the target window is destroyed must not
+     * fault, and XTestForgetTargetWindow inside libx11-compat
+     * unrealizeTopLevelWindow should leave subsequent calls inert.
+     */
     int rc = XTestFakeMotionEvent(dpy, screen, 0, 0, 0);
     CHECK(rc == 0 || rc == 1, "post-destroy fake call did not crash");
 

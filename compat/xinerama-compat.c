@@ -30,7 +30,8 @@ Status XineramaQueryVersion(Display *dpy,
 Bool XineramaIsActive(Display *dpy)
 {
     /* Match XineramaQueryScreens: report inactive when no screen is available
-     * so a client can't get True here and then crash on the NULL it returns. */
+     * so a client can't get True here and then crash on the NULL it returns.
+     */
     return dpy && dpy->nscreens > 0;
 }
 
@@ -41,8 +42,7 @@ XineramaScreenInfo *XineramaQueryScreens(Display *dpy, int *number_return)
     if (!dpy || dpy->nscreens <= 0)
         return NULL;
 
-    XineramaScreenInfo *info =
-        calloc((size_t) dpy->nscreens, sizeof(*info));
+    XineramaScreenInfo *info = calloc((size_t) dpy->nscreens, sizeof(*info));
     if (!info)
         return NULL;
 
@@ -51,13 +51,14 @@ XineramaScreenInfo *XineramaQueryScreens(Display *dpy, int *number_return)
         info[i].screen_number = i;
         info[i].x_org = 0;
         info[i].y_org = 0;
-        /* XineramaScreenInfo's width/height are `short` per the X11 ABI; clamp
-         * at SHRT_MAX so a 4K+ screen reports the ceiling instead of silently
-         * wrapping to a negative or tiny value. */
-        info[i].width = screen->width > SHRT_MAX ? SHRT_MAX
-                                                 : (short) screen->width;
-        info[i].height = screen->height > SHRT_MAX ? SHRT_MAX
-                                                   : (short) screen->height;
+        /* XineramaScreenInfo's width/height are "short" per the X11 ABI;
+         * clamp at SHRT_MAX so a 4K+ screen reports the ceiling instead
+         * of silently wrapping to a negative or tiny value.
+         */
+        info[i].width =
+            screen->width > SHRT_MAX ? SHRT_MAX : (short) screen->width;
+        info[i].height =
+            screen->height > SHRT_MAX ? SHRT_MAX : (short) screen->height;
     }
     if (number_return)
         *number_return = dpy->nscreens;

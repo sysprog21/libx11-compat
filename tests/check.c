@@ -313,9 +313,9 @@ static int test_keyboard(Display *display)
     CHECK(modifier_slot_has(modmap, LockMapIndex,
                             XKeysymToKeycode(display, XK_Caps_Lock)),
           "modifier map missing caps lock");
-    /* Both Alt halves share Mod1 to match the standard X server
-     * convention and stay consistent with convertModifierState's
-     * KMOD_ALT -> Mod1Mask mapping. */
+    /* Both Alt halves share Mod1 to match the standard X server convention and
+     * stay consistent with convertModifierState's KMOD_ALT -> Mod1Mask mapping.
+     */
     CHECK(modifier_slot_has(modmap, Mod1MapIndex,
                             XKeysymToKeycode(display, XK_Alt_L)),
           "modifier map missing left alt");
@@ -327,9 +327,10 @@ static int test_keyboard(Display *display)
           "modifier map missing num lock");
     CHECK(XFreeModifiermap(modmap) == 1, "XFreeModifiermap failed");
 
-    /* XSetInputFocus updates internal focus tracking; XGetInputFocus
-     * reads it back. None and PointerRoot both collapse to "no focus."
-     * Motif's modal dialog path relies on the round-trip. */
+    /* XSetInputFocus updates internal focus tracking; XGetInputFocus reads it
+     * back. None and PointerRoot both collapse to "no focus." Motif's modal
+     * dialog path relies on the round-trip.
+     */
     Window focusedBefore = None;
     int revertBefore = 0;
     XGetInputFocus(display, &focusedBefore, &revertBefore);
@@ -362,17 +363,19 @@ static int test_keyboard(Display *display)
           "child FocusIn from parent did not use NotifyAncestor");
     XSetInputFocus(display, None, RevertToParent, CurrentTime);
     XGetInputFocus(display, &focused, &revert);
-    /* Per Xlib spec XGetInputFocus reports the actual target: None for
-     * None, PointerRoot for PointerRoot. The previous behavior collapsed
-     * both into PointerRoot, which was non-conformant. */
+    /* Per Xlib spec XGetInputFocus reports the actual target: None for None,
+     * PointerRoot for PointerRoot. The previous behavior collapsed both into
+     * PointerRoot, which was non-conformant.
+     */
     CHECK(focused == None,
           "XGetInputFocus after None focus should report None");
-    /* Window-to-None per Xlib 10.7.1: the relationship between a window
-     * and a non-window focus target is nonlinear (no shared hierarchy),
-     * so the leaf gets NotifyNonlinear and each strict ancestor below
-     * the root gets NotifyNonlinearVirtual. The root also receives a
-     * companion FocusIn with detail NotifyDetailNone, not asserted here
-     * because the root has no FocusChangeMask. */
+    /* Window-to-None per Xlib 10.7.1: the relationship between a window and a
+     * non-window focus target is nonlinear (no shared hierarchy), so the leaf
+     * gets NotifyNonlinear and each strict ancestor below the root gets
+     * NotifyNonlinearVirtual. The root also receives a companion FocusIn with
+     * detail NotifyDetailNone, not asserted here because the root has no
+     * FocusChangeMask.
+     */
     CHECK(XCheckTypedWindowEvent(display, focusChild, FocusOut, &focusEvent),
           "XSetInputFocus(None) did not queue FocusOut on focus leaf");
     CHECK(focusEvent.xfocus.detail == NotifyNonlinear,
@@ -382,19 +385,20 @@ static int test_keyboard(Display *display)
     CHECK(focusEvent.xfocus.detail == NotifyNonlinearVirtual,
           "FocusOut to None on focus ancestor did not use "
           "NotifyNonlinearVirtual");
-    /* Round-trip the PointerRoot case so a future regression that
-     * re-collapses the two non-window targets in XGetInputFocus is
-     * caught at this test. */
+    /* Round-trip the PointerRoot case so a future regression that re-collapses
+     * the two non-window targets in XGetInputFocus is caught at this test.
+     */
     XSetInputFocus(display, (Window) PointerRoot, RevertToParent, CurrentTime);
     XGetInputFocus(display, &focused, &revert);
     CHECK(focused == (Window) PointerRoot,
           "XGetInputFocus after PointerRoot focus should report PointerRoot");
 
-    /* Destroying the focus window must auto-revert per the recorded
-     * revert_to (Xlib spec). Without this the focus state stayed pinned
-     * to a freed XID and subsequent key events routed to dead memory.
-     * The parent must be mapped: RevertToParent walks past unviewable
-     * ancestors, which is what a real X server does too. */
+    /* Destroying the focus window must auto-revert per the recorded revert_to
+     * (Xlib spec). Without this the focus state stayed pinned to a freed XID
+     * and subsequent key events routed to dead memory. The parent must be
+     * mapped: RevertToParent walks past unviewable ancestors, which is what a
+     * real X server does too.
+     */
     Window revertParent = XCreateSimpleWindow(
         display, DefaultRootWindow(display), 0, 0, 8, 8, 0, 0, 0);
     CHECK(revertParent != None, "XCreateSimpleWindow for revert parent failed");
@@ -418,15 +422,15 @@ static int test_keyboard(Display *display)
           "destroying focus window with RevertToPointerRoot did not revert "
           "to PointerRoot");
 
-    /* RevertToParent with an unmapped parent walks past it to the next
-     * viewable ancestor (per spec's "closest viewable ancestor" clause).
-     * Setup note: strict Xlib would BadMatch the XSetInputFocus call
-     * below because mappedChild is not viewable (its parent is
-     * unmapped). The compat layer does not enforce that check by
-     * design - Motif sets focus on widgets before they are fully
-     * realized and depends on the call landing. This regression is for
-     * the compat-layer revert-walk behavior, not for a spec-conformant
-     * client scenario. */
+    /* RevertToParent with an unmapped parent walks past it to the next viewable
+     * ancestor (per spec's "closest viewable ancestor" clause). Setup note:
+     * strict Xlib would BadMatch the XSetInputFocus call below because
+     * mappedChild is not viewable (its parent is unmapped). The compat layer
+     * does not enforce that check by design - Motif sets focus on widgets
+     * before they are fully realized and depends on the call landing. This
+     * regression is for the compat-layer revert-walk behavior, not for a
+     * spec-conformant client scenario.
+     */
     Window unmappedParent = XCreateSimpleWindow(
         display, DefaultRootWindow(display), 0, 0, 8, 8, 0, 0, 0);
     CHECK(unmappedParent != None,
@@ -444,15 +448,15 @@ static int test_keyboard(Display *display)
           "walking up");
     XDestroyWindow(display, unmappedParent);
 
-    /* Cascading destroy must preserve the FocusIn(parent) generated by
-     * a child's revert. Earlier code drained the parent's queue after
-     * recursion (which discarded that just-queued event); the discard
-     * now runs before recursion. Verify by selecting FocusChangeMask on
-     * the parent, focusing a mapped child with RevertToParent, then
-     * destroying the parent (which cascades to the child). The
-     * intermediate FocusIn(parent, NotifyInferior) from the child's
-     * revert (child is descendant of parent, so the spec detail is
-     * NotifyInferior, not NotifyAncestor) must reach the queue. */
+    /* Cascading destroy must preserve the FocusIn(parent) generated by a
+     * child's revert. Earlier code drained the parent's queue after recursion
+     * (which discarded that just-queued event); the discard now runs before
+     * recursion. Verify by selecting FocusChangeMask on the parent, focusing a
+     * mapped child with RevertToParent, then destroying the parent (which
+     * cascades to the child). The intermediate FocusIn(parent, NotifyInferior)
+     * from the child's revert (child is descendant of parent, so the spec
+     * detail is NotifyInferior, not NotifyAncestor) must reach the queue.
+     */
     Window cascadeParent = XCreateSimpleWindow(
         display, DefaultRootWindow(display), 0, 0, 8, 8, 0, 0, 0);
     CHECK(cascadeParent != None,
@@ -480,9 +484,10 @@ static int test_keyboard(Display *display)
     CHECK(sawRevertFocusIn,
           "cascading destroy discarded the child-revert FocusIn on the "
           "parent");
-    /* Drain any other events the cascade emitted (FocusOut on the parent
-     * from its own auto-revert, DestroyNotify, etc.) so they do not bleed
-     * into later subtests that assert XNextEvent ordering. */
+    /* Drain any other events the cascade emitted (FocusOut on the parent from
+     * its own auto-revert, DestroyNotify, etc.) so they do not bleed into later
+     * subtests that assert XNextEvent ordering.
+     */
     while (XPending(display) > 0)
         XNextEvent(display, &focusEvent);
 
@@ -575,8 +580,9 @@ static int test_gc(Display *display)
               values.fill_rule == WindingRule,
           "GC convenience setters did not round-trip");
 
-    /* Generation counter: every GC mutator bumps it so a future
-     * per-renderer state cache can skip redundant SDL pushes. */
+    /* Generation counter: every GC mutator bumps it so a future per-renderer
+     * state cache can skip redundant SDL pushes.
+     */
     GraphicContext *gContext = GET_GC(gc);
     CHECK(gContext != NULL, "GET_GC returned NULL");
     unsigned long gen = gContext->generation;
@@ -855,11 +861,12 @@ static int test_compat_stubs(Display *display)
               wy == DisplayHeight(display, DefaultScreen(display)) - 6 - 2,
           "XGeometry did not preserve zero unit sizes");
 
-    /* The negative-anchor pixel-arithmetic path must saturate when the
-     * font cell times the parsed unit count overflows int. We drive
-     * the satMulAdd path with a small parseable spec (so upstream
-     * XParseGeometry's signed int math stays in range) and a huge
-     * font cell argument; clampInt64ToInt clamps the result. */
+    /* The negative-anchor pixel-arithmetic path must saturate when the font
+     * cell times the parsed unit count overflows int. The test drives the
+     * satMulAdd path with a small parseable spec (so upstream XParseGeometry's
+     * signed int math stays in range) and a huge font cell argument;
+     * clampInt64ToInt clamps the result.
+     */
     int saturatedX = -1;
     int saturatedY = -1;
     int saturatedW = -1;
@@ -870,7 +877,8 @@ static int test_compat_stubs(Display *display)
     CHECK(saturatedW == 100 && saturatedH == 100,
           "XGeometry parsed width/height was clobbered");
     /* anchorPixelWidth = 100 * (INT_MAX/2) is far above INT_MAX, so
-     * DisplayWidth - anchorPixelWidth - border clamps to INT_MIN. */
+     * DisplayWidth - anchorPixelWidth - border clamps to INT_MIN.
+     */
     CHECK(saturatedX == INT_MIN,
           "XGeometry negative-anchor X did not saturate at INT_MIN");
     CHECK(saturatedY == INT_MIN,
@@ -962,11 +970,12 @@ static int test_colors(Display *display)
                             &exact),
           "XAllocNamedColor accepted invalid color");
 
-    /* XSetRGBColormaps / XGetRGBColormaps round-trip. Locks in the
-     * ICCCM section 6.4 wire-format ordering (visualid, killid, colormap,
-     * red_max, red_mult, green_max, green_mult, blue_max, blue_mult,
-     * base_pixel). If anyone edits the field order in one direction
-     * without the other, this test fails. */
+    /* XSetRGBColormaps / XGetRGBColormaps round-trip. Locks in the ICCCM
+     * section 6.4 wire-format ordering (visualid, killid, colormap, red_max,
+     * red_mult, green_max, green_mult, blue_max, blue_mult, base_pixel). If
+     * anyone edits the field order in one direction without the other, this
+     * test fails.
+     */
     Window stdCmapTarget = RootWindow(display, DefaultScreen(display));
     Atom rgbProbe = XInternAtom(display, "_LIBX11_COMPAT_TEST_RGB", False);
     XStandardColormap inCmap = {0};
@@ -1094,9 +1103,10 @@ static int test_pixmaps(Display *display)
           "XCreatePixmap accepted an unsupported depth");
     XSetErrorHandler(oldErrorHandler);
 
-    /* XCreateBitmapFromData expects ceil(width/8) * height packed bytes.
-     * For a 2x2 bitmap that is two bytes (one per row); supplying a single
-     * byte tripped AddressSanitizer's stack-buffer-overflow check. */
+    /* XCreateBitmapFromData expects ceil(width/8) * height packed bytes. For a
+     * 2x2 bitmap that is two bytes (one per row); supplying a single byte
+     * tripped AddressSanitizer's stack-buffer-overflow check.
+     */
     char bits[] = {0x01, 0x00};
     Pixmap bitmap = XCreateBitmapFromData(display, root, bits, 2, 2);
     CHECK(bitmap != None, "XCreateBitmapFromData failed");
@@ -1303,11 +1313,11 @@ static int test_pixmaps(Display *display)
           "XCopyArea to pixmap damaged unrelated pixels");
     SDL_FreeSurface(surface);
 
-    /* Non-GXcopy XCopyArea: the raster-op fallback should now respect
-     * the GC function. GXxor of opaque white over black yields white,
-     * GXand yields black. Skip the assertion if SDL_RenderReadPixels
-     * returns 0 (some headless SDL configs), but at minimum the call
-     * must report success. */
+    /* Non-GXcopy XCopyArea: the raster-op fallback should now respect the GC
+     * function. GXxor of opaque white over black yields white, GXand yields
+     * black. Skip the assertion if SDL_RenderReadPixels returns 0 (some
+     * headless SDL configs), but at minimum the call must report success.
+     */
     CHECK(XSetForeground(display, copyGc, 0xFFFFFFFF),
           "raster-op src fill color setup failed");
     CHECK(XFillRectangle(display, copySrc, copyGc, 0, 0, 8, 8),
@@ -1324,10 +1334,10 @@ static int test_pixmaps(Display *display)
           "XCopyArea with GXxor failed");
     rasterValues.function = GXcopy;
     XChangeGC(display, copyGc, GCFunction, &rasterValues);
-    /* Verify actual pixel output: white XOR black = white (0xFFFFFF).
-     * Without this assertion the test would pass even if the raster-op
-     * helper read the wrong renderer or fed uninitialized memory into
-     * applyRasterFunction. */
+    /* Verify actual pixel output: white XOR black = white (0xFFFFFF). Without
+     * this assertion the test would pass even if the raster-op helper read the
+     * wrong renderer or fed uninitialized memory into applyRasterFunction.
+     */
     {
         SDL_Renderer *rasterRenderer = NULL;
         GET_RENDERER(copyDest, rasterRenderer);
@@ -1366,10 +1376,11 @@ static int test_pixmaps(Display *display)
         }
     }
 
-    /* XCopyArea must reject geometries whose extents would overflow
-     * signed int instead of wrapping into SDL_Rect math. Combine a near-
-     * INT_MAX coordinate with a non-zero width to force the extent over
-     * the int boundary. */
+    /* XCopyArea must reject geometries whose extents would overflow signed int
+     * instead of wrapping into SDL_Rect math. Combine a near- INT_MAX
+     * coordinate with a non-zero width to force the extent over the int
+     * boundary.
+     */
     int (*xcOldHandler)(Display *, XErrorEvent *) =
         XSetErrorHandler(record_error);
     last_error_code = 0;
@@ -1412,8 +1423,9 @@ static int test_pixmaps(Display *display)
     XFreePixmap(display, copySrc);
     XFreePixmap(display, copyDest);
 
-    /* XBM file round-trip: parse a hand-written file, then read back a
-     * file produced by XWriteBitmapFile. */
+    /* XBM file round-trip: parse a hand-written file, then read back a file
+     * produced by XWriteBitmapFile.
+     */
     char xbmPath[] = "/tmp/libx11-compat-bitmap-XXXXXX";
     int xbmFd = mkstemp(xbmPath);
     CHECK(xbmFd >= 0, "mkstemp for XBM failed");
@@ -1891,7 +1903,8 @@ static int test_drawables_and_gcs(Display *display)
 
 /* Regression coverage for the fixes that closed out the Drawables / Pixmaps /
  * GC review pass: small-arc ArcChord routing, batched point and rectangle
- * primitives, non-GXcopy line batches, and dashed small arcs. */
+ * primitives, non-GXcopy line batches, and dashed small arcs.
+ */
 static int test_drawing_coverage(Display *display)
 {
     Window root = RootWindow(display, DefaultScreen(display));
@@ -1905,11 +1918,12 @@ static int test_drawing_coverage(Display *display)
     CHECK(XFillRectangle(display, arcPx, arcGc, 0, 0, 24, 12),
           "arc-mode clear failed");
     CHECK(XSetForeground(display, arcGc, 0xFFFF0000), "arc-mode red failed");
-    /* Width 10 keeps us under the legacy 16-pixel cutoff. Before the fix,
-     * the small-arc fallback always rendered as ArcPieSlice and would have
-     * filled the center pixel for both modes. After the fix the path
-     * accelerator handles ArcChord regardless of size, so the center pixel
-     * stays unfilled for chord but stays filled for pie. */
+    /* Width 10 stays under the legacy 16-pixel cutoff. Before the fix, the
+     * small-arc fallback always rendered as ArcPieSlice and would have filled
+     * the center pixel for both modes. After the fix the path accelerator
+     * handles ArcChord regardless of size, so the center pixel stays unfilled
+     * for chord but stays filled for pie.
+     */
     CHECK(XSetArcMode(display, arcGc, ArcChord), "set ArcChord failed");
     CHECK(XFillArc(display, arcPx, arcGc, 0, 1, 10, 10, 0, 90 * 64),
           "small ArcChord fill failed");
@@ -1921,8 +1935,9 @@ static int test_drawing_coverage(Display *display)
     SDL_Surface *arcSurface = getRenderSurface(arcRenderer);
     CHECK(arcSurface, "arc-mode getRenderSurface failed");
     /* Pixel (cx+2, cy-1) relative to each arc lies inside the pie wedge
-     * triangle but on the center side of the chord, i.e. inside pie and
-     * outside chord. Chord arc is at (0,1); pie arc is at (12,1). */
+     * triangle but on the center side of the chord, i.e. inside pie and outside
+     * chord. Chord arc is at (0,1); pie arc is at (12,1).
+     */
     CHECK(pixel_is_rgb(arcSurface, 7, 5, 0, 0, 0),
           "small ArcChord still filled the triangle (legacy pie fallback?)");
     CHECK(pixel_is_rgb(arcSurface, 19, 5, 255, 0, 0),
@@ -1931,9 +1946,10 @@ static int test_drawing_coverage(Display *display)
     XFreeGC(display, arcGc);
     XFreePixmap(display, arcPx);
 
-    /* XDrawPoints / XDrawRectangles were previously WARN_UNIMPLEMENTED
-     * stubs in missing.c. Exercise both batched forms and verify the
-     * pixels actually land. */
+    /* XDrawPoints / XDrawRectangles were previously WARN_UNIMPLEMENTED stubs in
+     * missing.c. Exercise both batched forms and verify the pixels actually
+     * land.
+     */
     Pixmap batchPx =
         XCreatePixmap(display, root, 16, 16, DefaultDepth(display, 0));
     CHECK(batchPx != None, "batch pixmap creation failed");
@@ -1967,10 +1983,11 @@ static int test_drawing_coverage(Display *display)
           "XDrawPoints CoordModePrevious accumulation broke");
     CHECK(pixel_is_rgb(batchSurface, 12, 3, 255, 255, 255),
           "XDrawPoints CoordModePrevious second accumulation broke");
-    /* XDrawRectangles per X11 spec outlines (w+1)x(h+1): rect {5,8,3,3}
-     * has corners (5,8) and (8,11); rect {10,10,4,4} has corners
-     * (10,10) and (14,14). The far corner check would fail under the
-     * old SDL w-by-h behavior, which only reached (13,13). */
+    /* XDrawRectangles per X11 spec outlines (w+1)x(h+1): rect {5,8,3,3} has
+     * corners (5,8) and (8,11); rect {10,10,4,4} has corners (10,10) and
+     * (14,14). The far corner check would fail under the old SDL w-by-h
+     * behavior, which only reached (13,13).
+     */
     CHECK(pixel_is_rgb(batchSurface, 5, 8, 0, 0, 255),
           "XDrawRectangles first rect missing top-left corner");
     CHECK(pixel_is_rgb(batchSurface, 8, 11, 0, 0, 255),
@@ -1987,10 +2004,11 @@ static int test_drawing_coverage(Display *display)
     XFreeGC(display, batchGc);
     XFreePixmap(display, batchPx);
 
-    /* Non-GXcopy XDrawSegments and XDrawLines: before the fix, batched
-     * line primitives fell through to plain SDL blending and silently
-     * dropped the GC function. With the software walker the XOR pattern
-     * applies to every span pixel. */
+    /* Non-GXcopy XDrawSegments and XDrawLines: before the fix, batched line
+     * primitives fell through to plain SDL blending and silently dropped the GC
+     * function. With the software walker the XOR pattern applies to every span
+     * pixel.
+     */
     Pixmap xorPx =
         XCreatePixmap(display, root, 16, 16, DefaultDepth(display, 0));
     CHECK(xorPx != None, "xor pixmap creation failed");
@@ -2041,7 +2059,8 @@ static int test_drawing_coverage(Display *display)
     /* Pattern {2, 2} with length-8 segments gives a verifiable on/off/on/off
      * sequence. The off-dash pixels (3 and 7 along each segment) must be
      * background; pass a length where only an end-pixel check would pass
-     * trivially even if dashes were ignored. */
+     * trivially even if dashes were ignored.
+     */
     char dashSegmentsPattern[] = {2, 2};
     CHECK(XSetDashes(display, dashSegGc, 0, dashSegmentsPattern, 2),
           "dash segment XSetDashes failed");
@@ -2063,8 +2082,9 @@ static int test_drawing_coverage(Display *display)
           "dashed XDrawSegments off-gap pixel was drawn");
     CHECK(pixel_is_rgb(dashSegSurface, 4, 12, 255, 255, 255),
           "dashed XDrawSegments second on-dash missing");
-    /* Segment 2 must restart the dash pattern — same gap at the same
-     * relative offset confirms the per-segment phase reset. */
+    /* Segment 2 must restart the dash pattern: the same gap at the same
+     * relative offset confirms the per-segment phase reset.
+     */
     CHECK(pixel_is_rgb(dashSegSurface, 0, 14, 255, 255, 255),
           "dashed XDrawSegments did not reset dash phase");
     CHECK(pixel_is_rgb(dashSegSurface, 3, 14, 0, 0, 0),
@@ -2073,11 +2093,12 @@ static int test_drawing_coverage(Display *display)
     XFreeGC(display, dashSegGc);
     XFreePixmap(display, dashSegPx);
 
-    /* Dashed small arcs: before shouldUsePathArc gated on lineStyle, a
-     * sub-16 arc with LineOnOffDash routed to the legacy point spray
-     * which ignores the dash list entirely. Now the dashed arc must
-     * leave visible gaps. We compare against the same arc drawn solid
-     * and require the dashed pixel count to be strictly smaller. */
+    /* Dashed small arcs: before shouldUsePathArc gated on lineStyle, a sub-16
+     * arc with LineOnOffDash routed to the legacy point spray which ignores the
+     * dash list entirely. Now the dashed arc must leave visible gaps. The test
+     * compares against the same arc drawn solid and requires the dashed pixel
+     * count to be strictly smaller.
+     */
     Pixmap dashArcPx =
         XCreatePixmap(display, root, 32, 14, DefaultDepth(display, 0));
     CHECK(dashArcPx != None, "dash-arc pixmap creation failed");
@@ -2231,13 +2252,13 @@ static int test_images(Display *display)
     CHECK(XPutImage(display, firstWindow, imageGc, cacheImage, 0, 0, 0, 0, 2,
                     2) == 1,
           "first XPutImage cache draw failed");
-    /* Renderer-unification: mapped top-level windows share the SCREEN
-     * renderer, so XDestroyWindow no longer triggers a renderer
-     * destruction or a corresponding cache invalidation. The load-
-     * bearing safety property is that the cached renderer stays valid
-     * across the destroy boundary; if a future change reverts to per-
-     * window renderers, the invalidate hook must still fire and this
-     * assertion must be tightened back to NULL. */
+    /* Renderer-unification: mapped top-level windows share the SCREEN renderer,
+     * so XDestroyWindow no longer triggers a renderer destruction or a
+     * corresponding cache invalidation. The load- bearing safety property is
+     * that the cached renderer stays valid across the destroy boundary; if a
+     * future change reverts to per- window renderers, the invalidate hook must
+     * still fire and this assertion must be tightened back to NULL.
+     */
     SDL_Renderer *firstStagingRenderer = getPutImageStagingTextureRenderer();
     CHECK(firstStagingRenderer,
           "XPutImage cache renderer not recorded after first draw");
@@ -2278,10 +2299,10 @@ static int test_images(Display *display)
           "XGetImage XYPixmap returned a zero-filled image");
     XDestroyImage(xyReadback);
 
-    /* Verify the ZPixmap 32-bit fast path promotes X11 pixel colors
-     * (upper byte == 0) to opaque alpha so SDL2 renders them visible.
-     * Without the alpha promotion the entire surface would read as
-     * fully transparent. */
+    /* Verify the ZPixmap 32-bit fast path promotes X11 pixel colors (upper byte
+     * == 0) to opaque alpha so SDL2 renders them visible. Without the alpha
+     * promotion the entire surface would read as fully transparent.
+     */
     char *alphaTestData = calloc(1, 16);
     CHECK(alphaTestData, "alpha-promotion image data allocation failed");
     XImage *alphaImage =
@@ -2558,9 +2579,10 @@ static int test_events(Display *display)
     while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
 
-    /* XSendEvent's contract is sizeof(XEvent), so the buffer must be
-     * full-union sized; passing a bare XClientMessageEvent triggers a
-     * stack-buffer-overflow under ASan. */
+    /* XSendEvent's contract is sizeof(XEvent), so the buffer must be full-union
+     * sized; passing a bare XClientMessageEvent triggers a
+     * stack-buffer-overflow under ASan.
+     */
     XEvent olderClient;
     memset(&olderClient, 0, sizeof(olderClient));
     olderClient.xclient.type = ClientMessage;
@@ -2707,9 +2729,10 @@ static int test_events(Display *display)
           "XTranslateCoordinates unmapped overlap lookup failed");
     CHECK(translatedChild == lowerOverlap,
           "XTranslateCoordinates returned an unmapped child");
-    /* Tear the offsetWindow subtree down before the rest of the test
-     * reuses `window` for unrelated checks; XDestroyWindow recursively
-     * frees offsetChild, lowerOverlap, and upperOverlap. */
+    /* Tear the offsetWindow subtree down before the rest of the test reuses
+     * `window` for unrelated checks; XDestroyWindow recursively frees
+     * offsetChild, lowerOverlap, and upperOverlap.
+     */
     XDestroyWindow(display, offsetWindow);
 
     Pixmap backgroundPixmap = XCreatePixmap(
@@ -3382,7 +3405,8 @@ static int test_events(Display *display)
     CHECK(out.xcrossing.mode == NotifyGrab,
           "XGrabPointer EnterNotify used wrong mode");
     /* A second active grab by the same client is a regrab: it updates the
-     * active grab instead of reporting AlreadyGrabbed. */
+     * active grab instead of reporting AlreadyGrabbed.
+     */
     CHECK(XGrabPointer(display, window, False,
                        ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
                        GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
@@ -3728,8 +3752,9 @@ static int test_properties(Display *display)
 {
     Window root = RootWindow(display, DefaultScreen(display));
 
-    /* _XSETTINGS_SETTINGS on the root window publishes a binary payload
-     * with at least Gtk/FontName so GTK probes have real defaults. */
+    /* _XSETTINGS_SETTINGS on the root window publishes a binary payload with at
+     * least Gtk/FontName so GTK probes have real defaults.
+     */
     Atom xs = XInternAtom(display, "_XSETTINGS_SETTINGS", False);
     CHECK(xs != None, "XInternAtom _XSETTINGS_SETTINGS failed");
     Atom actualType = None;
@@ -3753,8 +3778,9 @@ static int test_properties(Display *display)
     CHECK(found, "_XSETTINGS_SETTINGS missing Gtk/FontName");
     XFree(data);
 
-    /* _MOTIF_WM_HINTS: synthesize a default reply when unset; return the
-     * stored value verbatim once the client writes one. */
+    /* _MOTIF_WM_HINTS: synthesize a default reply when unset; return the stored
+     * value verbatim once the client writes one.
+     */
     Window window = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
     Atom motif = XInternAtom(display, "_MOTIF_WM_HINTS", False);
     CHECK(motif != None, "XInternAtom for _MOTIF_WM_HINTS failed");
@@ -3908,9 +3934,9 @@ static int test_properties(Display *display)
     XFree(data);
 
     /* XChangeProperty(_NET_WM_NAME, UTF8_STRING) must route through the
-     * top-level title path so SDL's window title reflects what Motif/
-     * GTK/Qt published. Regression for the WM_NAME detour added to
-     * XChangeProperty. */
+     * top-level title path so SDL's window title reflects what Motif/ GTK/Qt
+     * published. Regression for the WM_NAME detour added to XChangeProperty.
+     */
     {
         Window titleWin =
             XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
@@ -3939,9 +3965,10 @@ static int test_properties(Display *display)
         CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
               "WM_NAME XChangeProperty did not update SDL title");
 
-        /* Non-text property writes to WM_NAME (atom payload) must NOT
-         * touch the title: detour only triggers on XA_STRING /
-         * UTF8_STRING / COMPOUND_TEXT format=8 payloads. */
+        /* Non-text property writes to WM_NAME (atom payload) must NOT touch the
+         * title: detour only triggers on XA_STRING / UTF8_STRING /
+         * COMPOUND_TEXT format=8 payloads.
+         */
         Atom atomPayload = XA_CARDINAL;
         CHECK(
             XChangeProperty(display, titleWin, XA_WM_NAME, XA_ATOM, 32,
@@ -3955,6 +3982,649 @@ static int test_properties(Display *display)
 
     XDestroyWindow(display, transientFor);
     XDestroyWindow(display, window);
+    return 1;
+}
+
+/* EWMH _NET_WM_STATE ClientMessage routing: a _NET_WM_STATE ClientMessage
+ * targeting the root window must be dispatched to the in-process WM rather than
+ * walked up the event-mask propagation chain. The stored _NET_WM_STATE property
+ * must mirror the post-action atom set.
+ */
+static int test_ewmh_wm_state_clientmessage(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(window != None, "ewmh: window creation failed");
+    CHECK(XMapWindow(display, window), "ewmh: window map failed");
+
+    Atom netWmState = XInternAtom(display, "_NET_WM_STATE", False);
+    Atom netWmStateFullscreen =
+        XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+    CHECK(netWmState != None && netWmStateFullscreen != None,
+          "ewmh: atom intern failed");
+
+    XEvent event = {
+        .xclient = {
+            .type = ClientMessage,
+            .window = window,
+            .message_type = netWmState,
+            .format = 32,
+            .data.l = {1 /* _NET_WM_STATE_ADD */, (long) netWmStateFullscreen},
+        }};
+
+    /* SendEvent to root should be consumed by the EWMH dispatch and NOT
+     * propagate as a queued ClientMessage to root or to the target.
+     */
+    CHECK(XSendEvent(display, root, False,
+                     SubstructureNotifyMask | SubstructureRedirectMask, &event),
+          "ewmh: XSendEvent to root failed");
+
+    XEvent drained;
+    CHECK(!XCheckTypedEvent(display, ClientMessage, &drained),
+          "ewmh: EWMH ClientMessage to root leaked into the event queue");
+
+    /* Property mirror: stored _NET_WM_STATE must now include the fullscreen
+     * atom.
+     */
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long nItems = 0, bytesAfter = 0;
+    unsigned char *data = NULL;
+    int rc = XGetWindowProperty(display, window, netWmState, 0, 16, False,
+                                XA_ATOM, &actualType, &actualFormat, &nItems,
+                                &bytesAfter, &data);
+    CHECK(rc == Success, "ewmh: XGetWindowProperty(_NET_WM_STATE) failed");
+    CHECK(actualType == XA_ATOM && actualFormat == 32,
+          "ewmh: _NET_WM_STATE has wrong type/format after mirror");
+    Bool sawFullscreen = False;
+    if (data) {
+        Atom *atoms = (Atom *) data;
+        for (unsigned long i = 0; i < nItems; i++) {
+            if (atoms[i] == netWmStateFullscreen) {
+                sawFullscreen = True;
+                break;
+            }
+        }
+    }
+    XFree(data);
+    CHECK(sawFullscreen,
+          "ewmh: _NET_WM_STATE property mirror missed FULLSCREEN");
+
+    /* Toggle action removes the atom. */
+    event.xclient.data.l[0] = 2; /* _NET_WM_STATE_TOGGLE */
+    CHECK(XSendEvent(display, root, False, 0, &event),
+          "ewmh: toggle XSendEvent failed");
+    data = NULL;
+    nItems = 0;
+    bytesAfter = 0;
+    rc = XGetWindowProperty(display, window, netWmState, 0, 16, False, XA_ATOM,
+                            &actualType, &actualFormat, &nItems, &bytesAfter,
+                            &data);
+    CHECK(rc == Success, "ewmh: XGetWindowProperty after toggle failed");
+    Bool stillSawFullscreen = False;
+    if (data) {
+        Atom *atoms = (Atom *) data;
+        for (unsigned long i = 0; i < nItems; i++) {
+            if (atoms[i] == netWmStateFullscreen) {
+                stillSawFullscreen = True;
+                break;
+            }
+        }
+    }
+    XFree(data);
+    CHECK(!stillSawFullscreen, "ewmh: toggle did not clear FULLSCREEN atom");
+
+    /* Unrecognized message_types fall through. Send a ClientMessage with a
+     * private message_type to root with no propagate; the routing should not
+     * queue it (no event mask matched on root).
+     */
+    Atom privateAtom = XInternAtom(display, "SDL2X11_PRIVATE_CLIENT", False);
+    event.xclient.message_type = privateAtom;
+    CHECK(XSendEvent(display, root, False, NoEventMask, &event),
+          "ewmh: private ClientMessage send failed");
+    /* NoEventMask should accept on root; either way the dispatch is not
+     * involved. Drain any queued events to keep the test isolated.
+     */
+    while (XCheckTypedEvent(display, ClientMessage, &drained))
+        ;
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+static int test_ewmh_wm_state_initial_property(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(window != None, "ewmh-initial: window creation failed");
+
+    Atom netWmState = XInternAtom(display, "_NET_WM_STATE", False);
+    Atom netWmStateFullscreen =
+        XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+    CHECK(netWmState != None && netWmStateFullscreen != None,
+          "ewmh-initial: atom intern failed");
+
+    Atom states[1] = {netWmStateFullscreen};
+    CHECK(XChangeProperty(display, window, netWmState, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) states, 1),
+          "ewmh-initial: _NET_WM_STATE write failed");
+    CHECK(GET_WINDOW_STRUCT(window)->sdlWindow == NULL,
+          "ewmh-initial: property write realized the window too early");
+
+    CHECK(XMapWindow(display, window), "ewmh-initial: window map failed");
+    SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
+    CHECK(sdlWindow != NULL, "ewmh-initial: window has no SDL backing");
+    Uint32 flags = SDL_GetWindowFlags(sdlWindow);
+    CHECK((flags & SDL_WINDOW_FULLSCREEN) != 0,
+          "ewmh-initial: initial FULLSCREEN was not applied on map");
+
+    CHECK(XChangeProperty(display, window, netWmState, XA_ATOM, 32,
+                          PropModeReplace, NULL, 0),
+          "ewmh-initial: empty _NET_WM_STATE rewrite failed");
+    flags = SDL_GetWindowFlags(sdlWindow);
+    CHECK((flags & SDL_WINDOW_FULLSCREEN) == 0,
+          "ewmh-initial: direct _NET_WM_STATE rewrite did not clear SDL state");
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* EWMH _NET_ACTIVE_WINDOW ClientMessage routing: a request sent to root is
+ * consumed by the in-process WM dispatch and never leaks into the client event
+ * queue. Skip target inspection for unmapped or invalid windows.
+ */
+static int test_ewmh_active_window_clientmessage(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(window != None, "ewmh-active: window creation failed");
+    CHECK(XMapWindow(display, window), "ewmh-active: window map failed");
+
+    Atom activeWindow = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+    CHECK(activeWindow != None, "ewmh-active: atom intern failed");
+
+    XEvent event = {.xclient = {
+                        .type = ClientMessage,
+                        .window = window,
+                        .message_type = activeWindow,
+                        .format = 32,
+                        .data.l = {1 /* source: application */, CurrentTime},
+                    }};
+
+    CHECK(XSendEvent(display, root, False,
+                     SubstructureNotifyMask | SubstructureRedirectMask, &event),
+          "ewmh-active: XSendEvent to root failed");
+
+    XEvent drained;
+    CHECK(!XCheckTypedEvent(display, ClientMessage, &drained),
+          "ewmh-active: ClientMessage leaked into the event queue");
+
+    /* Invalid target window: dispatch must still consume the message silently
+     * and not crash on the windowless target lookup.
+     */
+    event.xclient.window = (Window) 0xdeadbeefUL;
+    CHECK(XSendEvent(display, root, False,
+                     SubstructureNotifyMask | SubstructureRedirectMask, &event),
+          "ewmh-active: invalid-target send failed");
+    CHECK(!XCheckTypedEvent(display, ClientMessage, &drained),
+          "ewmh-active: invalid-target message leaked");
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* EWMH _NET_CLOSE_WINDOW ClientMessage routing: when the target has
+ * WM_DELETE_WINDOW listed in WM_PROTOCOLS the dispatcher posts a WM_PROTOCOLS /
+ * WM_DELETE_WINDOW ClientMessage to the target rather than unmapping; otherwise
+ * it unmaps the window.
+ */
+static int test_ewmh_close_window_clientmessage(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(window != None, "ewmh-close: window creation failed");
+    CHECK(XMapWindow(display, window), "ewmh-close: window map failed");
+    XSelectInput(display, window, StructureNotifyMask);
+
+    Atom closeWindow = XInternAtom(display, "_NET_CLOSE_WINDOW", False);
+    Atom wmProtocols = XInternAtom(display, "WM_PROTOCOLS", False);
+    Atom wmDeleteWindow = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    CHECK(closeWindow != None && wmProtocols != None && wmDeleteWindow != None,
+          "ewmh-close: atom intern failed");
+
+    /* Path A: target advertises WM_DELETE_WINDOW. Dispatch must post a
+     * WM_PROTOCOLS / WM_DELETE_WINDOW ClientMessage to the target and leave the
+     * window mapped so the client can decide when to tear it down.
+     */
+    Atom protocols[1] = {wmDeleteWindow};
+    CHECK(XSetWMProtocols(display, window, protocols, 1),
+          "ewmh-close: XSetWMProtocols failed");
+
+    /* Verify the property landed so a dispatch mismatch is distinguishable from
+     * a missed-post: read WM_PROTOCOLS back and confirm it lists
+     * WM_DELETE_WINDOW under XA_ATOM.
+     */
+    Atom storedType = None;
+    int storedFormat = 0;
+    unsigned long storedItems = 0, storedAfter = 0;
+    unsigned char *storedData = NULL;
+    CHECK(XGetWindowProperty(display, window, wmProtocols, 0, 1, False, XA_ATOM,
+                             &storedType, &storedFormat, &storedItems,
+                             &storedAfter, &storedData) == Success,
+          "ewmh-close: XGetWindowProperty(WM_PROTOCOLS) failed");
+    CHECK(storedType == XA_ATOM && storedFormat == 32 && storedItems == 1 &&
+              storedData && ((Atom *) storedData)[0] == wmDeleteWindow,
+          "ewmh-close: WM_PROTOCOLS missing WM_DELETE_WINDOW after store");
+    XFree(storedData);
+
+    XEvent event = {.xclient = {
+                        .type = ClientMessage,
+                        .window = window,
+                        .message_type = closeWindow,
+                        .format = 32,
+                    }};
+
+    CHECK(XSendEvent(display, root, False,
+                     SubstructureNotifyMask | SubstructureRedirectMask, &event),
+          "ewmh-close: XSendEvent(WM_DELETE path) failed");
+
+    XEvent delivered;
+    Bool sawWmDelete = False;
+    while (XCheckTypedWindowEvent(display, window, ClientMessage, &delivered)) {
+        if (delivered.xclient.message_type == wmProtocols &&
+            (Atom) delivered.xclient.data.l[0] == wmDeleteWindow) {
+            sawWmDelete = True;
+            break;
+        }
+    }
+    CHECK(sawWmDelete,
+          "ewmh-close: WM_DELETE_WINDOW ClientMessage not delivered to target");
+    CHECK(GET_WINDOW_STRUCT(window)->mapState == Mapped,
+          "ewmh-close: window unmapped despite WM_DELETE_WINDOW handler");
+
+    /* Path B: a window without WM_DELETE_WINDOW in WM_PROTOCOLS is unmapped
+     * instead, mirroring SDL_WINDOWEVENT_CLOSE on a client that did not opt in
+     * to the delete protocol.
+     */
+    Window plain = XCreateSimpleWindow(display, root, 0, 0, 48, 48, 0, 0, 0);
+    CHECK(plain != None, "ewmh-close: plain window creation failed");
+    CHECK(XMapWindow(display, plain), "ewmh-close: plain window map failed");
+    CHECK(GET_WINDOW_STRUCT(plain)->mapState == Mapped,
+          "ewmh-close: plain window unexpectedly not mapped");
+
+    event.xclient.window = plain;
+    CHECK(XSendEvent(display, root, False,
+                     SubstructureNotifyMask | SubstructureRedirectMask, &event),
+          "ewmh-close: XSendEvent(unmap path) failed");
+
+    CHECK(GET_WINDOW_STRUCT(plain)->mapState == UnMapped,
+          "ewmh-close: plain window not unmapped");
+
+    XEvent drained;
+    while (XCheckTypedEvent(display, ClientMessage, &drained))
+        ;
+
+    XDestroyWindow(display, plain);
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* MWM _MOTIF_WM_HINTS write routing: a XChangeProperty write that clears
+ * MWM_DECOR_BORDER must drop the SDL window border; clearing MWM_FUNC_RESIZE
+ * must drop SDL_WINDOW_RESIZABLE. Under SDL's dummy video driver
+ * SDL_SetWindowBordered / SDL_SetWindowResizable are no-ops because the driver
+ * has no host window. The test probes for that and falls back to verifying the
+ * property storage round-trip when the driver does not honor the flag flip.
+ */
+static int test_mwm_hints_apply(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 96, 64, 0, 0, 0);
+    CHECK(window != None, "motif-hints: window creation failed");
+    CHECK(XMapWindow(display, window), "motif-hints: window map failed");
+
+    SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
+    CHECK(sdlWindow != NULL, "motif-hints: window has no SDL backing");
+
+    /* Driver-capability probe. Dummy: SetWindowBordered is unimplemented so
+     * SDL_GetWindowFlags never reports SDL_WINDOW_BORDERLESS even after a
+     * successful call. Real drivers honor the toggle.
+     */
+    Uint32 flagsBefore = SDL_GetWindowFlags(sdlWindow);
+    SDL_SetWindowBordered(sdlWindow, SDL_FALSE);
+    Uint32 flagsAfter = SDL_GetWindowFlags(sdlWindow);
+    SDL_SetWindowBordered(sdlWindow, SDL_TRUE); /* restore for the test */
+    Bool driverHonorsBorder = (flagsAfter & SDL_WINDOW_BORDERLESS) !=
+                              (flagsBefore & SDL_WINDOW_BORDERLESS);
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    flagsBefore = SDL_GetWindowFlags(sdlWindow);
+    SDL_SetWindowResizable(sdlWindow, SDL_FALSE);
+    flagsAfter = SDL_GetWindowFlags(sdlWindow);
+    SDL_SetWindowResizable(sdlWindow, SDL_TRUE);
+    Bool driverHonorsResizable = (flagsAfter & SDL_WINDOW_RESIZABLE) !=
+                                 (flagsBefore & SDL_WINDOW_RESIZABLE);
+#else
+    Bool driverHonorsResizable = False;
+#endif
+
+    Atom motif = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    CHECK(motif != None, "motif-hints: atom intern failed");
+
+    Window premap = XCreateSimpleWindow(display, root, 0, 0, 72, 48, 0, 0, 0);
+    CHECK(premap != None, "motif-hints: premap window creation failed");
+    long premapHints[5] = {
+        0x3 /* MWM_HINTS_FUNCTIONS | MWM_HINTS_DECORATIONS */,
+        0x1 /* MWM_FUNC_ALL */,
+        0 /* no decorations */,
+        0,
+        0,
+    };
+    CHECK(XChangeProperty(display, premap, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) premapHints, 5),
+          "motif-hints: premap XChangeProperty failed");
+    CHECK(GET_WINDOW_STRUCT(premap)->sdlWindow == NULL,
+          "motif-hints: premap write realized window too early");
+    CHECK(XMapWindow(display, premap), "motif-hints: premap map failed");
+    SDL_Window *premapSdl = GET_WINDOW_STRUCT(premap)->sdlWindow;
+    CHECK(premapSdl != NULL, "motif-hints: premap window has no SDL backing");
+    if (driverHonorsBorder) {
+        Uint32 flags = SDL_GetWindowFlags(premapSdl);
+        CHECK((flags & SDL_WINDOW_BORDERLESS) != 0,
+              "motif-hints: premap decorations did not drop SDL border");
+    }
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(premapSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) != 0,
+              "motif-hints: premap FUNC_ALL did not enable resize");
+    }
+    XDestroyWindow(display, premap);
+
+    Atom reparentNetWmState = XInternAtom(display, "_NET_WM_STATE", False);
+    Atom reparentModalAtom = XInternAtom(display, "_NET_WM_STATE_MODAL", False);
+    Atom reparentStates[1] = {reparentModalAtom};
+
+    Window shell = XCreateSimpleWindow(display, root, 0, 0, 96, 64, 0, 0, 0);
+    Window child = XCreateSimpleWindow(display, shell, 0, 0, 72, 48, 0, 0, 0);
+    CHECK(shell != None && child != None, "motif-hints: reparent setup failed");
+    CHECK(XChangeProperty(display, child, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) premapHints, 5),
+          "motif-hints: reparent XChangeProperty failed");
+    /* Modal + transient_for on window (already mapped above) so the replay has
+     * a driver-independent observable: deferredTransientApplied flips iff
+     * applyTransientForRelationship ran after the reparent. The border / resize
+     * assertions below stay no-ops on the SDL dummy driver, but this flag
+     * survives across drivers.
+     */
+    CHECK(XChangeProperty(display, child, reparentNetWmState, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) reparentStates, 1),
+          "motif-hints: reparent modal write failed");
+    CHECK(XSetTransientForHint(display, child, window),
+          "motif-hints: reparent transient_for failed");
+    CHECK(XMapWindow(display, shell), "motif-hints: shell map failed");
+    CHECK(XMapWindow(display, child), "motif-hints: child map failed");
+    CHECK(XReparentWindow(display, child, root, 0, 0),
+          "motif-hints: reparent to root failed");
+    SDL_Window *reparentedSdl = GET_WINDOW_STRUCT(child)->sdlWindow;
+    CHECK(reparentedSdl != NULL,
+          "motif-hints: reparented top-level has no SDL backing");
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    CHECK(GET_WINDOW_STRUCT(child)->deferredTransientApplied,
+          "motif-hints: reparent did not run deferred WM replay");
+#endif
+    if (driverHonorsBorder) {
+        Uint32 flags = SDL_GetWindowFlags(reparentedSdl);
+        CHECK((flags & SDL_WINDOW_BORDERLESS) != 0,
+              "motif-hints: reparent replay did not drop SDL border");
+    }
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(reparentedSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) != 0,
+              "motif-hints: reparent replay did not enable resize");
+    }
+    XDestroyWindow(display, child);
+    XDestroyWindow(display, shell);
+
+    /* MapRequested to Mapped promotion: a child mapped under an unmapped shell
+     * sits at MapRequested. Reparenting to root must promote it to Mapped so
+     * XGetWindowAttributes does not report IsUnviewable on a now-top-level
+     * window, and the new replay site must still fire.
+     */
+    Window unmappedShell =
+        XCreateSimpleWindow(display, root, 0, 0, 96, 64, 0, 0, 0);
+    Window mrChild =
+        XCreateSimpleWindow(display, unmappedShell, 0, 0, 72, 48, 0, 0, 0);
+    CHECK(unmappedShell != None && mrChild != None,
+          "motif-hints: map-requested setup failed");
+    CHECK(XChangeProperty(display, mrChild, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) premapHints, 5),
+          "motif-hints: map-requested motif write failed");
+    CHECK(XChangeProperty(display, mrChild, reparentNetWmState, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) reparentStates, 1),
+          "motif-hints: map-requested modal write failed");
+    CHECK(XSetTransientForHint(display, mrChild, window),
+          "motif-hints: map-requested transient_for failed");
+    CHECK(XMapWindow(display, mrChild),
+          "motif-hints: map-requested child map failed");
+    CHECK(GET_WINDOW_STRUCT(mrChild)->mapState == MapRequested,
+          "motif-hints: child under unmapped shell did not enter MapRequested");
+    CHECK(XReparentWindow(display, mrChild, root, 0, 0),
+          "motif-hints: map-requested reparent failed");
+    CHECK(GET_WINDOW_STRUCT(mrChild)->sdlWindow != NULL,
+          "motif-hints: map-requested reparent did not realize");
+    CHECK(GET_WINDOW_STRUCT(mrChild)->mapState == Mapped,
+          "motif-hints: reparent-to-root did not promote MapRequested");
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    CHECK(GET_WINDOW_STRUCT(mrChild)->deferredTransientApplied,
+          "motif-hints: reparent-to-root did not run deferred WM replay");
+#endif
+    XDestroyWindow(display, mrChild);
+    XDestroyWindow(display, unmappedShell);
+
+    /* Decorations: explicit decoration set EXCLUDING border / title bits.
+     * Without MWM_DECOR_ALL, only the listed bits are honored, so an empty set
+     * means "no decorations" → borderless window.
+     */
+    long hints[5] = {
+        0x2 /* MWM_HINTS_DECORATIONS */, 0, 0 /* no decorations */, 0, 0,
+    };
+    CHECK(XChangeProperty(display, window, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) hints, 5),
+          "motif-hints: XChangeProperty failed");
+    if (driverHonorsBorder) {
+        Uint32 flags = SDL_GetWindowFlags(sdlWindow);
+        CHECK((flags & SDL_WINDOW_BORDERLESS) != 0,
+              "motif-hints: cleared decorations did not drop SDL border");
+    }
+
+    /* Decorations restored to a set INCLUDING border AND title → bordered. */
+    hints[2] = 0xa; /* MWM_DECOR_BORDER (1<<1) | MWM_DECOR_TITLE (1<<3) */
+    CHECK(XChangeProperty(display, window, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) hints, 5),
+          "motif-hints: re-enable XChangeProperty failed");
+    if (driverHonorsBorder) {
+        Uint32 flags = SDL_GetWindowFlags(sdlWindow);
+        CHECK((flags & SDL_WINDOW_BORDERLESS) == 0,
+              "motif-hints: restoring decor did not re-add border");
+    }
+
+    /* Functions: explicit set without MWM_FUNC_ALL excluding RESIZE means
+     * resize is NOT allowed.
+     */
+    hints[0] = 0x1; /* MWM_HINTS_FUNCTIONS */
+    hints[1] = 0x4; /* MWM_FUNC_MOVE (1<<2) only, no RESIZE */
+    hints[2] = 0;
+    CHECK(XChangeProperty(display, window, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) hints, 5),
+          "motif-hints: functions XChangeProperty failed");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(sdlWindow);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) == 0,
+              "motif-hints: cleared MWM_FUNC_RESIZE did not drop resizable");
+    }
+
+    /* MWM_FUNC_ALL with no listed exclusions → resize back. */
+    hints[1] = 0x1; /* MWM_FUNC_ALL only */
+    CHECK(XChangeProperty(display, window, motif, motif, 32, PropModeReplace,
+                          (unsigned char *) hints, 5),
+          "motif-hints: FUNC_ALL-only XChangeProperty failed");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(sdlWindow);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) != 0,
+              "motif-hints: FUNC_ALL-only did not re-enable resize");
+    }
+
+    /* The property itself must round-trip verbatim regardless of driver
+     * capability, so a real WM downstream can read what was written.
+     */
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long nItems = 0, bytesAfter = 0;
+    unsigned char *data = NULL;
+    int rc = XGetWindowProperty(display, window, motif, 0, 5, False,
+                                AnyPropertyType, &actualType, &actualFormat,
+                                &nItems, &bytesAfter, &data);
+    CHECK(rc == Success && actualType == motif && actualFormat == 32 &&
+              nItems == 5,
+          "motif-hints: stored property did not round-trip");
+    XFree(data);
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* ICCCM WM_TRANSIENT_FOR + modal hint must wire SDL_SetWindowModalFor; without
+ * the modal hint, transient_for alone is a no-op for the modal call.
+ */
+static int test_icccm_transient_for_modal(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window parent = XCreateSimpleWindow(display, root, 0, 0, 128, 96, 0, 0, 0);
+    Window child = XCreateSimpleWindow(display, root, 0, 0, 64, 48, 0, 0, 0);
+    CHECK(parent != None && child != None, "transient: window creation failed");
+    CHECK(XMapWindow(display, parent), "transient: parent map failed");
+    CHECK(XMapWindow(display, child), "transient: child map failed");
+
+    /* Plain transient_for without a modal hint should NOT mark applied; SDL2
+     * has no non-modal parent primitive.
+     */
+    CHECK(XSetTransientForHint(display, child, parent),
+          "transient: XSetTransientForHint failed");
+    CHECK(!GET_WINDOW_STRUCT(child)->deferredTransientApplied,
+          "transient: non-modal transient_for unexpectedly applied modal-for");
+    CHECK(GET_WINDOW_STRUCT(child)->deferredTransientParent == parent,
+          "transient: deferredTransientParent not recorded");
+
+    Atom netWmState = XInternAtom(display, "_NET_WM_STATE", False);
+    Atom modalAtom = XInternAtom(display, "_NET_WM_STATE_MODAL", False);
+    Atom states[1] = {modalAtom};
+    CHECK(XChangeProperty(display, child, netWmState, XA_CARDINAL, 32,
+                          PropModeReplace, (unsigned char *) states, 1),
+          "transient: malformed _NET_WM_STATE write failed");
+    CHECK(!GET_WINDOW_STRUCT(child)->deferredTransientApplied,
+          "transient: non-ATOM _NET_WM_STATE unexpectedly marked modal");
+
+    /* Now add _NET_WM_STATE_MODAL and re-set transient_for: pairing should now
+     * apply if SDL supports modal-for.
+     */
+    CHECK(XChangeProperty(display, child, netWmState, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) states, 1),
+          "transient: _NET_WM_STATE write failed");
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    CHECK(GET_WINDOW_STRUCT(child)->deferredTransientApplied,
+          "transient: modal hint did not trigger SDL_SetWindowModalFor");
+
+    GET_WINDOW_STRUCT(child)->deferredTransientApplied = False;
+    XEvent event = {.xclient = {
+                        .type = ClientMessage,
+                        .window = child,
+                        .message_type = netWmState,
+                        .format = 32,
+                        .data.l = {1 /* _NET_WM_STATE_ADD */, (long) modalAtom},
+                    }};
+    CHECK(XSendEvent(display, root, False,
+                     SubstructureNotifyMask | SubstructureRedirectMask, &event),
+          "transient: idempotent modal ClientMessage failed");
+    CHECK(GET_WINDOW_STRUCT(child)->deferredTransientApplied,
+          "transient: idempotent modal ADD did not reapply modal-for");
+#endif
+
+    /* Clear modal: applied flag must drop. */
+    CHECK(XDeleteProperty(display, child, netWmState),
+          "transient: XDeleteProperty(_NET_WM_STATE) failed");
+    CHECK(!GET_WINDOW_STRUCT(child)->deferredTransientApplied,
+          "transient: clearing modal did not drop applied flag");
+
+    /* XDeleteProperty(WM_TRANSIENT_FOR) clears the deferred parent. */
+    CHECK(XChangeProperty(display, child, netWmState, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) states, 1),
+          "transient: re-arming modal failed");
+    CHECK(XDeleteProperty(display, child, XA_WM_TRANSIENT_FOR),
+          "transient: XDeleteProperty(WM_TRANSIENT_FOR) failed");
+    CHECK(GET_WINDOW_STRUCT(child)->deferredTransientParent == None,
+          "transient: delete did not clear deferredTransientParent");
+
+    /* Motif input mode also marks the child modal. Defer the transient pairing
+     * here: write the property BEFORE the child has any realized SDL window by
+     * destroying and recreating.
+     */
+    Window deferredChild =
+        XCreateSimpleWindow(display, root, 0, 0, 32, 24, 0, 0, 0);
+    CHECK(deferredChild != None, "transient: deferred child creation failed");
+    Atom motif = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    long mwm[5] = {
+        0x4 /* MWM_HINTS_INPUT_MODE */,           0, 0,
+        3 /* MWM_INPUT_FULL_APPLICATION_MODAL */, 0,
+    };
+    CHECK(XChangeProperty(display, deferredChild, motif, motif, 32,
+                          PropModeReplace, (unsigned char *) mwm, 5),
+          "transient: deferred MWM write failed");
+    CHECK(XSetTransientForHint(display, deferredChild, parent),
+          "transient: deferred XSetTransientForHint failed");
+    /* deferredTransientParent stashed before realize. */
+    CHECK(GET_WINDOW_STRUCT(deferredChild)->deferredTransientParent == parent,
+          "transient: deferred path lost parent before realize");
+    CHECK(XMapWindow(display, deferredChild),
+          "transient: deferred child map failed");
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    CHECK(GET_WINDOW_STRUCT(deferredChild)->deferredTransientApplied,
+          "transient: deferred realize did not apply modal-for");
+#endif
+
+    XDestroyWindow(display, deferredChild);
+
+    /* Parent-realized-after-child: a Motif/Xt pattern where the modal child is
+     * mapped first and the parent shell is mapped second. realizeTopLevelWindow
+     * on the parent must scan top-level siblings for any whose
+     * deferredTransientParent points at it and re-resolve the pairing.
+     */
+    Window lateParent =
+        XCreateSimpleWindow(display, root, 0, 0, 144, 96, 0, 0, 0);
+    Window earlyChild =
+        XCreateSimpleWindow(display, root, 0, 0, 80, 48, 0, 0, 0);
+    CHECK(lateParent != None && earlyChild != None,
+          "transient: late-parent setup failed");
+    Atom netWmState2 = XInternAtom(display, "_NET_WM_STATE", False);
+    Atom modalAtom2 = XInternAtom(display, "_NET_WM_STATE_MODAL", False);
+    Atom modalStates[1] = {modalAtom2};
+    CHECK(XChangeProperty(display, earlyChild, netWmState2, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) modalStates, 1),
+          "transient: early-child modal write failed");
+    CHECK(XSetTransientForHint(display, earlyChild, lateParent),
+          "transient: early-child transient hint failed");
+    CHECK(XMapWindow(display, earlyChild), "transient: early-child map failed");
+    /* Parent not yet realized: applyTransientForRelationship bails out. */
+    CHECK(!GET_WINDOW_STRUCT(earlyChild)->deferredTransientApplied,
+          "transient: child paired before parent existed");
+    CHECK(XMapWindow(display, lateParent), "transient: late-parent map failed");
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    CHECK(GET_WINDOW_STRUCT(earlyChild)->deferredTransientApplied,
+          "transient: late parent did not pick up waiting modal child");
+#endif
+    XDestroyWindow(display, earlyChild);
+    XDestroyWindow(display, lateParent);
+
+    XDestroyWindow(display, child);
+    XDestroyWindow(display, parent);
     return 1;
 }
 
@@ -4600,10 +5270,11 @@ static int test_windows(Display *display)
 
 static int test_fonts(Display *display)
 {
-    /* The names list passed to XFreeFontInfo must follow the same
-     * caller-owned, NULL-terminated convention that XListFonts now
-     * returns: each entry is heap-allocated and the array carries a
-     * trailing NULL sentinel that XFreeFontNames walks. */
+    /* The names list passed to XFreeFontInfo must follow the same caller-owned,
+     * NULL-terminated convention that XListFonts now returns: each entry is
+     * heap-allocated and the array carries a trailing NULL sentinel that
+     * XFreeFontNames walks.
+     */
     char **names = malloc(sizeof(char *) * 3);
     CHECK(names != NULL, "font names allocation failed");
     names[0] = strdup("font-a");
@@ -4674,9 +5345,10 @@ static int test_fonts(Display *display)
               "XListFonts alias results exceeded maxnames");
         XFreeFontNames(aliases);
 
-        /* XListFonts must not return the caller's pattern buffer as a
-         * list entry. Mutate the buffer after the call and confirm the
-         * returned name is unchanged. */
+        /* XListFonts must not return the caller's pattern buffer as a list
+         * entry. Mutate the buffer after the call and confirm the returned name
+         * is unchanged.
+         */
         char patternBuf[64];
         snprintf(patternBuf, sizeof(patternBuf), "-*helv*medium-r-*-12-*");
         int aliasResolved = 0;
@@ -5090,8 +5762,9 @@ static int test_fonts(Display *display)
     CHECK(invalid == NULL, "XQueryFont accepted None");
 
     /* XQueryTextExtents Status contract: nonzero means success. The pre-fix
-     * code returned 0 after filling outputs, which Motif/Xt measurement
-     * paths interpreted as failure and discarded valid metrics. */
+     * code returned 0 after filling outputs, which Motif/Xt measurement paths
+     * interpreted as failure and discarded valid metrics.
+     */
     {
         Font measureFont = XLoadFont(display, "fixed");
         if (measureFont != None) {
@@ -5204,7 +5877,8 @@ static int test_extensions(Display *display)
           "extension close callback was not called");
 
     /* Safe stubs for XSync and MIT-SHM: probing clients should get stable
-     * answers with zeroed outputs where an extension is unsupported. */
+     * answers with zeroed outputs where an extension is unsupported.
+     */
     int evBase = 99, errBase = 98;
     CHECK(!XSyncQueryExtension(display, &evBase, &errBase),
           "XSyncQueryExtension should report unsupported");
@@ -5266,8 +5940,9 @@ static int test_extensions(Display *display)
     CHECK(XShmQueryVersion(display, &shmMajor, &shmMinor, &sharedPix),
           "XShmQueryVersion failed");
     /* XShmCreatePixmap currently ignores its shared-memory buffer (creates a
-     * regular pixmap), so we report shared_pixmaps=False to keep callers from
-     * relying on semantics the implementation does not honor. */
+     * regular pixmap), so the compat layer reports shared_pixmaps=False to keep
+     * callers from relying on semantics the implementation does not honor.
+     */
     CHECK(shmMajor == 1 && shmMinor == 2 && sharedPix == False,
           "XShmQueryVersion returned wrong values");
 
@@ -5326,14 +6001,15 @@ static int test_extensions(Display *display)
     int opcode = 77, xkbMajor = 1, xkbMinor = 1;
     evBase = 99;
     errBase = 98;
-    /* xfreerdp / Motif / GTK probe XkbUseExtension and XkbQueryExtension
-     * before any keyboard work and refuse to start when either reports
-     * unavailable. We now report "available" with synthetic opcode /
-     * event / error base codes chosen above the core protocol range so
-     * `event.type - eventBase` math against the synthetic event base
-     * does not collide with X core events. The two probes must agree;
-     * the prior inconsistency (UseExtension true, QueryExtension false)
-     * was diagnosed by Codex as load-bearing on xfreerdp boot. */
+    /* xfreerdp / Motif / GTK probe XkbUseExtension and XkbQueryExtension before
+     * any keyboard work and refuse to start when either reports unavailable.
+     * The compat layer reports "available" with synthetic opcode / event /
+     * error base codes chosen above the core protocol range so "event.type -
+     * eventBase" math against the synthetic event base does not collide with X
+     * core events. The two probes must agree; the prior inconsistency
+     * (UseExtension true, QueryExtension false) was diagnosed by Codex as
+     * load-bearing on xfreerdp boot.
+     */
     CHECK(XkbQueryExtension(display, &opcode, &evBase, &errBase, &xkbMajor,
                             &xkbMinor),
           "XkbQueryExtension must report supported to match XkbUseExtension");
@@ -5346,8 +6022,9 @@ static int test_extensions(Display *display)
     CHECK(XkbUseExtension(display, &useMajor, &useMinor),
           "XkbUseExtension must report supported");
 
-    /* XDoubleToFixed must clamp out-of-range and NaN inputs instead of
-     * invoking undefined behavior on the double->int cast. */
+    /* XDoubleToFixed must clamp out-of-range and NaN inputs instead of invoking
+     * undefined behavior on the double->int cast.
+     */
     CHECK(XDoubleToFixed(0.0) == 0, "XDoubleToFixed zero failed");
     CHECK(XDoubleToFixed(1.0) == 0x10000, "XDoubleToFixed one failed");
     CHECK(XDoubleToFixed(-1.0) == -0x10000, "XDoubleToFixed minus one failed");
@@ -5382,7 +6059,8 @@ static int test_selection(Display *display)
           "no-owner SelectionNotify should carry property=None");
 
     /* Owner replacement: setting a new owner posts SelectionClear to the
-     * previous owner. */
+     * previous owner.
+     */
     Window owner1 = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
     Window owner2 = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
     XSetSelectionOwner(display, clipboard, owner1, CurrentTime);
@@ -5494,9 +6172,10 @@ static int test_xrm(Display *display)
      * quarks + class quarks + NULL terminator). A list_length too small for
      * that layout must return False so libXt's _XtDisplayInitialize doubling
      * loop can enlarge the buffer and retry; an adequate buffer encodes the
-     * prefix and returns True. Verify both branches so neither alloca-
-     * smashes the stack (always-False regression) nor lies about contents
-     * (always-True regression). */
+     * prefix and returns True. Verify both branches so neither alloca- smashes
+     * the stack (always-False regression) nor lies about contents (always-True
+     * regression).
+     */
     XrmHashTable tinySearch[1];
     CHECK(!XrmQGetSearchList(db, deepNames, deepClasses, tinySearch, 1),
           "XrmQGetSearchList should signal buffer-too-small with False");
@@ -5630,14 +6309,14 @@ static int test_xrm(Display *display)
     XrmSetDatabase(display, NULL);
     XrmDestroyDatabase(mine);
 
-    /* Motif-style cascade: '*XmLabel.fontList' must match the widget
-     * path 'top.frame.row.col.button.label.fontList' / class
-     * 'Top.Frame.Row.Col.Button.XmLabel.FontList'. The leading loose
-     * binding skips the four ancestor segments and pins on the
-     * 'XmLabel' class quark; the trailing tight binding hits 'fontList'
-     * as the leaf. Regression for the bindingQuarkListToPattern bug
-     * that dropped the leading '*' from loosely-bound patterns built
-     * through XrmQPutStringResource. */
+    /* Motif-style cascade: '*XmLabel.fontList' must match the widget path
+     * 'top.frame.row.col.button.label.fontList' / class
+     * 'Top.Frame.Row.Col.Button.XmLabel.FontList'. The leading loose binding
+     * skips the four ancestor segments and pins on the 'XmLabel' class quark;
+     * the trailing tight binding hits 'fontList' as the leaf. Regression for
+     * the bindingQuarkListToPattern bug that dropped the leading '*' from
+     * loosely-bound patterns built through XrmQPutStringResource.
+     */
     {
         XrmDatabase motifDb = NULL;
         XrmBinding bindings[2] = {XrmBindLoosely, XrmBindTightly};
@@ -5660,10 +6339,10 @@ static int test_xrm(Display *display)
         XrmDestroyDatabase(motifDb);
     }
 
-    /* Backslash continuation in resource source: '*XmLabel.fontList'
-     * lines in Motif app-defaults routinely split across multiple
-     * physical lines with trailing '\'. The parser must join them before
-     * looking for the ':'. */
+    /* Backslash continuation in resource source: '*XmLabel.fontList' lines in
+     * Motif app-defaults routinely split across multiple physical lines with
+     * trailing '\'. The parser must join them before looking for the ':'.
+     */
     {
         const char *multiline =
             "*App.fontList:\\\n"
@@ -5681,8 +6360,9 @@ static int test_xrm(Display *display)
         XrmDestroyDatabase(mlDb);
     }
 
-    /* Class-vs-name specificity: a class match scores lower than a name
-     * match at the same path depth. */
+    /* Class-vs-name specificity: a class match scores lower than a name match
+     * at the same path depth.
+     */
     {
         XrmDatabase cn = NULL;
         XrmPutStringResource(&cn, "*Label.color", "byClass");
@@ -5979,7 +6659,10 @@ static int test_defaults(Display *display)
     return 1;
 }
 
-static int test_wm_hints(Display *display)
+/* ICCCM WM_HINTS / WM_NORMAL_HINTS / WM_NAME round-trip plus pass-through for
+ * _NET_WM_ICON edge inputs (empty / truncated).
+ */
+static int test_icccm_wm_hints(Display *display)
 {
     Window root = RootWindow(display, DefaultScreen(display));
     Window window = XCreateSimpleWindow(display, root, 0, 0, 16, 16, 0, 0, 0);
@@ -6068,11 +6751,11 @@ static int run_test(const char *name, int (*test)(Display *))
     return ok;
 }
 
-/* End-to-end check that an installed shape mask carves a hole in
- * subsequent draw primitives. The mask is opaque-white except for a
- * BLACK_HOLE rect in the middle, which the spec says should clip the
- * shape; pixels in that hole must NOT receive the foreground fill we
- * apply afterwards. */
+/* End-to-end check that an installed shape mask carves a hole in subsequent
+ * draw primitives. The mask is opaque-white except for a BLACK_HOLE rect in the
+ * middle, which the spec says should clip the shape; pixels in that hole must
+ * NOT receive the foreground fill applied afterwards.
+ */
 static int test_shape_mask(Display *display)
 {
     enum { W = 16, H = 16, HOLE_X = 6, HOLE_Y = 6, HOLE_W = 4, HOLE_H = 4 };
@@ -6087,10 +6770,11 @@ static int test_shape_mask(Display *display)
     GC gc = XCreateGC(display, window, 0, NULL);
     CHECK(gc, "shape: GC creation failed");
 
-    /* Build the mask pixmap first (white everywhere, black inside HOLE)
-     * and install it. XShapeCombineMask paints visual indicators for the
-     * masked-out region as part of its install, so the "baseline" we want
-     * to preserve across later draws is the state AFTER that install. */
+    /* Build the mask pixmap first (white everywhere, black inside HOLE) and
+     * install it. XShapeCombineMask paints visual indicators for the masked-out
+     * region as part of its install, so the "baseline" the test preserves
+     * across later draws is the state AFTER that install.
+     */
     Pixmap mask = XCreatePixmap(display, window, W, H, depth);
     CHECK(mask != None, "shape: mask pixmap creation failed");
     GC maskGC = XCreateGC(display, mask, 0, NULL);
@@ -6103,9 +6787,10 @@ static int test_shape_mask(Display *display)
           "shape: mask hole fill failed");
     XFreeGC(display, maskGC);
 
-    /* Seed the entire window with a baseline color before installing the
-     * mask so the mask-install indicator + the surrounding region give
-     * the post-install snapshot something stable to capture. */
+    /* Seed the entire window with a baseline color before installing the mask
+     * so the mask-install indicator + the surrounding region give the
+     * post-install snapshot something stable to capture.
+     */
     unsigned long blue = 0xFF0000FF;
     unsigned long red = 0xFFFF0000;
     XSetForeground(display, gc, blue);
@@ -6197,9 +6882,10 @@ static int test_shape_mask(Display *display)
           "shape: small bounding extents ignored mask offset");
     XShapeCombineMask(display, window, ShapeBounding, 0, 0, mask, ShapeSet);
 
-    /* Capture the post-install state. XGetImage uses SDL's RGBA8888
-     * packing rather than X11 ARGB, so compare against the stored
-     * baseline byte-for-byte instead of guessing the channel layout. */
+    /* Capture the post-install state. XGetImage uses SDL's RGBA8888 packing
+     * rather than X11 ARGB, so compare against the stored baseline
+     * byte-for-byte instead of guessing the channel layout.
+     */
     XImage *baseline =
         XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
     CHECK(baseline, "shape: baseline XGetImage failed");
@@ -6207,9 +6893,9 @@ static int test_shape_mask(Display *display)
     unsigned long outsideBaseline = XGetPixel(baseline, 1, 1);
     XDestroyImage(baseline);
 
-    /* Now paint red over the whole window. The shape mask should keep
-     * the HOLE pixels at their preserved baseline and turn everything
-     * else red. */
+    /* Now paint red over the whole window. The shape mask should keep the HOLE
+     * pixels at their preserved baseline and turn everything else red.
+     */
     XSetForeground(display, gc, red);
     CHECK(XFillRectangle(display, window, gc, 0, 0, W, H),
           "shape: post-mask fill failed");
@@ -6246,17 +6932,18 @@ static int test_shape_mask(Display *display)
     return 1;
 }
 
-/* Bounding and clip masks must compose by intersection: a pixel is
- * preserved when EITHER mask excludes it. Install two disjoint holes —
- * one via ShapeBounding, one via ShapeClip — and verify that pixels in
- * either hole survive the post-mask fill while pixels admitted by both
- * masks are overwritten. */
+/* Bounding and clip masks must compose by intersection: a pixel is preserved
+ * when EITHER mask excludes it. Install two disjoint holes, one via
+ * ShapeBounding and one via ShapeClip, and verify that pixels in either hole
+ * survive the post-mask fill while pixels admitted by both masks are
+ * overwritten.
+ */
 static int test_shape_mask_intersection(Display *display)
 {
     enum { W = 20, H = 20 };
-    /* The bounding hole sits in the top-left quadrant, the clip hole in
-     * the bottom-right; they don't overlap so each verifies one mask
-     * independently. */
+    /* The bounding hole sits in the top-left quadrant, the clip hole in the
+     * bottom-right; they don't overlap so each verifies one mask independently.
+     */
     enum { B_X = 4, B_Y = 4, B_W = 4, B_H = 4 };
     enum { C_X = 12, C_Y = 12, C_W = 4, C_H = 4 };
 
@@ -6414,10 +7101,24 @@ int main(void)
     run_test("extensions", test_extensions);
     run_test("selection", test_selection);
     run_test("properties", test_properties);
+    /* ICCCM / EWMH / MWM compliance block. ICCCM covers the WM_* core (hints,
+     * transient_for); EWMH covers _NET_WM_* state and root ClientMessage
+     * routing; MWM covers Motif-specific _MOTIF_WM_HINTS decoding. Grouped here
+     * so the suite output reads as a window-manager-convention pass.
+     */
+    run_test("icccm_wm_hints", test_icccm_wm_hints);
+    run_test("icccm_transient_for_modal", test_icccm_transient_for_modal);
+    run_test("ewmh_wm_state_clientmessage", test_ewmh_wm_state_clientmessage);
+    run_test("ewmh_wm_state_initial_property",
+             test_ewmh_wm_state_initial_property);
+    run_test("ewmh_active_window_clientmessage",
+             test_ewmh_active_window_clientmessage);
+    run_test("ewmh_close_window_clientmessage",
+             test_ewmh_close_window_clientmessage);
+    run_test("mwm_hints_apply", test_mwm_hints_apply);
     run_test("xrm", test_xrm);
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);
-    run_test("wm_hints", test_wm_hints);
     run_test("shape_mask", test_shape_mask);
     run_test("shape_mask_intersection", test_shape_mask_intersection);
     run_test("shape_combine_ops", test_shape_combine_ops);

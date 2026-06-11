@@ -24,13 +24,15 @@ void releaseLastRequestCode(Display *display);
 
 /* Drain remaining lastRequestCode entries and destroy the side-table
  * mutex; called from XCloseDisplay's last-display-closing branch BEFORE
- * SDL_Quit so the SDL_mutex teardown reaches a still-valid SDL. */
+ * SDL_Quit so the SDL_mutex teardown reaches a still-valid SDL.
+ */
 void freeLastRequestStorage(void);
 
 /* Fatal-disconnect path: invokes the client-installed XIOErrorHandler if
  * any, then exits. Used when the window manager closes a window the client
  * has not opted in to handle, or when the host signals quit. Does not
- * return. */
+ * return.
+ */
 void triggerIOError(Display *display);
 
 #endif /* _ERRORS_H_ */

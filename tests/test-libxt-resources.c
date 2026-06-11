@@ -119,16 +119,17 @@ int main(void)
     XrmStringToClassList("Top.Frame.Row.Col.Button.XmLabel", prefix_classes);
     XrmEnumerateDatabase(db, prefix_names, prefix_classes, XrmEnumOneLevel,
                          enum_proc, (XPointer) &one);
-    /* Per XrmEnumerateDatabase spec, a one-level enumeration must report
-     * every resource that could be reached by appending exactly one
-     * name/class to the prefix. Three of the four db entries qualify:
+    /* Per XrmEnumerateDatabase spec, a one-level enumeration must report every
+     * resource that could be reached by appending exactly one name/class to the
+     * prefix. Three of the four db entries qualify:
      *   - the tight top...label.fontList (1 component below the prefix)
      *   - *XmLabel.fontList    (loose XmLabel matches prefix class[5])
      *   - *fontList            (loose binding absorbs the whole prefix)
-     * *Label.FontList does not because case-sensitive name/class lookup
-     * doesn't match the lowercase 'label' in the prefix path. The older
-     * implementation rejected loose-bound entries during prefix matching
-     * and only saw the tight one. */
+     * *Label.FontList does not because case-sensitive name/class lookup doesn't
+     * match the lowercase 'label' in the prefix path. The older implementation
+     * rejected loose-bound entries during prefix matching and only saw the
+     * tight one.
+     */
     CHECK(one.count == 3 && one.saw_tight && one.saw_loose,
           "one-level enumeration count=%d saw_tight=%d saw_loose=%d", one.count,
           one.saw_tight, one.saw_loose);

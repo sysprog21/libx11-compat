@@ -61,9 +61,13 @@ run_profile() {
     app_res_dir=$(motif_app_resource_dir "$rel")
     xappresdir="$app_res_dir"
     xfile_search_path=$(motif_xfile_search_path "$app_res_dir")
+    extra_lang=
     case "$rel" in
         programs/hellomotifi18n/helloint)
+            # Mirror scripts/validate-motif-demos.sh: pin LANG=C so Mrm's
+            # XtResolvePathname %L expansion hits C/uid/l_strings.uid.
             xappresdir=.
+            extra_lang=C
             ;;
     esac
 
@@ -73,6 +77,7 @@ run_profile() {
     (
         cd "$work_dir"
         exec env \
+            ${extra_lang:+LANG="$extra_lang" LC_ALL="$extra_lang"} \
             DYLD_LIBRARY_PATH="$lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
             LD_LIBRARY_PATH="$lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}" \

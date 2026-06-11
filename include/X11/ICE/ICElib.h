@@ -1,4 +1,4 @@
-/* Stub X11/ICE/ICElib.h for libx11-compat's libXt build
+/* Stub X11/ICE/ICElib.h for the libXt build
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
@@ -43,7 +43,8 @@ typedef enum {
  * values themselves are commonly probed via macros in some downstream
  * code. Mirror with #ifndef so any later #include of the real header
  * (e.g. through a Motif build pulling system X11 headers) does not
- * collide on the enum tag. */
+ * collide on the enum tag.
+ */
 #ifndef IceProcessMessagesSuccess
 typedef enum {
     IceProcessMessagesSuccess = 0,

@@ -11,10 +11,11 @@
 #include "selection.h"
 #include "window.h"
 
-/* Minimal in-process ICCCM selection bookkeeping. Owner state is per
- * (display, selection atom); CLIPBOARD also mirrors SDL's clipboard so
- * external SDL code can interoperate. PRIMARY/SECONDARY have no SDL
- * equivalent and report no owner. */
+/* Minimal in-process ICCCM selection bookkeeping. Owner state is per (display,
+ * selection atom); CLIPBOARD also mirrors SDL's clipboard so external SDL code
+ * can interoperate. PRIMARY/SECONDARY have no SDL equivalent and report no
+ * owner.
+ */
 
 typedef struct SelectionEntry {
     Atom selection;
@@ -23,9 +24,10 @@ typedef struct SelectionEntry {
     struct SelectionEntry *next;
 } SelectionEntry;
 
-/* Per-display selection table. Display* keys are opaque pointers so we
- * keep a small registry rather than touching the upstream _XPrivate
- * layout. freeSelectionStorage prunes the list when a display closes. */
+/* Per-display selection table. Display* keys are opaque pointers, so the table
+ * lives in a small side registry rather than the upstream _XPrivate layout.
+ * freeSelectionStorage prunes the list when a display closes.
+ */
 typedef struct DisplayTable {
     Display *display;
     SelectionEntry *head;
@@ -109,11 +111,11 @@ void freeSelectionStorage(Display *display)
     free(t);
 }
 
-/* Atom IDs come from the global atom table in atoms.c. That table is
- * destroyed by freeAtomStorage() when the last Display closes, so any
- * cached ID becomes stale across XCloseDisplay+XOpenDisplay cycles.
- * resetSelectionAtomCache() is invoked from XCloseDisplay alongside
- * freeAtomStorage() to keep these in sync. */
+/* Atom IDs come from the global atom table in atoms.c. That table is destroyed
+ * by freeAtomStorage() when the last Display closes, so any cached ID becomes
+ * stale across XCloseDisplay+XOpenDisplay cycles. resetSelectionAtomCache() is
+ * invoked from XCloseDisplay alongside freeAtomStorage() to keep these in sync.
+ */
 static Atom cachedClipboardAtom = None;
 static Atom cachedUtf8StringAtom = None;
 static Atom cachedTargetsAtom = None;
@@ -216,8 +218,9 @@ Window XGetSelectionOwner(Display *display, Atom selection)
         return e->owner;
     if (display && selection == clipboardAtom(display) &&
         SDL_HasClipboardText() == SDL_TRUE) {
-        /* SDL holds the clipboard but no local window has claimed it.
-         * Report root so callers can still XConvertSelection through us. */
+        /* SDL holds the clipboard but no local window has claimed it. Report
+         * root so callers can still XConvertSelection through libx11-compat.
+         */
         return RootWindow(display, 0);
     }
     return None;
@@ -231,19 +234,20 @@ int XSetSelectionOwner(Display *display,
     SelectionEntry *e = ensureEntry(display, selection);
     if (!e)
         return 0;
-    /* ICCCM 2.1: a timestamp older than the current owner's must not
-     * displace it. CurrentTime always wins (treated as "now"). */
+    /* ICCCM 2.1: a timestamp older than the current owner's must not displace
+     * it. CurrentTime always wins (treated as "now").
+     */
     if (e->owner != None && time != CurrentTime && e->time != CurrentTime &&
         (long) (time - e->time) < 0) {
         return 1;
     }
-    if (e->owner != None && e->owner != owner) {
+    if (e->owner != None && e->owner != owner)
         postSelectionClear(display, e->owner, selection, time);
-    }
     e->owner = owner;
     e->time = time;
-    /* Note: actual clipboard contents are not mirrored to SDL here; an
-     * owner is expected to respond to SelectionRequest with the data. */
+    /* Note: actual clipboard contents are not mirrored to SDL here; an owner is
+     * expected to respond to SelectionRequest with the data.
+     */
     return 1;
 }
 
@@ -260,17 +264,18 @@ int XConvertSelection(Display *display,
 
     if (owner == None && display && selection == clipboardAtom(display) &&
         SDL_HasClipboardText() == SDL_TRUE) {
-        /* No local owner but SDL has clipboard text; synthesize the
-         * conversion here so XConvertSelection works in single-process
-         * configurations. */
+        /* No local owner but SDL has clipboard text; synthesize the conversion
+         * here so XConvertSelection works in single-process configurations.
+         */
         char *text = SDL_GetClipboardText();
         Atom utf8 = utf8StringAtom(display);
         Atom targets = targetsAtom(display);
-        /* Only advertise TARGETS once we know SDL actually has retrievable
-         * text. SDL_HasClipboardText() above can disagree with a follow-up
+        /* Only advertise TARGETS once SDL actually has retrievable text.
+         * SDL_HasClipboardText() above can disagree with a follow-up
          * SDL_GetClipboardText() returning NULL (race, OOM), and a TARGETS
-         * reply listing UTF8_STRING/STRING when no text exists would lie
-         * to the requestor. Fall through to the no-data path instead. */
+         * reply listing UTF8_STRING/STRING when no text exists would lie to the
+         * requestor. Fall through to the no-data path instead.
+         */
         if (target == targets && text) {
             Atom supportedTargets[] = {targets, utf8, XA_STRING};
             XChangeProperty(

@@ -188,11 +188,11 @@ Bool XPointInRegion(Region region, int x, int y)
     return pixman_region_contains_point(GET_P_REGION(region), x, y, NULL) != 0;
 }
 
-/* One-axis erosion: replace `target` with target ∩ translate(target, -1)
- * ∩ translate(target, +1), repeated `n` times. Box erosion is separable
- * so doing this horizontally then vertically gives the same answer as
- * intersecting all 2D offsets, but in O(n) work per axis instead of
- * O(n^2). */
+/* One-axis erosion: replace "target" with target ∩ translate(target, -1) ∩
+ * translate(target, +1), repeated `n` times. Box erosion is separable so doing
+ * this horizontally then vertically gives the same answer as intersecting all
+ * 2D offsets, but in O(n) work per axis instead of O(n^2).
+ */
 static Bool erodeAxis(struct pixman_region16 *target,
                       int n,
                       int dxStep,
@@ -230,10 +230,10 @@ static Bool erodeAxis(struct pixman_region16 *target,
     return True;
 }
 
-/* One-axis dilation: per-rectangle expansion + union is exact for
- * axis-aligned dilation because pixman canonicalizes overlapping rects.
- * Used for negative dx/dy (XShrinkRegion treats negative as "make
- * larger"). */
+/* One-axis dilation: per-rectangle expansion + union is exact for axis-aligned
+ * dilation because pixman canonicalizes overlapping rects. Used for negative
+ * dx/dy (XShrinkRegion treats negative as "make larger").
+ */
 static Bool dilateAxis(struct pixman_region16 *target, int dx, int dy)
 {
     int rectCount = 0;
@@ -264,11 +264,13 @@ int XShrinkRegion(Region region, int dx, int dy)
     // https://tronche.com/gui/x/xlib/utilities/regions/XShrinkRegion.html
     /* Per-rectangle shrinkage carves notches out of non-convex regions
      * (U-shapes shard at the inner joins between bands). Proper Minkowski
-     * erosion on the region as a whole keeps connected components
-     * connected; we apply it separably for the positive (shrink) case.
+     * erosion on the region as a whole keeps connected components connected;
+     * the positive (shrink) case applies that erosion separably along each
+     * axis.
      *
-     * Negative dx/dy means expand. Per-rectangle grow + union is exact
-     * for axis-aligned dilation, so reuse the simpler path there. */
+     * Negative dx/dy means expand. Per-rectangle grow + union is exact for
+     * axis-aligned dilation, so reuse the simpler path there.
+     */
     pixman_region16_t *pixmanRegion = GET_P_REGION(region);
     Bool ok = True;
     if (dx > 0 && ok)
@@ -288,11 +290,11 @@ Region XPolygonRegion(XPoint *points, int count, int fill_rule)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XPolygonRegion.html
     Region region = XCreateRegion();
-    if (!region || !points || count < 3) {
+    if (!region || !points || count < 3)
         return region;
-    }
     /* +1 trailing closing point. Compute in size_t to avoid signed overflow
-     * when count is near INT_MAX, then bound by allocator-safe size. */
+     * when count is near INT_MAX, then bound by allocator-safe size.
+     */
     if ((size_t) count > SIZE_MAX / sizeof(PathPoint) - 1) {
         XDestroyRegion(region);
         return NULL;

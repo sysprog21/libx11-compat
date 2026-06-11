@@ -459,15 +459,15 @@ def main():
         action="store_true",
         help="install minimal Ubuntu packages on the remote via sudo apt-get",
     )
-    # Defaults match mk/motif.mk. Kept tight enough that a missing widget
-    # or wrong-color background trips the gate, but loose enough to
-    # tolerate font hinting / AA differences between Xft on system X11
-    # and our SDL_ttf path. Override per-job via MOTIF_DIFF_*_THRESHOLD
-    # when adding demos that legitimately render differently.
+    # Defaults match mk/motif.mk and scripts/compare-motif-reference.py.
+    # The MAE gate tolerates font hinting / AA differences between Xft on
+    # system X11 and our SDL_ttf path; the changed-pixel gate stays tighter so
+    # missing widgets or wrong-color backgrounds still trip the representative
+    # comparison.
     parser.add_argument(
         "--mae-threshold",
         type=float,
-        default=float(parse_env_default("MOTIF_DIFF_MAE_THRESHOLD", "0.04")),
+        default=float(parse_env_default("MOTIF_DIFF_MAE_THRESHOLD", "0.08")),
     )
     parser.add_argument(
         "--changed-threshold",

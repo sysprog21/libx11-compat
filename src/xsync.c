@@ -4,9 +4,10 @@
 
 #include "util.h"
 
-/* Safe no-op stubs for the X Synchronization extension. Clients that probe
- * for XSync (e.g. GTK, Qt) get a stable "not supported" answer rather than
- * crashing. */
+/* Safe no-op stubs for the X Synchronization extension. Clients that probe for
+ * XSync (e.g. GTK, Qt) get a stable "not supported" answer rather than
+ * crashing.
+ */
 
 Status XSyncQueryExtension(Display *dpy,
                            int *event_base_return,

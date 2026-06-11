@@ -8,8 +8,9 @@ static SDL_atomic_t targetWindowId;
 static SDL_atomic_t targetRootX;
 static SDL_atomic_t targetRootY;
 /* Seqlock counter: writers bump it to odd before mutating the (id, rootX,
- * rootY) triple and back to even afterward, so a reader that observes a
- * stable even value before and after its loads has a coherent snapshot. */
+ * rootY) triple and back to even afterward, so a reader that observes a stable
+ * even value before and after its loads has a coherent snapshot.
+ */
 static SDL_atomic_t targetSeq;
 static SDL_atomic_t lastPointerX;
 static SDL_atomic_t lastPointerY;
@@ -43,10 +44,11 @@ static void rebasePointerToTargetRoot(int rootX, int rootY)
     SDL_AtomicSet(&lastPointerY, pointerRootY - rootY);
 }
 
-/* Bump the seq counter by one. Writers call this to bracket their writes
- * to the target triple; the parity convention is "odd = write in
- * progress" so a reader observing an odd value (or a change across its
- * before/after reads) knows to retry. */
+/* Bump the seq counter by one. Writers call this to bracket their writes to the
+ * target triple; the parity convention is "odd = write in progress" so a reader
+ * observing an odd value (or a change across its before/after reads) knows to
+ * retry.
+ */
 static void seqBumpLocked(void)
 {
     SDL_AtomicAdd(&targetSeq, 1);
@@ -83,8 +85,9 @@ void replayTargetOfferWindow(Uint32 sdlWindowId,
     if (area > targetAreaHighWater)
         targetAreaHighWater = area;
     rebasePointerToTargetRoot(rootX, rootY);
-    /* Bracket the triple write with seq bumps so readers see either the
-     * old triple or the new one, never a mix. */
+    /* Bracket the triple write with seq bumps so readers see either the old
+     * triple or the new one, never a mix.
+     */
     seqBumpLocked();
     SDL_AtomicSet(&targetRootX, rootX);
     SDL_AtomicSet(&targetRootY, rootY);
@@ -115,9 +118,10 @@ Uint32 replayTargetWindowId(void)
 
 void replayTargetRootToLocal(int rootX, int rootY, int *localX, int *localY)
 {
-    /* Best-effort single-field translation. Callers that need the id and
-     * the local coords as a coherent pair must go through
-     * replayTargetTranslateRoot() instead. */
+    /* Best-effort single-field translation. Callers that need the id and the
+     * local coords as a coherent pair must go through
+     * replayTargetTranslateRoot() instead.
+     */
     *localX = rootX - SDL_AtomicGet(&targetRootX);
     *localY = rootY - SDL_AtomicGet(&targetRootY);
 }
@@ -128,17 +132,17 @@ Bool replayTargetTranslateRoot(int rootX,
                                int *localX,
                                int *localY)
 {
-    /* Seqlock read with a small retry budget: the writer side bumps an
-     * even counter to odd before mutating the triple and back to even
-     * after. A reader observes a coherent snapshot iff the counter is
-     * even and unchanged across the before/after loads. */
+    /* Seqlock read with a small retry budget: the writer side bumps an even
+     * counter to odd before mutating the triple and back to even after. A
+     * reader observes a coherent snapshot iff the counter is even and unchanged
+     * across the before/after loads.
+     */
     for (int attempt = 0; attempt < 8; attempt++) {
         int seqBefore = SDL_AtomicGet(&targetSeq);
         if (seqBefore & 1)
             continue;
         Uint32 id = (Uint32) SDL_AtomicGet(&targetWindowId);
-        int rx = SDL_AtomicGet(&targetRootX);
-        int ry = SDL_AtomicGet(&targetRootY);
+        int rx = SDL_AtomicGet(&targetRootX), ry = SDL_AtomicGet(&targetRootY);
         int seqAfter = SDL_AtomicGet(&targetSeq);
         if (seqBefore != seqAfter)
             continue;
@@ -162,8 +166,7 @@ Bool replayTargetTranslateLocal(int localX, int localY, int *rootX, int *rootY)
         if (seqBefore & 1)
             continue;
         Uint32 id = (Uint32) SDL_AtomicGet(&targetWindowId);
-        int rx = SDL_AtomicGet(&targetRootX);
-        int ry = SDL_AtomicGet(&targetRootY);
+        int rx = SDL_AtomicGet(&targetRootX), ry = SDL_AtomicGet(&targetRootY);
         int seqAfter = SDL_AtomicGet(&targetSeq);
         if (seqBefore != seqAfter)
             continue;
@@ -180,13 +183,14 @@ Bool replayTargetTranslateLocal(int localX, int localY, int *rootX, int *rootY)
 
 void replayTargetRememberPointer(int x, int y)
 {
-    /* Read targetRoot via the seqlock so a concurrent retarget does not
-     * combine the new (x,y) local with the previous target's root
-     * origin. If no coherent snapshot is reachable, fall back to a
-     * single best-effort read of the current values; staying at (0, 0)
-     * after a busy writer would otherwise pin lastPointerRoot at the
-     * local coords and the next rebasePointerToTargetRoot() would
-     * convert a local coordinate as if it were root-relative. */
+    /* Read targetRoot via the seqlock so a concurrent retarget does not combine
+     * the new (x,y) local with the previous target's root origin. If no
+     * coherent snapshot is reachable, fall back to a single best-effort read of
+     * the current values; staying at (0, 0) after a busy writer would otherwise
+     * pin lastPointerRoot at the local coords and the next
+     * rebasePointerToTargetRoot() would convert a local coordinate as if it
+     * were root-relative.
+     */
     int rx = 0, ry = 0;
     Bool gotSnapshot = False;
     for (int attempt = 0; attempt < 8 && !gotSnapshot; attempt++) {

@@ -69,9 +69,10 @@ int main(void)
     CHECK(callback_seen == 1, "converted callback did not run");
     free(callbacks);
 
-    /* Pin every Xmu converter declared in Converters.h so dropping any
-     * symbol from compat/xmu-compat.c fails at link rather than at the
-     * first downstream demo that registers it. */
+    /* Pin every Xmu converter declared in Converters.h so dropping any symbol
+     * from compat/xmu-compat.c fails at link rather than at the first
+     * downstream demo that registers it.
+     */
     void *converter_pins[] = {
         (void *) XmuCvtStringToBackingStore,
         (void *) XmuCvtBackingStoreToString,

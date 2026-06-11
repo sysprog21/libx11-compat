@@ -11,22 +11,19 @@ static char defaultValue[1024];
 
 static const char *baseProgramName(const char *program)
 {
-    if (!program) {
+    if (!program)
         return "";
-    }
     const char *slash = strrchr(program, '/');
     return slash ? slash + 1 : program;
 }
 
 static char *trim(char *text)
 {
-    while (isspace((unsigned char) *text)) {
+    while (isspace((unsigned char) *text))
         text++;
-    }
     char *end = text + strlen(text);
-    while (end > text && isspace((unsigned char) end[-1])) {
+    while (end > text && isspace((unsigned char) end[-1]))
         *--end = '\0';
-    }
     return text;
 }
 
@@ -55,25 +52,21 @@ static char *lookupDefaultsText(const char *data,
                                 const char *program,
                                 const char *name)
 {
-    if (!data || !name) {
+    if (!data || !name)
         return NULL;
-    }
 
     char *copy = strdup(data);
-    if (!copy) {
+    if (!copy)
         return NULL;
-    }
     char *save = NULL;
     for (char *line = strtok_r(copy, "\n", &save); line;
          line = strtok_r(NULL, "\n", &save)) {
         char *stripped = trim(line);
-        if (stripped[0] == '\0' || stripped[0] == '!' || stripped[0] == '#') {
+        if (stripped[0] == '\0' || stripped[0] == '!' || stripped[0] == '#')
             continue;
-        }
         char *colon = strchr(stripped, ':');
-        if (!colon) {
+        if (!colon)
             continue;
-        }
         *colon = '\0';
         char *specifier = trim(stripped);
         char *value = trim(colon + 1);
@@ -91,13 +84,11 @@ static char *lookupDefaultsFile(const char *path,
                                 const char *program,
                                 const char *name)
 {
-    if (!path || path[0] == '\0') {
+    if (!path || path[0] == '\0')
         return NULL;
-    }
     FILE *file = fopen(path, "rb");
-    if (!file) {
+    if (!file)
         return NULL;
-    }
     if (fseek(file, 0, SEEK_END) != 0) {
         fclose(file);
         return NULL;
@@ -124,9 +115,8 @@ static char *lookupDefaultsFile(const char *path,
 static char *lookupHomeDefaults(const char *program, const char *name)
 {
     const char *home = getenv("HOME");
-    if (!home) {
+    if (!home)
         return NULL;
-    }
     char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/.Xdefaults", home);
     return lookupDefaultsFile(path, program, name);
@@ -134,9 +124,8 @@ static char *lookupHomeDefaults(const char *program, const char *name)
 
 static char *lookupBuiltInDefault(const char *name)
 {
-    if (!name) {
+    if (!name)
         return NULL;
-    }
     static const struct {
         const char *name;
         char *value;

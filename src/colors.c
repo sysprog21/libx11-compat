@@ -24,17 +24,15 @@ static Colormap createColormapResource(Display *display,
 {
     XID colormap = ALLOC_XID();
     if (colormap == None) {
-        if (display) {
+        if (display)
             handleOutOfMemory(0, display, 0, 0);
-        }
         return None;
     }
     ColormapStruct *colormapStruct = malloc(sizeof(ColormapStruct));
     if (!colormapStruct) {
         FREE_XID(colormap);
-        if (display) {
+        if (display)
             handleOutOfMemory(0, display, 0, 0);
-        }
         return None;
     }
     colormapStruct->visualClass = visualClass;
@@ -171,15 +169,13 @@ static Bool colorNameMatches(const char *requested, const char *standard)
             standard++;
             continue;
         }
-        if (tolower((unsigned char) *requested) != *standard) {
+        if (tolower((unsigned char) *requested) != *standard)
             return False;
-        }
         requested++;
         standard++;
     }
-    while (*standard == ' ') {
+    while (*standard == ' ')
         standard++;
-    }
     return *requested == '\0' && *standard == '\0';
 }
 
@@ -201,9 +197,8 @@ static Bool parseHexComponent(const char *text,
     unsigned int component = 0;
     for (int i = 0; i < digits; i++) {
         int nibble = hexValue(text[i]);
-        if (nibble < 0) {
+        if (nibble < 0)
             return False;
-        }
         component = (component << 4) | (unsigned int) nibble;
     }
 
@@ -260,12 +255,10 @@ Status XParseColor(Display *display,
     SET_X_SERVER_REQUEST(display, X_LookupColor);
     (void) colormap;
     TYPE_CHECK(colormap, COLORMAP, display, 0);
-    if (!spec || !exact_def_return) {
+    if (!spec || !exact_def_return)
         return 0;
-    }
-    if (parseHexColor(spec, exact_def_return)) {
+    if (parseHexColor(spec, exact_def_return))
         return 1;
-    }
 
     for (size_t i = 0; i < NUM_STANDARD_COLORS; i++) {
         if (colorNameMatches(spec, STANDARD_COLORS[i].name)) {
@@ -285,9 +278,8 @@ Status XLookupColor(Display *display,
 {
     // https://tronche.com/gui/x/xlib/color/XLookupColor.html
     SET_X_SERVER_REQUEST(display, X_LookupColor);
-    if (!XParseColor(display, colormap, color_name, exact_def_return)) {
+    if (!XParseColor(display, colormap, color_name, exact_def_return))
         return 0;
-    }
     *screen_def_return = *exact_def_return;
     return 1;
 }
@@ -314,7 +306,8 @@ int XFreeColors(Display *display,
     SET_X_SERVER_REQUEST(display, X_FreeColors);
     TYPE_CHECK(colormap, COLORMAP, display, 0);
     /* Direct-color visual: pixels are not allocated entries, so nothing to
-     * release. */
+     * release.
+     */
     (void) pixels;
     (void) npixels;
     (void) planes;
@@ -330,9 +323,11 @@ Status XAllocColor(Display *display, Colormap colormap, XColor *screen_in_out)
         return 0;
     /* Spec: on success, .pixel is filled with the allocated index and the
      * .red/.green/.blue fields with the actually rendered values (which may
-     * differ from the requested ones on indexed visuals). Our visual is
-     * direct-color, so the requested RGB round-trips exactly. Pack into the
-     * shim's ARGB pixel format (A=24, R=16, G=8, B=0; see src/colors.h). */
+     * differ from the requested ones on indexed visuals). The compat layer's
+     * visual is direct-color, so the requested RGB round-trips exactly. Pack
+     * into the shim's ARGB pixel format (A=24, R=16, G=8, B=0; see
+     * src/colors.h).
+     */
     unsigned long r = (screen_in_out->red >> 8) & 0xFFul;
     unsigned long g = (screen_in_out->green >> 8) & 0xFFul;
     unsigned long b = (screen_in_out->blue >> 8) & 0xFFul;

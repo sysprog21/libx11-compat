@@ -1,4 +1,4 @@
-/* Stroke outline construction for libx11-compat
+/* Stroke outline construction
  *
  * Builds a single continuous outline polygon per polyline contour. The
  * outline traverses the left offset edges forward, around the end cap,
@@ -22,12 +22,14 @@
 #endif
 
 /* X11 default per the protocol spec. Clients can't override it through
- * Xlib so a fixed value matches every conforming server. */
+ * Xlib so a fixed value matches every conforming server.
+ */
 #define STROKE_MITER_LIMIT 10.0
 
 /* Round joins/caps tessellation step in radians. Roughly 11.25 degrees
  * per segment gives smooth strokes for the widths libx11-compat
- * clients actually use without ballooning the outline vertex count. */
+ * clients actually use without ballooning the outline vertex count.
+ */
 #define STROKE_ARC_STEP (M_PI / 16.0)
 
 static Bool appendArc(Path *out,
@@ -49,10 +51,11 @@ static Bool appendArc(Path *out,
     return True;
 }
 
-/* End of contour cap. We are positioned at p + halfWidth*(nx,ny) (left
- * edge end) and need to traverse around to p - halfWidth*(nx,ny) (right
- * edge end). (ux,uy) is the segment's unit direction so the cap can bulge
- * outward. */
+/* End of contour cap. appendCap is entered at p + halfWidth*(nx,ny)
+ * (left edge end) and must traverse around to p - halfWidth*(nx,ny)
+ * (right edge end). (ux,uy) is the segment's unit direction so the cap
+ * can bulge outward.
+ */
 static Bool appendCap(Path *out,
                       double px,
                       double py,
@@ -65,8 +68,9 @@ static Bool appendCap(Path *out,
 {
     if (capStyle == CapRound) {
         /* Semicircle from +n through +u to -n. The cap_left point is at
-         * angle atan2(ny,nx); we sweep by -PI (clockwise) so the curve
-         * passes through the +u direction. */
+         * angle atan2(ny,nx); the sweep of -PI (clockwise) routes the
+         * curve through the +u direction.
+         */
         double a0 = atan2(ny, nx);
         return appendArc(out, px, py, halfWidth, a0, -M_PI);
     }
@@ -114,12 +118,13 @@ static Bool appendDegenerateStroke(Path *out,
     return True;
 }
 
-/* Emit join geometry from edgeFrom to edgeTo. The vertex is at (vx, vy);
- * (uFromX,uFromY) is the incoming edge's tangent into the vertex,
- * (uToX,uToY) is the outgoing edge's tangent leaving the vertex.
- * outerSide is True when this side of the bend is the outer one (i.e.
- * the side with a visible gap that needs filling). For the inner side
- * we simply line to edgeTo. */
+/* Emit join geometry from edgeFrom to edgeTo. The vertex is at
+ * (vx, vy); (uFromX,uFromY) is the incoming edge's tangent into the
+ * vertex, (uToX,uToY) is the outgoing edge's tangent leaving the
+ * vertex. outerSide is True when this side of the bend is the outer
+ * one (i.e. the side with a visible gap that needs filling). For the
+ * inner side the helper simply lines to edgeTo.
+ */
 static Bool appendJoin(Path *out,
                        double vx,
                        double vy,
@@ -165,7 +170,8 @@ static Bool appendJoin(Path *out,
         double a1 = atan2(edgeToY - vy, edgeToX - vx);
         double sweep = a1 - a0;
         /* Sweep on the outer side: pick the direction that matches the
-         * cross product of edge-from-to-edge-to (computed from V). */
+         * cross product of edge-from-to-edge-to (computed from V).
+         */
         double fx = edgeFromX - vx;
         double fy = edgeFromY - vy;
         double tx = edgeToX - vx;
@@ -198,7 +204,8 @@ Bool pathStrokePolyline(Path *out,
 
     /* Collapse zero-length segments by dedup-copy. A zero-length segment
      * has no defined direction, which would corrupt the join math; the
-     * easiest cure is to drop those points entirely. */
+     * easiest cure is to drop those points entirely.
+     */
     PathPoint *pts = malloc(sizeof(PathPoint) * count);
     if (!pts)
         return False;
@@ -242,7 +249,8 @@ Bool pathStrokePolyline(Path *out,
      * vertex including the closure, no caps. Two bridge segments
      * (LSTART(0)<->RSTART(0)) traversed in opposite directions cancel
      * under the WindingRule fill, so a single self-intersecting outline
-     * is enough. Requires n>=4 to have at least 3 unique vertices. */
+     * is enough. Requires n>=4 to have at least 3 unique vertices.
+     */
     Bool closed =
         n >= 4 && pts[0].x == pts[n - 1].x && pts[0].y == pts[n - 1].y;
 
@@ -255,7 +263,8 @@ Bool pathStrokePolyline(Path *out,
 
     /* Forward walk along the left offset edges. For a closed contour the
      * last iteration also emits a join (the closure) instead of falling
-     * through to an end cap. */
+     * through to an end cap.
+     */
     for (size_t i = 0; i < numSegments && ok; i++) {
         double lendX = pts[i + 1].x + halfWidth * seg[i].nx;
         double lendY = pts[i + 1].y + halfWidth * seg[i].ny;
@@ -287,12 +296,14 @@ Bool pathStrokePolyline(Path *out,
     } else if (closed && ok) {
         /* Bridge from the forward walk's final position (LSTART(0)) to
          * the backward walk's start (RSTART(0)). The pathClose at the
-         * end traces the same bridge in reverse so winding cancels. */
+         * end traces the same bridge in reverse so winding cancels.
+         */
         ok = pathLineTo(out, pts[0].x - halfWidth * seg[0].nx,
                         pts[0].y - halfWidth * seg[0].ny);
         /* Emit the reverse closure join: from RSTART(0) to REND(num-1)
          * at vertex pts[0]. Walking backward the incoming tangent is
-         * -seg[0].u and the outgoing tangent is -seg[last].u. */
+         * -seg[0].u and the outgoing tangent is -seg[last].u.
+         */
         if (ok) {
             size_t last = numSegments - 1;
             double prevRendX = pts[0].x - halfWidth * seg[last].nx;
@@ -308,12 +319,14 @@ Bool pathStrokePolyline(Path *out,
     }
 
     /* Backward walk along the right offset edges. Going backward, the
-     * incoming tangent is -u[i] and the outgoing tangent is -u[i-1]. */
+     * incoming tangent is -u[i] and the outgoing tangent is -u[i-1].
+     */
     if (closed) {
-        /* Closure join was emitted above and left us at REND(num-1).
+        /* Closure join was emitted above and left the pen at REND(num-1).
          * Walk i = num-1 down to 1: lineTo RSTART(i) then join at pts[i]
          * to REND(i-1). The final lineTo RSTART(0) closes the bridge so
-         * pathClose retraces the forward bridge in reverse. */
+         * pathClose retraces the forward bridge in reverse.
+         */
         for (size_t i = numSegments - 1; i > 0 && ok; i--) {
             double rstartX = pts[i].x - halfWidth * seg[i].nx;
             double rstartY = pts[i].y - halfWidth * seg[i].ny;
@@ -356,7 +369,8 @@ Bool pathStrokePolyline(Path *out,
         }
         if (ok) {
             /* Start cap walks from RSTART(0) to LSTART(0) along the
-             * reversed first-segment direction. */
+             * reversed first-segment direction.
+             */
             ok = appendCap(out, pts[0].x, pts[0].y, -seg[0].ux, -seg[0].uy,
                            -seg[0].nx, -seg[0].ny, halfWidth, capStyle);
         }

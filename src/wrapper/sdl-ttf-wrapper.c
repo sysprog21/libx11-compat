@@ -8,7 +8,8 @@
 #endif
 
 /* See sdl-wrapper.c for the rationale and caveat. Same trigger set so
- * both shims downgrade together. */
+ * both shims downgrade together.
+ */
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
@@ -36,7 +37,8 @@
 /* See sdl-wrapper.c for the rationale: atomic load/store with
  * ACQUIRE/RELEASE ordering on the shared handle plus the per-wrapper
  * realFunc caches so racing first-callers are well-defined under the C
- * memory model. */
+ * memory model.
+ */
 static void *realTtfHandle(void)
 {
     static void *handle;
@@ -72,7 +74,8 @@ static void *realTtfHandle(void)
     }
     /* CAS so racing first-callers don't each pin an extra dlopen
      * refcount; loser dlcloses and uses the winner's handle. See
-     * sdl-wrapper.c for the full rationale. */
+     * sdl-wrapper.c for the full rationale.
+     */
     void *expected = NULL;
     if (__atomic_compare_exchange_n(&handle, &expected, opened, 0,
                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))

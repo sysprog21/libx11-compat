@@ -133,9 +133,8 @@ Bool matchWildcard(const char *wildcard, const char *string)
             return False;
         }
     }
-    while (*w == '*') {
+    while (*w == '*')
         w++;
-    }
     return *w == '\0';
 }
 

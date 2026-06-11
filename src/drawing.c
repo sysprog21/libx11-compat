@@ -34,15 +34,14 @@ static void resolveWindowBackground(Window window,
                                     unsigned long *backgroundColor);
 /* Forward-defined here so callers earlier in the file (the shape-mask
  * snapshot/composite helpers) can stack-allocate a ShapeMaskView. The
- * resolve/sample helpers themselves live next to the rest of the shape
- * code further down. */
+ * resolve/sample helpers themselves live next to the rest of the shape code
+ * further down.
+ */
 typedef struct ShapeMaskView {
     SDL_Surface *boundingMask;
-    int boundingOffsetX;
-    int boundingOffsetY;
+    int boundingOffsetX, boundingOffsetY;
     SDL_Surface *clipMask;
-    int clipOffsetX;
-    int clipOffsetY;
+    int clipOffsetX, clipOffsetY;
 } ShapeMaskView;
 static Bool resolveShapeMasks(const WindowStruct *window, ShapeMaskView *out);
 static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy);
@@ -139,9 +138,10 @@ static void schedulePresentWake(void)
         Uint32 eventType = SDL_RegisterEvents(1);
         if (eventType == ((Uint32) -1))
             return;
-        /* Losers of the CAS already installed a different registered
-         * event type; the registration we just won is unused but harmless,
-         * and pushing it would slip past presentWakeOwnsEventType. */
+        /* Losers of the CAS already installed a different registered event
+         * type; the registration this thread just won is unused but harmless,
+         * and pushing it would slip past presentWakeOwnsEventType.
+         */
         SDL_AtomicCAS(&presentWakeEventType, -1, (int) eventType);
     }
     SDL_AtomicSet(&presentWakeTimerPending, True);
@@ -256,9 +256,8 @@ void drawWindowDataToScreen()
             if (staging) {
                 readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
                                               staging->pixels, staging->pitch);
-                if (readRc == 0) {
+                if (readRc == 0)
                     SDL_BlitSurface(staging, NULL, winSurface, &presentRect);
-                }
                 SDL_FreeSurface(staging);
             }
         }
@@ -404,12 +403,12 @@ SDL_Renderer *getWindowRenderer(Window window)
     Bool justCreatedRenderer = False;
     if (!renderer) {
         /* All windows draw on the SCREEN renderer with a per-window backing
-         * texture as the render target. Mapped top-level windows used to own
-         * a separate SDL_Renderer attached to their SDL_Window, which forced
+         * texture as the render target. Mapped top-level windows used to own a
+         * separate SDL_Renderer attached to their SDL_Window, which forced
          * every XCopyArea between two top-level windows (and every
          * Pixmap->Window copy) into a cross-renderer readback. Unifying on
-         * SCREEN renderer keeps those copies in renderer space; presentation
-         * to the actual SDL_Window happens in drawWindowDataToScreen.
+         * SCREEN renderer keeps those copies in renderer space; presentation to
+         * the actual SDL_Window happens in drawWindowDataToScreen.
          */
         renderer = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
         SDL_Texture *texture = GET_WINDOW_STRUCT(drawWindow)->sdlTexture;
@@ -435,8 +434,9 @@ SDL_Renderer *getWindowRenderer(Window window)
     }
 
     /* Real X11 paints a freshly mapped window with its background pixel.
-     * We allocate the SDL surface/texture lazily, so do the equivalent one-shot
-     * fill here to avoid presenting uninitialized memory.
+     * libx11-compat allocates the SDL surface/texture lazily, so this path
+     * performs the equivalent one-shot fill to avoid presenting uninitialized
+     * memory.
      */
     if (justCreatedRenderer) {
         SDL_Texture *prevTarget = SDL_GetRenderTarget(renderer);
@@ -532,8 +532,8 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
     SDL_FillRect(surface, NULL, 0);
     /* Clip the requested rect to the viewport. SDL_RenderReadPixels fails
      * outright if the rect leaves the render target, so an X11 caller asking
-     * for a drawable-relative area that runs off the edge would otherwise
-     * lose all pixels instead of getting the in-bounds portion zero-padded.
+     * for a drawable-relative area that runs off the edge would otherwise lose
+     * all pixels instead of getting the in-bounds portion zero-padded.
      */
     SDL_Rect viewport;
     SDL_RenderGetViewport(renderer, &viewport);
@@ -556,6 +556,35 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
     size_t dstOffsetX = (size_t) (clipped.x - source->x);
     size_t dstOffsetY = (size_t) (clipped.y - source->y);
     SDL_Rect targetReadRect = readRect;
+
+    /* When SDL has a custom render target bound (Pixmap target, shape
+     * compositing), clamp the read rect to the texture's pixel bounds before
+     * SDL_RenderReadPixels. Without the clamp, a read rect that the viewport
+     * accepted can still run off the target, and the readback fails with
+     * "invalid parameter" on the GL/Metal backends.
+     */
+    SDL_Texture *target = SDL_GetRenderTarget(renderer);
+    if (target) {
+        int targetWidth = 0, targetHeight = 0;
+        if (SDL_QueryTexture(target, NULL, NULL, &targetWidth, &targetHeight) !=
+            0) {
+            /* Match the SDL_RenderReadPixels failure contract: an SDL error
+             * here is a real failure, not a "no overlap" case. Callers
+             * distinguish failure from clipped-to-zero by NULL return.
+             */
+            LOG("SDL_QueryTexture failed in %s: %s\n", __func__,
+                SDL_GetError());
+            SDL_FreeSurface(surface);
+            return NULL;
+        }
+
+        SDL_Rect targetBounds = {0, 0, targetWidth, targetHeight};
+        if (!SDL_IntersectRect(&targetReadRect, &targetBounds, &targetReadRect))
+            return surface;
+        dstOffsetX += (size_t) (targetReadRect.x - readRect.x);
+        dstOffsetY += (size_t) (targetReadRect.y - readRect.y);
+    }
+
     if (targetReadRect.x < 0) {
         int clippedPixels = -targetReadRect.x;
         if (clippedPixels >= targetReadRect.w)
@@ -589,10 +618,11 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
 }
 
 /* Clip a caller-supplied draw rect to the window's own bounds before
- * snapshotting. Pathological coordinates would otherwise ask the SDL
- * renderer to read back far outside the visible surface; the underlying
- * getRenderSurfaceRect already clips, but pre-clipping here avoids
- * allocating a multi-megabyte surface just to have most of it discarded. */
+ * snapshotting. Pathological coordinates would otherwise ask the SDL renderer
+ * to read back far outside the visible surface; the underlying
+ * getRenderSurfaceRect already clips, but pre-clipping here avoids allocating a
+ * multi-megabyte surface just to have most of it discarded.
+ */
 static Bool clipRectToWindow(WindowStruct *window,
                              const SDL_Rect *in,
                              SDL_Rect *out)
@@ -641,8 +671,9 @@ Bool applyShapeMaskOverDrawnRect(Drawable d,
     ShapeMaskView view;
     if (!resolveShapeMasks(window, &view))
         return True;
-    /* Match the clipping captureShapeMaskBaseline did so the composite
-     * surface is the same size as the baseline. */
+    /* Match the clipping captureShapeMaskBaseline did so the composite surface
+     * is the same size as the baseline.
+     */
     SDL_Rect clipped;
     if (!clipRectToWindow(window, rect, &clipped))
         return True;
@@ -653,10 +684,11 @@ Bool applyShapeMaskOverDrawnRect(Drawable d,
         return False;
     }
 
-    /* Composite: pixels that fall outside the combined shape (i.e. either
-     * mask excludes them) are restored from the baseline; pixels inside
-     * keep the freshly drawn value. Iterate in 64-bit so window
-     * coordinates near INT_MAX can't wrap. */
+    /* Composite: pixels that fall outside the combined shape (i.e. either mask
+     * excludes them) are restored from the baseline; pixels inside keep the
+     * freshly drawn value. Iterate in 64-bit so window coordinates near INT_MAX
+     * can't wrap.
+     */
     Bool anyChange = False;
     for (int row = 0; row < clipped.h; row++) {
         int64_t wy = (int64_t) clipped.y + row;
@@ -708,8 +740,9 @@ int getGcClipIterationCount(GC gc)
     return gContext->clipRectCount;
 }
 
-/* Centralize the graphics-exposures lookup so every XCopyArea exit
- * path tolerates a NULL gc the same way the clip helpers already do. */
+/* Centralize the graphics-exposures lookup so every XCopyArea exit path
+ * tolerates a NULL gc the same way the clip helpers already do.
+ */
 static Bool gcWantsGraphicsExposures(GC gc)
 {
     if (!gc)
@@ -829,9 +862,10 @@ void applySdlDrawState(SDL_Renderer *renderer,
     /* Core X11 pixels have no alpha; the upper byte is conventionally zero
      * (e.g., BlackPixel = 0x00000000, WhitePixel = 0x00FFFFFF). SDL2 treats
      * alpha=0 as fully transparent, so passing those pixels through verbatim
-     * makes everything drawn with the default GC foreground invisible.
-     * Promote at the single entry point so every primitive routed through
-     * applySdlDrawState() inherits the fix. */
+     * makes everything drawn with the default GC foreground invisible. Promote
+     * at the single entry point so every primitive routed through
+     * applySdlDrawState() inherits the fix.
+     */
     color = colorWithOpaqueDefault(color);
 
     GraphicContext *gContext = gc ? GET_GC(gc) : NULL;
@@ -882,11 +916,12 @@ static int compareInts(const void *a, const void *b)
     return (lhs > rhs) - (lhs < rhs);
 }
 
-/* Splits and removals can produce more outputs than inputs at any given
- * index, so we cannot write back into `segments` in place: a write to
- * segments[outCount] when outCount > i would overwrite an unread input
- * segment. Output through a caller-provided scratch buffer sized for
- * the worst case (every segment splits in two), then copy back. */
+/* Splits and removals can produce more outputs than inputs at any given index,
+ * so the helper cannot write back into "segments" in place: a write to
+ * segments[outCount] when outCount > i would overwrite an unread input segment.
+ * Output through a caller-provided scratch buffer sized for the worst case
+ * (every segment splits in two), then copy back.
+ */
 static void subtractSegment(SDL_Rect *segments,
                             SDL_Rect *scratch,
                             int *segmentCount,
@@ -896,10 +931,11 @@ static void subtractSegment(SDL_Rect *segments,
     int outCount = 0;
     int count = *segmentCount;
     for (int i = 0; i < count; i++) {
-        /* Extents in int64 so a segment near INT_MAX cannot wrap when
-         * width is added. Width differences are clamped back into int
-         * before writing into SDL_Rect.w (caller-side checks guarantee
-         * the post-clamp values are well-formed). */
+        /* Extents in int64 so a segment near INT_MAX cannot wrap when width is
+         * added. Width differences are clamped back into int before writing
+         * into SDL_Rect.w (caller-side checks guarantee the post-clamp values
+         * are well-formed).
+         */
         int64_t segX1 = segments[i].x;
         int64_t segX2 = (int64_t) segments[i].x + (int64_t) segments[i].w;
         if ((int64_t) removeX2 <= segX1 || (int64_t) removeX1 >= segX2) {
@@ -947,12 +983,12 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
 
     WindowStruct *parent = GET_WINDOW_STRUCT(window);
     size_t childCount = parent->children.length;
-    /* Bound the allocation so a pathological window tree can't wrap the
-     * malloc size and bypass the OOM guard. */
+    /* Bound the allocation so a pathological window tree can't wrap the malloc
+     * size and bypass the OOM guard.
+     */
     size_t childLimit = SIZE_MAX / sizeof(SDL_Rect) / 4;
-    if (childCount > childLimit) {
+    if (childCount > childLimit)
         return SDL_RenderFillRect(renderer, rect) == 0 ? True : False;
-    }
     int *edges = malloc(sizeof(int) * (childCount * 2 + 2));
     SDL_Rect *segments = malloc(sizeof(SDL_Rect) * (childCount + 1));
     SDL_Rect *segScratch = malloc(sizeof(SDL_Rect) * (childCount + 1) * 2);
@@ -963,8 +999,9 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
         return SDL_RenderFillRect(renderer, rect) == 0 ? True : False;
     }
 
-    /* Compute rect extents in int64_t so a rect at the int range cannot
-     * wrap before clamping. */
+    /* Compute rect extents in int64_t so a rect at the int range cannot wrap
+     * before clamping.
+     */
     int64_t rectX1_64 = rect->x;
     int64_t rectX2_64 = (int64_t) rect->x + (int64_t) rect->w;
     int64_t rectY2_64 = (int64_t) rect->y + (int64_t) rect->h;
@@ -1004,8 +1041,7 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
 
     Bool ok = True;
     for (int e = 0; e + 1 < edgeCount; e++) {
-        int bandY1 = edges[e];
-        int bandY2 = edges[e + 1];
+        int bandY1 = edges[e], bandY2 = edges[e + 1];
         if (bandY1 == bandY2)
             continue;
         int segmentCount = 1;
@@ -1073,9 +1109,10 @@ static Bool getDrawableSize(Drawable drawable, int *width, int *height)
     return False;
 }
 
-/* Cap per-side stroke padding so the bbox arithmetic can't overflow signed
- * int when an X client passes an extreme lineWidth. SDL_Rect is signed int
- * wide; values larger than this practically can't draw anyway. */
+/* Cap per-side stroke padding so the bbox arithmetic can't overflow signed int
+ * when an X client passes an extreme lineWidth. SDL_Rect is signed int wide;
+ * values larger than this practically can't draw anyway.
+ */
 #define DAMAGE_PAD_CAP 16384
 
 static int64_t arcStrokePad(GC gc)
@@ -1116,17 +1153,13 @@ static SDL_Rect arcsUnionBbox(const XArc *arcs, int n_arcs, int64_t strokePad)
 
 static SDL_Rect lineDamageRect(int x1, int y1, int x2, int y2, int lineWidth)
 {
-    int64_t minX = x1 < x2 ? x1 : x2;
-    int64_t minY = y1 < y2 ? y1 : y2;
-    int64_t maxX = x1 > x2 ? x1 : x2;
-    int64_t maxY = y1 > y2 ? y1 : y2;
+    int64_t minX = x1 < x2 ? x1 : x2, minY = y1 < y2 ? y1 : y2;
+    int64_t maxX = x1 > x2 ? x1 : x2, maxY = y1 > y2 ? y1 : y2;
     int64_t pad = lineWidth > 1 ? ((int64_t) lineWidth + 1) / 2 : 1;
     if (pad > DAMAGE_PAD_CAP)
         pad = DAMAGE_PAD_CAP;
-    int64_t outX = minX - pad;
-    int64_t outY = minY - pad;
-    int64_t w = (maxX + pad) - outX + 1;
-    int64_t h = (maxY + pad) - outY + 1;
+    int64_t outX = minX - pad, outY = minY - pad;
+    int64_t w = (maxX + pad) - outX + 1, h = (maxY + pad) - outY + 1;
     SDL_Rect rect = {
         .x = clampToInt(outX),
         .y = clampToInt(outY),
@@ -1207,12 +1240,12 @@ static void resolveWindowBackground(Window window,
         *backgroundColor = opaqueColorIfAlphaUnset(color);
 }
 
-/* X Shape semantics intersect the two masks: a pixel is "inside" the
- * window iff it is inside both the bounding region (defaults to all-ones
- * when no bounding mask is installed) and the clip region (same default).
- * resolveShapeMasks loads both pointers + their offsets once;
- * pixelInsideShape samples each non-NULL mask in mask-local coordinates
- * and ANDs the results. */
+/* X Shape semantics intersect the two masks: a pixel is "inside" the window iff
+ * it is inside both the bounding region (defaults to all-ones when no bounding
+ * mask is installed) and the clip region (same default). resolveShapeMasks
+ * loads both pointers + their offsets once; pixelInsideShape samples each
+ * non-NULL mask in mask-local coordinates and ANDs the results.
+ */
 static Bool resolveShapeMasks(const WindowStruct *window, ShapeMaskView *out)
 {
     if (!window || !out)
@@ -1226,11 +1259,11 @@ static Bool resolveShapeMasks(const WindowStruct *window, ShapeMaskView *out)
     return out->boundingMask != NULL || out->clipMask != NULL;
 }
 
-/* True when (wx, wy) is "inside" the combined shape: present in every
- * installed mask (a pixel outside a mask's rect, or hitting a black mask
- * pixel, counts as excluded). With no masks installed the caller has no
- * work to do (resolveShapeMasks returns False); callers must consult
- * that first. */
+/* True when (wx, wy) is "inside" the combined shape: present in every installed
+ * mask (a pixel outside a mask's rect, or hitting a black mask pixel, counts as
+ * excluded). With no masks installed the caller has no work to do
+ * (resolveShapeMasks returns False); callers must consult that first.
+ */
 static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy)
 {
     SDL_Surface *masks[2] = {view->boundingMask, view->clipMask};
@@ -1240,8 +1273,7 @@ static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy)
         SDL_Surface *mask = masks[i];
         if (!mask)
             continue;
-        int64_t mx = wx - (int64_t) offX[i];
-        int64_t my = wy - (int64_t) offY[i];
+        int64_t mx = wx - (int64_t) offX[i], my = wy - (int64_t) offY[i];
         if (mx < 0 || my < 0 || mx >= mask->w || my >= mask->h)
             return False;
         Uint32 mp = getPixel(mask, (unsigned int) mx, (unsigned int) my);
@@ -1326,10 +1358,8 @@ static Bool isConvexPolygon(const SDL_Point *points, int npoints)
         SDL_Point a = points[i];
         SDL_Point b = points[(i + 1) % npoints];
         SDL_Point c = points[(i + 2) % npoints];
-        long long abx = (long long) b.x - a.x;
-        long long aby = (long long) b.y - a.y;
-        long long bcx = (long long) c.x - b.x;
-        long long bcy = (long long) c.y - b.y;
+        long long abx = (long long) b.x - a.x, aby = (long long) b.y - a.y;
+        long long bcx = (long long) c.x - b.x, bcy = (long long) c.y - b.y;
         long long cross = abx * bcy - aby * bcx;
         if (cross == 0)
             continue;
@@ -1354,9 +1384,9 @@ static Bool shouldUsePathArc(GC gc,
         if (gContext->fillStyle != FillSolid)
             return False;
 
-        /* ArcChord rendering requires honoring the chord/pie distinction,
-         * which only the path accelerator does. Force the path even for small
-         * arcs to avoid the legacy pie-only fallback.
+        /* ArcChord rendering requires honoring the chord/pie distinction, which
+         * only the path accelerator does. Force the path even for small arcs to
+         * avoid the legacy pie-only fallback.
          */
         if (gContext->arcMode == ArcChord)
             return True;
@@ -1399,10 +1429,8 @@ static Bool appendXArcPath(Path *path,
                            int angle2,
                            int arcMode)
 {
-    double rx = width / 2.0;
-    double ry = height / 2.0;
-    double cx = x + rx;
-    double cy = y + ry;
+    double rx = width / 2.0, ry = height / 2.0;
+    double cx = x + rx, cy = y + ry;
     double startRad = (angle1 / 64.0) * M_PI / 180.0;
     double sweepRad = (angle2 / 64.0) * M_PI / 180.0;
     return pathAddArc(path, cx, cy, rx, ry, startRad, sweepRad, arcMode);
@@ -1502,9 +1530,10 @@ static void rasterOpRendererRect(SDL_Renderer *renderer,
     if (!SDL_IntersectRect(rect, &bounds, &clipped))
         return;
 
-    /* Guard the row * height multiplication so an oversize intersect
-     * cannot wrap size_t before malloc; also keep the pitch within
-     * SDL_RenderReadPixels' int pitch argument. */
+    /* Guard the row * height multiplication so an oversize intersect cannot
+     * wrap size_t before malloc; also keep the pitch within
+     * SDL_RenderReadPixels' int pitch argument.
+     */
     if (clipped.w <= 0 || clipped.h <= 0 ||
         (size_t) clipped.w > SIZE_MAX / 4u ||
         (size_t) clipped.h > SIZE_MAX / ((size_t) clipped.w * 4u) ||
@@ -1562,12 +1591,11 @@ static void rasterOpRendererPoint(SDL_Renderer *renderer,
     rasterOpRendererRect(renderer, &point, function, planeMask, sourceColor);
 }
 
-/* int64 math: abs(INT_MIN) and 2*err would overflow at 32-bit width.
- * Fast path reads the line's bounding box once, walks Bresenham mutating the
- * in-memory buffer, and blits back once instead of doing a full
- * SDL_RenderReadPixels round trip per pixel. The per-pixel fallback kicks in
- * for huge bboxes so we don't try to allocate gigabytes for a pathological
- * diagonal.
+/* int64 math: abs(INT_MIN) and 2*err would overflow at 32-bit width. Fast path
+ * reads the line's bounding box once, walks Bresenham mutating the in-memory
+ * buffer, and blits back once instead of doing a full SDL_RenderReadPixels
+ * round trip per pixel. The per-pixel fallback kicks in for huge bboxes so the
+ * fast path does not try to allocate gigabytes for a pathological diagonal.
  */
 static void rasterOpRendererLine(SDL_Renderer *renderer,
                                  int x1,
@@ -1580,10 +1608,8 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
                                  Bool includeFirst)
 {
     enum { BATCH_AREA_LIMIT = 1024 * 1024 };
-    int xLo = x1 < x2 ? x1 : x2;
-    int xHi = x1 < x2 ? x2 : x1;
-    int yLo = y1 < y2 ? y1 : y2;
-    int yHi = y1 < y2 ? y2 : y1;
+    int xLo = x1 < x2 ? x1 : x2, xHi = x1 < x2 ? x2 : x1;
+    int yLo = y1 < y2 ? y1 : y2, yHi = y1 < y2 ? y2 : y1;
     int64_t bboxArea = ((int64_t) xHi - xLo + 1) * ((int64_t) yHi - yLo + 1);
 
     int64_t dx = llabs((int64_t) x2 - (int64_t) x1);
@@ -1634,9 +1660,10 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
     if (!SDL_IntersectRect(&bbox, &bounds, &clipped))
         return;
 
-    /* Guard the row * height multiplication so an oversize intersect
-     * cannot wrap size_t before malloc; also keep the pitch within
-     * SDL_RenderReadPixels' int pitch argument. */
+    /* Guard the row * height multiplication so an oversize intersect cannot
+     * wrap size_t before malloc; also keep the pitch within
+     * SDL_RenderReadPixels' int pitch argument.
+     */
     if (clipped.w <= 0 || clipped.h <= 0 ||
         (size_t) clipped.w > SIZE_MAX / 4u ||
         (size_t) clipped.h > SIZE_MAX / ((size_t) clipped.w * 4u) ||
@@ -1655,8 +1682,7 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
         Bool first = True;
         for (;;) {
             if (includeFirst || !first) {
-                int relX = (int) px - clipped.x;
-                int relY = (int) py - clipped.y;
+                int relX = (int) px - clipped.x, relY = (int) py - clipped.y;
                 if (relX >= 0 && relX < clipped.w && relY >= 0 &&
                     relY < clipped.h) {
                     Uint32 *p = (Uint32 *) (pixels + (size_t) relY * pitch +
@@ -1699,8 +1725,9 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
 
 /* Trace a rectangle outline of (w+1) by (h+1) pixels (the X11 spec for
  * XDrawRectangle) under a non-GXcopy GC function. Each pixel must be touched
- * exactly once or raster ops like XOR cancel themselves at the corners; we
- * sequence the four edges so corner pixels appear in exactly one segment.
+ * exactly once or raster ops like XOR cancel themselves at the corners; the
+ * helper sequences the four edges so corner pixels appear in exactly one
+ * segment.
  */
 static void rasterOpRendererRectOutline(SDL_Renderer *renderer,
                                         int x,
@@ -1764,9 +1791,8 @@ static void drawFilledSpan(SDL_Renderer *renderer,
         return;
     }
 
-    if (SDL_RenderDrawLine(renderer, x1, y, x2, y) != 0) {
+    if (SDL_RenderDrawLine(renderer, x1, y, x2, y) != 0)
         LOG("SDL_RenderDrawLine failed in %s: %s\n", __func__, SDL_GetError());
-    }
 }
 
 int XFillPolygon(Display *display,
@@ -1792,9 +1818,8 @@ int XFillPolygon(Display *display,
         handleError(0, display, None, 0, BadValue, 0);
         return 0;
     }
-    if (npoints < 3) {
+    if (npoints < 3)
         return 1;
-    }
 
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(d, renderer);
@@ -1816,16 +1841,15 @@ int XFillPolygon(Display *display,
         poly = heapPoints;
     }
 
-    /* Accumulate CoordModePrevious in int64 so a hostile delta sequence
-     * can't signed-overflow before the bbox math sees the point. SDL_Point
-     * fields are int; clampToInt saturates so an out-of-range running sum
-     * degrades to the boundary instead of wrapping into bogus geometry. */
-    int64_t accX = points[0].x;
-    int64_t accY = points[0].y;
+    /* Accumulate CoordModePrevious in int64 so a hostile delta sequence can't
+     * signed-overflow before the bbox math sees the point. SDL_Point fields are
+     * int; clampToInt saturates so an out-of-range running sum degrades to the
+     * boundary instead of wrapping into bogus geometry.
+     */
+    int64_t accX = points[0].x, accY = points[0].y;
     poly[0].x = clampToInt(accX);
     poly[0].y = clampToInt(accY);
-    int minX = poly[0].x, maxX = poly[0].x;
-    int minY = poly[0].y, maxY = poly[0].y;
+    int minX = poly[0].x, maxX = poly[0].x, minY = poly[0].y, maxY = poly[0].y;
     for (int i = 1; i < npoints; i++) {
         if (mode == CoordModePrevious) {
             accX += points[i].x;
@@ -1860,8 +1884,9 @@ int XFillPolygon(Display *display,
         return 0;
     }
 
-    /* Open the shape guard only after both allocations have succeeded so
-     * the OOM paths above don't leak the captured baseline. */
+    /* Open the shape guard only after both allocations have succeeded so the
+     * OOM paths above don't leak the captured baseline.
+     */
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &polyBbox);
 
@@ -1919,8 +1944,7 @@ int XFillPolygon(Display *display,
                     if (crossings[i].x > maxX)
                         maxX = crossings[i].x;
                 }
-                int x1 = (int) ceil(minX);
-                int x2 = (int) ceil(maxX) - 1;
+                int x1 = (int) ceil(minX), x2 = (int) ceil(maxX) - 1;
                 drawFilledSpan(renderer, gContext, x1, y, x2);
                 continue;
             }
@@ -1979,12 +2003,10 @@ static int fillArcOnRenderer(SDL_Renderer *renderer,
     SDL_BlendMode blendMode =
         gContext->function == GXcopy ? SDL_BLENDMODE_NONE : SDL_BLENDMODE_BLEND;
     applySdlDrawState(renderer, gc, blendMode, gContext->foreground);
-    double rx = width / 2.0;
-    double ry = height / 2.0;
+    double rx = width / 2.0, ry = height / 2.0;
     if (rx <= 0.0 || ry <= 0.0)
         return 1;
-    double cx = x + rx;
-    double cy = y + ry;
+    double cx = x + rx, cy = y + ry;
     double start = angle1 / 64.0;
     double extent = angle2 / 64.0;
     int clipCount = getGcClipIterationCount(gc);
@@ -1993,8 +2015,7 @@ static int fillArcOnRenderer(SDL_Renderer *renderer,
             continue;
         for (int py = y; py < y + (int) height; py++) {
             for (int px = x; px < x + (int) width; px++) {
-                double nx = (px + 0.5 - cx) / rx;
-                double ny = (py + 0.5 - cy) / ry;
+                double nx = (px + 0.5 - cx) / rx, ny = (py + 0.5 - cy) / ry;
                 if (nx * nx + ny * ny > 1.0)
                     continue;
                 double degrees = atan2(-ny, nx) * 180.0 / M_PI;
@@ -2070,12 +2091,10 @@ static int drawArcOnRenderer(SDL_Renderer *renderer,
         }
     }
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, gContext->foreground);
-    double rx = width / 2.0;
-    double ry = height / 2.0;
+    double rx = width / 2.0, ry = height / 2.0;
     if (rx <= 0.0 || ry <= 0.0)
         return 1;
-    double cx = x + rx;
-    double cy = y + ry;
+    double cx = x + rx, cy = y + ry;
     double start = angle1 / 64.0;
     double extent = angle2 / 64.0;
     int steps = (int) ceil(fabs(extent));
@@ -2094,9 +2113,8 @@ static int drawArcOnRenderer(SDL_Renderer *renderer,
             int px = (int) lround(cx + cos(radians) * rx);
             int py = (int) lround(cy - sin(radians) * ry);
             for (int oy = -radius; oy <= radius; oy++) {
-                for (int ox = -radius; ox <= radius; ox++) {
+                for (int ox = -radius; ox <= radius; ox++)
                     SDL_RenderDrawPoint(renderer, px + ox, py + oy);
-                }
             }
         }
     }
@@ -2332,8 +2350,9 @@ int XCopyPlane(Display *display,
     Bool hasShape = resolveShapeMasks(destWindow, &shapeView);
     if (hasShape) {
         /* Shape composite needs the destination's prior pixels for
-         * mask-excluded positions. Fail rather than mix synthetic GC
-         * background into preserved pixels. */
+         * mask-excluded positions. Fail rather than mix synthetic GC background
+         * into preserved pixels.
+         */
         destSurface = getRenderSurfaceRect(destRenderer, &destRect);
         if (!destSurface) {
             SDL_FreeFormat(format);
@@ -2353,8 +2372,9 @@ int XCopyPlane(Display *display,
     for (unsigned int y = 0; y < height; y++) {
         for (unsigned int x = 0; x < width; x++) {
             if (hasShape) {
-                /* 64-bit math avoids signed overflow when dest_x/dest_y
-                 * are near INT_MAX. */
+                /* 64-bit math avoids signed overflow when dest_x/dest_y are
+                 * near INT_MAX.
+                 */
                 int64_t wx = (int64_t) dest_x + (int64_t) x;
                 int64_t wy = (int64_t) dest_y + (int64_t) y;
                 if (!pixelInsideShape(&shapeView, wx, wy)) {
@@ -2490,9 +2510,10 @@ int XDrawPoints(Display *display,
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
                           gContext->foreground);
     }
-    /* Compute the bbox of all points (post-CoordMode resolution) so the
-     * shape guard can capture once. An empty/degenerate bbox (no in-range
-     * points) yields w/h == 0; shapeGuardBegin treats that as a no-op. */
+    /* Compute the bbox of all points (post-CoordMode resolution) so the shape
+     * guard can capture once. An empty/degenerate bbox (no in-range points)
+     * yields w/h == 0; shapeGuardBegin treats that as a no-op.
+     */
     SDL_Rect pointsBbox = {0, 0, 0, 0};
     int64_t px = 0, py = 0;
     int minX = 0, maxX = 0, minY = 0, maxY = 0;
@@ -2507,8 +2528,7 @@ int XDrawPoints(Display *display,
         }
         if (px < INT_MIN || px > INT_MAX || py < INT_MIN || py > INT_MAX)
             continue;
-        int ix = (int) px;
-        int iy = (int) py;
+        int ix = (int) px, iy = (int) py;
         if (!haveBbox) {
             minX = maxX = ix;
             minY = maxY = iy;
@@ -2576,9 +2596,8 @@ int XDrawSegments(Display *display,
         handleError(0, display, None, 0, BadGC, 0);
         return 0;
     }
-    if (nsegments <= 0) {
+    if (nsegments <= 0)
         return 1;
-    }
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(d, renderer);
     if (!renderer) {
@@ -2624,7 +2643,8 @@ int XDrawSegments(Display *display,
         }
         /* Wide-stroke path failed (most likely pathInit OOM). The fallback
          * below renders each segment with SDL_RenderDrawLine, which is
-         * single-pixel only; flag the silent lineWidth downgrade. */
+         * single-pixel only; flag the silent lineWidth downgrade.
+         */
         LOG("%s: wide-stroke rasterizer failed; falling back to 1-pixel "
             "lines (lineWidth=%d)\n",
             __func__, gContext->lineWidth);
@@ -2697,10 +2717,11 @@ int XDrawLine(Display *display,
         repaintMappedChildrenInRect(display, d, &damage);
         return 1;
     }
-    /* Wide / non-solid stroke wanted but the path rasterizer failed
-     * (typically pathInit OOM). The fallback below uses SDL_RenderDrawLine
-     * which is single-pixel only; flag the silent lineWidth downgrade so
-     * a regression in the path rasterizer isn't invisible. */
+    /* Wide / non-solid stroke wanted but the path rasterizer failed (typically
+     * pathInit OOM). The fallback below uses SDL_RenderDrawLine which is
+     * single-pixel only; flag the silent lineWidth downgrade so a regression in
+     * the path rasterizer isn't invisible.
+     */
     if (wideStrokeWanted)
         LOG("%s: wide-stroke rasterizer failed; falling back to 1-pixel "
             "line (lineWidth=%d, style=%d)\n",
@@ -2772,11 +2793,11 @@ int XDrawLines(Display *display,
         }
         sdlPoints = heapPoints;
     }
-    /* CoordModePrevious accumulates relative deltas in int64 so a hostile
-     * delta sequence can't signed-overflow into bogus coordinates fed to
-     * polylineDamageRect; clampToInt saturates back to the SDL_Point int. */
-    int64_t accX = points[0].x;
-    int64_t accY = points[0].y;
+    /* CoordModePrevious accumulates relative deltas in int64 so a hostile delta
+     * sequence can't signed-overflow into bogus coordinates fed to
+     * polylineDamageRect; clampToInt saturates back to the SDL_Point int.
+     */
+    int64_t accX = points[0].x, accY = points[0].y;
     sdlPoints[0].x = clampToInt(accX);
     sdlPoints[0].y = clampToInt(accY);
     for (int i = 1; i < npoints; i++) {
@@ -2866,8 +2887,7 @@ int XClearArea(register Display *dpy,
 
     int winWidth, winHeight;
     GET_WINDOW_DIMS(w, winWidth, winHeight);
-    int clearX = x;
-    int clearY = y;
+    int clearX = x, clearY = y;
     int clearWidth = width == 0 ? winWidth - x : (int) width;
     int clearHeight = height == 0 ? winHeight - y : (int) height;
 
@@ -2883,12 +2903,10 @@ int XClearArea(register Display *dpy,
         clearHeight <= 0) {
         return 1;
     }
-    if (clearX + clearWidth > winWidth) {
+    if (clearX + clearWidth > winWidth)
         clearWidth = winWidth - clearX;
-    }
-    if (clearY + clearHeight > winHeight) {
+    if (clearY + clearHeight > winHeight)
         clearHeight = winHeight - clearY;
-    }
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(w, renderer);
     if (!renderer) {
@@ -2965,12 +2983,14 @@ int XClearArea(register Display *dpy,
     return 1;
 }
 
-/* Read-modify-write XCopyArea for non-GXcopy/masked GCs. Returns:
+/* Read-modify-write XCopyArea for non-GXcopy/masked GCs.
+ *
+ * Returns:
  *   0 - GC is GXcopy with full plane mask; fall through to the fast
  *       plain-blit path.
  *   1 - request handled successfully (read, applied function per
  *       pixel, wrote back).
- *  -1 - request failed (intermediate alloc/readback returned an
+ * -1 - request failed (intermediate alloc/readback returned an
  *       error). XCopyArea should report failure to the caller.
  */
 static int xCopyAreaRasterOp(Display *display,
@@ -2991,9 +3011,8 @@ static int xCopyAreaRasterOp(Display *display,
         return 0;
     int gcFunction = gContext->function;
     unsigned long gcPlaneMask = gContext->planeMask;
-    if (gcFunction == GXcopy && (gcPlaneMask & 0x00FFFFFFul) == 0x00FFFFFFul) {
+    if (gcFunction == GXcopy && (gcPlaneMask & 0x00FFFFFFul) == 0x00FFFFFFul)
         return 0;
-    }
     if (width == 0 || height == 0)
         return 1;
     if (width > (unsigned int) (INT_MAX / (int) sizeof(Uint32))) {
@@ -3002,11 +3021,12 @@ static int xCopyAreaRasterOp(Display *display,
     }
 
     /* Resolve the source renderer FIRST and read its pixels before the
-     * destination renderer is touched. GET_RENDERER can lazily attach
-     * an SDL_Texture render target to the drawable, which switches the
-     * active target. If we resolved dest first and then read from src,
-     * a same-renderer src/dest pair would read destination pixels into
-     * srcPixels and silently corrupt the GXxor/GXand result. */
+     * destination renderer is touched. GET_RENDERER can lazily attach an
+     * SDL_Texture render target to the drawable, which switches the active
+     * target. Resolving dest first and then reading from src would, for a
+     * same-renderer src/dest pair, read destination pixels into srcPixels and
+     * silently corrupt the GXxor/GXand result.
+     */
     SDL_Renderer *srcRenderer = NULL;
     GET_RENDERER(src, srcRenderer);
     if (!srcRenderer) {
@@ -3040,10 +3060,11 @@ static int xCopyAreaRasterOp(Display *display,
     size_t pixelCount = (size_t) destRect.w * (size_t) destRect.h;
     if (pixelCount > SIZE_MAX / sizeof(Uint32))
         return -1;
-    /* calloc instead of malloc: some SDL_RenderReadPixels backends
-     * silently partial-fill when the requested rect intersects
-     * out-of-bounds; the rest stays zero rather than feeding
-     * uninitialized heap into applyRasterFunction. */
+    /* calloc instead of malloc: some SDL_RenderReadPixels backends silently
+     * partial-fill when the requested rect intersects out-of-bounds; the rest
+     * stays zero rather than feeding uninitialized heap into
+     * applyRasterFunction.
+     */
     Uint32 *srcPixels = calloc(pixelCount, sizeof(Uint32));
     Uint32 *destPixels = calloc(pixelCount, sizeof(Uint32));
     if (!srcPixels || !destPixels) {
@@ -3053,20 +3074,22 @@ static int xCopyAreaRasterOp(Display *display,
         return -1;
     }
 
-    /* Free path is unified: all error exits jump to cleanup_pixels,
-     * which frees both pixel buffers. srcPixels is no longer touched
-     * after the pixel-math loop, but holding onto it until the single
-     * cleanup site is far simpler than threading separate free sites. */
+    /* Free path is unified: all error exits jump to cleanup_pixels, which frees
+     * both pixel buffers. srcPixels is no longer touched after the pixel-math
+     * loop, but holding onto it until the single cleanup site is far simpler
+     * than threading separate free sites.
+     */
     size_t pitchSize = (size_t) destRect.w * sizeof(Uint32);
     int pitch = (int) pitchSize;
     SDL_Texture *texture = NULL;
     SDL_Renderer *destRenderer = NULL;
-    /* SDL_RenderReadPixels reads absolute render-target coordinates and
-     * ignores the active viewport, while the caller passes srcRect /
-     * destRect in drawable-local (viewport-relative) coordinates. For a
-     * child window whose renderer is offset, raw read would pull from
-     * the wrong pixels. Translate by each renderer's viewport origin
-     * the same way getRenderSurfaceRect does for its readback. */
+    /* SDL_RenderReadPixels reads absolute render-target coordinates and ignores
+     * the active viewport, while the caller passes srcRect / destRect in
+     * drawable-local (viewport-relative) coordinates. For a child window whose
+     * renderer is offset, raw read would pull from the wrong pixels. Translate
+     * by each renderer's viewport origin the same way getRenderSurfaceRect does
+     * for its readback.
+     */
     SDL_Rect srcViewport;
     SDL_RenderGetViewport(srcRenderer, &srcViewport);
     SDL_Rect srcReadRect = {srcRect.x + srcViewport.x,
@@ -3162,9 +3185,10 @@ int XCopyArea(Display *display,
     TYPE_CHECK(dest, DRAWABLE, display, 0);
     LOG("%s: Copy area from 0x%08lx to 0x%08lx\n", __func__, src, dest);
     /* Reject anything whose extents would overflow signed int. Downstream
-     * SDL_Rect math uses int x/y/w/h and would wrap; capping width/height
-     * alone is not enough because src_x + width or dest_x + width can
-     * still overflow with a negative-leaning coordinate. */
+     * SDL_Rect math uses int x/y/w/h and would wrap; capping width/height alone
+     * is not enough because src_x + width or dest_x + width can still overflow
+     * with a negative-leaning coordinate.
+     */
     if (width > (unsigned int) INT_MAX || height > (unsigned int) INT_MAX ||
         (int64_t) src_x + (int64_t) width > INT_MAX ||
         (int64_t) src_y + (int64_t) height > INT_MAX ||
@@ -3175,9 +3199,9 @@ int XCopyArea(Display *display,
     }
     /* Non-GXcopy or masked plane masks need per-pixel arithmetic that
      * SDL_RenderCopy cannot express. xCopyAreaRasterOp does the slow
-     * read-modify-write through SDL_RenderReadPixels and returns 1 if
-     * it handled the request, 0 to fall through to the fast plain-blit
-     * path. */
+     * read-modify-write through SDL_RenderReadPixels and returns 1 if it
+     * handled the request, 0 to fall through to the fast plain-blit path.
+     */
     {
         int rasterRc = xCopyAreaRasterOp(display, src, dest, gc, src_x, src_y,
                                          width, height, dest_x, dest_y);
@@ -3298,9 +3322,10 @@ int XCopyArea(Display *display,
             handleError(0, display, dest, 0, BadDrawable, 0);
             return 0;
         }
-        /* XCopyArea is GXcopy: destination pixels are replaced, not
-         * blended. SDL_RenderCopy ignores renderer draw color/blend
-         * state, so only the texture blend mode matters here. */
+        /* XCopyArea is GXcopy: destination pixels are replaced, not blended.
+         * SDL_RenderCopy ignores renderer draw color/blend state, so only the
+         * texture blend mode matters here.
+         */
         SDL_SetTextureBlendMode(srcTexture, SDL_BLENDMODE_NONE);
         srcRect.x = 0;
         srcRect.y = 0;
@@ -3427,9 +3452,10 @@ int XDrawRectangle(Display *display,
         return 0;
     }
     GraphicContext *gContext = GET_GC(gc);
-    /* SDL_RenderDrawRect outlines a w-by-h pixel rect; the X11 spec is
-     * (w+1) by (h+1). Clamp in int64 so an unsigned width near UINT_MAX
-     * can't wrap into a negative SDL_Rect.w or wrap the path corners. */
+    /* SDL_RenderDrawRect outlines a w-by-h pixel rect; the X11 spec is (w+1) by
+     * (h+1). Clamp in int64 so an unsigned width near UINT_MAX can't wrap into
+     * a negative SDL_Rect.w or wrap the path corners.
+     */
     SDL_Rect rectDamage = {
         .x = x,
         .y = y,
@@ -3551,9 +3577,10 @@ int XFillRectangles(Display *display,
         handleError(0, display, d, 0, BadDrawable, 0);
         return 0;
     }
-    /* nrectangles is caller-supplied; an unbounded VLA is a stack-overflow
-     * path on hostile or buggy input. Use a small inline buffer for the
-     * common case and the heap when the request is larger. */
+    /* nrectangles is caller-supplied; an unbounded VLA is a stack-overflow path
+     * on hostile or buggy input. Use a small inline buffer for the common case
+     * and the heap when the request is larger.
+     */
     enum { RECT_INLINE_BUDGET = 128 };
     SDL_Rect inlineRectangles[RECT_INLINE_BUDGET];
     SDL_Rect *heapRectangles = NULL;
@@ -3588,7 +3615,8 @@ int XFillRectangles(Display *display,
     LOG("bgColor: 0x%08lx, fgColor: 0x%08lx\n", gContext->background,
         gContext->foreground);
     /* Snapshot the union of all rectangles before drawing so shape-mask
-     * post-processing can restore mask-excluded pixels in one pass. */
+     * post-processing can restore mask-excluded pixels in one pass.
+     */
     SDL_Rect shapeUnion = sdlRectangles[0];
     for (int r = 1; r < validRectangles; r++)
         unionRect(&shapeUnion, &sdlRectangles[r], &shapeUnion);
@@ -3597,8 +3625,8 @@ int XFillRectangles(Display *display,
         LOG("Fill_style is %s\n", "FillSolid");
         if (gContext->function != GXcopy) {
             /* SDL_Renderer has no raster-op equivalent, so read the affected
-             * pixels back, apply the GC function in software, and blit them
-             * in place.
+             * pixels back, apply the GC function in software, and blit them in
+             * place.
              */
             int clipCount = getGcClipIterationCount(gc);
             for (int clip = 0; clip < clipCount; clip++) {

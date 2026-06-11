@@ -12,8 +12,9 @@
 #include <X11/extensions/Xdamage.h>
 #include <X11/extensions/Xrandr.h>
 
-/* This test deliberately probes the deprecated public API to ensure the
- * library still exports it. Silence the corresponding compiler warning. */
+/* This test deliberately probes the deprecated public API to ensure the library
+ * still exports it. Silence the corresponding compiler warning.
+ */
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #elif defined(__GNUC__)

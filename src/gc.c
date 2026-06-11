@@ -12,9 +12,8 @@ int XFreeGC(Display *display, GC gc)
     SET_X_SERVER_REQUEST(display, X_FreeGC);
     invalidateGcStateCache(gc);
     GraphicContext *gContext = GET_GC(gc);
-    if (gContext->dashes) {
+    if (gContext->dashes)
         free(gContext->dashes);
-    }
     if (gContext->clipRects) {
         free(gContext->clipRects);
         gContext->clipRects = NULL;
@@ -68,11 +67,12 @@ GC XCreateGC(Display *display,
     graphicContextStruct->gid = contextId;
     SET_XID_TYPE(contextId, GRAPHICS_CONTEXT);
     SET_XID_VALUE(contextId, gc);
-    /* Initialize every field to safe defaults before any fallible
-     * allocation. XFreeGC walks gc->clipRects via free() and gc->font
-     * via compatFontReleaseForGC; if the dashes malloc below fails the
-     * cleanup path runs with whatever garbage malloc(3) left behind
-     * unless those fields are zeroed first. */
+    /* Initialize every field to safe defaults before any fallible allocation.
+     * XFreeGC walks gc->clipRects via free() and gc->font via
+     * compatFontReleaseForGC; if the dashes malloc below fails the cleanup path
+     * runs with whatever garbage malloc(3) left behind unless those fields are
+     * zeroed first.
+     */
     gc->dashes = NULL;
     gc->numDashes = 0;
     gc->function = GXcopy;
@@ -80,8 +80,8 @@ GC XCreateGC(Display *display,
     /* Per X11 spec the defaults are pixel indices 0 (foreground) and 1
      * (background). This shim treats pixel values as direct ARGB (see
      * src/colors.h), so default to opaque black/white instead. Otherwise
-     * alpha=0 makes blended text rendering (TTF_RenderUTF8_Blended)
-     * invisible. */
+     * alpha=0 makes blended text rendering (TTF_RenderUTF8_Blended) invisible.
+     */
     gc->foreground = 0xFF000000;
     gc->background = 0xFFFFFFFF;
     gc->lineWidth = 0;
@@ -171,36 +171,26 @@ int XChangeGC(Display *display,
         return 0;
     }
     GraphicContext *graphicContext = GET_GC(gc);
-    if (HAS_VALUE(valuemask, GCFunction)) {
+    if (HAS_VALUE(valuemask, GCFunction))
         graphicContext->function = values->function;
-    }
-    if (HAS_VALUE(valuemask, GCPlaneMask)) {
+    if (HAS_VALUE(valuemask, GCPlaneMask))
         graphicContext->planeMask = values->plane_mask;
-    }
-    if (HAS_VALUE(valuemask, GCForeground)) {
+    if (HAS_VALUE(valuemask, GCForeground))
         XSetForeground(display, gc, values->foreground);
-    }
-    if (HAS_VALUE(valuemask, GCBackground)) {
+    if (HAS_VALUE(valuemask, GCBackground))
         graphicContext->background = values->background;
-    }
-    if (HAS_VALUE(valuemask, GCLineWidth)) {
+    if (HAS_VALUE(valuemask, GCLineWidth))
         graphicContext->lineWidth = values->line_width;
-    }
-    if (HAS_VALUE(valuemask, GCLineStyle)) {
+    if (HAS_VALUE(valuemask, GCLineStyle))
         graphicContext->lineStyle = values->line_style;
-    }
-    if (HAS_VALUE(valuemask, GCCapStyle)) {
+    if (HAS_VALUE(valuemask, GCCapStyle))
         graphicContext->capStyle = values->cap_style;
-    }
-    if (HAS_VALUE(valuemask, GCJoinStyle)) {
+    if (HAS_VALUE(valuemask, GCJoinStyle))
         graphicContext->joinStyle = values->join_style;
-    }
-    if (HAS_VALUE(valuemask, GCFillStyle)) {
+    if (HAS_VALUE(valuemask, GCFillStyle))
         graphicContext->fillStyle = values->fill_style;
-    }
-    if (HAS_VALUE(valuemask, GCFillRule)) {
+    if (HAS_VALUE(valuemask, GCFillRule))
         graphicContext->fillRule = values->fill_rule;
-    }
     if (HAS_VALUE(valuemask, GCTile)) {
         if (!XSetTile(display, gc, values->tile))
             return 0;
@@ -209,43 +199,35 @@ int XChangeGC(Display *display,
         if (!XSetStipple(display, gc, values->stipple))
             return 0;
     }
-    if (HAS_VALUE(valuemask, GCTileStipXOrigin)) {
+    if (HAS_VALUE(valuemask, GCTileStipXOrigin))
         graphicContext->tileStipOriginX = values->ts_x_origin;
-    }
-    if (HAS_VALUE(valuemask, GCTileStipYOrigin)) {
+    if (HAS_VALUE(valuemask, GCTileStipYOrigin))
         graphicContext->tileStipOriginY = values->ts_y_origin;
-    }
     if (HAS_VALUE(valuemask, GCFont)) {
         if (!XSetFont(display, gc, values->font))
             return 0;
     }
-    if (HAS_VALUE(valuemask, GCSubwindowMode)) {
+    if (HAS_VALUE(valuemask, GCSubwindowMode))
         graphicContext->subWindowMode = values->subwindow_mode;
-    }
-    if (HAS_VALUE(valuemask, GCGraphicsExposures)) {
+    if (HAS_VALUE(valuemask, GCGraphicsExposures))
         graphicContext->graphicsExposures = values->graphics_exposures;
-    }
-    if (HAS_VALUE(valuemask, GCClipXOrigin)) {
+    if (HAS_VALUE(valuemask, GCClipXOrigin))
         graphicContext->clipOriginX = values->clip_x_origin;
-    }
-    if (HAS_VALUE(valuemask, GCClipYOrigin)) {
+    if (HAS_VALUE(valuemask, GCClipYOrigin))
         graphicContext->clipOriginY = values->clip_y_origin;
-    }
     if (HAS_VALUE(valuemask, GCClipMask)) {
         if (!XSetClipMask(display, gc, values->clip_mask))
             return 0;
     }
-    if (HAS_VALUE(valuemask, GCDashOffset)) {
+    if (HAS_VALUE(valuemask, GCDashOffset))
         graphicContext->dashOffset = values->dash_offset;
-    }
     if (HAS_VALUE(valuemask, GCDashList)) {
         const char value[] = {values->dashes, values->dashes};
         if (!setDashes(display, graphicContext, value, 2, True))
             return 0;
     }
-    if (HAS_VALUE(valuemask, GCArcMode)) {
+    if (HAS_VALUE(valuemask, GCArcMode))
         graphicContext->arcMode = values->arc_mode;
-    }
     if (valuemask != 0)
         GC_BUMP_GENERATION(graphicContext);
     return 1;
@@ -275,36 +257,26 @@ Status XGetGCValues(Display *display,
 {
     // https://tronche.com/gui/x/xlib/GC/XGetGCValues.html
     GraphicContext *graphicContext = GET_GC(gc);
-    if (HAS_VALUE(valuemask, GCFunction)) {
+    if (HAS_VALUE(valuemask, GCFunction))
         values_return->function = graphicContext->function;
-    }
-    if (HAS_VALUE(valuemask, GCPlaneMask)) {
+    if (HAS_VALUE(valuemask, GCPlaneMask))
         values_return->plane_mask = graphicContext->planeMask;
-    }
-    if (HAS_VALUE(valuemask, GCForeground)) {
+    if (HAS_VALUE(valuemask, GCForeground))
         values_return->foreground = graphicContext->foreground;
-    }
-    if (HAS_VALUE(valuemask, GCBackground)) {
+    if (HAS_VALUE(valuemask, GCBackground))
         values_return->background = graphicContext->background;
-    }
-    if (HAS_VALUE(valuemask, GCLineWidth)) {
+    if (HAS_VALUE(valuemask, GCLineWidth))
         values_return->line_width = graphicContext->lineWidth;
-    }
-    if (HAS_VALUE(valuemask, GCLineStyle)) {
+    if (HAS_VALUE(valuemask, GCLineStyle))
         values_return->line_style = graphicContext->lineStyle;
-    }
-    if (HAS_VALUE(valuemask, GCCapStyle)) {
+    if (HAS_VALUE(valuemask, GCCapStyle))
         values_return->cap_style = graphicContext->capStyle;
-    }
-    if (HAS_VALUE(valuemask, GCJoinStyle)) {
+    if (HAS_VALUE(valuemask, GCJoinStyle))
         values_return->join_style = graphicContext->joinStyle;
-    }
-    if (HAS_VALUE(valuemask, GCFillStyle)) {
+    if (HAS_VALUE(valuemask, GCFillStyle))
         values_return->fill_style = graphicContext->fillStyle;
-    }
-    if (HAS_VALUE(valuemask, GCFillRule)) {
+    if (HAS_VALUE(valuemask, GCFillRule))
         values_return->fill_rule = graphicContext->fillRule;
-    }
     if (HAS_VALUE(valuemask, GCTile)) {
         if (graphicContext->tile == None) {
             values_return->tile = 0xFFFFFFFF;
@@ -319,12 +291,10 @@ Status XGetGCValues(Display *display,
             values_return->stipple = graphicContext->stipple;
         }
     }
-    if (HAS_VALUE(valuemask, GCTileStipXOrigin)) {
+    if (HAS_VALUE(valuemask, GCTileStipXOrigin))
         values_return->ts_x_origin = graphicContext->tileStipOriginX;
-    }
-    if (HAS_VALUE(valuemask, GCTileStipYOrigin)) {
+    if (HAS_VALUE(valuemask, GCTileStipYOrigin))
         values_return->ts_y_origin = graphicContext->tileStipOriginY;
-    }
     if (HAS_VALUE(valuemask, GCFont)) {
         if (graphicContext->font == None) {
             values_return->font = 0xFFFFFFFF;
@@ -332,27 +302,20 @@ Status XGetGCValues(Display *display,
             values_return->font = graphicContext->font;
         }
     }
-    if (HAS_VALUE(valuemask, GCSubwindowMode)) {
+    if (HAS_VALUE(valuemask, GCSubwindowMode))
         values_return->subwindow_mode = graphicContext->subWindowMode;
-    }
-    if (HAS_VALUE(valuemask, GCGraphicsExposures)) {
+    if (HAS_VALUE(valuemask, GCGraphicsExposures))
         values_return->graphics_exposures = graphicContext->graphicsExposures;
-    }
-    if (HAS_VALUE(valuemask, GCClipXOrigin)) {
+    if (HAS_VALUE(valuemask, GCClipXOrigin))
         values_return->clip_x_origin = graphicContext->clipOriginX;
-    }
-    if (HAS_VALUE(valuemask, GCClipYOrigin)) {
+    if (HAS_VALUE(valuemask, GCClipYOrigin))
         values_return->clip_y_origin = graphicContext->clipOriginY;
-    }
-    if (HAS_VALUE(valuemask, GCClipMask)) {
+    if (HAS_VALUE(valuemask, GCClipMask))
         values_return->clip_mask = graphicContext->clipMask;
-    }
-    if (HAS_VALUE(valuemask, GCDashOffset)) {
+    if (HAS_VALUE(valuemask, GCDashOffset))
         values_return->dash_offset = graphicContext->dashOffset;
-    }
-    if (HAS_VALUE(valuemask, GCArcMode)) {
+    if (HAS_VALUE(valuemask, GCArcMode))
         values_return->arc_mode = graphicContext->arcMode;
-    }
     return 1;
 }
 

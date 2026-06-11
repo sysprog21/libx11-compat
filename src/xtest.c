@@ -1,4 +1,4 @@
-/* XTest extension implementation for libx11-compat.
+/* XTest extension implementation
  *
  * Real X11 implements XTest in the server: a test client calls
  * XTestFakeXxxEvent and the server distributes the resulting events to every
@@ -10,9 +10,9 @@
  * from a real one downstream.
  *
  * This is what overcomes the macOS NSEvent-injection limitation: the synthetic
- * SDL_Event lives inside our process and never has to cross the NSWindow/AppKit
- * responder chain that drops external CGEvent button presses against
- * non-keyWindow processes.
+ * SDL_Event lives inside the libx11-compat process and never has to cross the
+ * NSWindow/AppKit responder chain that drops external CGEvent button presses
+ * against non-keyWindow processes.
  */
 
 #include <stdlib.h>
@@ -31,9 +31,9 @@
 #define XTEST_MINOR 2
 
 /* The XTest spec says delay is "in milliseconds before delivering the event";
- * servers honor it because they have an internal scheduler. We just sleep when
- * nonzero. Callers chain fakes with delay=0, delay=10, delay=10... to pace a
- * sequence.
+ * servers honor it because they have an internal scheduler. honorDelay just
+ * sleeps when the value is nonzero. Callers chain fakes with delay=0, delay=10,
+ * delay=10... to pace a sequence.
  */
 static void honorDelay(unsigned long delay_ms)
 {
@@ -82,9 +82,10 @@ int XTestFakeMotionEvent(Display *display,
 {
     (void) screen_number;
     honorDelay(delay);
-    /* Coherent snapshot of (id, root) so a retarget between reading the
-     * id and the root cannot send this event to one window with another
-     * window's local coordinates. */
+    /* Coherent snapshot of (id, root) so a retarget between reading the id and
+     * the root cannot send this event to one window with another window's local
+     * coordinates.
+     */
     Uint32 winId = 0;
     int localX = 0, localY = 0;
     if (!replayTargetTranslateRoot(x, y, &winId, &localX, &localY))
@@ -151,8 +152,8 @@ int XTestFakeButtonEvent(Display *display,
     case 5: {
         /* X11 buttons 4/5 are scroll wheel up/down. SDL models scrolling as
          * SDL_MOUSEWHEEL, not button events. Synthesize one wheel tick with the
-         * appropriate y direction on press; the X-protocol release that
-         * follows real wheel events has no SDL analog, so swallow it.
+         * appropriate y direction on press; the X-protocol release that follows
+         * real wheel events has no SDL analog, so swallow it.
          */
         if (!is_press)
             return 1;
@@ -163,14 +164,14 @@ int XTestFakeButtonEvent(Display *display,
         ev.wheel.windowID = winId;
         ev.wheel.y = (button == 4) ? 1 : -1;
         ev.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
-        /* Tag the event as synthetic so convertEvent's SDL_MOUSEWHEEL
-         * handler knows to use the injected pointer position instead of
-         * SDL_GetMouseState. SDL_TOUCH_MOUSEID is the documented sentinel
-         * for "not a real mouse instance" and never collides with a
-         * device-driven which value. Without this tag, a real
-         * interactive wheel scroll AFTER any XTest activity would also
-         * route through the injected coordinates because we cannot tell
-         * the events apart from convertEvent. */
+        /* Tag the event as synthetic so convertEvent's SDL_MOUSEWHEEL handler
+         * knows to use the injected pointer position instead of
+         * SDL_GetMouseState. SDL_TOUCH_MOUSEID is the documented sentinel for
+         * "not a real mouse instance" and never collides with a device-driven
+         * which value. Without this tag, a real interactive wheel scroll AFTER
+         * any XTest activity would also route through the injected coordinates
+         * because convertEvent cannot tell synthetic and real events apart.
+         */
         ev.wheel.which = SDL_TOUCH_MOUSEID;
         return pushFakeEvent(display, &ev);
     }
@@ -209,13 +210,12 @@ int XTestFakeKeyEvent(Display *display,
     ev.key.timestamp = SDL_GetTicks();
     ev.key.windowID = winId;
     ev.key.state = is_press ? SDL_PRESSED : SDL_RELEASED;
-    /* X keycodes are server-defined; SDL scancodes are SDL's own enum and
-     * the convertEvent path derives the X keycode back from keysym.sym
-     * (low byte). Pass the requested code through as the SDL_Keycode so
-     * the round-trip lands on the same X keycode the caller asked for,
-     * and let SDL_GetScancodeFromKey fill in the scancode for callers
-     * that consume it. Callers wanting a specific keysym should
-     * XStringToKeysym first.
+    /* X keycodes are server-defined; SDL scancodes are SDL's own enum and the
+     * convertEvent path derives the X keycode back from keysym.sym (low byte).
+     * Pass the requested code through as the SDL_Keycode so the round-trip
+     * lands on the same X keycode the caller asked for, and let
+     * SDL_GetScancodeFromKey fill in the scancode for callers that consume it.
+     * Callers wanting a specific keysym should XStringToKeysym first.
      */
     ev.key.keysym.sym = (SDL_Keycode) keycode;
     ev.key.keysym.scancode = SDL_GetScancodeFromKey((SDL_Keycode) keycode);
@@ -223,8 +223,10 @@ int XTestFakeKeyEvent(Display *display,
 }
 
 /* Stubs: device-extension variants need XInput plumbing libx11-compat doesn't
- * model. Return success; the caller's chain typically falls back to non-device
- * XTest paths anyway.
+ * model.
+ *
+ * Return success; the caller's chain typically falls back to non-device XTest
+ * paths anyway.
  */
 int XTestFakeDeviceKeyEvent(Display *display,
                             XDevice *dev,
@@ -295,7 +297,7 @@ Bool XTestCompareCursorWithWindow(Display *display,
     (void) window;
     (void) cursor;
     /* No cursor introspection; reporting "same" prevents test programs from
-     * looping forever waiting for a cursor change we can't observe.
+     * looping forever waiting for a cursor change libx11-compat cannot observe.
      */
     return True;
 }

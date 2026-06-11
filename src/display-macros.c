@@ -196,9 +196,8 @@ int XScreenNumberOfScreen(Screen *screen)
 {
     Display *display = DisplayOfScreen(screen);
     for (int i = 0; i < ScreenCount(display); i++) {
-        if (ScreenOfDisplay(display, i) == screen) {
+        if (ScreenOfDisplay(display, i) == screen)
             return i;
-        }
     }
     return -1;
 }

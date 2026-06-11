@@ -7,10 +7,12 @@
 
 #define XSHM_EVENT_BASE 128
 
-/* The MIT-SHM extension speeds up image transfer with shared memory. We have
- * no client/server boundary, so XGetSubImage / XPutImage are already the fast
- * path. These wrappers let callers that probe XShm fall back without crashing,
- * and route XShmGetImage/XShmPutImage to the regular image APIs. */
+/* The MIT-SHM extension speeds up image transfer with shared memory.
+ * libx11-compat has no client/server boundary, so XGetSubImage and XPutImage
+ * are already the fast path. The wrappers below let callers that probe XShm
+ * fall back without crashing, and route XShmGetImage and XShmPutImage through
+ * the regular image APIs.
+ */
 
 static int destroyShmImage(XImage *image)
 {
@@ -40,10 +42,11 @@ Status XShmQueryVersion(Display *dpy,
         *major_version = 1;
     if (minor_version)
         *minor_version = 2;
-    /* We do not actually back shared pixmaps with a shared memory segment
-     * (XShmCreatePixmap below creates a normal pixmap and ignores the SHM
-     * data pointer). Advertising shared_pixmaps=True misleads callers into
-     * relying on shared-memory semantics we do not honor. */
+    /* XShmCreatePixmap below creates a normal pixmap and ignores the SHM data
+     * pointer, so the implementation does not actually back shared pixmaps with
+     * a shared memory segment. Advertising shared_pixmaps=True would mislead
+     * callers into relying on shared-memory semantics this shim does not honor.
+     */
     if (shared_pixmaps)
         *shared_pixmaps = False;
     return 1;
@@ -83,7 +86,8 @@ Bool XShmPutImage(Display *dpy,
 {
     /* XPutImage returns 1 on success and -1 on failure -- never 0 -- so
      * comparing against zero treats every failure as a success. Match the
-     * actual success sentinel instead. */
+     * actual success sentinel instead.
+     */
     if (XPutImage(dpy, d, gc, image, src_x, src_y, dst_x, dst_y, width,
                   height) != 1) {
         return False;
@@ -136,9 +140,8 @@ XImage *XShmCreateImage(Display *dpy,
         XCreateImage(dpy, visual, depth, format, 0,
                      data ? data : (shminfo ? shminfo->shmaddr : NULL), width,
                      height, 32, 0);
-    if (image) {
+    if (image)
         image->f.destroy_image = destroyShmImage;
-    }
     return image;
 }
 

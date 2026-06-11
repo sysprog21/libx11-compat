@@ -1,6 +1,6 @@
 # Formatting targets.
 
-C_FORMAT_FILES := $(shell find include src tests -type f \( -name '*.c' -o -name '*.h' \) | sort)
+C_FORMAT_FILES := $(shell find include src tests compat -type f \( -name '*.c' -o -name '*.h' \) -not -path 'compat/*-patches/*' | sort)
 PYTHON_FORMAT_FILES := $(shell find scripts -type f -name '*.py' | sort)
 SHELL_FORMAT_FILES := $(shell find .ci -type f -name '*.sh' 2>/dev/null | sort)
 
@@ -38,7 +38,7 @@ endif
 
 ## Format C sources, headers, Python scripts, and shell scripts
 indent: _clang_format_guard _shfmt_guard
-	@echo "  FMT     include/ src/ tests/ ($(CLANG_FORMAT))"
+	@echo "  FMT     include/ src/ tests/ compat/ ($(CLANG_FORMAT))"
 	$(Q)$(CLANG_FORMAT) -i $(C_FORMAT_FILES)
 ifneq ($(PYTHON_FORMAT_FILES),)
 	@echo "  BLACK   scripts/"
@@ -51,7 +51,7 @@ endif
 
 ## Check C, Python, and shell formatting
 check-format: _clang_format_guard _shfmt_guard
-	@echo "  FMT     include/ src/ tests/ (check, $(CLANG_FORMAT))"
+	@echo "  FMT     include/ src/ tests/ compat/ (check, $(CLANG_FORMAT))"
 	$(Q)$(CLANG_FORMAT) --dry-run --Werror $(C_FORMAT_FILES)
 ifneq ($(PYTHON_FORMAT_FILES),)
 	@echo "  BLACK   scripts/ (check)"

@@ -48,12 +48,11 @@ static Pixmap createPixmapFromPixels(Display *display,
                                      unsigned int depth)
 {
     Pixmap pixmap = XCreatePixmap(display, SCREEN_WINDOW, width, height, depth);
-    if (pixmap == None) {
+    if (pixmap == None)
         return None;
-    }
     SDL_Texture *texture = GET_PIXMAP_TEXTURE(pixmap);
-    /* SDL_UpdateTexture takes pitch as int; reject widths whose RGBA8888
-     * row size would not fit, before the implicit cast truncates it.
+    /* SDL_UpdateTexture takes pitch as int; reject widths whose RGBA8888 row
+     * size would not fit, before the implicit cast truncates it.
      */
     if (width > (unsigned int) INT_MAX / sizeof(Uint32)) {
         XFreePixmap(display, pixmap);
@@ -168,9 +167,10 @@ Pixmap XCreatePixmapFromBitmapData(Display *display,
         return None;
     }
 
-    /* Guard against width*height overflow before alloc, and against
-     * (width + 7) wrapping inside bitmapBitIsSet. Both feed into pointer
-     * arithmetic that would otherwise walk off the heap. */
+    /* Guard against width*height overflow before alloc, and against (width + 7)
+     * wrapping inside bitmapBitIsSet. Both feed into pointer arithmetic that
+     * would otherwise walk off the heap.
+     */
     if (width > UINT_MAX - 7 ||
         width > SIZE_MAX / sizeof(Uint32) / (size_t) height) {
         handleError(0, display, None, 0, BadValue, 0);
@@ -213,9 +213,8 @@ XPixmapFormatValues *XListPixmapFormats(Display *dpy, int *count)
         {.depth = 1, .bits_per_pixel = 1, .scanline_pad = 8},
     };
     XPixmapFormatValues *copy = malloc(sizeof(formats));
-    if (!copy) {
+    if (!copy)
         return NULL;
-    }
     memcpy(copy, formats, sizeof(formats));
     if (count) {
         *count = (int) (sizeof(formats) / sizeof(formats[0]));

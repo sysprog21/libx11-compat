@@ -1,4 +1,4 @@
-/* Path builder storage for libx11-compat
+/* Path builder storage
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

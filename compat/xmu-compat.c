@@ -23,7 +23,7 @@ typedef struct _AtomRec {
     Atom atom;
 } AtomRec;
 
-#define DEFINE_XMU_ATOM(symbol, name) \
+#define DEFINE_XMU_ATOM(symbol, name)               \
     static AtomRec symbol##_storage = {name, None}; \
     AtomPtr symbol = &symbol##_storage
 
@@ -83,7 +83,8 @@ static Widget findApplicationShell(Widget w)
 }
 
 /* Populate the selection-conversion return slots with a freshly duplicated
- * STRING value. Returns True only when XtNewString succeeded. */
+ * STRING value. Returns True only when XtNewString succeeded.
+ */
 static Boolean returnStringSelection(const char *value,
                                      Atom *type_return,
                                      XPointer *value_return,
@@ -273,7 +274,8 @@ Boolean XmuConvertStandardSelection(Widget w,
 
         const char *class_name = NULL;
         if (XtIsApplicationShell(classShell))
-            class_name = ((ApplicationShellWidget) classShell)->application.class;
+            class_name =
+                ((ApplicationShellWidget) classShell)->application.class;
         if (!class_name)
             class_name = XtClass(classShell)->core_class.class_name;
         if (!class_name)
@@ -282,7 +284,8 @@ Boolean XmuConvertStandardSelection(Widget w,
         size_t instance_len = strlen(instance);
         size_t class_len = strlen(class_name);
         /* XtMalloc takes Cardinal (unsigned int); guard against size_t
-         * truncation before allocating the two-NUL packed buffer. */
+         * truncation before allocating the two-NUL packed buffer.
+         */
         if (instance_len > (size_t) INT_MAX - 2 ||
             class_len > (size_t) INT_MAX - 2 - instance_len)
             return False;
@@ -345,8 +348,8 @@ Boolean XmuConvertStandardSelection(Widget w,
 
     if (*target == XA_TARGETS(dpy)) {
         Atom advertised[] = {
-            XA_TARGETS(dpy),  XA_TIMESTAMP(dpy),     XA_HOSTNAME(dpy),
-            XA_USER(dpy),     XA_CLASS(dpy),         XA_NAME(dpy),
+            XA_TARGETS(dpy),       XA_TIMESTAMP(dpy), XA_HOSTNAME(dpy),
+            XA_USER(dpy),          XA_CLASS(dpy),     XA_NAME(dpy),
             XA_CLIENT_WINDOW(dpy), XA_OWNER_OS(dpy),
         };
         Atom *targets = (Atom *) XtMalloc(sizeof(advertised));
@@ -371,8 +374,8 @@ static Bool windowHasProperty(Display *dpy, Window win, Atom property)
     unsigned long bytes_after = 0;
     unsigned char *data = NULL;
     if (XGetWindowProperty(dpy, win, property, 0, 0, False, AnyPropertyType,
-                           &actual_type, &actual_format, &nitems,
-                           &bytes_after, &data) == Success &&
+                           &actual_type, &actual_format, &nitems, &bytes_after,
+                           &data) == Success &&
         actual_type != None) {
         XFree(data);
         return True;
@@ -438,7 +441,8 @@ Status XmuLookupStandardColormap(Display *dpy,
                                  Bool retain)
 {
     /* retain across server resets isn't applicable to SDL2-backed Xlib:
-     * the server lives and dies with the client. */
+     * the server lives and dies with the client.
+     */
     (void) retain;
     if (!dpy || property == None || depth == 0)
         return False;
@@ -461,10 +465,11 @@ Status XmuLookupStandardColormap(Display *dpy,
         }
     }
 
-    /* SDL2 backs the only visual we expose as 24bpp TrueColor RGB. The
-     * client (mwm in particular) only reads this property to discover an
-     * acceptable allocation; fill in the canonical TrueColor RGB cube
-     * mapped 1:1 onto the pixel value. */
+    /* SDL2 backs the only visual the compat layer exposes as 24bpp
+     * TrueColor RGB. The client (mwm in particular) only reads this
+     * property to discover an acceptable allocation; fill in the
+     * canonical TrueColor RGB cube mapped 1:1 onto the pixel value.
+     */
     XStandardColormap cmap = {0};
     cmap.colormap = DefaultColormap(dpy, screen);
     cmap.red_max = 255;
@@ -502,20 +507,20 @@ int XmuSnprintf(char *str, int size, const char *fmt, ...)
     return result;
 }
 
-/* ------------------------------------------------------------------
- * Xmu type converters. Motif registers its own converters for its own
+/* Xmu type converters. Motif registers its own converters for its own
  * resource types; the symbols below exist so any object that includes
  * <X11/Xmu/Converters.h> (which declares them) links against
  * libXmu-compat without falling back to the host libXmu. mwm and
  * Athena widgets actually exercise some of them. The simple
  * String->enum converters are implemented inline; rarely-used variants
  * (Bitmap, Cursor, ColorCursor) and the inverse "ToString" converters
- * fail conversion via WARN_UNIMPLEMENTED so users see the gap at
+ * fail conversion via WARN_UNIMPLEMENTED so callers see the gap at
  * runtime if they hit it.
  *
  * Old-style converter signature (void return): set toVal->size = 0 to
  * report failure. New-style XtTypeConverter (Boolean return): return
- * False. */
+ * False.
+ */
 
 static void xmuStoreConverted(XrmValuePtr toVal, const void *src, Cardinal size)
 {
@@ -690,12 +695,11 @@ Boolean XmuCvtGravityToString(Display *dpy,
     (void) converter_data;
     if (!fromVal || !toVal || !fromVal->addr)
         return False;
-    static char *names[] = {(char *) "forget",      (char *) "northwest",
-                            (char *) "north",       (char *) "northeast",
-                            (char *) "west",        (char *) "center",
-                            (char *) "east",        (char *) "southwest",
-                            (char *) "south",       (char *) "southeast",
-                            (char *) "static",      (char *) "unmap"};
+    static char *names[] = {
+        (char *) "forget",    (char *) "northwest", (char *) "north",
+        (char *) "northeast", (char *) "west",      (char *) "center",
+        (char *) "east",      (char *) "southwest", (char *) "south",
+        (char *) "southeast", (char *) "static",    (char *) "unmap"};
     int v = *(int *) fromVal->addr;
     if (v < ForgetGravity || v > StaticGravity)
         return False;

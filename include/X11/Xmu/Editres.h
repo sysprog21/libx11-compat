@@ -1,4 +1,4 @@
-/* Stub Xmu/Editres.h for libx11-compat's libXt build
+/* Stub Xmu/Editres.h for the libXt build
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

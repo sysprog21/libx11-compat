@@ -1,4 +1,4 @@
-/* Scanline path rasterization for libx11-compat
+/* Scanline path rasterization
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
@@ -35,7 +35,8 @@ static Bool buildPixmanRegionFromSpans(const PathSpanList *spans,
 /* Color and fillRule are explicit so the wide-stroke path can force
  * WindingRule (its outline self-overlaps at joins) and dashed strokes can
  * fill each sub-path with foreground or background without mutating the
- * live GC. */
+ * live GC.
+ */
 static Bool rasterFillPathInternal(SDL_Renderer *renderer,
                                    GC gc,
                                    const Path *path,
@@ -221,7 +222,8 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
 
     /* Non-dashed, OR dashed-with-empty-dash-list (treat as solid since
      * there is no pattern to apply). The dash loop would spin forever
-     * if numDashes is 0 because dashLeft can never refill. */
+     * if numDashes is 0 because dashLeft can never refill.
+     */
     Bool dashed = gContext->lineStyle == LineOnOffDash ||
                   gContext->lineStyle == LineDoubleDash;
     if (!dashed || gContext->numDashes == 0) {
@@ -233,7 +235,8 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
     }
 
     /* Split the flattened polyline into on/off sub-paths by dash phase,
-     * then stroke each with the appropriate color via the helper above. */
+     * then stroke each with the appropriate color via the helper above.
+     */
     PathPoint *points = NULL;
     size_t pointCount = 0;
     Bool ok = False;
@@ -258,7 +261,8 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
     Bool dashOn = True;
     /* Reduce dashOffset mod the pattern period before consuming it.
      * Unsigned negation dodges -INT_MIN UB; modulo caps the consume loop
-     * iteration count. X11 doubles the period for odd-length lists. */
+     * iteration count. X11 doubles the period for odd-length lists.
+     */
     unsigned int patternTotal = 0;
     for (size_t k = 0; k < gContext->numDashes; k++)
         patternTotal += (unsigned char) gContext->dashes[k];
@@ -286,7 +290,8 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
     }
     ok = True;
     /* Dash state lives outside the contour loop: X11 carries phase
-     * across MoveTo boundaries instead of restarting per subpath. */
+     * across MoveTo boundaries instead of restarting per subpath.
+     */
     int dashedLineStyle = gContext->lineStyle;
     for (size_t i = 0; ok && i + 1 < pointCount; i++) {
         if (pathPointIsBreak(points[i]) || pathPointIsBreak(points[i + 1]))

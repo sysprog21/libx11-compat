@@ -271,6 +271,7 @@ while IFS= read -r exe; do
     lib_path="$abs_build_dir/lib/Xm/.libs:$abs_build_dir/lib/Mrm/.libs:$abs_build_dir/clients/uil/.libs:$abs_out_dir"
     input_file=
     home_dir=
+    extra_lang=
     app_res_dir=$(motif_app_resource_dir "$rel")
     xappresdir="$app_res_dir"
     xfile_search_path=$(motif_xfile_search_path "$app_res_dir")
@@ -334,7 +335,13 @@ EOF
                 -todoFile "$todo_file"
             ;;
         programs/hellomotifi18n/helloint)
+            # Mirror scripts/validate-motif-demos.sh: Mrm's XtResolvePathname
+            # expands %L from LANG to pick a uid/ locale subdir. The demo ships
+            # C/english/french/hebrew/japan/japanese/swedish; a host LANG like
+            # en_US.UTF-8 has no match and the lookup falls through to
+            # MrmNOT_FOUND. Pin LANG=C so the resolver hits C/uid/l_strings.uid.
             xappresdir=.
+            extra_lang=C
             ;;
     esac
 
@@ -343,6 +350,7 @@ EOF
         (
             cd "$work_dir"
             exec env -u SDL_VIDEODRIVER \
+                ${extra_lang:+LANG="$extra_lang" LC_ALL="$extra_lang"} \
                 DYLD_LIBRARY_PATH="$lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
                 LD_LIBRARY_PATH="$lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                 LIBX11_COMPAT_FONT_DIR="$compat_font_dir" \
@@ -355,6 +363,7 @@ EOF
         (
             cd "$work_dir"
             exec env -u SDL_VIDEODRIVER \
+                ${extra_lang:+LANG="$extra_lang" LC_ALL="$extra_lang"} \
                 DYLD_LIBRARY_PATH="$lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
                 LD_LIBRARY_PATH="$lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                 LIBX11_COMPAT_FONT_DIR="$compat_font_dir" \

@@ -269,7 +269,30 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None):
     return dest_path
 
 
-def capture_screen(path, env, command, region):
+def bring_process_to_front(pid):
+    if sys.platform != "darwin":
+        return
+    script = (
+        'tell application "System Events" to set frontmost of '
+        f"(first process whose unix id is {pid}) to true"
+    )
+    # Best-effort: a headless runner without osascript, a denied
+    # Accessibility prompt, or a vanished pid must not block or fail the
+    # replay. Bound the wait so a hung osascript cannot stall capture.
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+    time.sleep(0.1)
+
+
+def capture_screen(path, env, command, region, frontmost_pid=None):
     """Capture either the full screen or a fixed pixel region.
 
     region is an (x, y, w, h) tuple in display coordinates, or None for
@@ -291,6 +314,8 @@ def capture_screen(path, env, command, region):
                 "no screenshot command found; install ImageMagick import, "
                 "gnome-screenshot, or macOS screencapture"
             )
+    if command == "screencapture" and frontmost_pid is not None:
+        bring_process_to_front(frontmost_pid)
 
     if command == "import":
         cmd = ["import", "-window", "root"]
@@ -828,7 +853,13 @@ def run_replay(args):
                         )
                     else:
                         capture_start = time.perf_counter()
-                        capture_screen(shot, env, args.screenshot_command, region)
+                        capture_screen(
+                            shot,
+                            env,
+                            args.screenshot_command,
+                            region,
+                            frontmost_pid=proc.pid,
+                        )
                         add_metric(
                             metrics,
                             lineno,

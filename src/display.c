@@ -25,10 +25,10 @@
 #define SDL_HINT_VIDEO_X11_XKB "SDL_VIDEO_X11_XKB"
 #endif
 
-/* Lock hooks installed by libX11's locking.c when XInitThreads runs;
- * we hold the function-pointer storage so display open/close can invoke
- * them without dragging in upstream XlibInt.c. The storage is
- * LIBX11_COMPAT_HIDDEN so a system libX11.so.6 loaded alongside us
+/* Lock hooks installed by libX11's locking.c when XInitThreads runs.
+ * libx11-compat holds the function-pointer storage so display open/close can
+ * invoke them without dragging in upstream XlibInt.c. The storage is
+ * LIBX11_COMPAT_HIDDEN so a system libX11.so.6 loaded alongside libx11-compat
  * cannot reach in and overwrite it; see util.h for the rationale.
  */
 #include "locking.h"
@@ -46,9 +46,10 @@ LIBX11_COMPAT_HIDDEN void (*_XFreeDisplayLock_fn)(Display *dpy) = NULL;
 // }
 
 int numDisplaysOpen = 0;
-/* Vendor reports the SDL version this library was compiled against. The
- * active video driver can vary by environment at runtime, while this string is
- * stable and useful for compatibility probes. */
+/* Vendor reports the SDL version this library was compiled against. The active
+ * video driver can vary by environment at runtime, while this string is stable
+ * and useful for compatibility probes.
+ */
 static char *vendor = "SDL " TO_STRING(SDL_MAJOR_VERSION) "." TO_STRING(
     SDL_MINOR_VERSION) "." TO_STRING(SDL_PATCHLEVEL);
 static const int releaseVersion = 1;
@@ -61,26 +62,33 @@ int XCloseDisplay(Display *display)
     freeExtensionStorage(display);
     freeSelectionStorage(display);
     int screenIndex;
-    for (screenIndex = 0; screenIndex < display->nscreens; screenIndex++) {
-        Screen *screen = &display->screens[screenIndex];
-        if (screen->default_gc) {
-            XFreeGC(display, screen->default_gc);
-            screen->default_gc = NULL;
+    /* XOpenDisplay can call XCloseDisplay for cleanup after
+     * SDL_GetNumVideoDisplays succeeds but the screens calloc fails: nscreens
+     * is then >= 0 while screens is NULL. Guard the GC teardown so partial-init
+     * paths do not segfault.
+     */
+    if (display->screens) {
+        for (screenIndex = 0; screenIndex < display->nscreens; screenIndex++) {
+            Screen *screen = &display->screens[screenIndex];
+            if (screen->default_gc) {
+                XFreeGC(display, screen->default_gc);
+                screen->default_gc = NULL;
+            }
         }
     }
     /* Teardown order before SDL_Quit:
      *   releaseLastRequestCode -> replayStop -> destroyScreenWindow
      *   -> closeEventPipe -> SDL_Quit.
-     * All four touch SDL primitives (mutexes, timers, the event filter)
-     * that must still exist. replayStop precedes closeEventPipe so the
-     * worker cannot push XTest events through a queue with no filter
-     * behind it. destroyScreenWindow precedes closeEventPipe because
-     * destroyWindow recurses into discardQueuedEventsForWindow() and
-     * postEvent(DestroyNotify), both of which take per-display event
-     * mutexes that closeEventPipe destroys. The numDisplaysOpen guard
-     * scopes replay/screen teardown to the last close so secondary
-     * displays opened by Motif/Xt probes do not tear down shared
-     * state. */
+     * All four touch SDL primitives (mutexes, timers, the event filter) that
+     * must still exist. replayStop precedes closeEventPipe so the worker cannot
+     * push XTest events through a queue with no filter behind it.
+     * destroyScreenWindow precedes closeEventPipe because destroyWindow
+     * recurses into discardQueuedEventsForWindow() and
+     * postEvent(DestroyNotify), both of which take per-display event mutexes
+     * that closeEventPipe destroys. The numDisplaysOpen guard scopes
+     * replay/screen teardown to the last close so secondary displays opened by
+     * Motif/Xt probes do not tear down shared state.
+     */
     releaseLastRequestCode(display);
     if (numDisplaysOpen == 1) {
         replayStop();
@@ -99,9 +107,8 @@ int XCloseDisplay(Display *display)
         TTF_Quit();
         SDL_Quit();
     }
-    if (numDisplaysOpen > 0) {
+    if (numDisplaysOpen > 0)
         numDisplaysOpen--;
-    }
 
     if (GET_DISPLAY(display)->screens) {
         for (screenIndex = 0; screenIndex < GET_DISPLAY(display)->nscreens;
@@ -120,17 +127,17 @@ Display *XOpenDisplay(_Xconst char *display_name)
     setenv("DISPLAY", ":0", 0);
 
     // https://tronche.com/gui/x/xlib/display/opening.html
-    /* calloc zeroes every field, which matches the explicit reset of the
-     * many _Xprivate Display members the protocol expects to start at NULL/0
-     * (lock_meaning == NoSymbol == 0, cursor_font == None == 0, etc.). */
+    /* calloc zeroes every field, which matches the explicit reset of the many
+     * _Xprivate Display members the protocol expects to start at NULL/0
+     * (lock_meaning == NoSymbol == 0, cursor_font == None == 0, etc.).
+     */
     Display *display = calloc(1, sizeof(Display));
     if (!display) {
-        LOG("Out of memory: Failed to allocate memory for Display struct in "
-            "XOpenDisplay!");
+        fprintf(stderr, "libX11-compat: failed to allocate Display struct\n");
         return NULL;
     }
-    /* Track whether we own the SDL/TTF init so the failure paths only
-     * tear down what this call brought up. An embedding application that
+    /* Track whether the open path owns the SDL/TTF init so the failure paths
+     * only tear down what this call brought up. An embedding application that
      * pre-initialized SDL would otherwise lose its video subsystem.
      */
     Bool sdlOwned = False;
@@ -138,14 +145,29 @@ Display *XOpenDisplay(_Xconst char *display_name)
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_SetMainReady();
         SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
-        /* On macOS, the click that activates a background window is
-         * consumed by activation and never seen by the app. Click-through
-         * routes that first click to the app as a real button event,
-         * matching X11 semantics. Has no effect on Accessibility/TCC
-         * gating of synthetic input (cliclick, CGEvent). */
+        /* On macOS, the click that activates a background window is consumed by
+         * activation and never seen by the app. Click-through routes that first
+         * click to the app as a real button event, matching X11 semantics. Has
+         * no effect on Accessibility/TCC gating of synthetic input (cliclick,
+         * CGEvent).
+         */
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
         if (SDL_Init(SDL_INIT_VIDEO) == -1) {
-            LOG("Failed to initialize SDL: %s\n", SDL_GetError());
+            /* Diagnose intermittent XOpenDisplay -> NULL failures observed
+             * under load on the remote Xvfb differential test. The Xt error
+             * "Can't open display" is generic; without this line the actual
+             * SDL backend error is lost when DEBUG_LIBX11_COMPAT is off.
+             * Cache getenv() results in locals: passing them through ternaries
+             * inline evaluates getenv() twice per arg, and a NULL result the
+             * second time around would be undefined behavior in fprintf %s.
+             */
+            const char *displayEnv = getenv("DISPLAY");
+            const char *driverEnv = getenv("SDL_VIDEODRIVER");
+            fprintf(stderr,
+                    "libX11-compat: SDL_Init(VIDEO) failed: %s "
+                    "(DISPLAY=%s SDL_VIDEODRIVER=%s)\n",
+                    SDL_GetError(), displayEnv ? displayEnv : "",
+                    driverEnv ? driverEnv : "");
             free(display);
             return NULL;
         }
@@ -153,7 +175,8 @@ Display *XOpenDisplay(_Xconst char *display_name)
     }
     if (!TTF_WasInit()) {
         if (TTF_Init() == -1) {
-            LOG("Failed to initialize SDL_TTF: %s\n", TTF_GetError());
+            fprintf(stderr, "libX11-compat: TTF_Init failed: %s\n",
+                    TTF_GetError());
             if (sdlOwned)
                 SDL_Quit();
             free(display);
@@ -163,6 +186,8 @@ Display *XOpenDisplay(_Xconst char *display_name)
     }
     if (numDisplaysOpen == 0) {
         if (!(initVisuals() && initColorStorage() && initFontStorage())) {
+            fprintf(stderr,
+                    "libX11-compat: visuals/colors/fonts init failed\n");
             freeFontStorage();
             freeColorStorage();
             freeVisuals();
@@ -179,6 +204,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
     display->next_event_serial_num = 1;
     int eventFd = initEventPipe(display);
     if (eventFd < 0) {
+        fprintf(stderr, "libX11-compat: initEventPipe failed\n");
         display->nscreens = 0;
         XCloseDisplay(display);
         return NULL;
@@ -204,26 +230,28 @@ Display *XOpenDisplay(_Xconst char *display_name)
     display->default_screen = 0;
     display->nscreens = SDL_GetNumVideoDisplays();
     if (display->nscreens < 0) {
-        LOG("Failed to get the number of screens: %s\n", SDL_GetError());
+        fprintf(stderr, "libX11-compat: SDL_GetNumVideoDisplays failed: %s\n",
+                SDL_GetError());
         XCloseDisplay(display);
         return NULL;
     }
     display->screens = calloc((size_t) display->nscreens, sizeof(Screen));
     if (!display->screens) {
-        LOG("Failed to get the number of screens: %s\n", SDL_GetError());
+        fprintf(stderr, "libX11-compat: failed to allocate %d screen records\n",
+                display->nscreens);
         XCloseDisplay(display);
         return NULL;
     }
 
     /* Initialize the display lock */
     if (InitDisplayLock(display) != 0) {
-        LOG("Failed to InitDisplayLock\n");
+        fprintf(stderr, "libX11-compat: InitDisplayLock failed\n");
         XCloseDisplay(display);
         return NULL;
     }
 
     if (!(display->free_funcs = Xcalloc(1, sizeof(_XFreeFuncRec)))) {
-        LOG("OutOfMemory free_funcs\n");
+        fprintf(stderr, "libX11-compat: failed to allocate free_funcs\n");
         XCloseDisplay(display);
         return NULL;
     }
@@ -233,9 +261,10 @@ Display *XOpenDisplay(_Xconst char *display_name)
         Screen *screen = &display->screens[screenIndex];
         SDL_DisplayMode displayMode;
         if (SDL_GetDesktopDisplayMode(screenIndex, &displayMode) != 0) {
+            fprintf(stderr,
+                    "libX11-compat: SDL_GetDesktopDisplayMode(%d) failed: %s\n",
+                    screenIndex, SDL_GetError());
             XCloseDisplay(display);
-            LOG("Failed to get the display mode in XOpenDisplay: %s\n",
-                SDL_GetError());
             return NULL;
         }
         screen->display = display;
@@ -260,6 +289,9 @@ Display *XOpenDisplay(_Xconst char *display_name)
         screen->ndepths = ARRAY_LENGTH(supportedDepths);
         screen->depths = calloc(ARRAY_LENGTH(supportedDepths), sizeof(Depth));
         if (!screen->depths) {
+            fprintf(stderr,
+                    "libX11-compat: failed to allocate depths for screen %d\n",
+                    screenIndex);
             XCloseDisplay(display);
             return NULL;
         }
@@ -267,9 +299,9 @@ Display *XOpenDisplay(_Xconst char *display_name)
              depthIndex++) {
             screen->depths[depthIndex].depth = supportedDepths[depthIndex];
         }
-        /* Default pixels are 24-bit TrueColor values, not full internal
-         * ARGB draw colors. Some legacy clients index tables sized by
-         * 1 << DefaultDepth using BlackPixel/WhitePixel.
+        /* Default pixels are 24-bit TrueColor values, not full internal ARGB
+         * draw colors. Some legacy clients index tables sized by 1 <<
+         * DefaultDepth using BlackPixel/WhitePixel.
          */
         screen->white_pixel = 0x00FFFFFF;
         screen->black_pixel = 0x00000000;
@@ -282,7 +314,8 @@ Display *XOpenDisplay(_Xconst char *display_name)
     }
     if (SCREEN_WINDOW == None) {
         if (initScreenWindow(display) != True) {
-            LOG("XOpenDisplay: Initializing the screen window failed!\n");
+            fprintf(stderr, "libX11-compat: initScreenWindow failed: %s\n",
+                    SDL_GetError());
             XCloseDisplay(display);
             return NULL;
         }
@@ -292,6 +325,8 @@ Display *XOpenDisplay(_Xconst char *display_name)
         display->screens[screenIndex].default_gc =
             XCreateGC(display, RootWindow(display, 0), 0, 0);
         if (!display->screens[screenIndex].default_gc) {
+            fprintf(stderr, "libX11-compat: XCreateGC failed for screen %d\n",
+                    screenIndex);
             XCloseDisplay(display);
             return NULL;
         }
@@ -346,7 +381,8 @@ int XGrabServer(Display *display)
     // https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
     SET_X_SERVER_REQUEST(display, X_GrabServer);
     /* No-op: this backend has no separate X server or competing clients to
-     * exclude while a client updates global state. */
+     * exclude while a client updates global state.
+     */
     return 1;
 }
 
@@ -474,8 +510,8 @@ int XSetCommand(Display *display, Window w, char **argv, int argc)
 
     /* XChangeProperty takes the element count as int, and the ICCCM payload
      * size is bounded by the X protocol; cap aggregate WM_COMMAND bytes at
-     * INT_MAX. Check bytes first so the subtraction in the second clause
-     * cannot wrap when bytes is already at the cap.
+     * INT_MAX. Check bytes first so the subtraction in the second clause cannot
+     * wrap when bytes is already at the cap.
      */
     size_t bytes = 0;
     for (int i = 0; i < argc; i++) {
@@ -573,9 +609,8 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
         data.baseWidth = hints->base_width;
         data.baseHeight = hints->base_height;
     }
-    if (hints->flags & PWinGravity) {
+    if (hints->flags & PWinGravity)
         data.winGravity = hints->win_gravity;
-    }
 
     XChangeProperty(dpy, w, prop, XA_WM_SIZE_HINTS, 32, PropModeReplace,
                     (unsigned char *) &data, NumPropSizeElements);
@@ -648,9 +683,8 @@ Status XGetWMSizeHints(Display *dpy,
         hints->base_height = prop->baseHeight;
         hints->win_gravity = prop->winGravity;
     }
-    if (supplied) {
+    if (supplied)
         *supplied = hints->flags;
-    }
     XFree(propertyData);
     return 1;
 }
@@ -676,7 +710,8 @@ int XSetClassHint(Display *display, Window w, XClassHint *class_hints)
     /* XChangeProperty takes int element count; both NUL terminators must fit
      * along with nameLen + classLen, so cap the combined size below INT_MAX.
      * Check nameLen first so the subtraction in the second clause cannot wrap
-     * when nameLen is already at the cap. */
+     * when nameLen is already at the cap.
+     */
     if (nameLen > (size_t) INT_MAX - 2 ||
         classLen > (size_t) INT_MAX - 2 - nameLen) {
         handleError(0, display, None, 0, BadAlloc, 0);
@@ -827,7 +862,7 @@ Status XGetSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom property)
 }
 
 /* XSetNormalHints sets the property
- *	WM_NORMAL_HINTS 	type: WM_SIZE_HINTS format: 32
+ * 	WM_NORMAL_HINTS 	type: WM_SIZE_HINTS format: 32
  */
 
 int XSetNormalHints(/* old routine */
@@ -845,11 +880,11 @@ Status XGetNormalHints(Display *dpy, Window w, XSizeHints *hints)
 }
 
 /* XSetStandardProperties sets the following properties:
- *	WM_NAME		  type: STRING		format: 8
- *	WM_ICON_NAME	  type: STRING		format: 8
- *	WM_HINTS	  type: WM_HINTS	format: 32
- *	WM_COMMAND	  type: STRING
- *	WM_NORMAL_HINTS	  type: WM_SIZE_HINTS 	format: 32
+ * 	WM_NAME		  type: STRING		format: 8
+ * 	WM_ICON_NAME	  type: STRING		format: 8
+ * 	WM_HINTS	  type: WM_HINTS	format: 32
+ * 	WM_COMMAND	  type: STRING
+ * 	WM_NORMAL_HINTS	  type: WM_SIZE_HINTS 	format: 32
  */
 
 int XSetStandardProperties(
