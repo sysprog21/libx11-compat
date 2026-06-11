@@ -1,0 +1,19 @@
+src/window-property.c
+  s_86ea4979ab4a64::t_5294ba1584ffdb 477-486
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "d24cc6dd2ca3684b8ca9201a1575b826db5e1ba1",
+  "prompts": {},
+  "sessions": {
+    "s_86ea4979ab4a64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7be8b0cc-1d8d-4a64-82f6-514628bece15",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
