@@ -12,6 +12,7 @@
 #include "colors.h"
 #include "events.h"
 #include "path/raster.h"
+#include "timeline.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,8 +271,10 @@ void drawWindowDataToScreen()
             child->hasPresentRect = False;
             child->hasPresented = True;
             presentedWindows++;
-            presentedPixels +=
+            uint64_t windowPixels =
                 (uint64_t) presentRect.w * (uint64_t) presentRect.h;
+            presentedPixels += windowPixels;
+            timelineTapPresent(children[i], 1, windowPixels);
         } else {
             LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                 SDL_GetError());

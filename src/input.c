@@ -8,6 +8,7 @@
 #include "errors.h"
 #include "display.h"
 #include "events.h"
+#include "timeline.h"
 #include "window-internal.h"
 
 Window keyboardFocus = None;
@@ -436,6 +437,7 @@ int XSetInputFocus(Display *display, Window focus, int revert_to, Time time)
         return 1;
     setKeyboardFocus(newFocus);
     keyboardFocusKind = newKind;
+    timelineTapSetInputFocus(newFocus, revert_to);
     postFocusChange(display, oldKind, oldFocus, newKind, newFocus);
     return 1;
 }
@@ -466,6 +468,7 @@ int XGrabKeyboard(Display *display,
     keyboardGrab.active = True;
     keyboardGrab.grab_window = grab_window;
     keyboardGrab.owner_events = owner_events;
+    timelineTapGrabKeyboard(grab_window, True);
     return GrabSuccess;
 }
 
@@ -477,6 +480,7 @@ int XUngrabKeyboard(Display *display, Time time)
     keyboardGrab.active = False;
     keyboardGrab.grab_window = None;
     keyboardGrab.owner_events = False;
+    timelineTapGrabKeyboard(None, False);
     return 1;
 }
 

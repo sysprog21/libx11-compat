@@ -9,6 +9,7 @@
 #include "input.h"
 #include "colors.h"
 #include "replay-target.h"
+#include "timeline.h"
 
 Window SCREEN_WINDOW = None;
 
@@ -453,6 +454,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      * events -> recurse (children's reverts may queue events for this window,
      * all survive) -> own revert -> teardown -> DestroyNotify.
      */
+    timelineTapDestroy(window);
     discardQueuedEventsForWindow(display, window);
 
     size_t i;
@@ -1041,6 +1043,8 @@ Bool configureWindow(Display *display,
         return True;
     if (!postEvent(display, window, ConfigureNotify))
         return False;
+    timelineTapConfigure(window, windowStruct->x, windowStruct->y,
+                         windowStruct->w, windowStruct->h);
     if (windowStruct->mapState != UnMapped &&
         (oldX != windowStruct->x || oldY != windowStruct->y ||
          (unsigned int) oldWidth != windowStruct->w ||

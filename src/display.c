@@ -62,6 +62,7 @@ int XCloseDisplay(Display *display)
     freeExtensionStorage(display);
     freeSelectionStorage(display);
     int screenIndex;
+
     /* XOpenDisplay can call XCloseDisplay for cleanup after
      * SDL_GetNumVideoDisplays succeeds but the screens calloc fails: nscreens
      * is then >= 0 while screens is NULL. Guard the GC teardown so partial-init
@@ -76,6 +77,7 @@ int XCloseDisplay(Display *display)
             }
         }
     }
+
     /* Teardown order before SDL_Quit:
      *   releaseLastRequestCode -> replayStop -> destroyScreenWindow
      *   -> closeEventPipe -> SDL_Quit.
@@ -136,6 +138,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
         fprintf(stderr, "libX11-compat: failed to allocate Display struct\n");
         return NULL;
     }
+
     /* Track whether the open path owns the SDL/TTF init so the failure paths
      * only tear down what this call brought up. An embedding application that
      * pre-initialized SDL would otherwise lose its video subsystem.
@@ -145,6 +148,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_SetMainReady();
         SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
+
         /* On macOS, the click that activates a background window is consumed by
          * activation and never seen by the app. Click-through routes that first
          * click to the app as a real button event, matching X11 semantics. Has
@@ -155,11 +159,11 @@ Display *XOpenDisplay(_Xconst char *display_name)
         if (SDL_Init(SDL_INIT_VIDEO) == -1) {
             /* Diagnose intermittent XOpenDisplay -> NULL failures observed
              * under load on the remote Xvfb differential test. The Xt error
-             * "Can't open display" is generic; without this line the actual
-             * SDL backend error is lost when DEBUG_LIBX11_COMPAT is off.
-             * Cache getenv() results in locals: passing them through ternaries
-             * inline evaluates getenv() twice per arg, and a NULL result the
-             * second time around would be undefined behavior in fprintf %s.
+             * "Can't open display" is generic; without this line the actual SDL
+             * backend error is lost when DEBUG_LIBX11_COMPAT is off. Cache
+             * getenv() results in locals: passing them through ternaries inline
+             * evaluates getenv() twice per arg, and a NULL result the second
+             * time around would be undefined behavior in fprintf %s.
              */
             const char *displayEnv = getenv("DISPLAY");
             const char *driverEnv = getenv("SDL_VIDEODRIVER");
