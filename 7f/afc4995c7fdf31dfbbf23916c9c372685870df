@@ -1,0 +1,157 @@
+README.md
+  s_53fa11ea02849d::t_510fca224f3c4f 106
+  s_53fa11ea02849d::t_9c50349503221a 107
+src/replay.c
+  s_69dc2aed2cd651::t_a099e1bfc37671 275-276
+  s_53fa11ea02849d::t_a5994d29531ad0 42-43,46-51
+  s_69dc2aed2cd651::t_f6b82ddcdaa4e7 211-213
+  s_53fa11ea02849d::t_b4ae9f45d27a39 246-255
+  s_53fa11ea02849d::t_1378088fe9b37e 202-205,209-210,214-245,256-260,262-264
+  s_53fa11ea02849d::t_905f83fa869a65 268,273
+  s_53fa11ea02849d::t_eabd7d5ed758a9 164,172,179,187,192,194-201,208,261,265-267,269-272,274,277-293
+src/pointer.c
+  s_53fa11ea02849d::t_cec29c5783ca48 437-441
+  s_53fa11ea02849d::t_cf3012d86abcc0 12
+  s_53fa11ea02849d::t_fd4c77703db9a5 461
+  s_53fa11ea02849d::t_09401adc9d10ae 555,557
+docs/COVERAGE.md
+  s_53fa11ea02849d::t_7cc22c8c241ebb 6
+tests/check.c
+  s_69dc2aed2cd651::t_f6b82ddcdaa4e7 7176
+  s_69dc2aed2cd651::t_bbadfcef68959c 7120-7128,7203
+  s_53fa11ea02849d::t_62a14f0e463d93 7085-7119,7129-7140,7161-7166,7168-7169,7191,7194-7198,7202,7204
+  s_53fa11ea02849d::t_d61af4f53076c6 27-28
+  s_53fa11ea02849d::t_2bb792bb3a9e03 7141-7160,7167,7170-7175,7177-7190,7192-7193
+src/drawing.c
+  s_53fa11ea02849d::t_9e5f5167685add 15
+  s_53fa11ea02849d::t_7c07f0b36c9a08 274,276-277
+src/timeline.c
+  s_69dc2aed2cd651::t_496efa4262a338 418,423
+  s_53fa11ea02849d::t_34a288cf18f411 368-373,375,380-383,391,393-396,401-402,404
+  s_53fa11ea02849d::t_c20f1db3dbda4a 1-367,374,376-379,392,397-400,403,405-417,419-422,424-428
+  s_53fa11ea02849d::t_6f37eb68f682f2 384-386
+src/timeline.h
+  s_53fa11ea02849d::t_05b04a2cf87f6c 1-105
+docs/EXAMPLES.md
+  s_53fa11ea02849d::t_ed208352e489a3 5
+src/input.c
+  s_53fa11ea02849d::t_720c48982e6231 483
+  s_53fa11ea02849d::t_58a039576c22e2 11
+  s_53fa11ea02849d::t_8734f9432fc306 471
+  s_53fa11ea02849d::t_fb902fef81ea8f 440
+tests/ui/assertions/state-after-map.json
+  s_53fa11ea02849d::t_a5a2a8ed030256 1-6
+src/window-internal.c
+  s_53fa11ea02849d::t_746af977543b55 1046-1047
+  s_53fa11ea02849d::t_eda9dece0a01a3 12
+  s_53fa11ea02849d::t_0623905795c178 457
+src/events.c
+  s_53fa11ea02849d::t_527a7a439b6d6e 23
+  s_53fa11ea02849d::t_23c71209cbd66c 22
+  s_53fa11ea02849d::t_4ade2bd0d60067 2239,2248
+  s_53fa11ea02849d::t_69293856ab47f6 2085-2088
+src/input.h
+  s_53fa11ea02849d::t_d6f58717b05492 10-11
+scripts/run-ui-replay.py
+  s_53fa11ea02849d::t_69e75518d4f44f 1161-1168,1171-1172,1175-1176
+  s_ca32c9986d3446::t_40423104b7bc1b 354,372-373
+  s_ca32c9986d3446::t_fcb39e6178c96f 1018-1089
+  s_ca32c9986d3446::t_a7d1b005ab6c0b 118-121,126-213
+  s_ca32c9986d3446::t_c2a4016ac43a3a 1846-1854
+  s_53fa11ea02849d::t_33ab200ba26e17 475-479,482-502
+  s_ca32c9986d3446::t_825af982c64ed5 385,480,1169-1170,1180-1181,1203,1468-1469,1474-1478
+  s_53fa11ea02849d::t_a33054241a5b64 752-759,761-767,769-770
+  s_ca32c9986d3446::t_89ce1d896f7dfe 2-4,6-67,69-88
+  s_ca32c9986d3446::t_5a2dcfeb00137f 375-378,381-384
+  s_ca32c9986d3446::t_b0cbd50c2f7311 1232-1237,1596-1601,1611-1619,1626
+  s_53fa11ea02849d::t_ad95cac6983f3c 5,68
+  s_ca32c9986d3446::t_ef4c968a0be843 481
+  s_69dc2aed2cd651::t_b9abe97fbb99b1 374,379-380
+  s_53fa11ea02849d::t_9fe85ce1b22895 1466-1467,1479-1500,1502-1505,1507-1563
+  s_ca32c9986d3446::t_0bf7055fbccd8a 1470,1501,1506
+  s_ca32c9986d3446::t_8109a7fa63e659 1128-1145,1152-1160,1173-1174,1177-1179,1182-1184,1190,1192,1195-1197,1206-1207,1209,1220
+  s_69dc2aed2cd651::t_3bfc66bad967f1 760,768,1471-1473
+  s_ca32c9986d3446::t_359bac21ebd272 101
+  s_ca32c9986d3446::t_66e6eb14088d9e 1332,1351,1388,1414-1416
+  s_53fa11ea02849d::t_5d24566a4f5f40 1800-1814
+  s_ca32c9986d3446::t_0b832812d78c1a 1662-1664
+  s_53fa11ea02849d::t_03fd3d9c187a31 355-371
+  s_ca32c9986d3446::t_610ce18977a97e 122-125
+  s_ca32c9986d3446::t_5f15cc35656be6 1187-1189
+  s_53fa11ea02849d::t_7ca828eaca963a 692-751,771-875
+  s_ca32c9986d3446::t_789f272134b000 1638-1643,1645,1648-1651,1673-1708,1711
+  s_ca32c9986d3446::t_b13320cad109ae 1763-1797
+  s_ca32c9986d3446::t_a17a41ba073c44 1665-1672
+scripts/mine-timeline-latency.py
+  s_53fa11ea02849d::t_2f085c0e38e2de 1-196
+tests/ui/assertions/timeline-has-activity.json
+  s_53fa11ea02849d::t_45437a8143011b 1-5
+src/state-snapshot.c
+  s_53fa11ea02849d::t_2875bf9ea6b531 141-160,176-188
+  s_53fa11ea02849d::t_c040388e929831 235,237-239,242-245
+  s_53fa11ea02849d::t_d3043eb4b4c443 420-436,443-451
+  s_53fa11ea02849d::t_b342fc11b48dfc 381-384,387-398,400,402-411
+  s_53fa11ea02849d::t_84b71d6d817cab 311-316
+  s_53fa11ea02849d::t_6c727a6737035d 465-468,475-476,480-485,489,492,497-501
+  s_53fa11ea02849d::t_d8a9c76281df35 45-60
+  s_53fa11ea02849d::t_8caaaa9b75d92e 74-75
+  s_ca32c9986d3446::t_3723747d42c276 251-284,296,298
+  s_53fa11ea02849d::t_9297a4f7465b8e 98-100,112-131,135-138
+  s_53fa11ea02849d::t_b8cfa76efa1e76 1-44,61-73,76-97,101-111,139-140,161-175,189-231,236,240-241,246-250,285-295,297,299-310,317-380,385-386,399,401,412-419,437-442,452-464,469-474,477-479,486-488,490-491,493-494,502-516
+  s_69dc2aed2cd651::t_f6b82ddcdaa4e7 132-134
+src/state-snapshot.h
+  s_53fa11ea02849d::t_37f8b4118b4339 59
+  s_53fa11ea02849d::t_4f71f8deac319b 1-58,60-94
+src/display.c
+  s_42a8ba1a88142c::t_1308be6748a81d 80,141,151
+  s_bf13f9672a6f2b::t_90218e28f2dea4 163,166
+  s_bf13f9672a6f2b::t_fbeeeeba5b92f9 162,164-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "7fafc4995c7fdf31dfbbf23916c9c372685870df",
+  "prompts": {},
+  "sessions": {
+    "s_42a8ba1a88142c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d89c19-0659-4c16-911a-a0fd3d6daafb",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_53fa11ea02849d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "929e5069-c23d-4d37-ab4a-24fca01103b0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    },
+    "s_69dc2aed2cd651": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb9f2-2fce-7c90-a882-16979d4d6dae",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_bf13f9672a6f2b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a25d9924-d684-4aba-8025-00a37c4b55d7",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": null
+    },
+    "s_ca32c9986d3446": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eb7f7-25d3-7701-9635-6b373f04aae8",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
