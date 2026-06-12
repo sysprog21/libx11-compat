@@ -9,6 +9,7 @@
 #include "events.h"
 #include "display.h"
 #include "errors.h"
+#include "timeline.h"
 
 unsigned int currentEventMask = ~0;
 Bool mouseFrozen = False;
@@ -433,6 +434,11 @@ int XGrabPointer(Display *display,
     if (pointerGrab.active && !pointerGrab.passive) {
         replacePointerGrab(display, grab_window, owner_events, event_mask,
                            pointer_mode, keyboard_mode, confine_to, cursor);
+        /* Motif menubar regrabs (the documented use case for this branch)
+         * are real grab transitions; the timeline tap must fire here too
+         * so wait-converge and the leak-assertion both see them.
+         */
+        timelineTapGrabPointer(grab_window, True);
         return GrabSuccess;
     }
     /* GrabInvalidTime: the requested time must be CurrentTime or no later than
@@ -452,6 +458,7 @@ int XGrabPointer(Display *display,
         clearPointerGrab(display);
     installPointerGrab(display, grab_window, owner_events, event_mask,
                        pointer_mode, keyboard_mode, confine_to, cursor, False);
+    timelineTapGrabPointer(grab_window, True);
     return GrabSuccess;
 }
 
@@ -545,6 +552,8 @@ int XUngrabPointer(Display *display, Time time)
 {
     // https://tronche.com/gui/x/xlib/input/XUngrabPointer.html
     SET_X_SERVER_REQUEST(display, X_UngrabPointer);
+    (void) time;
     clearPointerGrab(display);
+    timelineTapGrabPointer(None, False);
     return 1;
 }

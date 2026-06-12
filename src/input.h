@@ -7,6 +7,8 @@
 Window getKeyboardFocus();
 void setKeyboardFocus(Window window);
 
+extern int revertTo;
+
 /* If "window" is the current keyboard focus, re-target focus per the
  * stored revert_to value (RevertToParent / RevertToPointerRoot /
  * RevertToNone) and emit the focus-change events that XSetInputFocus

@@ -2,6 +2,7 @@
 
 `examples/` ships real Xlib clients built against the local `libX11-compat.so` so behavior can be exercised end-to-end without a system Xlib.
 They double as concrete porting references for the steps in [`PORTING.md`](PORTING.md).
+The deterministic UI replay harness that drives them in CI is documented in [`UI-REPLAY.md`](UI-REPLAY.md).
 
 ```sh
 make examples

@@ -39,7 +39,27 @@
 #include "replay.h"
 #include "replay-target.h"
 #include "snapshot.h"
+#include "state-snapshot.h"
+#include "timeline.h"
 #include "util.h"
+
+static uint64_t replayLastInputAnchorMs = 0;
+
+static uint64_t replayNowMs(void)
+{
+    return timelineNowMs();
+}
+
+static uint64_t replayWaitConvergeAnchorMs(uint64_t timeoutMs)
+{
+    uint64_t nowMs = replayNowMs();
+    uint64_t anchorMs = replayLastInputAnchorMs;
+    if (timeoutMs == 0)
+        timeoutMs = 5000;
+    if (anchorMs == 0 || (nowMs >= anchorMs && nowMs - anchorMs >= timeoutMs))
+        return nowMs;
+    return anchorMs;
+}
 
 static pthread_once_t replayOnce = PTHREAD_ONCE_INIT;
 static Display *replayDisplay = NULL;
@@ -152,6 +172,7 @@ static void runScript(const char *path)
             int x = 0, y = 0;
             if (sscanf(args, "%d %d", &x, &y) == 2) {
                 XTestFakeMotionEvent(replayDisplay, 0, x, y, 0);
+                replayLastInputAnchorMs = replayNowMs();
             }
         } else if (!strcmp(cmd, "target-motion")) {
             int x = 0, y = 0;
@@ -159,12 +180,14 @@ static void runScript(const char *path)
                 int rootX = 0, rootY = 0;
                 if (replayTargetTranslateLocal(x, y, &rootX, &rootY))
                     XTestFakeMotionEvent(replayDisplay, 0, rootX, rootY, 0);
+                replayLastInputAnchorMs = replayNowMs();
             }
         } else if (!strcmp(cmd, "button")) {
             unsigned int btn = 0;
             char dir[16] = {0};
             if (sscanf(args, "%u %15s", &btn, dir) == 2) {
                 XTestFakeButtonEvent(replayDisplay, btn, isPressWord(dir), 0);
+                replayLastInputAnchorMs = replayNowMs();
             }
         } else if (!strcmp(cmd, "click")) {
             int x = 0, y = 0;
@@ -172,12 +195,115 @@ static void runScript(const char *path)
                 XTestFakeMotionEvent(replayDisplay, 0, x, y, 0);
                 XTestFakeButtonEvent(replayDisplay, 1, True, 10);
                 XTestFakeButtonEvent(replayDisplay, 1, False, 10);
+                replayLastInputAnchorMs = replayNowMs();
             }
         } else if (!strcmp(cmd, "key")) {
             unsigned int code = 0;
             char dir[16] = {0};
-            if (sscanf(args, "%u %15s", &code, dir) == 2)
+            if (sscanf(args, "%u %15s", &code, dir) == 2) {
                 XTestFakeKeyEvent(replayDisplay, code, isPressWord(dir), 0);
+                replayLastInputAnchorMs = replayNowMs();
+            }
+        } else if (!strcmp(cmd, "wait-converge")) {
+            /* Block the worker until the post-input event stream goes quiet,
+             * with an explicit divergence trip-wire. Arguments are optional and
+             * have sensible defaults; full form is
+             *   wait-converge [bucket_ms quiet_buckets diverged_buckets
+             *                  threshold_per_bucket timeout_ms]
+             *
+             * Validation: parse with strtoull and reject any "-" prefix or
+             * trailing garbage so a typo like `wait-converge -1` does not get
+             * silently accepted as ULONG_MAX. Each value is clamped against a
+             * per-field ceiling that keeps the underlying nanosleep, int casts,
+             * and counter math in spec.
+             */
+            unsigned long long fields[5] = {50ULL, 2ULL, 16ULL, 32ULL, 5000ULL};
+            const unsigned long long ceilings[5] = {
+                60000ULL,   /* bucket_ms: max one minute */
+                1000ULL,    /* quiet_buckets: bounded by int cast */
+                1000ULL,    /* diverged_buckets: bounded by int cast */
+                1000000ULL, /* threshold_per_bucket: well above realistic */
+                600000ULL,  /* timeout_ms: ten minutes */
+            };
+            const char *cursor = args;
+            for (int idx = 0; idx < 5; idx++) {
+                while (*cursor == ' ' || *cursor == '\t')
+                    cursor++;
+                if (*cursor == '\0')
+                    break;
+                if (*cursor == '-') {
+                    fprintf(stderr,
+                            "replay: line %d: wait-converge rejects "
+                            "negative arg %d\n",
+                            lineno, idx + 1);
+                    cursor = NULL;
+                    break;
+                }
+                char *endp = NULL;
+                errno = 0;
+                unsigned long long parsed = strtoull(cursor, &endp, 10);
+                if (cursor == endp || errno == ERANGE) {
+                    fprintf(stderr,
+                            "replay: line %d: wait-converge bad arg %d\n",
+                            lineno, idx + 1);
+                    cursor = NULL;
+                    break;
+                }
+                if (parsed > ceilings[idx])
+                    parsed = ceilings[idx];
+                fields[idx] = parsed;
+                cursor = endp;
+            }
+            if (!cursor) {
+                /* Malformed input. Break out of the script so the runner
+                 * cannot proceed past the failed synchronization point
+                 * with the rest of the .replay still queued. A continue
+                 * here would silently drop the verb and let the next
+                 * state-snapshot / assert-state run against unsettled
+                 * state, defeating the synchronization contract.
+                 */
+                break;
+            }
+            unsigned long long bucketMs = fields[0];
+            unsigned long long quietBuckets = fields[1];
+            unsigned long long divergedBuckets = fields[2];
+            unsigned long long thresholdPerBucket = fields[3];
+            unsigned long long timeoutMs = fields[4];
+            uint64_t anchorMs =
+                replayWaitConvergeAnchorMs((uint64_t) timeoutMs);
+            int rc = timelineWaitConverge(
+                anchorMs, (uint64_t) bucketMs, (int) quietBuckets,
+                (int) divergedBuckets, (uint64_t) thresholdPerBucket,
+                (uint64_t) timeoutMs);
+            if (rc < 0)
+                fprintf(stderr,
+                        "replay: line %d: wait-converge diverged after "
+                        "%llu ms windows\n",
+                        lineno, bucketMs * divergedBuckets);
+            else if (rc == 0)
+                fprintf(stderr,
+                        "replay: line %d: wait-converge timed out after "
+                        "%llu ms\n",
+                        lineno, timeoutMs);
+            if (rc <= 0)
+                break;
+        } else if (!strcmp(cmd, "state-snapshot")) {
+            /* Marshal the in-process focus / grab / window / property state to
+             * a JSON file. Synchronous so a follow-up assert-state in the
+             * runner sees a fully-written file.
+             */
+            if (*args == '\0') {
+                fprintf(stderr,
+                        "replay: line %d: state-snapshot needs a path\n",
+                        lineno);
+            } else {
+                int rc = stateSnapshotRequestAndWait(args);
+                if (rc != 0)
+                    fprintf(stderr,
+                            "replay: line %d: state-snapshot %s failed "
+                            "(rc=%d)\n",
+                            lineno, args, rc);
+            }
         } else if (!strcmp(cmd, "snapshot")) {
             /* Capture the cached replay target window's backing surface to the
              * path that follows. Blocking: the main thread does the actual save

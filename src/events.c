@@ -19,6 +19,8 @@
 #include "window-internal.h"
 #include "replay-target.h"
 #include "snapshot.h"
+#include "state-snapshot.h"
+#include "timeline.h"
 #include "X11/Xlibint.h"
 
 int eventFds[2] = {-1, -1};
@@ -2080,6 +2082,10 @@ int convertEvent(Display *display,
                 snapshotHandleResizeEvent(display, sdlEvent);
                 return -1;
             }
+            if (stateSnapshotOwnsEventType(sdlEvent->type)) {
+                stateSnapshotHandleEvent(display, sdlEvent);
+                return -1;
+            }
             if (presentWakeOwnsEventType(sdlEvent->type) &&
                 sdlEvent->user.code == PRESENT_EVENT_CODE) {
                 drawWindowDataToScreen();
@@ -2230,6 +2236,7 @@ int convertEvent(Display *display,
                 memcpy(xEvent, sdlEvent->user.data1, sizeof(XEvent));
                 if (freeInternalEvents)
                     free(sdlEvent->user.data1);
+                timelineTapXEvent(xEvent);
                 return 0;
             }
         }
@@ -2238,6 +2245,7 @@ int convertEvent(Display *display,
     FILL_STANDARD_VALUES(xany);
     xEvent->xany.window = eventWindow;
     xEvent->type = type;
+    timelineTapXEvent(xEvent);
     return 0;
 #undef FILL_STANDARD_VALUES
 }

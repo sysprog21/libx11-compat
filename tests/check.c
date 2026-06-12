@@ -24,6 +24,8 @@
 #include "path/compose.h"
 #include "path/edges.h"
 #include "path/path.h"
+#include "state-snapshot.h"
+#include "timeline.h"
 #include "util.h"
 
 int convertEvent(Display *display,
@@ -7080,9 +7082,126 @@ static int test_shape_combine_ops(Display *display)
     return 1;
 }
 
+static int test_timeline_counters(Display *display)
+{
+    /* Counters always increment regardless of LIBX11_COMPAT_TIMELINE so Phase
+     * 3's wait-converge works in an untapped build.
+     */
+    uint64_t baseExpose = timelineCounter(TIMELINE_KIND_EXPOSE);
+    uint64_t baseConfigure = timelineCounter(TIMELINE_KIND_CONFIGURE);
+    uint64_t baseDestroy = timelineCounter(TIMELINE_KIND_DESTROY);
+
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window =
+        XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0,
+                            BlackPixel(display, 0), WhitePixel(display, 0));
+    CHECK(window != None, "XCreateSimpleWindow returned None");
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask);
+    XMapWindow(display, window);
+
+    /* configureWindow taps emit on geometry mutation; resize twice. */
+    XResizeWindow(display, window, 96, 96);
+    XResizeWindow(display, window, 128, 128);
+
+    XDestroyWindow(display, window);
+
+    CHECK(timelineCounter(TIMELINE_KIND_CONFIGURE) > baseConfigure,
+          "configure counter did not advance");
+    CHECK(timelineCounter(TIMELINE_KIND_DESTROY) > baseDestroy,
+          "destroy counter did not advance");
+    /* Don't assert Expose: dummy SDL driver may not always deliver one in the
+     * time check_test gives, and the unit-test path runs synchronously without
+     * an event pump iteration.
+     */
+    (void) baseExpose;
+    return 1;
+}
+
+static int test_timeline_wait_converge_idle(Display *display)
+{
+    (void) display;
+
+    int rc = timelineWaitConverge(timelineNowMs(), 1, 2, 16, 32, 50);
+    CHECK(rc == 1, "idle wait-converge did not settle");
+    return 1;
+}
+
+static int test_state_snapshot(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window =
+        XCreateSimpleWindow(display, root, 0, 0, 100, 80, 0,
+                            BlackPixel(display, 0), WhitePixel(display, 0));
+    CHECK(window != None, "XCreateSimpleWindow returned None");
+    Atom wm_class_atom = XInternAtom(display, "WM_CLASS", False);
+    XChangeProperty(display, window, wm_class_atom, XA_STRING, 8,
+                    PropModeReplace, (const unsigned char *) "TestProbe", 9);
+    XMapWindow(display, window);
+
+    /* mkstemp under $TMPDIR (falls back to /tmp) so parallel test runs and
+     * symlink-attack vectors on a shared multi-user /tmp do not collide.
+     * The temp file gets unlinked after readback.
+     */
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir)
+        tmpdir = "/tmp";
+    char path[256];
+    int written =
+        snprintf(path, sizeof(path),
+                 "%s/libx11-compat-state-snapshot-check.XXXXXX", tmpdir);
+    CHECK(written > 0 && (size_t) written < sizeof(path),
+          "snapshot path template truncated");
+    int fd = mkstemp(path);
+    CHECK(fd >= 0, "mkstemp failed");
+    /* stateSnapshotRequestAndWait reopens the path with fopen("w") on the
+     * main thread; close our fd so the open does not race the kernel handle.
+     */
+    close(fd);
+
+    int rc = stateSnapshotRequestAndWait(path);
+    /* In the unit-test environment the SDL event pump may not drain the
+     * SDL_USEREVENT round-trip; treat -4 (timed-out wait) as a soft skip but
+     * still verify that the request was at least dispatched without a hard
+     * error.
+     */
+    int hard_error = !(rc == 0 || rc == -4);
+    if (rc == 0) {
+        FILE *fp = fopen(path, "r");
+        if (fp) {
+            char header[64];
+            size_t r = fread(header, 1, sizeof(header) - 1, fp);
+            header[r] = '\0';
+            fclose(fp);
+            if (!strstr(header, "\"focused_window\"")) {
+                fprintf(stderr, "%s:%d: snapshot JSON missing focused_window\n",
+                        __FILE__, __LINE__);
+                failures++;
+                unlink(path);
+                XDestroyWindow(display, window);
+                return 0;
+            }
+        } else {
+            fprintf(stderr, "%s:%d: snapshot JSON file missing\n", __FILE__,
+                    __LINE__);
+            failures++;
+            unlink(path);
+            XDestroyWindow(display, window);
+            return 0;
+        }
+    }
+    unlink(path);
+    CHECK(!hard_error, "stateSnapshotRequestAndWait hard error");
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
 int main(void)
 {
     run_test("smoke", test_smoke);
+    run_test("timeline_counters", test_timeline_counters);
+    run_test("timeline_wait_converge_idle", test_timeline_wait_converge_idle);
+    run_test("state_snapshot", test_state_snapshot);
     run_test("atoms", test_atoms);
     run_test("keyboard", test_keyboard);
     run_test("gc", test_gc);

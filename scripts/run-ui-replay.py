@@ -1,4 +1,91 @@
 #!/usr/bin/env python3
+"""Driver for deterministic UI replay scenarios against libx11-compat.
+
+This script reads a `.replay` source file (a one-command-per-line text
+format documented in docs/UI-REPLAY.md), launches the target application
+with a libx11-compat-aware environment, and feeds synthetic input either
+through the in-process LIBX11_COMPAT_REPLAY engine (default) or through
+external xdotool. After each step it records BMP/PNG screenshots, JSON
+state snapshots, and a JSONL event timeline, then applies declarative
+assertion rules against those artifacts.
+
+# Invocation
+
+    scripts/run-ui-replay.py \
+        --name        <human-readable-name>           \
+        --app         <path-to-target-binary>         \
+        [--app-arg    <extra-arg>]                    \
+        --replay      <path-to-.replay-file>          \
+        --out-root    <artifact-output-directory>     \
+        [--env        KEY=VALUE]                      \
+        [--input-backend internal|xdotool]            \
+        [--in-process-snapshots]                      \
+        [--timeline | --timeline-path <path>]         \
+        [--render-stats <path-to-tsv>]                \
+        [--trace-path <path-to-jsonl>]                \
+        [--profile-json <path-to-json>]               \
+        [--ci-summary <path-to-json>]                 \
+        [--screenshot-command auto|import|gnome-screenshot|screencapture] \
+        [--screenshot-region X,Y,W,H]                 \
+        [--offscreen]                                 \
+        [--xvfb --display N --geometry WxHxD]         \
+        [--leave-running]
+
+# Backends
+
+`--input-backend internal` (the default) writes a translated replay script
+to <out-root>/internal.replay and points the target process at it via the
+LIBX11_COMPAT_REPLAY env var. The replay then runs inside the same
+process as the X client, side-stepping the macOS NSApp focus dance that
+otherwise drops mid-screencapture input.
+
+`--input-backend xdotool` injects through an external X server; the
+target must already have a DISPLAY (e.g. with --xvfb).
+
+`--offscreen` forces SDL_VIDEODRIVER=dummy and requires the internal
+backend plus --in-process-snapshots. It is meant for CI jobs that need
+replay, state, timeline, and renderer artifacts without a visible desktop.
+
+# Replay grammar (excerpt)
+
+    # comments and blank lines are ignored
+    delay <ms>
+    motion <x> <y>                  # screen-relative
+    target-motion <x> <y>           # window-relative
+    button <n> press|release|click
+    wheel up|down <count>
+    key <scancode>
+    resize <W> <H>
+    screenshot <name> [x y w h]
+    state-snapshot <name>           # requires --in-process-snapshots
+    wait-converge [bucket_ms quiet diverged threshold timeout_ms]
+    wait-window <regex> <timeout_ms>
+    assert-image <screenshot> <rule.json>
+    assert-state <state-name> <rule.json>
+    timeline-summary <rule.json>
+    assert-exit running|any|<status>
+
+See docs/UI-REPLAY.md for the full verb reference and the JSON rule
+schemas accepted by assert-image, assert-state, and timeline-summary.
+
+# Output
+
+The runner produces, under <out-root>:
+
+    results.tsv         per-step status (captured|ok|failed) + detail
+    metrics.tsv         per-step duration and any observation values
+    profile.json        aggregate per-command timing and artifact sizes
+    summary.json        CI-oriented pass/fail and artifact index
+    trace.jsonl         structured runner events for resource/debug tracing
+    junit.xml           JUnit summary suitable for CI gating
+    screens/<name>.png  PNG-converted screenshots
+    snapshots/<name>.bmp
+    states/<name>.json  state-snapshot output (--in-process-snapshots only)
+    sync/wait-converge-<line>.json  internal synchronization markers
+    timeline.jsonl      JSONL timeline (when --timeline is set)
+    logs/<name>.log     target process stdout+stderr
+"""
+
 import argparse
 import csv
 import json
@@ -11,6 +98,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -25,6 +113,102 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReplayError(Exception):
     pass
+
+
+@dataclass
+class ArtifactPaths:
+    out_root: Path
+    name: str
+    trace_path: object = None
+    profile_path: object = None
+    summary_path: object = None
+    render_stats_path: object = None
+
+    screenshot_dir: Path = field(init=False)
+    log_dir: Path = field(init=False)
+    states_dir: Path = field(init=False)
+    sync_dir: Path = field(init=False)
+    snapshot_dir: Path = field(init=False)
+    results_path: Path = field(init=False)
+    metrics_path: Path = field(init=False)
+    junit_path: Path = field(init=False)
+    app_log_path: Path = field(init=False)
+
+    def __post_init__(self):
+        self.screenshot_dir = self.out_root / "screens"
+        self.log_dir = self.out_root / "logs"
+        self.states_dir = self.out_root / "states"
+        self.sync_dir = self.out_root / "sync"
+        self.snapshot_dir = self.out_root / "snapshots"
+        self.results_path = self.out_root / "results.tsv"
+        self.metrics_path = self.out_root / "metrics.tsv"
+        self.junit_path = self.out_root / "junit.xml"
+        self.app_log_path = self.log_dir / f"{self.name}.log"
+        if self.trace_path is None:
+            self.trace_path = self.out_root / "trace.jsonl"
+        if self.profile_path is None:
+            self.profile_path = self.out_root / "profile.json"
+        if self.summary_path is None:
+            self.summary_path = self.out_root / "summary.json"
+
+    def prepare_base(self):
+        self.out_root.mkdir(parents=True, exist_ok=True)
+        for path in (self.screenshot_dir, self.log_dir):
+            if path.exists():
+                shutil.rmtree(path)
+            path.mkdir(parents=True)
+
+    def reset_dir(self, path):
+        if path.exists():
+            shutil.rmtree(path)
+        path.mkdir(parents=True)
+
+
+class ReplayTrace:
+    def __init__(self, path):
+        self.path = path
+        self.fp = None
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.fp = path.open("w")
+
+    def emit(self, event, **fields):
+        if self.fp is None:
+            return
+        record = {
+            "t_ms": int(time.perf_counter() * 1000),
+            "event": event,
+        }
+        record.update(fields)
+        self.fp.write(json.dumps(record, sort_keys=True) + "\n")
+        self.fp.flush()
+
+    def close(self):
+        if self.fp is not None:
+            self.fp.close()
+            self.fp = None
+
+
+@dataclass
+class ReplayProfile:
+    started_at_ms: int
+    command_counts: dict = field(default_factory=dict)
+    command_durations_ms: dict = field(default_factory=dict)
+    artifacts: dict = field(default_factory=dict)
+    process: dict = field(default_factory=dict)
+
+    def add_step(self, command, duration_ms):
+        self.command_counts[command] = self.command_counts.get(command, 0) + 1
+        total = self.command_durations_ms.get(command, 0.0)
+        self.command_durations_ms[command] = total + duration_ms
+
+    def add_artifact(self, key, path):
+        if path is None:
+            return
+        entry = {"path": str(path)}
+        if path.exists() and path.is_file():
+            entry["bytes"] = path.stat().st_size
+        self.artifacts[key] = entry
 
 
 def resolve_path(path, *bases):
@@ -167,7 +351,38 @@ def wait_process_alive(proc, timeout_ms):
         time.sleep(0.1)
 
 
-def write_internal_replay(source_path, dest_path, snapshot_dir=None):
+def wait_converge_timeout_ms(parts):
+    # Defaults track the C-side handler in src/replay.c. Malformed input
+    # raises ReplayError so the dispatcher converts it into a deterministic
+    # step failure (otherwise int("abc") would surface as an uncaught
+    # ValueError and crash the runner mid-replay).
+    if len(parts) < 6:
+        return 5000
+    try:
+        value = int(parts[5])
+    except ValueError as error:
+        raise ReplayError(
+            f"wait-converge timeout_ms must be an integer, got {parts[5]!r}"
+        ) from error
+    if value < 0:
+        raise ReplayError(
+            f"wait-converge timeout_ms must be non-negative, got {value}"
+        )
+    return value
+
+
+def wait_for_nonempty_file(path, timeout_s, poll_s=0.05, proc=None):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if path.exists() and path.stat().st_size > 0:
+            return True
+        if proc is not None and proc.poll() is not None:
+            raise ReplayError(f"process exited with status {proc.returncode}")
+        time.sleep(poll_s)
+    return path.exists() and path.stat().st_size > 0
+
+
+def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=None):
     """Translate runner replay commands to the in-process replay engine.
 
     The library-side engine handles input/timing commands and, when
@@ -257,7 +472,34 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None):
             wait_ms = int(parts[2])
             if wait_ms > 0:
                 lines.append(f"delay {wait_ms}")
-        elif command in ("assert-image", "assert-exit"):
+        elif command == "wait-converge":
+            # Default args mirror the C-side defaults; allow override:
+            # wait-converge [bucket_ms quiet diverged threshold timeout_ms]
+            extra = " ".join(parts[1:]) if len(parts) > 1 else ""
+            lines.append(f"wait-converge {extra}".rstrip())
+            if sync_dir is not None:
+                lines.append(f"state-snapshot {sync_dir}/wait-converge-{lineno}.json")
+        elif command == "state-snapshot":
+            if len(parts) < 2:
+                raise ReplayError(
+                    f"{source_path}:{lineno}: state-snapshot needs a name"
+                )
+            name = parts[1]
+            if snapshot_dir is None:
+                # The in-process state writer needs a directory the runner
+                # owns; without --in-process-snapshots we have no place to
+                # put it. Skip with a delay so a later wait-window doesn't
+                # race the missing file.
+                lines.append("delay 50")
+                continue
+            states_dir = snapshot_dir.parent / "states"
+            lines.append(f"state-snapshot {states_dir}/{name}.json")
+        elif command in (
+            "assert-image",
+            "assert-exit",
+            "assert-state",
+            "timeline-summary",
+        ):
             continue
         else:
             raise ReplayError(
@@ -447,6 +689,190 @@ def image_changed_ratio(a, b):
     return changed / total
 
 
+def assert_state(rule_path, state_path):
+    """Apply a state-matcher rule file against a UiSnapshot JSON file.
+
+    The rule schema is intentionally narrow so a failing assertion can be
+    explained without a debugger: each matcher names a single field of the
+    snapshot (focused_window, pointer_grab, keyboard_grab,
+    mapped_window_count, popup_window_count, window_count, event_queue_depth)
+    or a per-window predicate (wm_class_present, window_with_size).
+    """
+    if not rule_path.exists():
+        raise ReplayError(f"state-rule file not found: {rule_path}")
+    if not state_path.exists():
+        raise ReplayError(f"state file not found: {state_path}")
+    with rule_path.open() as f:
+        rule_doc = json.load(f)
+    with state_path.open() as f:
+        snap = json.load(f)
+    failures = []
+    for rule in rule_doc.get("assertions", []):
+        rule_type = rule.get("type")
+        if rule_type == "equal":
+            field = rule["field"]
+            expected = rule["expected"]
+            actual = snap.get(field)
+            if actual != expected:
+                failures.append(f"field {field}: expected {expected!r}, got {actual!r}")
+        elif rule_type == "leq":
+            field = rule["field"]
+            limit = rule["max"]
+            actual = snap.get(field, 0)
+            if actual > limit:
+                failures.append(f"field {field}: {actual} exceeds max {limit}")
+        elif rule_type == "geq":
+            field = rule["field"]
+            floor = rule["min"]
+            actual = snap.get(field, 0)
+            if actual < floor:
+                failures.append(f"field {field}: {actual} below min {floor}")
+        elif rule_type == "wm_class_present":
+            wanted = rule["wm_class"]
+            found = any(
+                entry.get("wm_class") == wanted for entry in snap.get("windows", [])
+            )
+            if not found:
+                failures.append(f"no window with wm_class={wanted!r}")
+        elif rule_type == "window_with_size":
+            w = rule.get("w")
+            h = rule.get("h")
+            found = any(
+                (w is None or entry.get("w") == w)
+                and (h is None or entry.get("h") == h)
+                for entry in snap.get("windows", [])
+            )
+            if not found:
+                failures.append(f"no window with size w={w} h={h}")
+        elif rule_type == "grab_released":
+            for field in ("pointer_grab", "keyboard_grab"):
+                if snap.get(field, 0) != 0:
+                    failures.append(f"{field} still held by window {snap.get(field)}")
+        elif rule_type == "property_unchanged":
+            # The baseline must live alongside the current state file under
+            # states_dir. Reject absolute paths and any segments that walk
+            # outside it so a malicious rule cannot point the runner at
+            # arbitrary on-disk JSON (e.g. ../../etc/passwd-shaped paths
+            # that happen to parse as JSON).
+            raw_baseline = rule["between"][0]
+            baseline_candidate = Path(raw_baseline)
+            if baseline_candidate.is_absolute():
+                failures.append(f"property baseline must be relative: {raw_baseline!r}")
+                continue
+            states_root = state_path.parent.resolve()
+            baseline_path = (state_path.parent / baseline_candidate).resolve()
+            try:
+                baseline_path.relative_to(states_root)
+            except ValueError:
+                failures.append(
+                    f"property baseline {raw_baseline!r} escapes states " f"directory"
+                )
+                continue
+            if not baseline_path.exists():
+                failures.append(f"property baseline {baseline_path} missing")
+                continue
+            with baseline_path.open() as bf:
+                baseline = json.load(bf)
+            target_window = rule["window"]
+            target_atom = rule["atom"]
+            new_value = _find_property(snap, target_window, target_atom)
+            old_value = _find_property(baseline, target_window, target_atom)
+            if new_value != old_value:
+                failures.append(
+                    f"property atom={target_atom} on window={target_window} "
+                    f"changed: {old_value} -> {new_value}"
+                )
+        elif rule_type == "property_changed_to":
+            target_window = rule["window"]
+            target_atom = rule["atom"]
+            wanted_hex = rule["hex"]
+            value = _find_property(snap, target_window, target_atom)
+            if value is None or value.get("hex") != wanted_hex:
+                failures.append(
+                    f"property atom={target_atom} on window={target_window} "
+                    f"not at expected value: got {value}"
+                )
+        else:
+            failures.append(f"unknown state assertion {rule_type!r}")
+    if failures:
+        raise ReplayError(
+            f"{state_path.name} failed {rule_path.name}: {'; '.join(failures)}"
+        )
+    return []
+
+
+def _find_property(snap, window_id, atom):
+    for entry in snap.get("windows", []):
+        if entry.get("window") != window_id:
+            continue
+        for prop in entry.get("properties", []):
+            if prop.get("atom") == atom:
+                return {
+                    "source": prop.get("source"),
+                    "hex": prop.get("hex"),
+                    "format": prop.get("format"),
+                    "length": prop.get("length"),
+                }
+    return None
+
+
+def assert_timeline_summary(rule_path, timeline_path):
+    """Read a JSONL timeline and assert per-kind event counts.
+
+    Rule schema:
+      {
+        "assertions": [
+          {"type": "kind_at_least", "kind": "ButtonPress", "min": 1},
+          {"type": "kind_at_most",  "kind": "diverged",   "max": 0},
+          {"type": "kind_equal",    "kind": "MapNotify",  "expected": 3}
+        ]
+      }
+    """
+    if not rule_path.exists():
+        raise ReplayError(f"timeline-rule file not found: {rule_path}")
+    if not timeline_path.exists():
+        raise ReplayError(f"timeline file not found: {timeline_path}")
+    counts = {}
+    with timeline_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            kind = record.get("kind")
+            if kind:
+                counts[kind] = counts.get(kind, 0) + 1
+    with rule_path.open() as f:
+        rule_doc = json.load(f)
+    failures = []
+    for rule in rule_doc.get("assertions", []):
+        rule_type = rule.get("type")
+        kind = rule.get("kind")
+        observed = counts.get(kind, 0)
+        if rule_type == "kind_at_least":
+            limit = rule["min"]
+            if observed < limit:
+                failures.append(f"kind {kind}: {observed} below min {limit}")
+        elif rule_type == "kind_at_most":
+            limit = rule["max"]
+            if observed > limit:
+                failures.append(f"kind {kind}: {observed} above max {limit}")
+        elif rule_type == "kind_equal":
+            expected = rule["expected"]
+            if observed != expected:
+                failures.append(f"kind {kind}: {observed} != expected {expected}")
+        else:
+            failures.append(f"unknown timeline assertion {rule_type!r}")
+    if failures:
+        raise ReplayError(
+            f"{timeline_path.name} failed {rule_path.name}: " f"{'; '.join(failures)}"
+        )
+    return counts
+
+
 def assert_image(rule_path, image_path, screenshots, assertion_base):
     ensure_pil()
     if not rule_path.exists():
@@ -589,6 +1015,78 @@ def write_metrics(path, rows):
             writer.writerow({field: row.get(field, "") for field in fields})
 
 
+def write_json(path, doc):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def tail_text(path, line_count=20):
+    if not path.exists():
+        return ""
+    with path.open() as f:
+        return "".join(f.readlines()[-line_count:])
+
+
+def summarize_metrics(rows):
+    summary = {}
+    for row in rows:
+        command = row.get("command", "")
+        metric = row.get("metric", "")
+        duration = row.get("duration_ms")
+        if not command or duration in (None, ""):
+            continue
+        try:
+            value = float(duration)
+        except ValueError:
+            continue
+        key = f"{command}:{metric}"
+        entry = summary.setdefault(
+            key,
+            {"count": 0, "total_ms": 0.0, "max_ms": 0.0},
+        )
+        entry["count"] += 1
+        entry["total_ms"] += value
+        entry["max_ms"] = max(entry["max_ms"], value)
+    for entry in summary.values():
+        entry["avg_ms"] = entry["total_ms"] / max(1, entry["count"])
+    return summary
+
+
+def summarize_timeline_file(path):
+    if path is None or not path.exists():
+        return {}
+    counts = {}
+    malformed = 0
+    with path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            kind = record.get("kind", "Unknown")
+            counts[kind] = counts.get(kind, 0) + 1
+    return {"counts": counts, "malformed": malformed}
+
+
+def summarize_tsv_file(path):
+    if path is None or not path.exists():
+        return {}
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        rows = list(reader)
+    return {
+        "rows": len(rows),
+        "columns": reader.fieldnames or [],
+        "bytes": path.stat().st_size,
+    }
+
+
 def write_junit(path, name, rows):
     failures = [row for row in rows if row.get("status") not in ("captured", "ok")]
     suite = ET.Element(
@@ -627,44 +1125,88 @@ def run_replay(args):
     replay_path = resolve_path(args.replay, ROOT / "tests/ui/replays", ROOT)
     assertion_base = ROOT / "tests/ui/assertions"
     out_root = args.out_root
-    screenshot_dir = out_root / "screens"
-    log_dir = out_root / "logs"
-    out_root.mkdir(parents=True, exist_ok=True)
-    if screenshot_dir.exists():
-        shutil.rmtree(screenshot_dir)
-    if log_dir.exists():
-        shutil.rmtree(log_dir)
-    screenshot_dir.mkdir(parents=True)
-    log_dir.mkdir(parents=True)
+    artifacts = ArtifactPaths(
+        out_root,
+        args.name,
+        trace_path=args.trace_path,
+        profile_path=args.profile_json,
+        summary_path=args.ci_summary,
+        render_stats_path=args.render_stats,
+    )
+    artifacts.prepare_base()
+    trace = ReplayTrace(artifacts.trace_path)
+    profile = ReplayProfile(int(time.time() * 1000))
+    trace.emit(
+        "runner.start",
+        name=args.name,
+        replay=str(replay_path),
+        backend=args.input_backend,
+        offscreen=args.offscreen,
+    )
 
     env = os.environ.copy()
     env.update(split_env(args.env))
     if args.render_stats is not None:
         args.render_stats.parent.mkdir(parents=True, exist_ok=True)
         env["LIBX11_COMPAT_RENDER_STATS"] = str(args.render_stats)
+        profile.add_artifact("render_stats", args.render_stats)
+    if args.offscreen:
+        if args.input_backend != "internal" or not args.in_process_snapshots:
+            raise ReplayError(
+                "--offscreen requires --input-backend internal "
+                "and --in-process-snapshots"
+            )
+        env["SDL_VIDEODRIVER"] = "dummy"
+        trace.emit("resource.offscreen", sdl_videodriver="dummy")
+    timeline_path = None
+    if args.timeline or args.timeline_path is not None:
+        timeline_path = (
+            args.timeline_path
+            if args.timeline_path is not None
+            else out_root / "timeline.jsonl"
+        )
+        timeline_path.parent.mkdir(parents=True, exist_ok=True)
+        if timeline_path.exists():
+            timeline_path.unlink()
+        env["LIBX11_COMPAT_TIMELINE"] = "1"
+        env["LIBX11_COMPAT_TIMELINE_PATH"] = str(timeline_path)
+        profile.add_artifact("timeline", timeline_path)
+        trace.emit("resource.timeline", path=str(timeline_path))
+    states_dir = None
+    if args.input_backend == "internal" and args.in_process_snapshots:
+        states_dir = artifacts.states_dir
+        artifacts.reset_dir(states_dir)
+        trace.emit("resource.states", path=str(states_dir))
+    sync_dir = None
+    if args.input_backend == "internal":
+        sync_dir = artifacts.sync_dir
+        artifacts.reset_dir(sync_dir)
+        trace.emit("resource.sync", path=str(sync_dir))
     display = args.display
     xvfb_proc = None
-    if args.xvfb:
-        xvfb_proc = start_xvfb(display, args.geometry, log_dir / "xvfb.log")
+    if args.xvfb and args.offscreen:
+        trace.emit("resource.xvfb.skip", reason="offscreen")
+    elif args.xvfb:
+        xvfb_proc = start_xvfb(display, args.geometry, artifacts.log_dir / "xvfb.log")
         env["DISPLAY"] = f":{display}"
+        trace.emit("resource.xvfb.start", display=env["DISPLAY"])
     snapshot_dir = None
     if args.input_backend == "internal" and args.in_process_snapshots:
-        snapshot_dir = out_root / "snapshots"
-        # Wipe stale BMPs from a previous run; otherwise an earlier
-        # screenshot step's output could satisfy a later assertion
-        # against a snapshot the current run never produced.
-        if snapshot_dir.exists():
-            shutil.rmtree(snapshot_dir)
-        snapshot_dir.mkdir(parents=True)
+        snapshot_dir = artifacts.snapshot_dir
+        artifacts.reset_dir(snapshot_dir)
+        trace.emit("resource.snapshots", path=str(snapshot_dir))
     if args.input_backend == "internal":
         internal_replay = write_internal_replay(
             replay_path,
             out_root / "internal.replay",
             snapshot_dir=snapshot_dir,
+            sync_dir=sync_dir,
         )
         env["LIBX11_COMPAT_REPLAY"] = str(internal_replay)
+        profile.add_artifact("internal_replay", internal_replay)
+        trace.emit("resource.internal_replay", path=str(internal_replay))
 
-    app_log = (log_dir / f"{args.name}.log").open("w")
+    app_log = artifacts.app_log_path.open("w")
     app_cmd = [str(args.app), *args.app_arg]
     print("+", " ".join(shlex.quote(str(c)) for c in app_cmd), flush=True)
     proc = subprocess.Popen(
@@ -675,6 +1217,7 @@ def run_replay(args):
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    trace.emit("process.start", pid=proc.pid, argv=[str(c) for c in app_cmd])
 
     rows = []
     metrics = []
@@ -686,6 +1229,12 @@ def run_replay(args):
             command = parts[0]
             target = " ".join(parts[1:])
             step_start = time.perf_counter()
+            trace.emit(
+                "step.start",
+                lineno=lineno,
+                command=command,
+                target=target,
+            )
             try:
                 if command == "delay":
                     if len(parts) != 2:
@@ -780,7 +1329,7 @@ def run_replay(args):
                     if len(parts) not in (2, 6):
                         raise ReplayError("screenshot expects: name [x y w h]")
                     name = parts[1]
-                    shot = screenshot_dir / f"{name}.png"
+                    shot = artifacts.screenshot_dir / f"{name}.png"
                     bmp_path = (snapshot_dir / f"{name}.bmp") if snapshot_dir else None
                     region = args.screenshot_region
                     if len(parts) == 6:
@@ -799,11 +1348,7 @@ def run_replay(args):
                         # resize) and not drain the SDL_USEREVENT for
                         # several seconds.
                         wait_start = time.perf_counter()
-                        deadline = time.time() + 16.0
-                        while time.time() < deadline:
-                            if bmp_path.exists() and bmp_path.stat().st_size > 0:
-                                break
-                            time.sleep(0.05)
+                        wait_for_nonempty_file(bmp_path, 16.0)
                         add_metric(
                             metrics,
                             lineno,
@@ -840,11 +1385,7 @@ def run_replay(args):
                         # loudly with the app-log tail so the
                         # underlying snapshot failure is debuggable.
                         log_tail = ""
-                        app_log_path = log_dir / f"{args.name}.log"
-                        if app_log_path.exists():
-                            with app_log_path.open() as f:
-                                tail_lines = f.readlines()[-20:]
-                                log_tail = "".join(tail_lines)
+                        log_tail = tail_text(artifacts.app_log_path)
                         raise ReplayError(
                             f"in-process snapshot to {bmp_path} did "
                             f"not produce a file within 5s; refusing "
@@ -870,6 +1411,9 @@ def run_replay(args):
                             detail=str(shot),
                         )
                     screenshots[name] = shot
+                    profile.add_artifact(f"screen:{name}", shot)
+                    if bmp_path is not None:
+                        profile.add_artifact(f"snapshot:{name}", bmp_path)
                     rows.append(
                         {
                             "status": "captured",
@@ -919,6 +1463,104 @@ def run_replay(args):
                             "detail": "",
                         }
                     )
+                elif command == "wait-converge":
+                    if args.input_backend == "internal":
+                        sync_target = sync_dir / f"wait-converge-{lineno}.json"
+                        wait_start = time.perf_counter()
+                        timeout_s = wait_converge_timeout_ms(parts) / 1000.0 + 16.0
+                        if not wait_for_nonempty_file(
+                            sync_target, timeout_s, proc=proc
+                        ):
+                            raise ReplayError(
+                                f"wait-converge marker {sync_target} did not "
+                                f"appear within "
+                                f"{time.perf_counter() - wait_start:.2f}s"
+                            )
+                    else:
+                        # External backends have no detector; mirror the
+                        # legacy delay-shaped behavior so the script stays
+                        # portable.
+                        time.sleep(0.5)
+                elif command == "state-snapshot":
+                    if len(parts) < 2:
+                        raise ReplayError("state-snapshot expects a name")
+                    if states_dir is None or args.input_backend != "internal":
+                        # No way to capture in-process state without the
+                        # internal backend + --in-process-snapshots. Skip
+                        # rather than fail so existing replays still run.
+                        rows.append(
+                            {
+                                "status": "ok",
+                                "relative_path": f"state-snapshot:{parts[1]}",
+                                "detail": "skipped (no in-process snapshots)",
+                            }
+                        )
+                        continue
+                    state_target = states_dir / f"{parts[1]}.json"
+                    wait_start = time.perf_counter()
+                    if not wait_for_nonempty_file(state_target, 16.0):
+                        raise ReplayError(
+                            f"state-snapshot {state_target} did not appear "
+                            f"within {time.perf_counter() - wait_start:.2f}s"
+                        )
+                    profile.add_artifact(f"state:{parts[1]}", state_target)
+                    rows.append(
+                        {
+                            "status": "captured",
+                            "relative_path": f"state-snapshot:{parts[1]}",
+                            "screenshot": str(state_target),
+                            "detail": "",
+                        }
+                    )
+                elif command == "assert-state":
+                    if len(parts) != 3:
+                        raise ReplayError("assert-state expects name rule")
+                    if states_dir is None:
+                        rows.append(
+                            {
+                                "status": "ok",
+                                "relative_path": (
+                                    f"assert-state:{parts[1]}:{parts[2]}"
+                                ),
+                                "detail": "skipped (no in-process snapshots)",
+                            }
+                        )
+                        continue
+                    state_target = states_dir / f"{parts[1]}.json"
+                    rule_path = resolve_path(
+                        parts[2], assertion_base, replay_path.parent, ROOT
+                    )
+                    assert_state(rule_path, state_target)
+                    rows.append(
+                        {
+                            "status": "ok",
+                            "relative_path": (f"assert-state:{parts[1]}:{parts[2]}"),
+                            "detail": str(rule_path),
+                        }
+                    )
+                elif command == "timeline-summary":
+                    if len(parts) != 2:
+                        raise ReplayError("timeline-summary expects a rule path")
+                    if timeline_path is None:
+                        rows.append(
+                            {
+                                "status": "ok",
+                                "relative_path": f"timeline-summary:{parts[1]}",
+                                "detail": "skipped (no --timeline)",
+                            }
+                        )
+                        continue
+                    rule_path = resolve_path(
+                        parts[1], assertion_base, replay_path.parent, ROOT
+                    )
+                    assert_timeline_summary(rule_path, timeline_path)
+                    rows.append(
+                        {
+                            "status": "ok",
+                            "relative_path": f"timeline-summary:{parts[1]}",
+                            "detail": str(rule_path),
+                        }
+                    )
                 elif command == "assert-exit":
                     if len(parts) != 2:
                         raise ReplayError("assert-exit expects status|any|running")
@@ -951,6 +1593,12 @@ def run_replay(args):
             except ReplayError as error:
                 failed = True
                 detail = f"{replay_path}:{lineno}: {error}"
+                trace.emit(
+                    "step.error",
+                    lineno=lineno,
+                    command=command,
+                    detail=detail,
+                )
                 rows.append(
                     {
                         "status": "failed",
@@ -960,13 +1608,22 @@ def run_replay(args):
                 )
                 print(detail, file=sys.stderr)
             finally:
+                duration_ms = (time.perf_counter() - step_start) * 1000.0
+                profile.add_step(command, duration_ms)
+                trace.emit(
+                    "step.finish",
+                    lineno=lineno,
+                    command=command,
+                    failed=failed,
+                    duration_ms=f"{duration_ms:.3f}",
+                )
                 add_metric(
                     metrics,
                     lineno,
                     command,
                     target,
                     "step_duration_ms",
-                    duration_ms=f"{(time.perf_counter() - step_start) * 1000.0:.3f}",
+                    duration_ms=f"{duration_ms:.3f}",
                 )
             if failed:
                 break
@@ -978,9 +1635,20 @@ def run_replay(args):
                 except OSError:
                     proc.terminate()
                 terminate_process(proc)
+        profile.process["app_returncode"] = proc.poll()
+        trace.emit(
+            "process.finish",
+            pid=proc.pid,
+            returncode=profile.process["app_returncode"],
+        )
         app_log.close()
+        profile.add_artifact("app_log", artifacts.app_log_path)
         if xvfb_proc is not None:
             terminate_process(xvfb_proc)
+            trace.emit(
+                "resource.xvfb.finish",
+                returncode=xvfb_proc.poll(),
+            )
 
     if not rows:
         rows.append(
@@ -991,14 +1659,56 @@ def run_replay(args):
             }
         )
         failed = True
-    write_results(out_root / "results.tsv", rows)
-    write_metrics(out_root / "metrics.tsv", metrics)
-    write_junit(out_root / "junit.xml", args.name, rows)
-    print(f"Wrote {out_root / 'results.tsv'}")
-    print(f"Wrote {out_root / 'metrics.tsv'}")
+    write_results(artifacts.results_path, rows)
+    write_metrics(artifacts.metrics_path, metrics)
+    write_junit(artifacts.junit_path, args.name, rows)
+    failures = [row for row in rows if row.get("status") not in ("captured", "ok")]
+    trace.emit(
+        "runner.finish",
+        status="failed" if failed else "ok",
+        steps=len(rows),
+        failures=len(failures),
+    )
+    trace.close()
+    profile.add_artifact("results", artifacts.results_path)
+    profile.add_artifact("metrics", artifacts.metrics_path)
+    profile.add_artifact("junit", artifacts.junit_path)
+    profile.add_artifact("trace", artifacts.trace_path)
+    profile.add_artifact("profile", artifacts.profile_path)
+    profile.add_artifact("summary", artifacts.summary_path)
+    finished_at_ms = int(time.time() * 1000)
+    profile_doc = {
+        "name": args.name,
+        "started_at_ms": profile.started_at_ms,
+        "finished_at_ms": finished_at_ms,
+        "duration_ms": finished_at_ms - profile.started_at_ms,
+        "command_counts": profile.command_counts,
+        "command_durations_ms": profile.command_durations_ms,
+        "metric_summary": summarize_metrics(metrics),
+        "timeline": summarize_timeline_file(timeline_path),
+        "render_stats": summarize_tsv_file(args.render_stats),
+        "process": profile.process,
+        "artifacts": profile.artifacts,
+    }
+    summary_doc = {
+        "name": args.name,
+        "status": "failed" if failed else "ok",
+        "backend": args.input_backend,
+        "offscreen": args.offscreen,
+        "steps": len(rows),
+        "failures": failures,
+        "artifacts": profile.artifacts,
+    }
+    write_json(artifacts.profile_path, profile_doc)
+    write_json(artifacts.summary_path, summary_doc)
+    print(f"Wrote {artifacts.results_path}")
+    print(f"Wrote {artifacts.metrics_path}")
+    print(f"Wrote {artifacts.profile_path}")
+    print(f"Wrote {artifacts.summary_path}")
+    print(f"Wrote {artifacts.trace_path}")
     if args.render_stats is not None:
         print(f"Wrote {args.render_stats}")
-    print(f"Wrote {out_root / 'junit.xml'}")
+    print(f"Wrote {artifacts.junit_path}")
     return 1 if failed else 0
 
 
@@ -1050,7 +1760,58 @@ def main():
             "by setting LIBX11_COMPAT_RENDER_STATS for the target process"
         ),
     )
+    parser.add_argument(
+        "--trace-path",
+        type=Path,
+        default=None,
+        help=(
+            "write structured runner trace JSONL here. Defaults to "
+            "<out-root>/trace.jsonl."
+        ),
+    )
+    parser.add_argument(
+        "--profile-json",
+        type=Path,
+        default=None,
+        help=(
+            "write aggregate command timing, artifact sizes, timeline counts, "
+            "and render-stats metadata here. Defaults to <out-root>/profile.json."
+        ),
+    )
+    parser.add_argument(
+        "--ci-summary",
+        type=Path,
+        default=None,
+        help=(
+            "write compact CI pass/fail and artifact index JSON here. "
+            "Defaults to <out-root>/summary.json."
+        ),
+    )
+    parser.add_argument(
+        "--offscreen",
+        action="store_true",
+        help=(
+            "force SDL_VIDEODRIVER=dummy for headless CI. Requires "
+            "--input-backend internal and --in-process-snapshots."
+        ),
+    )
     parser.add_argument("--leave-running", action="store_true")
+    parser.add_argument(
+        "--timeline",
+        action="store_true",
+        help=(
+            "set LIBX11_COMPAT_TIMELINE=1 so the target process writes "
+            "a JSONL trace of every X event, configure, destroy, present, "
+            "and focus / grab transition. Defaults to "
+            "<out-root>/timeline.jsonl when --timeline-path is unset."
+        ),
+    )
+    parser.add_argument(
+        "--timeline-path",
+        type=Path,
+        default=None,
+        help=("explicit path for the timeline JSONL. Implies --timeline."),
+    )
     parser.add_argument(
         "--in-process-snapshots",
         action="store_true",
@@ -1082,6 +1843,15 @@ def main():
             )
             return 2
         args.screenshot_region = tuple(parts)
+    if args.offscreen and (
+        args.input_backend != "internal" or not args.in_process_snapshots
+    ):
+        print(
+            "--offscreen requires --input-backend internal "
+            "and --in-process-snapshots",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         return run_replay(args)

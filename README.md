@@ -103,6 +103,8 @@ The `check-smoke-*` targets use deterministic replay files and in-process snapsh
 They do not require `node11`, `xdotool`, or a native X11 reference run.
 Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
 
+See [`docs/UI-REPLAY.md`](docs/UI-REPLAY.md) for the replay grammar, the runner CLI, the state / image / timeline assertion schemas, and the artifact layout.
+
 The value of these targets is not that they replace a real X11, Motif, or Qt2 install today,
 but that they keep legacy Xlib clients building and running on platforms where no X server is available while migration is in progress.
 

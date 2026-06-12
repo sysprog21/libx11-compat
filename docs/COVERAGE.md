@@ -3,6 +3,7 @@
 The library exports 615 public Xlib symbols, listed in [`tests/api-symbols.txt`](../tests/api-symbols.txt).
 The exported manifest is enforced by `make symbol-coverage`;
 per-subsystem behavior is checked by `make check`.
+End-to-end behavior of real Xlib workloads is exercised through the replay harness documented in [`UI-REPLAY.md`](UI-REPLAY.md).
 
 The status column uses three buckets:
 

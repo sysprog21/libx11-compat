@@ -1,0 +1,6 @@
+{
+  "assertions": [
+    {"type": "geq", "field": "mapped_window_count", "min": 1},
+    {"type": "leq", "field": "truncation_flagged", "max": 0}
+  ]
+}
