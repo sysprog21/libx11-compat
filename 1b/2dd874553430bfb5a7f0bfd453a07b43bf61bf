@@ -1,0 +1,50 @@
+src/window.h
+  s_e651e529e29ae8::t_772ece59da97b7 48-56
+  s_e651e529e29ae8::t_e3ca41ab45becf 57-59
+src/image.c
+  s_e651e529e29ae8::t_3de829725f7c8c 813
+src/font.c
+  s_e651e529e29ae8::t_edf2900622af19 82
+  s_e651e529e29ae8::t_a60f0e80faebb2 2455-2466
+src/window-internal.c
+  s_e651e529e29ae8::t_0b9da2add75516 1247,1276,1299,1307,1375,1464,1467,1477
+  s_e651e529e29ae8::t_a7bca139f25dc1 1281-1283
+  s_e651e529e29ae8::t_f8d61a0cc154dd 61-65
+  s_e651e529e29ae8::t_303e2690d15392 165
+  s_e651e529e29ae8::t_1bc6e32bfcf669 547
+  s_e651e529e29ae8::t_04c22222d0f88a 1277-1280
+tests/check.c
+  s_e651e529e29ae8::t_f9434fdfe0f8a0 4748-4753
+src/drawing.c
+  s_e651e529e29ae8::t_d86622dc66f64b 3517
+  s_e651e529e29ae8::t_9d232dad3da5da 63,68-87,90,92-96,99-105,109-110,112-123
+  s_e651e529e29ae8::t_1656159e749419 397-398
+  s_e651e529e29ae8::t_63614b145130cc 2435,2449
+  s_e651e529e29ae8::t_727d2d30e7ab1f 254-261,265-275,277-310,320-325,344,348-351,354-366,368-369,372-379,381-384,386-387,393,401-404,406
+  s_e651e529e29ae8::t_46f8782f09cc85 3397
+  s_e651e529e29ae8::t_3db88efc4c88bd 3593
+  s_e651e529e29ae8::t_ed63558ba3c6b7 2482
+  s_e651e529e29ae8::t_e63c5159e53710 3706-3712,3714,3723
+  s_e651e529e29ae8::t_3ddc6922ae3f64 2668
+  s_e651e529e29ae8::t_c56e40149f32a1 2302
+  s_e651e529e29ae8::t_76c22797a1b56f 1141
+  s_e651e529e29ae8::t_fd3c48416a7df4 311,317-319
+  s_e651e529e29ae8::t_3a583c6183922a 2390
+  s_e651e529e29ae8::t_7905bc4ecd0c58 3666
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "1b2dd874553430bfb5a7f0bfd453a07b43bf61bf",
+  "prompts": {},
+  "sessions": {
+    "s_e651e529e29ae8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ade43d7d-c351-40b1-a2ad-feafb6107c5b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
