@@ -2,6 +2,7 @@
 #define _WINDOW_H_
 
 #include <SDL2/SDL.h>
+#include <pixman.h>
 #include "window-debug.h"
 #include "resource-types.h"
 #include "util.h"
@@ -44,6 +45,18 @@ typedef struct {
     Bool needsPresent;
     Bool hasPresentRect;
     SDL_Rect presentRect;
+    /* Dirty region in window-local coords for the next present.
+     * drawWindowDataToScreen walks this region and emits one
+     * SDL_RenderReadPixels per rect, then submits the whole set via
+     * SDL_UpdateWindowSurfaceRects. fullyDirty is a sentinel that collapses
+     * the region to the entire window when the rect budget (LIBX11_COMPAT_
+     * DIRTY_MAX_RECTS, default 16) is exceeded or a NULL-rect mark arrives;
+     * the read side then falls back to a single full-window readback.
+     * Initialized in initWindowStruct; finalized in destroyWindow /
+     * destroyScreenWindow.
+     */
+    pixman_region32_t dirty;
+    Bool fullyDirty;
     /* True after a mapped top-level window has completed at least one
      * successful update to its SDL_Window surface.
      */
@@ -96,6 +109,17 @@ typedef struct {
      */
     Window deferredTransientParent;
     Bool deferredTransientApplied;
+    /* Cached sibling-occlusion clip in window-local coords. Equals
+     * (0,0,w,h) minus the union of higher siblings on this window's
+     * parent, walked up the ancestor chain. Recomputed lazily through
+     * ensureVisibleRegion; invalidated by configureWindow and the
+     * restack helpers when stacking, geometry, or mapping changes.
+     * Drawing primitives in src/drawing.c intersect each clip rect with
+     * this region before issuing SDL_RenderSetClipRect, so a higher
+     * sibling cannot be drawn through by a lower one.
+     */
+    pixman_region32_t visibleRegion;
+    Bool visibleRegionValid;
 #ifdef DEBUG_WINDOWS
     /* Random id used for debugging. */
     unsigned long debugId;

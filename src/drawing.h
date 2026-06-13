@@ -72,10 +72,32 @@ SDL_Renderer *getWindowRenderer(Window window);
 SDL_Surface *getRenderSurface(SDL_Renderer *renderer);
 SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
                                   const SDL_Rect *source);
-int getGcClipIterationCount(GC gc);
+/* Number of clip iterations to perform when drawing into "d" through "gc".
+ * Each iteration is one (gc clip rect) x (visible-region rect) pair. Returns 0
+ * when the gc clip excludes all pixels or "d"'s sibling occlusion fully covers
+ * it, so callers can short-circuit the draw. "d" may be None or a Pixmap, in
+ * which case only gc clipping is considered; sibling occlusion only applies to
+ * windows.
+ */
+int getGcClipIterationCount(GC gc, Drawable d);
 void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip);
-Bool setGcClipForIteration(SDL_Renderer *renderer, GC gc, int iteration);
+/* Pair "iteration" of getGcClipIterationCount: intersect the gc clip rect, the
+ * cached parent-chain drawable clip, and "d"'s sibling visible region (when
+ * "d" is a window), then push the result through SDL_RenderSetClipRect.
+ * Returns False when the intersected region is empty so the caller skips draw
+ * work for this iteration.
+ */
+Bool setGcClipForIteration(SDL_Renderer *renderer,
+                           GC gc,
+                           int iteration,
+                           Drawable d);
 void clearRendererClip(SDL_Renderer *renderer);
+/* Flush the per-primitive cache that pairs a Drawable with its resolved
+ * visible region and rect count. Called from invalidateVisibleRegionSubtree so
+ * the cached pointer cannot outlive the underlying pixman rect storage across
+ * a region recomputation.
+ */
+void invalidatePrimitiveClipCache(void);
 void drawWindowDataToScreen(void);
 Bool presentWakeOwnsEventType(Uint32 eventType);
 void markWindowNeedsPresent(Window window);

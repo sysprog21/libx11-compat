@@ -60,16 +60,67 @@ static double nsToMs(uint64_t ns)
     return (double) ns / 1000000.0;
 }
 
+/* Maximum number of independent dirty rects to track on a single window before
+ * collapsing to fullyDirty. Keeps SDL_UpdateWindowSurfaceRects in its per-rect
+ * path on every backend that has been measured; once the region exceeds this
+ * cap, a single full-window readback is cheaper than per-rect bookkeeping.
+ * Hard-clamped to [1, 256] when read from the env.
+ */
+#define DIRTY_RECT_CAP_DEFAULT 16
+
+static int dirtyRectCap(void)
+{
+    static int cached = 0;
+    if (cached != 0)
+        return cached;
+    int value = DIRTY_RECT_CAP_DEFAULT;
+    const char *env = getenv("LIBX11_COMPAT_DIRTY_MAX_RECTS");
+    if (env && *env) {
+        char *end = NULL;
+        long parsed = strtol(env, &end, 10);
+        if (end != env && parsed >= 1 && parsed <= 256)
+            value = (int) parsed;
+    }
+    cached = value;
+    return cached;
+}
+
 static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
 {
-    if (!windowStruct || !rect || rect->w <= 0 || rect->h <= 0)
+    if (!windowStruct)
         return;
+
+    if (!rect) {
+        /* NULL marks the whole window dirty. The region cannot become any
+         * dirtier before the next present, so the union below can short
+         * circuit. The legacy bounding rect mirrors the same intent by staying
+         * clear of hasPresentRect; drawWindowDataToScreen falls back to the
+         * full window when hasPresentRect is False.
+         */
+        windowStruct->fullyDirty = True;
+        return;
+    }
+    if (rect->w <= 0 || rect->h <= 0)
+        return;
+
     if (!windowStruct->hasPresentRect) {
         windowStruct->presentRect = *rect;
         windowStruct->hasPresentRect = True;
-        return;
+    } else {
+        unionRect(&windowStruct->presentRect, rect, &windowStruct->presentRect);
     }
-    unionRect(&windowStruct->presentRect, rect, &windowStruct->presentRect);
+
+    /* Mirror into the new region. fullyDirty stays sticky once set; the
+     * present-side path will clear it on a successful flush.
+     */
+    if (windowStruct->fullyDirty)
+        return;
+
+    pixman_region32_union_rect(&windowStruct->dirty, &windowStruct->dirty,
+                               rect->x, rect->y, (unsigned int) rect->w,
+                               (unsigned int) rect->h);
+    if (pixman_region32_n_rects(&windowStruct->dirty) > dirtyRectCap())
+        windowStruct->fullyDirty = True;
 }
 
 static FILE *renderStatsFile(void)
@@ -139,6 +190,7 @@ static void schedulePresentWake(void)
         Uint32 eventType = SDL_RegisterEvents(1);
         if (eventType == ((Uint32) -1))
             return;
+
         /* Losers of the CAS already installed a different registered event
          * type; the registration this thread just won is unused but harmless,
          * and pushing it would slip past presentWakeOwnsEventType.
@@ -199,24 +251,78 @@ void drawWindowDataToScreen()
 
         int w, h;
         GET_WINDOW_DIMS(children[i], w, h);
-        SDL_Rect presentRect = {0, 0, w, h};
-        if (child->hasPresented && child->hasPresentRect)
-            presentRect = child->presentRect;
-        SDL_Rect bounds = {0, 0, w, h};
-        if (!SDL_IntersectRect(&presentRect, &bounds, &presentRect))
-            continue;
-        /* Clamp the readback rect to all three of the X11 logical size, the
-         * backing texture size, and the SDL window surface size. Window surface
-         * and X11 logical w/h can diverge during resize and on high-DPI setups;
-         * an unclamped read would overflow winSurface->pixels.
+        /* Build the read rect list. fullyDirty (sentinel set by
+         * unionPresentRect on a NULL mark or rect-count overflow), or a window
+         * that has never presented before, falls back to a single full-window
+         * rect; otherwise walk the cached dirty region and pre-clamp each box
+         * against the X11 logical size, the backing texture size, and the SDL
+         * window surface size. Window surface and X11 logical w/h can diverge
+         * during resize and on high-DPI setups; an unclamped read overflows
+         * winSurface->pixels.
          */
         int texW = 0, texH = 0;
         SDL_QueryTexture(child->sdlTexture, NULL, NULL, &texW, &texH);
-        SDL_Rect texBounds = {0, 0, texW, texH};
-        SDL_Rect surfaceBounds = {0, 0, winSurface->w, winSurface->h};
-        if (!SDL_IntersectRect(&presentRect, &texBounds, &presentRect) ||
-            !SDL_IntersectRect(&presentRect, &surfaceBounds, &presentRect))
+        int clampW = w;
+        if (texW < clampW)
+            clampW = texW;
+        if (winSurface->w < clampW)
+            clampW = winSurface->w;
+        int clampH = h;
+        if (texH < clampH)
+            clampH = texH;
+        if (winSurface->h < clampH)
+            clampH = winSurface->h;
+        if (clampW <= 0 || clampH <= 0)
             continue;
+        SDL_Rect bounds = {0, 0, clampW, clampH};
+
+        enum { DIRTY_RECT_BUDGET = 256 };
+        SDL_Rect rects[DIRTY_RECT_BUDGET];
+        int nrects = 0;
+        Bool useRegion = !child->fullyDirty && child->hasPresented &&
+                         child->hasPresentRect &&
+                         pixman_region32_n_rects(&child->dirty) > 0;
+        if (useRegion) {
+            int rn = pixman_region32_n_rects(&child->dirty);
+            if (rn > DIRTY_RECT_BUDGET) {
+                /* Should never trip: unionPresentRect collapses to fullyDirty
+                 * once the dirtyRectCap is exceeded. Fall back to the bounding
+                 * extent so a future cap bump does not silently truncate.
+                 */
+                useRegion = False;
+            } else {
+                pixman_box32_t *boxes =
+                    pixman_region32_rectangles(&child->dirty, NULL);
+                for (int b = 0; b < rn; b++) {
+                    SDL_Rect r = {
+                        .x = boxes[b].x1,
+                        .y = boxes[b].y1,
+                        .w = boxes[b].x2 - boxes[b].x1,
+                        .h = boxes[b].y2 - boxes[b].y1,
+                    };
+                    if (!SDL_IntersectRect(&r, &bounds, &r))
+                        continue;
+                    rects[nrects++] = r;
+                }
+            }
+        }
+        if (!useRegion || nrects == 0) {
+            SDL_Rect r = {0, 0, clampW, clampH};
+            /* When fullyDirty is set, always read back the entire clamped
+             * window. presentRect may carry over a smaller bounding extent from
+             * prior partial marks in the same pending cycle; using it here
+             * would under-cover the actual damage. The region-walk path above
+             * already gated on !fullyDirty, so this fallback handles fullyDirty
+             * + no-region + no-prior-present together.
+             */
+            if (!child->fullyDirty && child->hasPresented &&
+                child->hasPresentRect)
+                r = child->presentRect;
+            if (!SDL_IntersectRect(&r, &bounds, &r))
+                continue;
+            rects[0] = r;
+            nrects = 1;
+        }
         if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
             LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -235,46 +341,69 @@ void drawWindowDataToScreen()
         screenTargetMutated = True;
         Uint32 winFmt = winSurface->format->format;
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
-        int readRc = -1;
+        int readRc = 0;
         uint64_t readStart = monotonicNowNs();
         if (winFmt == readFmt) {
             /* Direct readback into the window's framebuffer. Saves one
-             * full-image memcpy on every present.
+             * full-image memcpy on every present. SDL_RenderReadPixels accepts
+             * repeated writes into a single locked surface, so locking once
+             * across the per-rect loop amortizes the lock cost (which rebinds
+             * GL state on some backends).
              */
             if (SDL_LockSurface(winSurface) == 0) {
-                Uint8 *pixels =
-                    (Uint8 *) winSurface->pixels +
-                    (size_t) presentRect.y * (size_t) winSurface->pitch +
-                    (size_t) presentRect.x *
-                        (size_t) winSurface->format->BytesPerPixel;
-                readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
-                                              pixels, winSurface->pitch);
+                for (int r = 0; r < nrects; r++) {
+                    Uint8 *pixels =
+                        (Uint8 *) winSurface->pixels +
+                        (size_t) rects[r].y * (size_t) winSurface->pitch +
+                        (size_t) rects[r].x *
+                            (size_t) winSurface->format->BytesPerPixel;
+                    int rc = SDL_RenderReadPixels(screen, &rects[r], readFmt,
+                                                  pixels, winSurface->pitch);
+                    if (rc != 0) {
+                        readRc = rc;
+                        break;
+                    }
+                }
                 SDL_UnlockSurface(winSurface);
+            } else {
+                readRc = -1;
             }
         } else {
-            SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
-                0, presentRect.w, presentRect.h, 32, readFmt);
-            if (staging) {
-                readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
+            for (int r = 0; r < nrects; r++) {
+                SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
+                    0, rects[r].w, rects[r].h, 32, readFmt);
+                if (!staging) {
+                    readRc = -1;
+                    break;
+                }
+                int rc = SDL_RenderReadPixels(screen, &rects[r], readFmt,
                                               staging->pixels, staging->pitch);
-                if (readRc == 0)
-                    SDL_BlitSurface(staging, NULL, winSurface, &presentRect);
+                if (rc == 0)
+                    SDL_BlitSurface(staging, NULL, winSurface, &rects[r]);
+                else
+                    readRc = rc;
                 SDL_FreeSurface(staging);
+                if (readRc != 0)
+                    break;
             }
         }
         readbackNs += monotonicNowNs() - readStart;
         if (readRc == 0) {
             uint64_t updateStart = monotonicNowNs();
-            SDL_UpdateWindowSurfaceRects(child->sdlWindow, &presentRect, 1);
+            SDL_UpdateWindowSurfaceRects(child->sdlWindow, rects, nrects);
             updateNs += monotonicNowNs() - updateStart;
             child->needsPresent = False;
             child->hasPresentRect = False;
+            pixman_region32_clear(&child->dirty);
+            child->fullyDirty = False;
             child->hasPresented = True;
             presentedWindows++;
-            uint64_t windowPixels =
-                (uint64_t) presentRect.w * (uint64_t) presentRect.h;
+            uint64_t windowPixels = 0;
+            for (int r = 0; r < nrects; r++) {
+                windowPixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
+            }
             presentedPixels += windowPixels;
-            timelineTapPresent(children[i], 1, windowPixels);
+            timelineTapPresent(children[i], (size_t) nrects, windowPixels);
         } else {
             LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -731,16 +860,64 @@ Bool applyShapeMaskOverDrawnRect(Drawable d,
     return ok;
 }
 
-int getGcClipIterationCount(GC gc)
+/* Returns the cached visible region for "d" along with its rect count.
+ *   - (NULL, 1): "d" is None or a pixmap, so no sibling occlusion applies.
+ *   - (&region, N): "d" is a window; the region holds N >= 1 visible rects
+ *     (top-levels see their full frame as one rect).
+ *   - (&region, 0): "d" is a window fully covered by higher-stacked siblings;
+ *     the caller must skip drawing.
+ */
+static const pixman_region32_t *drawableVisibleRegion(Drawable d,
+                                                      int *visCountOut)
 {
-    if (!gc)
-        return 1;
-    GraphicContext *gContext = GET_GC(gc);
-    if (!gContext || !gContext->clipRectanglesSet)
-        return 1;
-    if (gContext->clipRectCount <= 0)
+    if (d == None || !IS_TYPE(d, WINDOW)) {
+        *visCountOut = 1;
+        return NULL;
+    }
+    const pixman_region32_t *region = ensureVisibleRegion(d);
+    if (!region) {
+        *visCountOut = 1;
+        return NULL;
+    }
+    *visCountOut = pixman_region32_n_rects((pixman_region32_t *) region);
+    return region;
+}
+
+void invalidatePrimitiveClipCache(void)
+{
+    /* No-op kept as a stable exported symbol so window-internal.c can
+     * unconditionally call this from invalidateVisibleRegionSubtree. The
+     * previous primitive-clip cache was rolled back after benchmarks showed no
+     * net win.
+     */
+}
+
+/* Cartesian product of GC-clip and visible-region rect counts, capped at
+ * INT_MAX in int64_t. A shape-fragmented visible region multiplied by a long GC
+ * clip list can otherwise wrap negative and either skip drawing entirely or
+ * desynchronize the gcIdx / visIdx decode below.
+ */
+static int cappedClipIterationCount(int gcCount, int visCount)
+{
+    return clampToInt((int64_t) gcCount * (int64_t) visCount);
+}
+
+int getGcClipIterationCount(GC gc, Drawable d)
+{
+    int gcCount = 1;
+    if (gc) {
+        GraphicContext *gContext = GET_GC(gc);
+        if (gContext && gContext->clipRectanglesSet) {
+            if (gContext->clipRectCount <= 0)
+                return 0;
+            gcCount = gContext->clipRectCount;
+        }
+    }
+    int visCount = 1;
+    (void) drawableVisibleRegion(d, &visCount);
+    if (visCount <= 0)
         return 0;
-    return gContext->clipRectCount;
+    return cappedClipIterationCount(gcCount, visCount);
 }
 
 /* Centralize the graphics-exposures lookup so every XCopyArea exit path
@@ -801,37 +978,89 @@ void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip)
     SDL_RenderSetClipRect(renderer, clip);
 }
 
-Bool setGcClipForIteration(SDL_Renderer *renderer, GC gc, int iteration)
+Bool setGcClipForIteration(SDL_Renderer *renderer,
+                           GC gc,
+                           int iteration,
+                           Drawable d)
 {
     if (!renderer)
         return False;
-    if (!gc) {
-        clearRendererClip(renderer);
-        return True;
+
+    GraphicContext *gContext = gc ? GET_GC(gc) : NULL;
+    Bool hasGcClip = gContext && gContext->clipRectanglesSet;
+    int gcCount = 1;
+    if (hasGcClip) {
+        if (gContext->clipRectCount <= 0)
+            return False;
+        gcCount = gContext->clipRectCount;
     }
-    GraphicContext *gContext = GET_GC(gc);
-    if (!gContext || !gContext->clipRectanglesSet) {
-        clearRendererClip(renderer);
-        return True;
+
+    int visCount = 1;
+    const pixman_region32_t *region = drawableVisibleRegion(d, &visCount);
+    if (visCount <= 0)
+        return False;
+    /* The bounds check must agree with the cap reported by
+     * getGcClipIterationCount; visIdx / gcIdx stay safe because the caller only
+     * iterates up to that returned int.
+     */
+    int total = cappedClipIterationCount(gcCount, visCount);
+    if (iteration < 0 || iteration >= total)
+        return False;
+
+    int visIdx = iteration / gcCount;
+    int gcIdx = iteration % gcCount;
+
+    /* The gc clip slot determines the starting rect: an explicit gc clip rect
+     * when one is installed, otherwise the parent-chain drawable clip pushed by
+     * getWindowRenderer. When neither source is present, the fallback uses the
+     * whole renderer target so the subsequent sibling-region intersect still
+     * produces a meaningful rect.
+     */
+    SDL_Rect clip;
+    if (hasGcClip) {
+        XRectangle *source = &gContext->clipRects[gcIdx];
+        if (source->width == 0 || source->height == 0)
+            return False;
+        clip.x = gContext->clipOriginX + source->x;
+        clip.y = gContext->clipOriginY + source->y;
+        clip.w = source->width;
+        clip.h = source->height;
+    } else if (rendererDrawableClip.valid &&
+               rendererDrawableClip.renderer == renderer) {
+        clip = rendererDrawableClip.clip;
+    } else {
+        SDL_RenderGetViewport(renderer, &clip);
+        clip.x = 0;
+        clip.y = 0;
     }
-    if (gContext->clipRectCount <= 0)
-        return False;
-    if (iteration < 0 || iteration >= gContext->clipRectCount)
-        return False;
-    XRectangle *source = &gContext->clipRects[iteration];
-    if (source->width == 0 || source->height == 0)
-        return False;
-    SDL_Rect clip = {
-        .x = gContext->clipOriginX + source->x,
-        .y = gContext->clipOriginY + source->y,
-        .w = source->width,
-        .h = source->height,
-    };
-    if (rendererDrawableClip.valid &&
+
+    if (hasGcClip && rendererDrawableClip.valid &&
         rendererDrawableClip.renderer == renderer) {
         if (!SDL_IntersectRect(&clip, &rendererDrawableClip.clip, &clip))
             return False;
     }
+
+    /* Sibling occlusion: drop any pixels that would have landed under a
+     * higher-stacked sibling on the same parent (or any ancestor's higher
+     * sibling). Pixmaps and the (NULL, 1) fallback above leave "region" NULL,
+     * so this branch is a no-op for them.
+     */
+    if (region && visIdx < visCount) {
+        pixman_box32_t *boxes =
+            pixman_region32_rectangles((pixman_region32_t *) region, NULL);
+        pixman_box32_t b = boxes[visIdx];
+        SDL_Rect visRect = {
+            .x = b.x1,
+            .y = b.y1,
+            .w = b.x2 - b.x1,
+            .h = b.y2 - b.y1,
+        };
+        if (visRect.w <= 0 || visRect.h <= 0)
+            return False;
+        if (!SDL_IntersectRect(&clip, &visRect, &clip))
+            return False;
+    }
+
     return SDL_RenderSetClipRect(renderer, &clip) == 0 ? True : False;
 }
 
@@ -909,7 +1138,7 @@ static void repaintMappedChildrenInRect(Display *display,
 {
     if (rect && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, rect, 1);
-    presentDrawableIfVisible(drawable);
+    presentDrawableRectIfVisible(drawable, rect);
 }
 
 static int compareInts(const void *a, const void *b)
@@ -1408,6 +1637,7 @@ static Bool shouldUsePathArc(GC gc,
 }
 
 static Bool strokeLineOnRenderer(SDL_Renderer *renderer,
+                                 Drawable d,
                                  GC gc,
                                  int x1,
                                  int y1,
@@ -1418,7 +1648,7 @@ static Bool strokeLineOnRenderer(SDL_Renderer *renderer,
     if (!pathInit(&path))
         return False;
     Bool ok = pathMoveTo(&path, x1, y1) && pathLineTo(&path, x2, y2) &&
-              rasterStrokePathOnRenderer(renderer, gc, &path);
+              rasterStrokePathOnRenderer(renderer, d, gc, &path);
     pathFree(&path);
     return ok;
 }
@@ -1914,9 +2144,9 @@ int XFillPolygon(Display *display,
         return 1;
     }
 
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         for (int y = minY; y <= maxY; y++) {
             double scanY = y + 0.5;
@@ -1983,6 +2213,7 @@ int XFillPolygon(Display *display,
 }
 
 static int fillArcOnRenderer(SDL_Renderer *renderer,
+                             Drawable d,
                              GC gc,
                              int x,
                              int y,
@@ -1997,7 +2228,7 @@ static int fillArcOnRenderer(SDL_Renderer *renderer,
         if (pathInit(&path)) {
             Bool ok = appendXArcPath(&path, x, y, width, height, angle1, angle2,
                                      gContext->arcMode) &&
-                      rasterFillPathOnRenderer(renderer, gc, &path);
+                      rasterFillPathOnRenderer(renderer, d, gc, &path);
             pathFree(&path);
             if (ok)
                 return 1;
@@ -2012,9 +2243,9 @@ static int fillArcOnRenderer(SDL_Renderer *renderer,
     double cx = x + rx, cy = y + ry;
     double start = angle1 / 64.0;
     double extent = angle2 / 64.0;
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         for (int py = y; py < y + (int) height; py++) {
             for (int px = x; px < x + (int) width; px++) {
@@ -2065,14 +2296,15 @@ int XFillArc(Display *display,
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &arcBbox);
     int result =
-        fillArcOnRenderer(renderer, gc, x, y, width, height, angle1, angle2);
+        fillArcOnRenderer(renderer, d, gc, x, y, width, height, angle1, angle2);
     shapeGuardEnd(&sg);
     if (result)
-        presentDrawableIfVisible(d);
+        presentDrawableRectIfVisible(d, &arcBbox);
     return result;
 }
 
 static int drawArcOnRenderer(SDL_Renderer *renderer,
+                             Drawable d,
                              GC gc,
                              int x,
                              int y,
@@ -2087,7 +2319,7 @@ static int drawArcOnRenderer(SDL_Renderer *renderer,
         if (pathInit(&path)) {
             Bool ok = appendXArcPath(&path, x, y, width, height, angle1, angle2,
                                      -1) &&
-                      rasterStrokePathOnRenderer(renderer, gc, &path);
+                      rasterStrokePathOnRenderer(renderer, d, gc, &path);
             pathFree(&path);
             if (ok)
                 return 1;
@@ -2105,9 +2337,9 @@ static int drawArcOnRenderer(SDL_Renderer *renderer,
         steps = 1;
     int lineWidth = gContext->lineWidth <= 0 ? 1 : gContext->lineWidth;
     int radius = lineWidth / 2;
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
 
         for (int i = 0; i <= steps; i++) {
@@ -2152,10 +2384,10 @@ int XDrawArc(Display *display,
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &arcBbox);
     int result =
-        drawArcOnRenderer(renderer, gc, x, y, width, height, angle1, angle2);
+        drawArcOnRenderer(renderer, d, gc, x, y, width, height, angle1, angle2);
     shapeGuardEnd(&sg);
     if (result)
-        presentDrawableIfVisible(d);
+        presentDrawableRectIfVisible(d, &arcBbox);
     return result;
 }
 
@@ -2196,17 +2428,17 @@ int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
                                     arcs[i].angle2, -1);
             }
             if (ok)
-                ok = rasterStrokePathOnRenderer(renderer, gc, &path);
+                ok = rasterStrokePathOnRenderer(renderer, d, gc, &path);
             pathFree(&path);
             if (ok) {
                 shapeGuardEnd(&sg);
-                presentDrawableIfVisible(d);
+                presentDrawableRectIfVisible(d, &arcsBbox);
                 return 1;
             }
         }
     }
     for (int i = 0; i < n_arcs; i++) {
-        if (!drawArcOnRenderer(renderer, gc, arcs[i].x, arcs[i].y,
+        if (!drawArcOnRenderer(renderer, d, gc, arcs[i].x, arcs[i].y,
                                arcs[i].width, arcs[i].height, arcs[i].angle1,
                                arcs[i].angle2)) {
             shapeGuardEnd(&sg);
@@ -2214,7 +2446,7 @@ int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
         }
     }
     shapeGuardEnd(&sg);
-    presentDrawableIfVisible(d);
+    presentDrawableRectIfVisible(d, &arcsBbox);
     return 1;
 }
 
@@ -2239,7 +2471,7 @@ int XFillArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &fillBbox);
     for (int i = 0; i < n_arcs; i++) {
-        if (!fillArcOnRenderer(renderer, gc, arcs[i].x, arcs[i].y,
+        if (!fillArcOnRenderer(renderer, d, gc, arcs[i].x, arcs[i].y,
                                arcs[i].width, arcs[i].height, arcs[i].angle1,
                                arcs[i].angle2)) {
             shapeGuardEnd(&sg);
@@ -2247,7 +2479,7 @@ int XFillArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
         }
     }
     shapeGuardEnd(&sg);
-    presentDrawableIfVisible(d);
+    presentDrawableRectIfVisible(d, &fillBbox);
     return 1;
 }
 
@@ -2415,10 +2647,10 @@ int XCopyPlane(Display *display,
     }
     free(pixels);
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, dest);
     int rcCopy = 0;
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(destRenderer, gc, clip))
+        if (!setGcClipForIteration(destRenderer, gc, clip, dest))
             continue;
         if (SDL_RenderCopy(destRenderer, texture, NULL, &destRect) != 0) {
             rcCopy = -1;
@@ -2433,7 +2665,7 @@ int XCopyPlane(Display *display,
     }
     if (gContext->graphicsExposures)
         postEvent(display, dest, NoExpose, X_CopyPlane, 0);
-    presentDrawableIfVisible(dest);
+    presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 }
 
@@ -2461,9 +2693,9 @@ int XDrawPoint(Display *display, Drawable d, GC gc, int x, int y)
     SDL_Rect pointRect = {.x = x, .y = y, .w = 1, .h = 1};
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &pointRect);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         if (gContext->function != GXcopy) {
             rasterOpRendererPoint(renderer, x, y, gContext->function,
@@ -2555,9 +2787,9 @@ int XDrawPoints(Display *display,
     }
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &pointsBbox);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         /* int64 accumulator dodges signed overflow on hostile point lists. */
         int64_t px = 0, py = 0;
@@ -2615,7 +2847,7 @@ int XDrawSegments(Display *display,
     if (gContext->function == GXcopy && gContext->lineStyle != LineSolid) {
         Bool ok = True;
         for (int i = 0; ok && i < nsegments; i++)
-            ok = strokeLineOnRenderer(renderer, gc, segments[i].x1,
+            ok = strokeLineOnRenderer(renderer, d, gc, segments[i].x1,
                                       segments[i].y1, segments[i].x2,
                                       segments[i].y2);
         shapeGuardEnd(&sg);
@@ -2635,7 +2867,7 @@ int XDrawSegments(Display *display,
                      pathLineTo(&path, segments[i].x2, segments[i].y2);
             }
             if (ok)
-                ok = rasterStrokePathOnRenderer(renderer, gc, &path);
+                ok = rasterStrokePathOnRenderer(renderer, d, gc, &path);
             pathFree(&path);
             if (ok) {
                 shapeGuardEnd(&sg);
@@ -2653,9 +2885,9 @@ int XDrawSegments(Display *display,
             __func__, gContext->lineWidth);
     }
     if (gContext->function != GXcopy) {
-        int clipCount = getGcClipIterationCount(gc);
+        int clipCount = getGcClipIterationCount(gc, d);
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             for (int i = 0; i < nsegments; i++) {
                 rasterOpRendererLine(renderer, segments[i].x1, segments[i].y1,
@@ -2672,9 +2904,9 @@ int XDrawSegments(Display *display,
     }
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, gContext->foreground);
     /* SDL_RenderDrawLines would connect the segments; XSegment is disjoint. */
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         for (int i = 0; i < nsegments; i++) {
             if (SDL_RenderDrawLine(renderer, segments[i].x1, segments[i].y1,
@@ -2715,7 +2947,7 @@ int XDrawLine(Display *display,
         gContext->function == GXcopy &&
         (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid);
     if (wideStrokeWanted &&
-        strokeLineOnRenderer(renderer, gc, x1, y1, x2, y2)) {
+        strokeLineOnRenderer(renderer, d, gc, x1, y1, x2, y2)) {
         shapeGuardEnd(&sg);
         repaintMappedChildrenInRect(display, d, &damage);
         return 1;
@@ -2733,9 +2965,9 @@ int XDrawLine(Display *display,
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND,
                           gContext->foreground);
     }
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         if (gContext->function != GXcopy) {
             rasterOpRendererLine(renderer, x1, y1, x2, y2, gContext->function,
@@ -2827,7 +3059,7 @@ int XDrawLines(Display *display,
             for (int i = 1; ok && i < npoints; i++)
                 ok = pathLineTo(&path, sdlPoints[i].x, sdlPoints[i].y);
             if (ok)
-                ok = rasterStrokePathOnRenderer(renderer, gc, &path);
+                ok = rasterStrokePathOnRenderer(renderer, d, gc, &path);
             pathFree(&path);
             if (ok) {
                 shapeGuardEnd(&sg);
@@ -2838,9 +3070,9 @@ int XDrawLines(Display *display,
         }
     }
     if (gContext->function != GXcopy) {
-        int clipCount = getGcClipIterationCount(gc);
+        int clipCount = getGcClipIterationCount(gc, d);
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             for (int i = 0; i + 1 < npoints; i++) {
                 rasterOpRendererLine(renderer, sdlPoints[i].x, sdlPoints[i].y,
@@ -2856,9 +3088,9 @@ int XDrawLines(Display *display,
         return 1;
     }
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, gContext->foreground);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         if (SDL_RenderDrawLines(renderer, &sdlPoints[0], npoints)) {
             LOG("SDL_RenderDrawLines failed in %s: %s\n", __func__,
@@ -3139,10 +3371,10 @@ static int xCopyAreaRasterOp(Display *display,
 
     ShapeGuard sg;
     shapeGuardBegin(&sg, dest, destRenderer, &destRect);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, dest);
     int rc = 0;
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(destRenderer, gc, clip))
+        if (!setGcClipForIteration(destRenderer, gc, clip, dest))
             continue;
         if (SDL_RenderCopy(destRenderer, texture, NULL, &destRect) != 0) {
             LOG("SDL_RenderCopy failed in %s raster path: %s\n", __func__,
@@ -3162,7 +3394,7 @@ static int xCopyAreaRasterOp(Display *display,
     }
     postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect, &destRect);
     if (shapeOk)
-        presentDrawableIfVisible(dest);
+        presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 
 cleanup_pixels:
@@ -3260,10 +3492,10 @@ int XCopyArea(Display *display,
                 SDL_SetTextureBlendMode(pixmapTexture, SDL_BLENDMODE_NONE);
                 ShapeGuard fastSg;
                 shapeGuardBegin(&fastSg, dest, destRenderer, &fastDest);
-                int fastClipCount = getGcClipIterationCount(gc);
+                int fastClipCount = getGcClipIterationCount(gc, dest);
                 int fastRcCopy = 0;
                 for (int clip = 0; clip < fastClipCount; clip++) {
-                    if (!setGcClipForIteration(destRenderer, gc, clip))
+                    if (!setGcClipForIteration(destRenderer, gc, clip, dest))
                         continue;
                     if (SDL_RenderCopy(destRenderer, pixmapTexture, &fastSrc,
                                        &fastDest) != 0) {
@@ -3282,7 +3514,7 @@ int XCopyArea(Display *display,
                 postCopyAreaExposure(display, src, dest, gc, &fastSrc,
                                      &fastDest);
                 if (fastShapeOk)
-                    presentDrawableIfVisible(dest);
+                    presentDrawableRectIfVisible(dest, &fastDest);
                 return 1;
             }
         }
@@ -3334,10 +3566,10 @@ int XCopyArea(Display *display,
         srcRect.y = 0;
         ShapeGuard sg;
         shapeGuardBegin(&sg, dest, destRenderer, &destRect);
-        int clipCount = getGcClipIterationCount(gc);
+        int clipCount = getGcClipIterationCount(gc, dest);
         int rcCopy = 0;
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(destRenderer, gc, clip))
+            if (!setGcClipForIteration(destRenderer, gc, clip, dest))
                 continue;
             if (SDL_RenderCopy(destRenderer, srcTexture, &srcRect, &destRect) !=
                 0) {
@@ -3358,7 +3590,7 @@ int XCopyArea(Display *display,
         postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
                              &destRect);
         if (slowShapeOk)
-            presentDrawableIfVisible(dest);
+            presentDrawableRectIfVisible(dest, &destRect);
         return 1;
     }
 
@@ -3410,10 +3642,10 @@ int XCopyArea(Display *display,
         .h = (int) height,
     };
     SDL_SetTextureBlendMode(srcTexture, SDL_BLENDMODE_NONE);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, dest);
     int rcCopy = 0;
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(destRenderer, gc, clip))
+        if (!setGcClipForIteration(destRenderer, gc, clip, dest))
             continue;
         if (SDL_RenderCopy(destRenderer, srcTexture, &copySrc, &destRect) !=
             0) {
@@ -3431,7 +3663,7 @@ int XCopyArea(Display *display,
     }
 
     postCopyAreaExposure(display, src, dest, gc, &srcRect, &destRect);
-    presentDrawableIfVisible(dest);
+    presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 }
 
@@ -3471,17 +3703,24 @@ int XDrawRectangle(Display *display,
         (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid)) {
         Path path;
         if (pathInit(&path)) {
+            /* Wide / non-solid strokes paint outside the geometric rect, so
+             * inflate the damage by the stroke pad before snapshotting the
+             * shape baseline and marking the present. arcDamageRect does the
+             * same +1 width / +1 height correction this path needs.
+             */
+            SDL_Rect strokeDamage =
+                arcDamageRect(x, y, width, height, arcStrokePad(gc));
             ShapeGuard sg;
-            shapeGuardBegin(&sg, d, renderer, &rectDamage);
+            shapeGuardBegin(&sg, d, renderer, &strokeDamage);
             Bool ok = pathMoveTo(&path, x, y) && pathLineTo(&path, rightX, y) &&
                       pathLineTo(&path, rightX, bottomY) &&
                       pathLineTo(&path, x, bottomY) && pathLineTo(&path, x, y);
             if (ok)
-                ok = rasterStrokePathOnRenderer(renderer, gc, &path);
+                ok = rasterStrokePathOnRenderer(renderer, d, gc, &path);
             pathFree(&path);
             shapeGuardEnd(&sg);
             if (ok) {
-                repaintMappedChildrenInRect(display, d, &rectDamage);
+                repaintMappedChildrenInRect(display, d, &strokeDamage);
                 return 1;
             }
         }
@@ -3489,9 +3728,9 @@ int XDrawRectangle(Display *display,
     ShapeGuard sg;
     shapeGuardBegin(&sg, d, renderer, &rectDamage);
     if (gContext->function != GXcopy) {
-        int clipCount = getGcClipIterationCount(gc);
+        int clipCount = getGcClipIterationCount(gc, d);
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             rasterOpRendererRectOutline(renderer, x, y, width, height,
                                         gContext->function, gContext->planeMask,
@@ -3500,9 +3739,9 @@ int XDrawRectangle(Display *display,
     } else {
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND,
                           gContext->foreground);
-        int clipCount = getGcClipIterationCount(gc);
+        int clipCount = getGcClipIterationCount(gc, d);
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             if (SDL_RenderDrawRect(renderer, &rectDamage)) {
                 LOG("SDL_RenderDrawRect failed in %s: %s\n", __func__,
@@ -3631,9 +3870,9 @@ int XFillRectangles(Display *display,
              * pixels back, apply the GC function in software, and blit them in
              * place.
              */
-            int clipCount = getGcClipIterationCount(gc);
+            int clipCount = getGcClipIterationCount(gc, d);
             for (int clip = 0; clip < clipCount; clip++) {
-                if (!setGcClipForIteration(renderer, gc, clip))
+                if (!setGcClipForIteration(renderer, gc, clip, d))
                     continue;
                 for (int r = 0; r < validRectangles; r++) {
                     SDL_Rect rr = sdlRectangles[r];
@@ -3646,9 +3885,9 @@ int XFillRectangles(Display *display,
         } else {
             applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
                               gContext->foreground);
-            int clipCount = getGcClipIterationCount(gc);
+            int clipCount = getGcClipIterationCount(gc, d);
             for (int clip = 0; clip < clipCount; clip++) {
-                if (!setGcClipForIteration(renderer, gc, clip))
+                if (!setGcClipForIteration(renderer, gc, clip, d))
                     continue;
                 if (SDL_RenderFillRects(renderer, &sdlRectangles[0],
                                         validRectangles)) {
@@ -3664,9 +3903,9 @@ int XFillRectangles(Display *display,
         LOG("Fill_style is %s\n", "FillOpaqueStippled");
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
                           gContext->background);
-        int clipCount = getGcClipIterationCount(gc);
+        int clipCount = getGcClipIterationCount(gc, d);
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             if (SDL_RenderFillRects(renderer, &sdlRectangles[0],
                                     validRectangles)) {

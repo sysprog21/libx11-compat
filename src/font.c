@@ -79,7 +79,7 @@ static void finishTextDamage(Display *display,
 {
     if (damage && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, damage, 1);
-    presentDrawableIfVisible(drawable);
+    presentDrawableRectIfVisible(drawable, damage);
 }
 
 /* Project-bundled "fonts" wins for self-contained checkouts; the remaining
@@ -2166,10 +2166,10 @@ static Bool renderFixedBitmapText(Drawable drawable,
     ShapeGuard sg;
     shapeGuardBegin(&sg, drawable, renderer, &bounds);
 
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, drawable);
     Bool ok = True;
     for (int clip = 0; clip < clipCount && ok; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, drawable))
             continue;
 
         SDL_Rect rects[512];
@@ -2346,10 +2346,10 @@ Bool renderText(Display *display,
         *drawnBounds = destR;
     ShapeGuard sg;
     shapeGuardBegin(&sg, drawable, renderer, &destR);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, drawable);
     Bool ok = True;
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, drawable))
             continue;
         if (SDL_RenderCopy(renderer, fontTexture, NULL, &destR) != 0) {
             ok = False;
@@ -2432,9 +2432,9 @@ static int drawImageString(Display *display,
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE, gContext->background);
     ShapeGuard sg;
     shapeGuardBegin(&sg, drawable, renderer, &background);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, drawable);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, drawable))
             continue;
         if (SDL_RenderFillRect(renderer, &background) != 0) {
             clearRendererClip(renderer);
@@ -2452,8 +2452,18 @@ static int drawImageString(Display *display,
         renderText(display, drawable, renderer, gc, x, y, text, length, &damage)
             ? 1
             : 0;
-    if (result)
-        finishTextDamage(display, drawable, &damage);
+    if (result) {
+        /* The background fill above paints across the entire text width x font
+         * height rectangle, which can extend past the glyph damage on both
+         * sides (e.g. trailing whitespace, descent gap). The dirty-region
+         * pipeline needs the union of both rects, or pixels in the cleared
+         * background outside the glyph extents stay stale on the SDL window
+         * surface.
+         */
+        SDL_Rect imageDamage;
+        unionRect(&background, &damage, &imageDamage);
+        finishTextDamage(display, drawable, &imageDamage);
+    }
     return result;
 }
 

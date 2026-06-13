@@ -32,12 +32,12 @@ static Bool buildPixmanRegionFromSpans(const PathSpanList *spans,
     return True;
 }
 
-/* Color and fillRule are explicit so the wide-stroke path can force
- * WindingRule (its outline self-overlaps at joins) and dashed strokes can
- * fill each sub-path with foreground or background without mutating the
- * live GC.
+/* Color and fillRule are explicit so the wide-stroke path can force WindingRule
+ * (its outline self-overlaps at joins) and dashed strokes can fill each
+ * sub-path with foreground or background without mutating the live GC.
  */
 static Bool rasterFillPathInternal(SDL_Renderer *renderer,
+                                   Drawable d,
                                    GC gc,
                                    const Path *path,
                                    int fillRule,
@@ -83,13 +83,13 @@ static Bool rasterFillPathInternal(SDL_Renderer *renderer,
     }
 
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE, color);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     if (spanRegionInitialized) {
         int rectCount = 0;
         pixman_box16_t *rects =
             pixman_region_rectangles(&spanRegion, &rectCount);
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             for (int i = 0; i < rectCount; i++) {
                 SDL_Rect rect = {
@@ -103,7 +103,7 @@ static Bool rasterFillPathInternal(SDL_Renderer *renderer,
         }
     } else {
         for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip))
+            if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
             for (size_t i = 0; i < spans.count; i++) {
                 PathSpan span = spans.spans[i];
@@ -127,6 +127,7 @@ cleanup:
 }
 
 Bool rasterFillPathOnRendererWithOptions(SDL_Renderer *renderer,
+                                         Drawable d,
                                          GC gc,
                                          const Path *path,
                                          Bool coalesceWithPixman)
@@ -134,16 +135,20 @@ Bool rasterFillPathOnRendererWithOptions(SDL_Renderer *renderer,
     if (!renderer || !gc || !path)
         return False;
     GraphicContext *gContext = GET_GC(gc);
-    return rasterFillPathInternal(renderer, gc, path, gContext->fillRule,
+    return rasterFillPathInternal(renderer, d, gc, path, gContext->fillRule,
                                   gContext->foreground, coalesceWithPixman);
 }
 
-Bool rasterFillPathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
+Bool rasterFillPathOnRenderer(SDL_Renderer *renderer,
+                              Drawable d,
+                              GC gc,
+                              const Path *path)
 {
-    return rasterFillPathOnRendererWithOptions(renderer, gc, path, True);
+    return rasterFillPathOnRendererWithOptions(renderer, d, gc, path, True);
 }
 
 static Bool rasterStrokeSolidPath(SDL_Renderer *renderer,
+                                  Drawable d,
                                   GC gc,
                                   const Path *path,
                                   unsigned long color,
@@ -184,7 +189,7 @@ static Bool rasterStrokeSolidPath(SDL_Renderer *renderer,
         }
         if (ok) {
             /* Force WindingRule: see rasterFillPathInternal. */
-            ok = rasterFillPathInternal(renderer, gc, &outline, WindingRule,
+            ok = rasterFillPathInternal(renderer, d, gc, &outline, WindingRule,
                                         color, False);
         }
         pathFree(&outline);
@@ -192,9 +197,9 @@ static Bool rasterStrokeSolidPath(SDL_Renderer *renderer,
     }
 
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, color);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, d))
             continue;
         for (size_t i = 0; i + 1 < pointCount; i++) {
             if (pathPointIsBreak(points[i]) || pathPointIsBreak(points[i + 1]))
@@ -212,7 +217,10 @@ cleanup:
     return ok;
 }
 
-Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
+Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer,
+                                Drawable d,
+                                GC gc,
+                                const Path *path)
 {
     if (!renderer || !gc || !path)
         return False;
@@ -220,22 +228,22 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
     if (gContext->function != GXcopy)
         return False;
 
-    /* Non-dashed, OR dashed-with-empty-dash-list (treat as solid since
-     * there is no pattern to apply). The dash loop would spin forever
-     * if numDashes is 0 because dashLeft can never refill.
+    /* Non-dashed, OR dashed-with-empty-dash-list (treat as solid since there is
+     * no pattern to apply). The dash loop would spin forever if numDashes is 0
+     * because dashLeft can never refill.
      */
     Bool dashed = gContext->lineStyle == LineOnOffDash ||
                   gContext->lineStyle == LineDoubleDash;
     if (!dashed || gContext->numDashes == 0) {
         if (!dashed && gContext->lineStyle != LineSolid)
             return False;
-        return rasterStrokeSolidPath(renderer, gc, path, gContext->foreground,
-                                     gContext->lineWidth, gContext->capStyle,
-                                     gContext->joinStyle);
+        return rasterStrokeSolidPath(renderer, d, gc, path,
+                                     gContext->foreground, gContext->lineWidth,
+                                     gContext->capStyle, gContext->joinStyle);
     }
 
-    /* Split the flattened polyline into on/off sub-paths by dash phase,
-     * then stroke each with the appropriate color via the helper above.
+    /* Split the flattened polyline into on/off sub-paths by dash phase, then
+     * stroke each with the appropriate color via the helper above.
      */
     PathPoint *points = NULL;
     size_t pointCount = 0;
@@ -259,9 +267,9 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
     double dashLeft =
         gContext->numDashes > 0 ? (unsigned char) gContext->dashes[0] : 1.0;
     Bool dashOn = True;
-    /* Reduce dashOffset mod the pattern period before consuming it.
-     * Unsigned negation dodges -INT_MIN UB; modulo caps the consume loop
-     * iteration count. X11 doubles the period for odd-length lists.
+    /* Reduce dashOffset mod the pattern period before consuming it. Unsigned
+     * negation dodges -INT_MIN UB; modulo caps the consume loop iteration
+     * count. X11 doubles the period for odd-length lists.
      */
     unsigned int patternTotal = 0;
     for (size_t k = 0; k < gContext->numDashes; k++)
@@ -289,8 +297,8 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
         }
     }
     ok = True;
-    /* Dash state lives outside the contour loop: X11 carries phase
-     * across MoveTo boundaries instead of restarting per subpath.
+    /* Dash state lives outside the contour loop: X11 carries phase across
+     * MoveTo boundaries instead of restarting per subpath.
      */
     int dashedLineStyle = gContext->lineStyle;
     for (size_t i = 0; ok && i + 1 < pointCount; i++) {
@@ -329,13 +337,13 @@ Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path)
         }
     }
     if (ok)
-        ok = rasterStrokeSolidPath(renderer, gc, &onPath, gContext->foreground,
-                                   gContext->lineWidth, gContext->capStyle,
-                                   gContext->joinStyle);
+        ok = rasterStrokeSolidPath(renderer, d, gc, &onPath,
+                                   gContext->foreground, gContext->lineWidth,
+                                   gContext->capStyle, gContext->joinStyle);
     if (ok && dashedLineStyle == LineDoubleDash)
-        ok = rasterStrokeSolidPath(renderer, gc, &offPath, gContext->background,
-                                   gContext->lineWidth, gContext->capStyle,
-                                   gContext->joinStyle);
+        ok = rasterStrokeSolidPath(renderer, d, gc, &offPath,
+                                   gContext->background, gContext->lineWidth,
+                                   gContext->capStyle, gContext->joinStyle);
     pathFree(&offPath);
     pathFree(&onPath);
 
