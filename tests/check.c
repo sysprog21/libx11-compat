@@ -2581,6 +2581,37 @@ static int test_events(Display *display)
     while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
 
+    Window restackLower =
+        XCreateSimpleWindow(display, window, 1, 1, 10, 10, 0, 0, 0);
+    CHECK(restackLower != None, "restack lower child creation failed");
+    Window restackUpper =
+        XCreateSimpleWindow(display, window, 5, 5, 10, 10, 0, 0, 0);
+    CHECK(restackUpper != None, "restack upper child creation failed");
+    XSelectInput(display, restackLower, ExposureMask);
+    CHECK(XMapWindow(display, restackLower), "restack lower child map failed");
+    CHECK(XMapWindow(display, restackUpper), "restack upper child map failed");
+    while (XCheckTypedWindowEvent(display, restackLower, Expose, &out)) {
+    }
+    GC restackGc = XCreateGC(display, restackLower, 0, NULL);
+    CHECK(restackGc != NULL, "restack GC creation failed");
+    CHECK(XDrawLine(display, restackLower, restackGc, 0, 0, 9, 9),
+          "covered lower child draw failed");
+    CHECK(XRaiseWindow(display, restackLower), "restack raise failed");
+    CHECK(XCheckTypedWindowEvent(display, restackLower, Expose, &out),
+          "restack did not expose newly uncovered child pixels");
+    CHECK(out.xexpose.x == 4 && out.xexpose.y == 4 && out.xexpose.width == 6 &&
+              out.xexpose.height == 6,
+          "restack Expose rectangle was not newly uncovered child area");
+    while (XCheckTypedWindowEvent(display, restackLower, Expose, &out)) {
+    }
+    XFreeGC(display, restackGc);
+    CHECK(XDestroyWindow(display, restackUpper),
+          "restack upper child destroy failed");
+    CHECK(XDestroyWindow(display, restackLower),
+          "restack lower child destroy failed");
+    while (XCheckTypedEvent(display, Expose, &out)) {
+    }
+
     /* XSendEvent's contract is sizeof(XEvent), so the buffer must be full-union
      * sized; passing a bare XClientMessageEvent triggers a
      * stack-buffer-overflow under ASan.
@@ -5089,6 +5120,15 @@ static int test_windows(Display *display)
           "viewport restore failed");
     GC childClipGc = XCreateGC(display, parent, 0, NULL);
     CHECK(childClipGc != NULL, "ClipByChildren GC creation failed");
+    /* Earlier in this test child1 was stacked above child2, so child2's
+     * (0, 0, 4, 4) corner now falls under child1 and the sibling
+     * occlusion clip would drop the fill before it ever reaches
+     * parent's shared backing. Raise child2 back to the top so the
+     * ClipByChildren probe is testing what it intends to test: that
+     * XClearArea on parent does NOT erase the pixels that map to a
+     * mapped child's frame.
+     */
+    XRaiseWindow(display, child2);
     CHECK(XSetForeground(display, childClipGc, 0xFFFFFFFF),
           "ClipByChildren parent clear setup failed");
     CHECK(XFillRectangle(display, parent, childClipGc, 0, 0, 32, 32),
@@ -5106,6 +5146,11 @@ static int test_windows(Display *display)
           "parent clear erased mapped child contents");
     SDL_FreeSurface(clipSurface);
     XFreeGC(display, childClipGc);
+    /* Restore the pre-probe stacking order so the XCirculateSubwindowsUp
+     * test below still sees [child2, child1] and raises child2 to the
+     * top as expected.
+     */
+    XLowerWindow(display, child2);
     CHECK(
         XCheckTypedWindowEvent(display, child1, VisibilityNotify, &visibility),
         "VisibilityNotify was not delivered for mapped child");
@@ -7082,6 +7127,280 @@ static int test_shape_combine_ops(Display *display)
     return 1;
 }
 
+/* Sibling-occlusion clipping regression. Two child windows overlap on the
+ * same parent; we raise one above the other, then fill the lower window's
+ * full area and assert that pixels mapping to the upper sibling's frame
+ * were NOT touched. Without the cached visibleRegion clip, the lower
+ * window's draw would "punch through" the upper sibling on the shared
+ * backing texture; with it, those pixels stay at their pre-draw value.
+ */
+static int test_sibling_occlusion_clip(Display *display)
+{
+    enum { W = 64, H = 48 };
+    enum { LOWER_X = 4, LOWER_Y = 4, LOWER_W = 32, LOWER_H = 32 };
+    enum { UPPER_X = 20, UPPER_Y = 12, UPPER_W = 24, UPPER_H = 24 };
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window parent = XCreateSimpleWindow(display, root, 0, 0, W, H, 0, 0, 0);
+    CHECK(parent != None, "sibling: parent creation failed");
+    Window lower = XCreateSimpleWindow(display, parent, LOWER_X, LOWER_Y,
+                                       LOWER_W, LOWER_H, 0, 0, 0);
+    Window upper = XCreateSimpleWindow(display, parent, UPPER_X, UPPER_Y,
+                                       UPPER_W, UPPER_H, 0, 0, 0);
+    CHECK(lower != None && upper != None, "sibling: children creation failed");
+    CHECK(XMapWindow(display, parent), "sibling: parent map failed");
+    CHECK(XMapWindow(display, lower), "sibling: lower map failed");
+    CHECK(XMapWindow(display, upper), "sibling: upper map failed");
+
+    GC gc = XCreateGC(display, parent, 0, NULL);
+    CHECK(gc != NULL, "sibling: GC creation failed");
+
+    unsigned long warmColor = 0xFF778899;
+    CHECK(XSetForeground(display, gc, warmColor),
+          "sibling: warm foreground setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "sibling: warm fill failed");
+
+    CHECK(XRaiseWindow(display, upper),
+          "sibling: raise upper above lower failed");
+
+    unsigned long baselineColor = 0xFF445566;
+    unsigned long lowerColor = 0xFF112233;
+    CHECK(XSetForeground(display, gc, baselineColor),
+          "sibling: baseline foreground setup failed");
+    /* Pre-fill the entire lower window to give every pixel inside it a stable
+     * baseline. With sibling occlusion clipping, the pixels that fall under
+     * "upper" do not receive the baseline either, so the test captures the
+     * actual pre-test pixel at the probe coordinate and uses it as the
+     * "untouched" reference for both assertions below.
+     */
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "sibling: baseline fill failed");
+
+    /* The probe point sits in the overlap: lower-local (LOWER overlaps
+     * UPPER starting at upperX - lowerX, upperY - lowerY). Pick a pixel
+     * inside the overlap and a pixel outside it, both expressed in
+     * lower-local coords.
+     */
+    int probeInsideX = (UPPER_X - LOWER_X) + 4;
+    int probeInsideY = (UPPER_Y - LOWER_Y) + 4;
+    int probeOutsideX = 2, probeOutsideY = 2;
+
+    XImage *pre =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(pre != NULL, "sibling: pre XGetImage failed");
+    unsigned long preInside = XGetPixel(pre, probeInsideX, probeInsideY);
+    unsigned long preOutside = XGetPixel(pre, probeOutsideX, probeOutsideY);
+    XDestroyImage(pre);
+
+    CHECK(XSetForeground(display, gc, lowerColor),
+          "sibling: lower color setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "sibling: post-baseline fill failed");
+
+    XImage *post =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(post != NULL, "sibling: post XGetImage failed");
+    unsigned long postInside = XGetPixel(post, probeInsideX, probeInsideY);
+    unsigned long postOutside = XGetPixel(post, probeOutsideX, probeOutsideY);
+    XDestroyImage(post);
+
+    /* The non-occluded outside pixel must have received the new fill;
+     * the occluded inside pixel must have kept its pre-fill value.
+     */
+    CHECK(postOutside != preOutside,
+          "sibling: outside-overlap pixel did not receive the fill");
+    CHECK(postInside == preInside,
+          "sibling: fill punched through the upper sibling");
+
+    XFreeGC(display, gc);
+    XDestroyWindow(display, upper);
+    XDestroyWindow(display, lower);
+    XDestroyWindow(display, parent);
+    return 1;
+}
+
+static int test_sibling_occlusion_respects_shape(Display *display)
+{
+    enum { W = 64, H = 48 };
+    enum { LOWER_X = 4, LOWER_Y = 4, LOWER_W = 32, LOWER_H = 32 };
+    enum { UPPER_X = 20, UPPER_Y = 12, UPPER_W = 24, UPPER_H = 24 };
+    Window root = RootWindow(display, DefaultScreen(display));
+    int screen = DefaultScreen(display);
+    int depth = DefaultDepth(display, screen);
+    Window parent = XCreateSimpleWindow(display, root, 0, 0, W, H, 0, 0, 0);
+    CHECK(parent != None, "shape sibling: parent creation failed");
+    Window lower = XCreateSimpleWindow(display, parent, LOWER_X, LOWER_Y,
+                                       LOWER_W, LOWER_H, 0, 0, 0);
+    Window upper = XCreateSimpleWindow(display, parent, UPPER_X, UPPER_Y,
+                                       UPPER_W, UPPER_H, 0, 0, 0);
+    CHECK(lower != None && upper != None,
+          "shape sibling: children creation failed");
+
+    Pixmap mask = XCreatePixmap(display, upper, UPPER_W, UPPER_H, depth);
+    CHECK(mask != None, "shape sibling: mask creation failed");
+    GC maskGC = XCreateGC(display, mask, 0, NULL);
+    CHECK(maskGC != NULL, "shape sibling: mask GC creation failed");
+    XSetForeground(display, maskGC, 0x00000000);
+    CHECK(XFillRectangle(display, mask, maskGC, 0, 0, UPPER_W, UPPER_H),
+          "shape sibling: mask black fill failed");
+    XSetForeground(display, maskGC, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, mask, maskGC, 0, 0, UPPER_W / 2, UPPER_H),
+          "shape sibling: mask white fill failed");
+    XShapeCombineMask(display, upper, ShapeBounding, 0, 0, mask, ShapeSet);
+
+    CHECK(XMapWindow(display, parent), "shape sibling: parent map failed");
+    CHECK(XMapWindow(display, lower), "shape sibling: lower map failed");
+    CHECK(XMapWindow(display, upper), "shape sibling: upper map failed");
+    CHECK(XRaiseWindow(display, upper),
+          "shape sibling: raise upper above lower failed");
+
+    GC gc = XCreateGC(display, parent, 0, NULL);
+    CHECK(gc != NULL, "shape sibling: GC creation failed");
+    unsigned long baselineColor = 0xFF102030;
+    unsigned long lowerColor = 0xFF405060;
+    CHECK(XSetForeground(display, gc, baselineColor),
+          "shape sibling: baseline foreground setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "shape sibling: baseline fill failed");
+
+    int activeX = UPPER_X - LOWER_X + 2;
+    int transparentX = UPPER_X - LOWER_X + UPPER_W / 2 + 2;
+    int probeY = UPPER_Y - LOWER_Y + 4;
+
+    XImage *pre =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(pre != NULL, "shape sibling: pre XGetImage failed");
+    unsigned long preActive = XGetPixel(pre, activeX, probeY);
+    unsigned long preTransparent = XGetPixel(pre, transparentX, probeY);
+    XDestroyImage(pre);
+
+    CHECK(XSetForeground(display, gc, lowerColor),
+          "shape sibling: lower color setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "shape sibling: lower fill failed");
+
+    XImage *post =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(post != NULL, "shape sibling: post XGetImage failed");
+    unsigned long postActive = XGetPixel(post, activeX, probeY);
+    unsigned long postTransparent = XGetPixel(post, transparentX, probeY);
+    XDestroyImage(post);
+
+    CHECK(postActive == preActive,
+          "shape sibling: fill punched through active shape");
+    CHECK(postTransparent != preTransparent,
+          "shape sibling: transparent shape area stayed clipped");
+
+    XShapeCombineMask(display, upper, ShapeBounding, 0, 0, None, ShapeSet);
+    XImage *preClear =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(preClear != NULL, "shape sibling: pre-clear XGetImage failed");
+    unsigned long preClearTransparent =
+        XGetPixel(preClear, transparentX, probeY);
+    XDestroyImage(preClear);
+
+    CHECK(XSetForeground(display, gc, 0xFF708090),
+          "shape sibling: cleared lower color setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "shape sibling: cleared lower fill failed");
+
+    XImage *postClear =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(postClear != NULL, "shape sibling: post-clear XGetImage failed");
+    unsigned long postClearTransparent =
+        XGetPixel(postClear, transparentX, probeY);
+    XDestroyImage(postClear);
+
+    CHECK(postClearTransparent == preClearTransparent,
+          "shape sibling: cleared shape did not restore rectangle occlusion");
+
+    XFreeGC(display, gc);
+    XFreeGC(display, maskGC);
+    XFreePixmap(display, mask);
+    XDestroyWindow(display, upper);
+    XDestroyWindow(display, lower);
+    XDestroyWindow(display, parent);
+    return 1;
+}
+
+static int test_sibling_occlusion_shape_extends_outside_frame(Display *display)
+{
+    enum { W = 72, H = 48 };
+    enum { LOWER_X = 4, LOWER_Y = 8, LOWER_W = 32, LOWER_H = 24 };
+    enum { UPPER_X = 44, UPPER_Y = 8, UPPER_W = 8, UPPER_H = 16 };
+    enum { MASK_W = 32, MASK_H = 16, MASK_OFFSET_X = -24 };
+    Window root = RootWindow(display, DefaultScreen(display));
+    int screen = DefaultScreen(display);
+    int depth = DefaultDepth(display, screen);
+    Window parent = XCreateSimpleWindow(display, root, 0, 0, W, H, 0, 0, 0);
+    CHECK(parent != None, "shape extent: parent creation failed");
+    Window lower = XCreateSimpleWindow(display, parent, LOWER_X, LOWER_Y,
+                                       LOWER_W, LOWER_H, 0, 0, 0);
+    Window upper = XCreateSimpleWindow(display, parent, UPPER_X, UPPER_Y,
+                                       UPPER_W, UPPER_H, 0, 0, 0);
+    CHECK(lower != None && upper != None,
+          "shape extent: children creation failed");
+
+    Pixmap mask = XCreatePixmap(display, upper, MASK_W, MASK_H, depth);
+    CHECK(mask != None, "shape extent: mask creation failed");
+    GC maskGC = XCreateGC(display, mask, 0, NULL);
+    CHECK(maskGC != NULL, "shape extent: mask GC creation failed");
+    XSetForeground(display, maskGC, 0xFFFFFFFF);
+    CHECK(XFillRectangle(display, mask, maskGC, 0, 0, MASK_W, MASK_H),
+          "shape extent: mask fill failed");
+    XShapeCombineMask(display, upper, ShapeBounding, MASK_OFFSET_X, 0, mask,
+                      ShapeSet);
+
+    CHECK(XMapWindow(display, parent), "shape extent: parent map failed");
+    CHECK(XMapWindow(display, lower), "shape extent: lower map failed");
+    CHECK(XMapWindow(display, upper), "shape extent: upper map failed");
+    CHECK(XRaiseWindow(display, upper),
+          "shape extent: raise upper above lower failed");
+
+    GC gc = XCreateGC(display, parent, 0, NULL);
+    CHECK(gc != NULL, "shape extent: GC creation failed");
+    CHECK(XSetForeground(display, gc, 0xFF203040),
+          "shape extent: baseline foreground setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "shape extent: baseline fill failed");
+
+    int occludedX = UPPER_X + MASK_OFFSET_X - LOWER_X + 2;
+    int occludedY = UPPER_Y - LOWER_Y + 2;
+    int openX = 2, openY = 2;
+
+    XImage *pre =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(pre != NULL, "shape extent: pre XGetImage failed");
+    unsigned long preOccluded = XGetPixel(pre, occludedX, occludedY);
+    unsigned long preOpen = XGetPixel(pre, openX, openY);
+    XDestroyImage(pre);
+
+    CHECK(XSetForeground(display, gc, 0xFF506070),
+          "shape extent: lower color setup failed");
+    CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
+          "shape extent: lower fill failed");
+
+    XImage *post =
+        XGetImage(display, lower, 0, 0, LOWER_W, LOWER_H, AllPlanes, ZPixmap);
+    CHECK(post != NULL, "shape extent: post XGetImage failed");
+    unsigned long postOccluded = XGetPixel(post, occludedX, occludedY);
+    unsigned long postOpen = XGetPixel(post, openX, openY);
+    XDestroyImage(post);
+
+    CHECK(postOccluded == preOccluded,
+          "shape extent: extended shape was culled before clipping");
+    CHECK(postOpen != preOpen,
+          "shape extent: non-occluded lower pixel did not receive fill");
+
+    XFreeGC(display, gc);
+    XFreeGC(display, maskGC);
+    XFreePixmap(display, mask);
+    XDestroyWindow(display, upper);
+    XDestroyWindow(display, lower);
+    XDestroyWindow(display, parent);
+    return 1;
+}
+
 static int test_timeline_counters(Display *display)
 {
     /* Counters always increment regardless of LIBX11_COMPAT_TIMELINE so Phase
@@ -7241,5 +7560,10 @@ int main(void)
     run_test("shape_mask", test_shape_mask);
     run_test("shape_mask_intersection", test_shape_mask_intersection);
     run_test("shape_combine_ops", test_shape_combine_ops);
+    run_test("sibling_occlusion_clip", test_sibling_occlusion_clip);
+    run_test("sibling_occlusion_respects_shape",
+             test_sibling_occlusion_respects_shape);
+    run_test("sibling_occlusion_shape_extends_outside_frame",
+             test_sibling_occlusion_shape_extends_outside_frame);
     return failures == 0 ? 0 : 1;
 }

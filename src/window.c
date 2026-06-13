@@ -28,18 +28,18 @@ int XDestroyWindow(Display *display, Window window)
     return 1;
 }
 
-static Bool moveChildToTop(Window window)
+static Bool moveChildToTop(Display *display, Window window)
 {
     Window parent = GET_PARENT(window);
     if (parent == None)
         return False;
-    return moveChildToIndex(window,
-                            GET_WINDOW_STRUCT(parent)->children.length - 1);
+    return moveChildToIndexAndExpose(
+        display, window, GET_WINDOW_STRUCT(parent)->children.length - 1);
 }
 
-static Bool moveChildToBottom(Window window)
+static Bool moveChildToBottom(Display *display, Window window)
 {
-    return moveChildToIndex(window, 0);
+    return moveChildToIndexAndExpose(display, window, 0);
 }
 
 static void postVisibilityForWindowAndSiblings(Display *display, Window window)
@@ -419,6 +419,11 @@ int XMapWindow(Display *display, Window window)
     if (GET_WINDOW_STRUCT(window)->mapState == Mapped)
         return 1;
 
+    /* Map adds this window to the occlusion graph; lower siblings now see less.
+     * Mark stale before the actual map so neither branch needs to remember.
+     */
+    invalidateVisibleRegionForTopLevel(window);
+
     /* libx11-compat has no separate window-manager client to service
      * SubstructureRedirect requests. Some Motif paths select redirect-style
      * masks internally; stopping at MapRequest would leave top-level shells
@@ -535,6 +540,11 @@ int XUnmapWindow(Display *display, Window window)
         return 1;
 
     windowStruct->mapState = UnMapped;
+    /* Unmapping clears this window's contribution to the sibling occlusion
+     * graph; lower siblings may now have more visible area. Mark the top-level
+     * subtree stale so the next draw recomputes.
+     */
+    invalidateVisibleRegionForTopLevel(window);
     postVisibilityForWindowAndSiblings(display, window);
     if (windowStruct->sdlWindow) {
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
@@ -702,6 +712,13 @@ int XReparentWindow(Display *display,
     }
     windowStruct->x = x;
     windowStruct->y = y;
+    /* The new parent's siblings of "window" (and their descendants) and
+     * "window"'s own descendants all need their cached visible regions
+     * recomputed against the new parent chain. removeChildFromParent above
+     * already invalidated the old top-level subtree; this call picks up the new
+     * one.
+     */
+    invalidateVisibleRegionForTopLevel(window);
     if (mapState != UnMapped) {
         if (wasTopLevel && parent != SCREEN_WINDOW) {
             if (!mergeWindowDrawables(parent, window)) {
@@ -801,7 +818,7 @@ int XRaiseWindow(Display *display, Window window)
     TYPE_CHECK(window, WINDOW, display, 0);
     if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
         SDL_RaiseWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
-    moveChildToTop(window);
+    moveChildToTop(display, window);
     postVisibilityForWindowAndSiblings(display, window);
     return 1;
 }
@@ -810,7 +827,7 @@ int XLowerWindow(Display *display, Window window)
 {
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
-    moveChildToBottom(window);
+    moveChildToBottom(display, window);
     postVisibilityForWindowAndSiblings(display, window);
     return 1;
 }
@@ -823,7 +840,12 @@ int XRestackWindows(Display *display, Window *windows, int nwindows)
     for (int i = 0; i < nwindows; i++)
         TYPE_CHECK(windows[i], WINDOW, display, 0);
     for (int i = nwindows - 1; i >= 0; i--) {
-        moveChildToTop(windows[i]);
+        Window parent = GET_PARENT(windows[i]);
+        if (parent != None) {
+            moveChildToIndexAndExpose(
+                display, windows[i],
+                GET_WINDOW_STRUCT(parent)->children.length - 1);
+        }
         postVisibilityForWindowAndSiblings(display, windows[i]);
     }
     return 1;

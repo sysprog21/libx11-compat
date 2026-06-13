@@ -11,12 +11,23 @@
 
 #include "path.h"
 
-Bool rasterFillPathOnRenderer(SDL_Renderer *renderer, GC gc, const Path *path);
+/* Drawable d is the destination of the rasterized path. The raster
+ * helpers forward it into setGcClipForIteration so sibling occlusion
+ * applies inside path renders just like in the primitive paths.
+ * Callers may pass None / a pixmap when no sibling clipping is
+ * required.
+ */
+Bool rasterFillPathOnRenderer(SDL_Renderer *renderer,
+                              Drawable d,
+                              GC gc,
+                              const Path *path);
 Bool rasterFillPathOnRendererWithOptions(SDL_Renderer *renderer,
+                                         Drawable d,
                                          GC gc,
                                          const Path *path,
                                          Bool coalesceWithPixman);
 Bool rasterStrokePathOnRenderer(SDL_Renderer *renderer,
+                                Drawable d,
                                 GC gc,
                                 const Path *path);
 

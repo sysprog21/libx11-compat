@@ -447,6 +447,8 @@ void XShapeCombineMask(Display *dpy,
         }
         *offsetXSlot = 0;
         *offsetYSlot = 0;
+        if (destKind == ShapeBounding)
+            invalidateVisibleRegionForTopLevel(dest);
         return;
     }
     if (src != None && !IS_TYPE(src, PIXMAP))
@@ -502,6 +504,7 @@ void XShapeCombineMask(Display *dpy,
 
     if (destKind != ShapeBounding)
         return;
+    invalidateVisibleRegionForTopLevel(dest);
     if (*maskSlot)
         repaintBoundingMask(dpy, dest);
 }

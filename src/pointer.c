@@ -434,9 +434,9 @@ int XGrabPointer(Display *display,
     if (pointerGrab.active && !pointerGrab.passive) {
         replacePointerGrab(display, grab_window, owner_events, event_mask,
                            pointer_mode, keyboard_mode, confine_to, cursor);
-        /* Motif menubar regrabs (the documented use case for this branch)
-         * are real grab transitions; the timeline tap must fire here too
-         * so wait-converge and the leak-assertion both see them.
+        /* Motif menubar regrabs (the documented use case for this branch) are
+         * real grab transitions; the timeline tap must fire here too so
+         * wait-converge and the leak-assertion both see them.
          */
         timelineTapGrabPointer(grab_window, True);
         return GrabSuccess;

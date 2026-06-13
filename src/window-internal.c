@@ -86,6 +86,13 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->shapeClipOffsetY = 0;
     windowStruct->deferredTransientParent = None;
     windowStruct->deferredTransientApplied = False;
+    /* pixman_region32_init is the only safe zero state for a region; a
+     * memset/bare zero would crash on the first fini. The valid flag stays
+     * False so the next consumer recomputes from the real frame dimensions and
+     * parent chain.
+     */
+    pixman_region32_init(&windowStruct->visibleRegion);
+    windowStruct->visibleRegionValid = False;
 #ifdef DEBUG_WINDOWS
     windowStruct->debugId = ((unsigned long) rand() << 16) | rand();
 #endif /* DEBUG_WINDOWS */
@@ -149,6 +156,7 @@ void destroyScreenWindow(Display *display)
         windowStruct->sdlRenderer = NULL;
         SDL_DestroyWindow(windowStruct->sdlWindow);
         freeArray(&windowStruct->children);
+        pixman_region32_fini(&windowStruct->visibleRegion);
         free(windowStruct);
         FREE_XID(SCREEN_WINDOW);
         SCREEN_WINDOW = None;
@@ -436,6 +444,12 @@ void removeChildFromParent(Window child)
         return;
     Window parent = GET_PARENT(child);
     if (parent != None) {
+        /* Tear-down may have already invalidated this top-level subtree via the
+         * map-state change; calling again is a cheap no-op walk but keeps the
+         * contract that any sibling-list edit leaves cached visible regions
+         * stale.
+         */
+        invalidateVisibleRegionForTopLevel(child);
         ssize_t childIndex =
             findInArray(&GET_WINDOW_STRUCT(parent)->children, (void *) child);
         if (childIndex != -1) {
@@ -518,11 +532,25 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     postEvent(display, window, DestroyNotify);
     if (freeParentData)
         removeChildFromParent(window);
+    /* Hold visibleRegion live through removeChildFromParent's invalidation
+     * walk, then fini it immediately before the matching free so the
+     * lifecycle is obvious and a future reorder cannot wedge a use after
+     * free between the two.
+     */
+    pixman_region32_fini(&windowStruct->visibleRegion);
     free(windowStruct);
     SET_XID_VALUE(window, NULL);
     SET_XID_TYPE(window, CLOSED_WINDOW);
 }
 
+/* Neither addChildToWindow nor insertChildIntoWindow invalidates the
+ * sibling-occlusion cache. Current callers are safe: XCreateWindow attaches a
+ * brand-new Unmapped child (no occlusion contribution until XMapWindow runs),
+ * and XReparentWindow's failure-rollback re-adds to the old parent which
+ * removeChildFromParent already invalidated. A future caller that attaches a
+ * Mapped child must call invalidateVisibleRegionForTopLevel(child) after the
+ * attach succeeds, or the new siblings' cached visible regions will be stale.
+ */
 Bool addChildToWindow(Window parent, Window child)
 {
     if (findInArray(&GET_WINDOW_STRUCT(parent)->children, (void *) child) >=
@@ -619,6 +647,157 @@ Bool moveChildToIndex(Window window, size_t targetIndex)
     }
     children->array[targetIndex] = (void *) window;
     children->length++;
+    invalidateVisibleRegionForTopLevel(window);
+    return True;
+}
+
+typedef struct {
+    Window window;
+    pixman_region32_t before;
+} RestackExposureSnapshot;
+
+static Window getTopLevelForWindow(Window window)
+{
+    Window top = window;
+    while (top != None && top != SCREEN_WINDOW && !IS_TOP_LEVEL(top))
+        top = GET_PARENT(top);
+    if (top == None || top == SCREEN_WINDOW)
+        return None;
+    return top;
+}
+
+static void freeRestackExposureSnapshots(Array *snapshots)
+{
+    for (size_t i = 0; i < snapshots->length; i++) {
+        RestackExposureSnapshot *snapshot = snapshots->array[i];
+        pixman_region32_fini(&snapshot->before);
+        free(snapshot);
+    }
+    freeArray(snapshots);
+}
+
+static Bool appendRestackExposureSnapshot(Array *snapshots, Window window)
+{
+    RestackExposureSnapshot *snapshot = malloc(sizeof(*snapshot));
+    if (!snapshot)
+        return False;
+    snapshot->window = window;
+    computeVisibleRegion(window, &snapshot->before);
+    if (!insertArray(snapshots, snapshot)) {
+        pixman_region32_fini(&snapshot->before);
+        free(snapshot);
+        return False;
+    }
+    return True;
+}
+
+static Bool collectRestackExposureSnapshots(Array *snapshots, Window window)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return True;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (!windowStruct->inputOnly && isWindowEffectivelyViewable(window) &&
+        !appendRestackExposureSnapshot(snapshots, window)) {
+        return False;
+    }
+
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = 0; i < windowStruct->children.length; i++) {
+        if (!collectRestackExposureSnapshots(snapshots, children[i]))
+            return False;
+    }
+    return True;
+}
+
+static void postFullExposeForMappedSubtree(Display *display, Window window)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (!windowStruct->inputOnly && isWindowEffectivelyViewable(window)) {
+        SDL_Rect full = {0, 0, (int) windowStruct->w, (int) windowStruct->h};
+        postEvent(display, window, Expose, &full, (size_t) 0);
+    }
+
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = 0; i < windowStruct->children.length; i++)
+        postFullExposeForMappedSubtree(display, children[i]);
+}
+
+static void postRestackExposureDiffs(Display *display, Array *snapshots)
+{
+    for (size_t i = 0; i < snapshots->length; i++) {
+        RestackExposureSnapshot *snapshot = snapshots->array[i];
+        pixman_region32_t after;
+        pixman_region32_t exposed;
+        computeVisibleRegion(snapshot->window, &after);
+        pixman_region32_init(&exposed);
+        pixman_region32_subtract(&exposed, &after, &snapshot->before);
+
+        int rectCount = 0;
+        pixman_box32_t *boxes =
+            pixman_region32_rectangles(&exposed, &rectCount);
+        for (int j = rectCount; j-- > 0;) {
+            SDL_Rect rect = {
+                boxes[j].x1,
+                boxes[j].y1,
+                boxes[j].x2 - boxes[j].x1,
+                boxes[j].y2 - boxes[j].y1,
+            };
+            if (rect.w > 0 && rect.h > 0)
+                postEvent(display, snapshot->window, Expose, &rect, (size_t) j);
+        }
+
+        pixman_region32_fini(&exposed);
+        pixman_region32_fini(&after);
+    }
+}
+
+Bool moveChildToIndexAndExpose(Display *display,
+                               Window window,
+                               size_t targetIndex)
+{
+    if (window == SCREEN_WINDOW)
+        return False;
+    Window parent = GET_PARENT(window);
+    if (parent == None)
+        return False;
+
+    Array *children = &GET_WINDOW_STRUCT(parent)->children;
+    ssize_t index = findInArray(children, (void *) window);
+    if (index < 0)
+        return False;
+    if (targetIndex >= children->length)
+        targetIndex = children->length - 1;
+    if ((size_t) index == targetIndex)
+        return True;
+
+    Window top = getTopLevelForWindow(window);
+    Array snapshots;
+    Bool haveSnapshots = False;
+    if (display && top != None && initArray(&snapshots, 0)) {
+        haveSnapshots = collectRestackExposureSnapshots(&snapshots, top);
+        if (!haveSnapshots)
+            freeRestackExposureSnapshots(&snapshots);
+    }
+
+    Bool moved = moveChildToIndex(window, targetIndex);
+    if (!moved) {
+        if (haveSnapshots)
+            freeRestackExposureSnapshots(&snapshots);
+        return False;
+    }
+
+    if (display && top != None) {
+        if (haveSnapshots) {
+            postRestackExposureDiffs(display, &snapshots);
+            freeRestackExposureSnapshots(&snapshots);
+        } else {
+            postFullExposeForMappedSubtree(display, top);
+        }
+    }
     return True;
 }
 
@@ -636,6 +815,228 @@ Bool windowsOverlap(Window a, Window b)
     int64_t by2 = (int64_t) sb->y + (int64_t) sb->h;
     return (int64_t) sa->x < bx2 && (int64_t) sb->x < ax2 &&
            (int64_t) sa->y < by2 && (int64_t) sb->y < ay2;
+}
+
+static Bool shapeMaskPixelActive(SDL_Surface *mask, int x, int y)
+{
+    if (!mask || x < 0 || y < 0 || x >= mask->w || y >= mask->h)
+        return False;
+    Uint32 pixel = getPixel(mask, (unsigned int) x, (unsigned int) y);
+    Uint8 r = 0, g = 0, b = 0;
+    SDL_GetRGB(pixel, mask->format, &r, &g, &b);
+    return r || g || b;
+}
+
+/* Build the occluder region in the target window's local frame. rx64/ry64 are
+ * the sibling's origin already expressed in the target's coordinate system;
+ * winW/winH are the target's frame. All geometry math runs in int64_t so a huge
+ * or far-away sibling cannot overflow the int32 inputs pixman expects: the rect
+ * is pre-clipped to (0,0,winW,winH) before any cast to int. The shape-mask path
+ * applies the same clip per span.
+ */
+static void initSiblingOccluderRegion(WindowStruct *siblingStruct,
+                                      int64_t rx64,
+                                      int64_t ry64,
+                                      unsigned int winW,
+                                      unsigned int winH,
+                                      pixman_region32_t *occluder)
+{
+    int64_t winWi = (int64_t) winW, winHi = (int64_t) winH;
+    SDL_Surface *mask = siblingStruct->shapeBoundingMask;
+    if (!mask) {
+        int64_t x1 = rx64 < 0 ? 0 : rx64, y1 = ry64 < 0 ? 0 : ry64;
+        int64_t x2 = rx64 + (int64_t) siblingStruct->w;
+        int64_t y2 = ry64 + (int64_t) siblingStruct->h;
+        if (x2 > winWi)
+            x2 = winWi;
+        if (y2 > winHi)
+            y2 = winHi;
+        if (x2 <= x1 || y2 <= y1) {
+            pixman_region32_init(occluder);
+            return;
+        }
+        pixman_region32_init_rect(occluder, (int) x1, (int) y1,
+                                  (unsigned int) (x2 - x1),
+                                  (unsigned int) (y2 - y1));
+        return;
+    }
+
+    pixman_region32_init(occluder);
+    int64_t baseX = rx64 + (int64_t) siblingStruct->shapeBoundingOffsetX;
+    int64_t baseY = ry64 + (int64_t) siblingStruct->shapeBoundingOffsetY;
+    for (int y = 0; y < mask->h; y++) {
+        int64_t pixY = baseY + (int64_t) y;
+        if (pixY < 0 || pixY >= winHi)
+            continue;
+        int x = 0;
+        while (x < mask->w) {
+            while (x < mask->w && !shapeMaskPixelActive(mask, x, y))
+                x++;
+            int start = x;
+            while (x < mask->w && shapeMaskPixelActive(mask, x, y))
+                x++;
+            if (start == x)
+                continue;
+            int64_t spanX1 = baseX + (int64_t) start;
+            int64_t spanX2 = baseX + (int64_t) x;
+            if (spanX1 < 0)
+                spanX1 = 0;
+            if (spanX2 > winWi)
+                spanX2 = winWi;
+            if (spanX2 <= spanX1)
+                continue;
+            pixman_region32_t span;
+            pixman_region32_init_rect(&span, (int) spanX1, (int) pixY,
+                                      (unsigned int) (spanX2 - spanX1), 1);
+            pixman_region32_union(occluder, occluder, &span);
+            pixman_region32_fini(&span);
+        }
+    }
+}
+
+static Bool siblingOccluderIntersectsWindow(WindowStruct *siblingStruct,
+                                            int64_t rx64,
+                                            int64_t ry64,
+                                            unsigned int winW,
+                                            unsigned int winH)
+{
+    int64_t x1 = rx64, y1 = ry64;
+    int64_t x2 = rx64 + (int64_t) siblingStruct->w;
+    int64_t y2 = ry64 + (int64_t) siblingStruct->h;
+    SDL_Surface *mask = siblingStruct->shapeBoundingMask;
+    if (mask) {
+        x1 = rx64 + (int64_t) siblingStruct->shapeBoundingOffsetX;
+        y1 = ry64 + (int64_t) siblingStruct->shapeBoundingOffsetY;
+        x2 = x1 + (int64_t) mask->w;
+        y2 = y1 + (int64_t) mask->h;
+    }
+    return x1 < (int64_t) winW && y1 < (int64_t) winH && x2 > 0 && y2 > 0;
+}
+
+/* Build the sibling-occlusion region for "window" in window-local coords.
+ * Starts from the full (0,0,w,h) frame and subtracts each higher sibling
+ * encountered while walking up the ancestor chain, translated into the window's
+ * coordinate frame. Walks stop at SCREEN_WINDOW: sibling top-levels are
+ * arbitrated by the host compositor, not by X clipping. The caller must NOT
+ * have previously initialized *out: this function calls
+ * pixman_region32_init_rect on it.
+ */
+void computeVisibleRegion(Window window, pixman_region32_t *out)
+{
+    if (window == None || window == SCREEN_WINDOW || !IS_TYPE(window, WINDOW)) {
+        pixman_region32_init(out);
+        return;
+    }
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    pixman_region32_init_rect(out, 0, 0, windowStruct->w, windowStruct->h);
+
+    /* (winOX, winOY) holds the window's origin expressed in the current
+     * ancestor's parent's coordinate frame. Initially that's just (window.x,
+     * window.y) because the first level processed is window's own parent. Each
+     * step up adds the just-visited ancestor's parent-relative origin so the
+     * invariant holds for the grandparent's frame next. Coordinates accumulate
+     * in int64_t so a deep ancestor chain or hostile XConfigureWindow inputs
+     * cannot trip signed-int overflow before pixman sees the rect.
+     */
+    int64_t winOX = (int64_t) windowStruct->x,
+            winOY = (int64_t) windowStruct->y;
+    Window cur = window;
+    while (cur != SCREEN_WINDOW) {
+        Window parent = GET_PARENT(cur);
+        if (parent == None || parent == SCREEN_WINDOW)
+            break;
+        WindowStruct *parentStruct = GET_WINDOW_STRUCT(parent);
+        Window *children = (Window *) parentStruct->children.array;
+        ssize_t curIndex = findInArray(&parentStruct->children, (void *) cur);
+        if (curIndex < 0)
+            break;
+
+        for (size_t i = (size_t) (curIndex + 1);
+             i < parentStruct->children.length; i++) {
+            Window sibling = children[i];
+            if (sibling == None || !IS_TYPE(sibling, WINDOW))
+                continue;
+
+            WindowStruct *siblingStruct = GET_WINDOW_STRUCT(sibling);
+            if (siblingStruct->mapState == UnMapped)
+                continue;
+            if (siblingStruct->inputOnly)
+                continue;
+            if (siblingStruct->w == 0 || siblingStruct->h == 0)
+                continue;
+
+            int64_t rx64 = (int64_t) siblingStruct->x - winOX;
+            int64_t ry64 = (int64_t) siblingStruct->y - winOY;
+            /* Cull occluders that cannot intersect the (0,0,w,h) frame before
+             * they reach pixman. The helper would clip to an empty rect anyway,
+             * but the explicit cull keeps the math and the iterations under it
+             * cheap. Shaped windows use the bounding-mask extents because the
+             * active shape can extend outside the default window frame.
+             */
+            if (!siblingOccluderIntersectsWindow(siblingStruct, rx64, ry64,
+                                                 windowStruct->w,
+                                                 windowStruct->h))
+                continue;
+            pixman_region32_t occluder;
+            initSiblingOccluderRegion(siblingStruct, rx64, ry64,
+                                      windowStruct->w, windowStruct->h,
+                                      &occluder);
+            pixman_region32_subtract(out, out, &occluder);
+            pixman_region32_fini(&occluder);
+        }
+
+        winOX += (int64_t) parentStruct->x;
+        winOY += (int64_t) parentStruct->y;
+        cur = parent;
+    }
+}
+
+const pixman_region32_t *ensureVisibleRegion(Window window)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return NULL;
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (windowStruct->visibleRegionValid)
+        return &windowStruct->visibleRegion;
+    pixman_region32_fini(&windowStruct->visibleRegion);
+    computeVisibleRegion(window, &windowStruct->visibleRegion);
+    windowStruct->visibleRegionValid = True;
+    return &windowStruct->visibleRegion;
+}
+
+static void invalidateVisibleRegionSubtree(Window window)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return;
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    windowStruct->visibleRegionValid = False;
+    /* The per-primitive drawing-side cache may hold a pointer to the just-
+     * invalidated region; flush it so the next draw recomputes from fresh
+     * data instead of reading freed pixman rect storage.
+     */
+    invalidatePrimitiveClipCache();
+    Window *children = (Window *) windowStruct->children.array;
+    for (size_t i = 0; i < windowStruct->children.length; i++)
+        invalidateVisibleRegionSubtree(children[i]);
+}
+
+/* A move, resize, restack, or map-state change on "window" can shift the
+ * visible region of anything beneath the nearest top-level ancestor: lower
+ * siblings change occlusion, descendants inherit the cut, and ancestors only
+ * matter if "window" was itself a covering sibling on one of them.
+ * Invalidating the full top-level subtree keeps the rule trivial; the recompute
+ * on next consult is bounded by sibling depth and runs lazily on demand.
+ */
+void invalidateVisibleRegionForTopLevel(Window window)
+{
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return;
+    Window top = window;
+    while (top != None && top != SCREEN_WINDOW && !IS_TOP_LEVEL(top))
+        top = GET_PARENT(top);
+    if (top == None || top == SCREEN_WINDOW)
+        return;
+    invalidateVisibleRegionSubtree(top);
 }
 
 /* TopIf/BottomIf/Opposite are conditional restacks. "Occludes" means an upper
@@ -699,28 +1100,30 @@ static Bool restackWindow(Display *display,
         }
         if ((size_t) index < target)
             target--;
-        return moveChildToIndex(window, target);
+        return moveChildToIndexAndExpose(display, window, target);
     }
 
     size_t idx = (size_t) index;
     switch (mode) {
     case Above:
-        return moveChildToIndex(window, children->length - 1);
+        return moveChildToIndexAndExpose(display, window, children->length - 1);
     case Below:
-        return moveChildToIndex(window, 0);
+        return moveChildToIndexAndExpose(display, window, 0);
     case TopIf:
         if (hasOccludingSiblingAbove(children, idx))
-            return moveChildToIndex(window, children->length - 1);
+            return moveChildToIndexAndExpose(display, window,
+                                             children->length - 1);
         return True;
     case BottomIf:
         if (hasOccludedSiblingBelow(children, idx))
-            return moveChildToIndex(window, 0);
+            return moveChildToIndexAndExpose(display, window, 0);
         return True;
     case Opposite:
         if (hasOccludingSiblingAbove(children, idx))
-            return moveChildToIndex(window, children->length - 1);
+            return moveChildToIndexAndExpose(display, window,
+                                             children->length - 1);
         if (hasOccludedSiblingBelow(children, idx))
-            return moveChildToIndex(window, 0);
+            return moveChildToIndexAndExpose(display, window, 0);
         return True;
     default:
         handleError(0, display, window, 0, BadValue, 0);
@@ -1041,6 +1444,13 @@ Bool configureWindow(Display *display,
     }
     if (!hasChanged)
         return True;
+    /* Any move/resize/restack on this window invalidates the sibling-occlusion
+     * clip for everything under the same top-level: lower siblings may newly
+     * see, and previously occluded windows may now expose pixels under the
+     * moved one. ensureVisibleRegion recomputes lazily on demand; this call
+     * site only marks the cache stale.
+     */
+    invalidateVisibleRegionForTopLevel(window);
     if (!postEvent(display, window, ConfigureNotify))
         return False;
     timelineTapConfigure(window, windowStruct->x, windowStruct->y,

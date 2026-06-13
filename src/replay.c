@@ -255,12 +255,12 @@ static void runScript(const char *path)
                 cursor = endp;
             }
             if (!cursor) {
-                /* Malformed input. Break out of the script so the runner
-                 * cannot proceed past the failed synchronization point
-                 * with the rest of the .replay still queued. A continue
-                 * here would silently drop the verb and let the next
-                 * state-snapshot / assert-state run against unsettled
-                 * state, defeating the synchronization contract.
+                /* Malformed input. Break out of the script so the runner cannot
+                 * proceed past the failed synchronization point with the rest
+                 * of the .replay still queued. A continue here would silently
+                 * drop the verb and let the next state-snapshot / assert-state
+                 * run against unsettled state, defeating the synchronization
+                 * contract.
                  */
                 break;
             }

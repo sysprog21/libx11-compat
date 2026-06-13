@@ -365,9 +365,7 @@ def wait_converge_timeout_ms(parts):
             f"wait-converge timeout_ms must be an integer, got {parts[5]!r}"
         ) from error
     if value < 0:
-        raise ReplayError(
-            f"wait-converge timeout_ms must be non-negative, got {value}"
-        )
+        raise ReplayError(f"wait-converge timeout_ms must be non-negative, got {value}")
     return value
 
 

@@ -780,29 +780,15 @@ int XChangeKeyboardMapping(register Display *dpy,
     return 0;
 }
 
-static void moveChildIndexToTop(Array *children, size_t index)
+static Window childAtIndex(Array *children, size_t index)
 {
-    if (index + 1 >= children->length)
-        return;
-    void *child = children->array[index];
-    memmove(&children->array[index], &children->array[index + 1],
-            sizeof(void *) * (children->length - index - 1));
-    children->array[children->length - 1] = child;
-}
-
-static void moveChildIndexToBottom(Array *children, size_t index)
-{
-    if (index == 0)
-        return;
-    void *child = children->array[index];
-    memmove(&children->array[1], &children->array[0], sizeof(void *) * index);
-    children->array[0] = child;
+    return (Window) children->array[index];
 }
 
 /* RaiseLowest: raise the lowest mapped child that is occluded by another mapped
  * sibling. If no such child exists, circulation is a no-op.
  */
-static void circulateChildrenUp(Window w)
+static void circulateChildrenUp(Display *dpy, Window w)
 {
     Array *childArray = &GET_WINDOW_STRUCT(w)->children;
     Window *children = GET_CHILDREN(w);
@@ -814,7 +800,8 @@ static void circulateChildrenUp(Window w)
         for (size_t j = i + 1; j < childArray->length; j++) {
             if (GET_WINDOW_STRUCT(children[j])->mapState == Mapped &&
                 windowsOverlap(children[i], children[j])) {
-                moveChildIndexToTop(childArray, i);
+                moveChildToIndexAndExpose(dpy, childAtIndex(childArray, i),
+                                          childArray->length - 1);
                 return;
             }
         }
@@ -824,7 +811,7 @@ static void circulateChildrenUp(Window w)
 /* LowerHighest: lower the highest mapped child that occludes another mapped
  * sibling. If none match, the stacking order must stay unchanged.
  */
-static void circulateChildrenDown(Window w)
+static void circulateChildrenDown(Display *dpy, Window w)
 {
     Array *childArray = &GET_WINDOW_STRUCT(w)->children;
     Window *children = GET_CHILDREN(w);
@@ -836,7 +823,7 @@ static void circulateChildrenDown(Window w)
         for (size_t j = 0; j < i; j++) {
             if (GET_WINDOW_STRUCT(children[j])->mapState == Mapped &&
                 windowsOverlap(children[i], children[j])) {
-                moveChildIndexToBottom(childArray, i);
+                moveChildToIndexAndExpose(dpy, childAtIndex(childArray, i), 0);
                 return;
             }
         }
@@ -847,7 +834,7 @@ int XCirculateSubwindowsUp(register Display *dpy, Window w)
 {
     SET_X_SERVER_REQUEST(dpy, X_CirculateWindow);
     TYPE_CHECK(w, WINDOW, dpy, 0);
-    circulateChildrenUp(w);
+    circulateChildrenUp(dpy, w);
     return 1;
 }
 
@@ -857,10 +844,10 @@ int XCirculateSubwindows(register Display *dpy, Window w, int direction)
     TYPE_CHECK(w, WINDOW, dpy, 0);
     switch (direction) {
     case RaiseLowest:
-        circulateChildrenUp(w);
+        circulateChildrenUp(dpy, w);
         return 1;
     case LowerHighest:
-        circulateChildrenDown(w);
+        circulateChildrenDown(dpy, w);
         return 1;
     default:
         handleError(0, dpy, None, 0, BadValue, 0);
@@ -972,7 +959,7 @@ int XCirculateSubwindowsDown(register Display *dpy, Window w)
 {
     SET_X_SERVER_REQUEST(dpy, X_CirculateWindow);
     TYPE_CHECK(w, WINDOW, dpy, 0);
-    circulateChildrenDown(w);
+    circulateChildrenDown(dpy, w);
     return 1;
 }
 

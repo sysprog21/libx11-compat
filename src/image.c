@@ -790,9 +790,9 @@ int XPutImage(Display *display,
     SDL_Rect dst = {dest_x, dest_y, width, height};
     ShapeGuard sg;
     shapeGuardBegin(&sg, drawable, renderer, &dst);
-    int clipCount = getGcClipIterationCount(gc);
+    int clipCount = getGcClipIterationCount(gc, drawable);
     for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip))
+        if (!setGcClipForIteration(renderer, gc, clip, drawable))
             continue;
         if (SDL_RenderCopy(renderer, texture, NULL, &dst) < 0) {
             clearRendererClip(renderer);

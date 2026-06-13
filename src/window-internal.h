@@ -1,6 +1,7 @@
 #ifndef WINDOWINTERNAL_H
 #define WINDOWINTERNAL_H
 
+#include <pixman.h>
 #include "window.h"
 
 typedef struct _WindowSdlIdMapper {
@@ -35,6 +36,9 @@ void translateWindowPoint(Window sourceWindow,
 Bool addChildToWindow(Window parent, Window child);
 Bool insertChildIntoWindow(Window parent, Window child, size_t index);
 Bool moveChildToIndex(Window window, size_t targetIndex);
+Bool moveChildToIndexAndExpose(Display *display,
+                               Window window,
+                               size_t targetIndex);
 void removeChildFromParent(Window child);
 Bool windowsOverlap(Window a, Window b);
 void resizeWindowTexture(Window window);
@@ -60,6 +64,17 @@ Bool configureWindow(Display *display,
                      Window window,
                      unsigned long value_mask,
                      XWindowChanges *values);
+
+/* Sibling-occlusion clipping support. computeVisibleRegion writes the
+ * caller-owned region (which must be uninitialized) and is the slow
+ * path; drawing code should go through ensureVisibleRegion, which
+ * recomputes only when the cached region was invalidated.
+ * invalidateVisibleRegionForTopLevel walks the nearest top-level
+ * subtree and marks every descendant's cached region stale.
+ */
+void computeVisibleRegion(Window window, pixman_region32_t *out);
+const pixman_region32_t *ensureVisibleRegion(Window window);
+void invalidateVisibleRegionForTopLevel(Window window);
 
 /* Motif WM hints bit layout. Used by both the XChangeProperty _MOTIF_WM_HINTS
  * write routing and the synthesized read in XGetWindowProperty; centralizing

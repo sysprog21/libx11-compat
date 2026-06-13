@@ -380,8 +380,8 @@ static void populateSnapshot(Display *display, UiSnapshot *snap)
         /* Also count popup windows by _NET_WM_WINDOW_TYPE atom set (some Motif
          * menus set the atom without override-redirect). EWMH allows the
          * property to be a list of atoms in priority order, so walk every
-         * stored element (bounded by what we copied into bytes), not just
-         * the first one.
+         * stored element (bounded by what we copied into bytes), not just the
+         * first one.
          */
         for (int p = 0; p < entry->property_count; p++) {
             const UiSnapshotProperty *prop = &entry->properties[p];
@@ -404,8 +404,8 @@ static void populateSnapshot(Display *display, UiSnapshot *snap)
             if (isPopup) {
                 /* Avoid double-counting override-redirect popups (already
                  * filtered above) and avoid double-counting when two
-                 * _NET_WM_WINDOW_TYPE entries are present on the same
-                 * window: break out of the property loop on the first hit.
+                 * _NET_WM_WINDOW_TYPE entries are present on the same window:
+                 * break out of the property loop on the first hit.
                  */
                 snap->popup_window_count++;
                 break;

@@ -1721,6 +1721,11 @@ int convertEvent(Display *display,
                     GET_WINDOW_STRUCT(eventWindow)->h =
                         (unsigned int) sdlEvent->window.data2;
                     resizeWindowTexture(eventWindow);
+                    /* The top-level's own cached visibleRegion is its
+                     * (0,0,w,h) frame; it goes stale on every resize
+                     * driven by SDL outside of configureWindow.
+                     */
+                    invalidateVisibleRegionForTopLevel(eventWindow);
                     clearWindowTreeWithoutExpose(display, eventWindow);
                     postFullWindowExpose(display, eventWindow);
                 }

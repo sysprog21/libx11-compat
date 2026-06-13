@@ -2,6 +2,7 @@
 #define _WINDOW_H_
 
 #include <SDL2/SDL.h>
+#include <pixman.h>
 #include "window-debug.h"
 #include "resource-types.h"
 #include "util.h"
@@ -96,6 +97,17 @@ typedef struct {
      */
     Window deferredTransientParent;
     Bool deferredTransientApplied;
+    /* Cached sibling-occlusion clip in window-local coords. Equals
+     * (0,0,w,h) minus the union of higher siblings on this window's
+     * parent, walked up the ancestor chain. Recomputed lazily through
+     * ensureVisibleRegion; invalidated by configureWindow and the
+     * restack helpers when stacking, geometry, or mapping changes.
+     * Drawing primitives in src/drawing.c intersect each clip rect with
+     * this region before issuing SDL_RenderSetClipRect, so a higher
+     * sibling cannot be drawn through by a lower one.
+     */
+    pixman_region32_t visibleRegion;
+    Bool visibleRegionValid;
 #ifdef DEBUG_WINDOWS
     /* Random id used for debugging. */
     unsigned long debugId;
