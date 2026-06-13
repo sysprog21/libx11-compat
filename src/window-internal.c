@@ -58,6 +58,11 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->needsPresent = False;
     windowStruct->hasPresentRect = False;
     windowStruct->presentRect = (SDL_Rect) {0, 0, 0, 0};
+    /* Region must be init'd before any union/clear; matches the
+     * pixman_region32_init contract for visibleRegion above.
+     */
+    pixman_region32_init(&windowStruct->dirty);
+    windowStruct->fullyDirty = False;
     windowStruct->hasPresented = False;
     windowStruct->contentsMergedToParent = False;
     windowStruct->sdlRenderer = NULL;
@@ -157,6 +162,7 @@ void destroyScreenWindow(Display *display)
         SDL_DestroyWindow(windowStruct->sdlWindow);
         freeArray(&windowStruct->children);
         pixman_region32_fini(&windowStruct->visibleRegion);
+        pixman_region32_fini(&windowStruct->dirty);
         free(windowStruct);
         FREE_XID(SCREEN_WINDOW);
         SCREEN_WINDOW = None;
@@ -533,11 +539,12 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     if (freeParentData)
         removeChildFromParent(window);
     /* Hold visibleRegion live through removeChildFromParent's invalidation
-     * walk, then fini it immediately before the matching free so the
-     * lifecycle is obvious and a future reorder cannot wedge a use after
-     * free between the two.
+     * walk, then fini it immediately before the matching free so the lifecycle
+     * is obvious and a future reorder cannot wedge a use after free between the
+     * two.
      */
     pixman_region32_fini(&windowStruct->visibleRegion);
+    pixman_region32_fini(&windowStruct->dirty);
     free(windowStruct);
     SET_XID_VALUE(window, NULL);
     SET_XID_TYPE(window, CLOSED_WINDOW);
@@ -1011,8 +1018,8 @@ static void invalidateVisibleRegionSubtree(Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     windowStruct->visibleRegionValid = False;
     /* The per-primitive drawing-side cache may hold a pointer to the just-
-     * invalidated region; flush it so the next draw recomputes from fresh
-     * data instead of reading freed pixman rect storage.
+     * invalidated region; flush it so the next draw recomputes from fresh data
+     * instead of reading freed pixman rect storage.
      */
     invalidatePrimitiveClipCache();
     Window *children = (Window *) windowStruct->children.array;
@@ -1023,9 +1030,9 @@ static void invalidateVisibleRegionSubtree(Window window)
 /* A move, resize, restack, or map-state change on "window" can shift the
  * visible region of anything beneath the nearest top-level ancestor: lower
  * siblings change occlusion, descendants inherit the cut, and ancestors only
- * matter if "window" was itself a covering sibling on one of them.
- * Invalidating the full top-level subtree keeps the rule trivial; the recompute
- * on next consult is bounded by sibling depth and runs lazily on demand.
+ * matter if "window" was itself a covering sibling on one of them. Invalidating
+ * the full top-level subtree keeps the rule trivial; the recompute on next
+ * consult is bounded by sibling depth and runs lazily on demand.
  */
 void invalidateVisibleRegionForTopLevel(Window window)
 {
@@ -1237,6 +1244,7 @@ void resizeWindowTexture(Window window)
         GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
     if (!windowRenderer)
         return;
+
     /* Caller must record the new dimensions in windowStruct->w/h before
      * calling. The SDL window may not actually be the target size yet (resize
      * events may be faked in tests), so this function cannot re-query via
@@ -1265,6 +1273,14 @@ void resizeWindowTexture(Window window)
     windowStruct->sdlTexture = newTexture;
     windowStruct->needsPresent = True;
     windowStruct->hasPresentRect = False;
+
+    /* The old rects are stale relative to the new texture geometry. Drop them
+     * and let fullyDirty force a single full-window readback on the next
+     * present; that is cheaper than re-marking, and the present-success path in
+     * drawWindowDataToScreen clears both fields together.
+     */
+    pixman_region32_clear(&windowStruct->dirty);
+    windowStruct->fullyDirty = True;
     markWindowNeedsPresent(window);
     SDL_SetRenderTarget(windowRenderer,
                         prevTarget == oldTexture ? newTexture : prevTarget);
@@ -1280,6 +1296,7 @@ Bool mergeWindowDrawables(Window parent, Window child)
     SDL_Renderer *parentRenderer = getWindowRenderer(parent);
     if (childWindowStruct->sdlRenderer)
         SDL_RenderPresent(childWindowStruct->sdlRenderer);
+
     SDL_Rect destRect;
     GET_WINDOW_POS(child, destRect.x, destRect.y);
     GET_WINDOW_DIMS(child, destRect.w, destRect.h);
@@ -1287,6 +1304,7 @@ Bool mergeWindowDrawables(Window parent, Window child)
                        &destRect) != 0) {
         return False;
     }
+
     presentDrawableRectIfVisible(parent, &destRect);
     SDL_DestroyTexture(childWindowStruct->sdlTexture);
     childWindowStruct->sdlTexture = NULL;
@@ -1354,6 +1372,7 @@ Bool configureWindow(Display *display,
         return True;
     Bool hasChanged = False;
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+
     /* There is no external window-manager client in the SDL-backed
      * compatibility model. Honor the configure directly even if a toolkit
      * selected SubstructureRedirectMask internally.
@@ -1442,8 +1461,10 @@ Bool configureWindow(Display *display,
             }
         }
     }
+
     if (!hasChanged)
         return True;
+
     /* Any move/resize/restack on this window invalidates the sibling-occlusion
      * clip for everything under the same top-level: lower siblings may newly
      * see, and previously occluded windows may now expose pixels under the
@@ -1453,6 +1474,7 @@ Bool configureWindow(Display *display,
     invalidateVisibleRegionForTopLevel(window);
     if (!postEvent(display, window, ConfigureNotify))
         return False;
+
     timelineTapConfigure(window, windowStruct->x, windowStruct->y,
                          windowStruct->w, windowStruct->h);
     if (windowStruct->mapState != UnMapped &&

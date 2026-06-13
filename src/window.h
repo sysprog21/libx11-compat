@@ -45,6 +45,18 @@ typedef struct {
     Bool needsPresent;
     Bool hasPresentRect;
     SDL_Rect presentRect;
+    /* Dirty region in window-local coords for the next present.
+     * drawWindowDataToScreen walks this region and emits one
+     * SDL_RenderReadPixels per rect, then submits the whole set via
+     * SDL_UpdateWindowSurfaceRects. fullyDirty is a sentinel that collapses
+     * the region to the entire window when the rect budget (LIBX11_COMPAT_
+     * DIRTY_MAX_RECTS, default 16) is exceeded or a NULL-rect mark arrives;
+     * the read side then falls back to a single full-window readback.
+     * Initialized in initWindowStruct; finalized in destroyWindow /
+     * destroyScreenWindow.
+     */
+    pixman_region32_t dirty;
+    Bool fullyDirty;
     /* True after a mapped top-level window has completed at least one
      * successful update to its SDL_Window surface.
      */

@@ -4740,11 +4740,17 @@ static int test_windows(Display *display)
           "wide rectangle draw did not schedule a present");
     CHECK(wideRectTopStruct->hasPresentRect,
           "wide rectangle draw did not store a present rectangle");
-    CHECK(wideRectTopStruct->presentRect.x == 0 &&
-              wideRectTopStruct->presentRect.y == 0 &&
-              wideRectTopStruct->presentRect.w == 64 &&
-              wideRectTopStruct->presentRect.h == 48,
-          "wide rectangle draw used non-conservative partial present");
+    /* Wide-line XDrawRectangle stores the geometric rect inflated by the stroke
+     * pad on each side (arcStrokePad returns lineWidth when > 1), matching what
+     * arcDamageRect produces for arcs. For (16, 16, 8, 8) with lineWidth = 9
+     * that is (7, 7, 27, 27). The previous "always full window" behavior was
+     * over-conservative and defeated the dirty-region read-side coalescing.
+     */
+    CHECK(wideRectTopStruct->presentRect.x == 7 &&
+              wideRectTopStruct->presentRect.y == 7 &&
+              wideRectTopStruct->presentRect.w == 27 &&
+              wideRectTopStruct->presentRect.h == 27,
+          "wide rectangle draw did not store stroke-padded present rect");
     XFreeGC(display, wideRectGc);
     XDestroyWindow(display, wideRectTop);
 
@@ -5120,13 +5126,12 @@ static int test_windows(Display *display)
           "viewport restore failed");
     GC childClipGc = XCreateGC(display, parent, 0, NULL);
     CHECK(childClipGc != NULL, "ClipByChildren GC creation failed");
-    /* Earlier in this test child1 was stacked above child2, so child2's
-     * (0, 0, 4, 4) corner now falls under child1 and the sibling
-     * occlusion clip would drop the fill before it ever reaches
-     * parent's shared backing. Raise child2 back to the top so the
-     * ClipByChildren probe is testing what it intends to test: that
-     * XClearArea on parent does NOT erase the pixels that map to a
-     * mapped child's frame.
+    /* Earlier in this test child1 was stacked above child2, so child2's (0, 0,
+     * 4, 4) corner now falls under child1 and the sibling occlusion clip would
+     * drop the fill before it ever reaches parent's shared backing. Raise
+     * child2 back to the top so the ClipByChildren probe is testing what it
+     * intends to test: that XClearArea on parent does NOT erase the pixels that
+     * map to a mapped child's frame.
      */
     XRaiseWindow(display, child2);
     CHECK(XSetForeground(display, childClipGc, 0xFFFFFFFF),
@@ -5146,9 +5151,9 @@ static int test_windows(Display *display)
           "parent clear erased mapped child contents");
     SDL_FreeSurface(clipSurface);
     XFreeGC(display, childClipGc);
-    /* Restore the pre-probe stacking order so the XCirculateSubwindowsUp
-     * test below still sees [child2, child1] and raises child2 to the
-     * top as expected.
+    /* Restore the pre-probe stacking order so the XCirculateSubwindowsUp test
+     * below still sees [child2, child1] and raises child2 to the top as
+     * expected.
      */
     XLowerWindow(display, child2);
     CHECK(
@@ -7127,12 +7132,12 @@ static int test_shape_combine_ops(Display *display)
     return 1;
 }
 
-/* Sibling-occlusion clipping regression. Two child windows overlap on the
- * same parent; we raise one above the other, then fill the lower window's
- * full area and assert that pixels mapping to the upper sibling's frame
- * were NOT touched. Without the cached visibleRegion clip, the lower
- * window's draw would "punch through" the upper sibling on the shared
- * backing texture; with it, those pixels stay at their pre-draw value.
+/* Sibling-occlusion clipping regression. Two child windows overlap on the same
+ * parent; we raise one above the other, then fill the lower window's full area
+ * and assert that pixels mapping to the upper sibling's frame were NOT touched.
+ * Without the cached visibleRegion clip, the lower window's draw would "punch
+ * through" the upper sibling on the shared backing texture; with it, those
+ * pixels stay at their pre-draw value.
  */
 static int test_sibling_occlusion_clip(Display *display)
 {
@@ -7176,10 +7181,9 @@ static int test_sibling_occlusion_clip(Display *display)
     CHECK(XFillRectangle(display, lower, gc, 0, 0, LOWER_W, LOWER_H),
           "sibling: baseline fill failed");
 
-    /* The probe point sits in the overlap: lower-local (LOWER overlaps
-     * UPPER starting at upperX - lowerX, upperY - lowerY). Pick a pixel
-     * inside the overlap and a pixel outside it, both expressed in
-     * lower-local coords.
+    /* The probe point sits in the overlap: lower-local (LOWER overlaps UPPER
+     * starting at upperX - lowerX, upperY - lowerY). Pick a pixel inside the
+     * overlap and a pixel outside it, both expressed in lower-local coords.
      */
     int probeInsideX = (UPPER_X - LOWER_X) + 4;
     int probeInsideY = (UPPER_Y - LOWER_Y) + 4;
@@ -7204,8 +7208,8 @@ static int test_sibling_occlusion_clip(Display *display)
     unsigned long postOutside = XGetPixel(post, probeOutsideX, probeOutsideY);
     XDestroyImage(post);
 
-    /* The non-occluded outside pixel must have received the new fill;
-     * the occluded inside pixel must have kept its pre-fill value.
+    /* The non-occluded outside pixel must have received the new fill; the
+     * occluded inside pixel must have kept its pre-fill value.
      */
     CHECK(postOutside != preOutside,
           "sibling: outside-overlap pixel did not receive the fill");
@@ -7458,8 +7462,8 @@ static int test_state_snapshot(Display *display)
     XMapWindow(display, window);
 
     /* mkstemp under $TMPDIR (falls back to /tmp) so parallel test runs and
-     * symlink-attack vectors on a shared multi-user /tmp do not collide.
-     * The temp file gets unlinked after readback.
+     * symlink-attack vectors on a shared multi-user /tmp do not collide. The
+     * temp file gets unlinked after readback.
      */
     const char *tmpdir = getenv("TMPDIR");
     if (!tmpdir || !*tmpdir)
@@ -7472,8 +7476,8 @@ static int test_state_snapshot(Display *display)
           "snapshot path template truncated");
     int fd = mkstemp(path);
     CHECK(fd >= 0, "mkstemp failed");
-    /* stateSnapshotRequestAndWait reopens the path with fopen("w") on the
-     * main thread; close our fd so the open does not race the kernel handle.
+    /* stateSnapshotRequestAndWait reopens the path with fopen("w") on the main
+     * thread; close our fd so the open does not race the kernel handle.
      */
     close(fd);
 

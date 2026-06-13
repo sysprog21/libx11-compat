@@ -810,7 +810,7 @@ int XPutImage(Display *display,
     Bool shapeOk = shapeGuardEnd(&sg);
     unlockPutImageScratch(scratchLock);
     if (shapeOk)
-        presentDrawableIfVisible(drawable);
+        presentDrawableRectIfVisible(drawable, &dst);
     return 1;
 }
 

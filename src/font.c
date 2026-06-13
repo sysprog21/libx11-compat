@@ -79,7 +79,7 @@ static void finishTextDamage(Display *display,
 {
     if (damage && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, damage, 1);
-    presentDrawableIfVisible(drawable);
+    presentDrawableRectIfVisible(drawable, damage);
 }
 
 /* Project-bundled "fonts" wins for self-contained checkouts; the remaining
@@ -2452,8 +2452,18 @@ static int drawImageString(Display *display,
         renderText(display, drawable, renderer, gc, x, y, text, length, &damage)
             ? 1
             : 0;
-    if (result)
-        finishTextDamage(display, drawable, &damage);
+    if (result) {
+        /* The background fill above paints across the entire text width x font
+         * height rectangle, which can extend past the glyph damage on both
+         * sides (e.g. trailing whitespace, descent gap). The dirty-region
+         * pipeline needs the union of both rects, or pixels in the cleared
+         * background outside the glyph extents stay stale on the SDL window
+         * surface.
+         */
+        SDL_Rect imageDamage;
+        unionRect(&background, &damage, &imageDamage);
+        finishTextDamage(display, drawable, &imageDamage);
+    }
     return result;
 }
 

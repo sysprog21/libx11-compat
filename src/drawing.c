@@ -60,16 +60,67 @@ static double nsToMs(uint64_t ns)
     return (double) ns / 1000000.0;
 }
 
+/* Maximum number of independent dirty rects to track on a single window before
+ * collapsing to fullyDirty. Keeps SDL_UpdateWindowSurfaceRects in its per-rect
+ * path on every backend that has been measured; once the region exceeds this
+ * cap, a single full-window readback is cheaper than per-rect bookkeeping.
+ * Hard-clamped to [1, 256] when read from the env.
+ */
+#define DIRTY_RECT_CAP_DEFAULT 16
+
+static int dirtyRectCap(void)
+{
+    static int cached = 0;
+    if (cached != 0)
+        return cached;
+    int value = DIRTY_RECT_CAP_DEFAULT;
+    const char *env = getenv("LIBX11_COMPAT_DIRTY_MAX_RECTS");
+    if (env && *env) {
+        char *end = NULL;
+        long parsed = strtol(env, &end, 10);
+        if (end != env && parsed >= 1 && parsed <= 256)
+            value = (int) parsed;
+    }
+    cached = value;
+    return cached;
+}
+
 static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
 {
-    if (!windowStruct || !rect || rect->w <= 0 || rect->h <= 0)
+    if (!windowStruct)
         return;
+
+    if (!rect) {
+        /* NULL marks the whole window dirty. The region cannot become any
+         * dirtier before the next present, so the union below can short
+         * circuit. The legacy bounding rect mirrors the same intent by staying
+         * clear of hasPresentRect; drawWindowDataToScreen falls back to the
+         * full window when hasPresentRect is False.
+         */
+        windowStruct->fullyDirty = True;
+        return;
+    }
+    if (rect->w <= 0 || rect->h <= 0)
+        return;
+
     if (!windowStruct->hasPresentRect) {
         windowStruct->presentRect = *rect;
         windowStruct->hasPresentRect = True;
-        return;
+    } else {
+        unionRect(&windowStruct->presentRect, rect, &windowStruct->presentRect);
     }
-    unionRect(&windowStruct->presentRect, rect, &windowStruct->presentRect);
+
+    /* Mirror into the new region. fullyDirty stays sticky once set; the
+     * present-side path will clear it on a successful flush.
+     */
+    if (windowStruct->fullyDirty)
+        return;
+
+    pixman_region32_union_rect(&windowStruct->dirty, &windowStruct->dirty,
+                               rect->x, rect->y, (unsigned int) rect->w,
+                               (unsigned int) rect->h);
+    if (pixman_region32_n_rects(&windowStruct->dirty) > dirtyRectCap())
+        windowStruct->fullyDirty = True;
 }
 
 static FILE *renderStatsFile(void)
@@ -139,6 +190,7 @@ static void schedulePresentWake(void)
         Uint32 eventType = SDL_RegisterEvents(1);
         if (eventType == ((Uint32) -1))
             return;
+
         /* Losers of the CAS already installed a different registered event
          * type; the registration this thread just won is unused but harmless,
          * and pushing it would slip past presentWakeOwnsEventType.
@@ -199,24 +251,78 @@ void drawWindowDataToScreen()
 
         int w, h;
         GET_WINDOW_DIMS(children[i], w, h);
-        SDL_Rect presentRect = {0, 0, w, h};
-        if (child->hasPresented && child->hasPresentRect)
-            presentRect = child->presentRect;
-        SDL_Rect bounds = {0, 0, w, h};
-        if (!SDL_IntersectRect(&presentRect, &bounds, &presentRect))
-            continue;
-        /* Clamp the readback rect to all three of the X11 logical size, the
-         * backing texture size, and the SDL window surface size. Window surface
-         * and X11 logical w/h can diverge during resize and on high-DPI setups;
-         * an unclamped read would overflow winSurface->pixels.
+        /* Build the read rect list. fullyDirty (sentinel set by
+         * unionPresentRect on a NULL mark or rect-count overflow), or a window
+         * that has never presented before, falls back to a single full-window
+         * rect; otherwise walk the cached dirty region and pre-clamp each box
+         * against the X11 logical size, the backing texture size, and the SDL
+         * window surface size. Window surface and X11 logical w/h can diverge
+         * during resize and on high-DPI setups; an unclamped read overflows
+         * winSurface->pixels.
          */
         int texW = 0, texH = 0;
         SDL_QueryTexture(child->sdlTexture, NULL, NULL, &texW, &texH);
-        SDL_Rect texBounds = {0, 0, texW, texH};
-        SDL_Rect surfaceBounds = {0, 0, winSurface->w, winSurface->h};
-        if (!SDL_IntersectRect(&presentRect, &texBounds, &presentRect) ||
-            !SDL_IntersectRect(&presentRect, &surfaceBounds, &presentRect))
+        int clampW = w;
+        if (texW < clampW)
+            clampW = texW;
+        if (winSurface->w < clampW)
+            clampW = winSurface->w;
+        int clampH = h;
+        if (texH < clampH)
+            clampH = texH;
+        if (winSurface->h < clampH)
+            clampH = winSurface->h;
+        if (clampW <= 0 || clampH <= 0)
             continue;
+        SDL_Rect bounds = {0, 0, clampW, clampH};
+
+        enum { DIRTY_RECT_BUDGET = 256 };
+        SDL_Rect rects[DIRTY_RECT_BUDGET];
+        int nrects = 0;
+        Bool useRegion = !child->fullyDirty && child->hasPresented &&
+                         child->hasPresentRect &&
+                         pixman_region32_n_rects(&child->dirty) > 0;
+        if (useRegion) {
+            int rn = pixman_region32_n_rects(&child->dirty);
+            if (rn > DIRTY_RECT_BUDGET) {
+                /* Should never trip: unionPresentRect collapses to fullyDirty
+                 * once the dirtyRectCap is exceeded. Fall back to the bounding
+                 * extent so a future cap bump does not silently truncate.
+                 */
+                useRegion = False;
+            } else {
+                pixman_box32_t *boxes =
+                    pixman_region32_rectangles(&child->dirty, NULL);
+                for (int b = 0; b < rn; b++) {
+                    SDL_Rect r = {
+                        .x = boxes[b].x1,
+                        .y = boxes[b].y1,
+                        .w = boxes[b].x2 - boxes[b].x1,
+                        .h = boxes[b].y2 - boxes[b].y1,
+                    };
+                    if (!SDL_IntersectRect(&r, &bounds, &r))
+                        continue;
+                    rects[nrects++] = r;
+                }
+            }
+        }
+        if (!useRegion || nrects == 0) {
+            SDL_Rect r = {0, 0, clampW, clampH};
+            /* When fullyDirty is set, always read back the entire clamped
+             * window. presentRect may carry over a smaller bounding extent from
+             * prior partial marks in the same pending cycle; using it here
+             * would under-cover the actual damage. The region-walk path above
+             * already gated on !fullyDirty, so this fallback handles fullyDirty
+             * + no-region + no-prior-present together.
+             */
+            if (!child->fullyDirty && child->hasPresented &&
+                child->hasPresentRect)
+                r = child->presentRect;
+            if (!SDL_IntersectRect(&r, &bounds, &r))
+                continue;
+            rects[0] = r;
+            nrects = 1;
+        }
         if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
             LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -235,46 +341,69 @@ void drawWindowDataToScreen()
         screenTargetMutated = True;
         Uint32 winFmt = winSurface->format->format;
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
-        int readRc = -1;
+        int readRc = 0;
         uint64_t readStart = monotonicNowNs();
         if (winFmt == readFmt) {
             /* Direct readback into the window's framebuffer. Saves one
-             * full-image memcpy on every present.
+             * full-image memcpy on every present. SDL_RenderReadPixels accepts
+             * repeated writes into a single locked surface, so locking once
+             * across the per-rect loop amortizes the lock cost (which rebinds
+             * GL state on some backends).
              */
             if (SDL_LockSurface(winSurface) == 0) {
-                Uint8 *pixels =
-                    (Uint8 *) winSurface->pixels +
-                    (size_t) presentRect.y * (size_t) winSurface->pitch +
-                    (size_t) presentRect.x *
-                        (size_t) winSurface->format->BytesPerPixel;
-                readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
-                                              pixels, winSurface->pitch);
+                for (int r = 0; r < nrects; r++) {
+                    Uint8 *pixels =
+                        (Uint8 *) winSurface->pixels +
+                        (size_t) rects[r].y * (size_t) winSurface->pitch +
+                        (size_t) rects[r].x *
+                            (size_t) winSurface->format->BytesPerPixel;
+                    int rc = SDL_RenderReadPixels(screen, &rects[r], readFmt,
+                                                  pixels, winSurface->pitch);
+                    if (rc != 0) {
+                        readRc = rc;
+                        break;
+                    }
+                }
                 SDL_UnlockSurface(winSurface);
+            } else {
+                readRc = -1;
             }
         } else {
-            SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
-                0, presentRect.w, presentRect.h, 32, readFmt);
-            if (staging) {
-                readRc = SDL_RenderReadPixels(screen, &presentRect, readFmt,
+            for (int r = 0; r < nrects; r++) {
+                SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
+                    0, rects[r].w, rects[r].h, 32, readFmt);
+                if (!staging) {
+                    readRc = -1;
+                    break;
+                }
+                int rc = SDL_RenderReadPixels(screen, &rects[r], readFmt,
                                               staging->pixels, staging->pitch);
-                if (readRc == 0)
-                    SDL_BlitSurface(staging, NULL, winSurface, &presentRect);
+                if (rc == 0)
+                    SDL_BlitSurface(staging, NULL, winSurface, &rects[r]);
+                else
+                    readRc = rc;
                 SDL_FreeSurface(staging);
+                if (readRc != 0)
+                    break;
             }
         }
         readbackNs += monotonicNowNs() - readStart;
         if (readRc == 0) {
             uint64_t updateStart = monotonicNowNs();
-            SDL_UpdateWindowSurfaceRects(child->sdlWindow, &presentRect, 1);
+            SDL_UpdateWindowSurfaceRects(child->sdlWindow, rects, nrects);
             updateNs += monotonicNowNs() - updateStart;
             child->needsPresent = False;
             child->hasPresentRect = False;
+            pixman_region32_clear(&child->dirty);
+            child->fullyDirty = False;
             child->hasPresented = True;
             presentedWindows++;
-            uint64_t windowPixels =
-                (uint64_t) presentRect.w * (uint64_t) presentRect.h;
+            uint64_t windowPixels = 0;
+            for (int r = 0; r < nrects; r++) {
+                windowPixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
+            }
             presentedPixels += windowPixels;
-            timelineTapPresent(children[i], 1, windowPixels);
+            timelineTapPresent(children[i], (size_t) nrects, windowPixels);
         } else {
             LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -758,8 +887,8 @@ void invalidatePrimitiveClipCache(void)
 {
     /* No-op kept as a stable exported symbol so window-internal.c can
      * unconditionally call this from invalidateVisibleRegionSubtree. The
-     * previous primitive-clip cache was rolled back after benchmarks showed
-     * no net win.
+     * previous primitive-clip cache was rolled back after benchmarks showed no
+     * net win.
      */
 }
 
@@ -1009,7 +1138,7 @@ static void repaintMappedChildrenInRect(Display *display,
 {
     if (rect && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, rect, 1);
-    presentDrawableIfVisible(drawable);
+    presentDrawableRectIfVisible(drawable, rect);
 }
 
 static int compareInts(const void *a, const void *b)
@@ -2170,7 +2299,7 @@ int XFillArc(Display *display,
         fillArcOnRenderer(renderer, d, gc, x, y, width, height, angle1, angle2);
     shapeGuardEnd(&sg);
     if (result)
-        presentDrawableIfVisible(d);
+        presentDrawableRectIfVisible(d, &arcBbox);
     return result;
 }
 
@@ -2258,7 +2387,7 @@ int XDrawArc(Display *display,
         drawArcOnRenderer(renderer, d, gc, x, y, width, height, angle1, angle2);
     shapeGuardEnd(&sg);
     if (result)
-        presentDrawableIfVisible(d);
+        presentDrawableRectIfVisible(d, &arcBbox);
     return result;
 }
 
@@ -2303,7 +2432,7 @@ int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
             pathFree(&path);
             if (ok) {
                 shapeGuardEnd(&sg);
-                presentDrawableIfVisible(d);
+                presentDrawableRectIfVisible(d, &arcsBbox);
                 return 1;
             }
         }
@@ -2317,7 +2446,7 @@ int XDrawArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
         }
     }
     shapeGuardEnd(&sg);
-    presentDrawableIfVisible(d);
+    presentDrawableRectIfVisible(d, &arcsBbox);
     return 1;
 }
 
@@ -2350,7 +2479,7 @@ int XFillArcs(Display *display, Drawable d, GC gc, XArc *arcs, int n_arcs)
         }
     }
     shapeGuardEnd(&sg);
-    presentDrawableIfVisible(d);
+    presentDrawableRectIfVisible(d, &fillBbox);
     return 1;
 }
 
@@ -2536,7 +2665,7 @@ int XCopyPlane(Display *display,
     }
     if (gContext->graphicsExposures)
         postEvent(display, dest, NoExpose, X_CopyPlane, 0);
-    presentDrawableIfVisible(dest);
+    presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 }
 
@@ -3265,7 +3394,7 @@ static int xCopyAreaRasterOp(Display *display,
     }
     postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect, &destRect);
     if (shapeOk)
-        presentDrawableIfVisible(dest);
+        presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 
 cleanup_pixels:
@@ -3385,7 +3514,7 @@ int XCopyArea(Display *display,
                 postCopyAreaExposure(display, src, dest, gc, &fastSrc,
                                      &fastDest);
                 if (fastShapeOk)
-                    presentDrawableIfVisible(dest);
+                    presentDrawableRectIfVisible(dest, &fastDest);
                 return 1;
             }
         }
@@ -3461,7 +3590,7 @@ int XCopyArea(Display *display,
         postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
                              &destRect);
         if (slowShapeOk)
-            presentDrawableIfVisible(dest);
+            presentDrawableRectIfVisible(dest, &destRect);
         return 1;
     }
 
@@ -3534,7 +3663,7 @@ int XCopyArea(Display *display,
     }
 
     postCopyAreaExposure(display, src, dest, gc, &srcRect, &destRect);
-    presentDrawableIfVisible(dest);
+    presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 }
 
@@ -3574,8 +3703,15 @@ int XDrawRectangle(Display *display,
         (gContext->lineWidth > 1 || gContext->lineStyle != LineSolid)) {
         Path path;
         if (pathInit(&path)) {
+            /* Wide / non-solid strokes paint outside the geometric rect, so
+             * inflate the damage by the stroke pad before snapshotting the
+             * shape baseline and marking the present. arcDamageRect does the
+             * same +1 width / +1 height correction this path needs.
+             */
+            SDL_Rect strokeDamage =
+                arcDamageRect(x, y, width, height, arcStrokePad(gc));
             ShapeGuard sg;
-            shapeGuardBegin(&sg, d, renderer, &rectDamage);
+            shapeGuardBegin(&sg, d, renderer, &strokeDamage);
             Bool ok = pathMoveTo(&path, x, y) && pathLineTo(&path, rightX, y) &&
                       pathLineTo(&path, rightX, bottomY) &&
                       pathLineTo(&path, x, bottomY) && pathLineTo(&path, x, y);
@@ -3584,7 +3720,7 @@ int XDrawRectangle(Display *display,
             pathFree(&path);
             shapeGuardEnd(&sg);
             if (ok) {
-                repaintMappedChildrenInRect(display, d, &rectDamage);
+                repaintMappedChildrenInRect(display, d, &strokeDamage);
                 return 1;
             }
         }
