@@ -1,0 +1,31 @@
+.github/workflows/ci.yml
+  s_14e4a9a9292a95::t_2b2543f3a5125d 740
+  s_14e4a9a9292a95::t_13b42aef41255d 564
+  s_14e4a9a9292a95::t_dba2eccca1268f 1-5,7-10,12-13
+  s_14e4a9a9292a95::t_a096153a7748c4 537
+  s_14e4a9a9292a95::t_fffd115096b171 615-687,696-739,741-752,754-771
+  s_14e4a9a9292a95::t_07330b27473acb 546
+  s_14e4a9a9292a95::t_9b4bef8fc2bba2 341
+  s_14e4a9a9292a95::t_021df2ae9e05e8 688-695
+  s_14e4a9a9292a95::t_2a9c77d1cb66f0 37
+  s_14e4a9a9292a95::t_c0440c8d777593 773
+  s_14e4a9a9292a95::t_85608a7ba5b614 579
+  s_14e4a9a9292a95::t_d52c4148ba06b0 594
+  s_14e4a9a9292a95::t_fbc7d69d8bd913 753
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "789d672dfdd5bed58c37d0e426609e8a6e85db94",
+  "prompts": {},
+  "sessions": {
+    "s_14e4a9a9292a95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3df34990-f51a-49a8-9dc1-221d573a54bf",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
