@@ -30,6 +30,19 @@ def ssh(remote, script):
     run(["ssh", remote, "sh", "-s"], input_text=script)
 
 
+def execute(args, script):
+    """Run a build/capture/compare shell payload locally or via SSH."""
+    if args.local:
+        run(["sh", "-s"], input_text=script)
+    else:
+        ssh(args.remote, script)
+
+
+def remote_uri(args, path):
+    """Format a path for rsync; local mode strips the remote: prefix."""
+    return str(path) if args.local else f"{args.remote}:{path}"
+
+
 def q(value):
     return shlex.quote(str(value))
 
@@ -41,7 +54,60 @@ def parse_env_default(name, default):
     return value
 
 
+def parse_env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.lower() in ("1", "yes", "true", "on")
+
+
+def check_local_paths(out_root, remote_root, reference_dir=None):
+    """Reject --remote-root values that fetch_results would delete.
+
+    fetch_results() rmtrees out_root/{system,compat,logs,diff} (and
+    the optional reference_dir) before rsyncing from
+    remote_root/{screens/system,screens/compat,logs,diff}. If
+    remote_root equals out_root, equals reference_dir, or lives
+    inside one of those subdirectories, the rmtree wipes the staging
+    tree before rsync can read from it.
+    """
+    out_root = Path(out_root).resolve()
+    remote_root = Path(remote_root).resolve()
+
+    if remote_root == out_root:
+        raise ValueError(
+            "--remote-root cannot equal --out-root in local mode; "
+            "fetch_results would delete out_root/logs and out_root/diff "
+            "before rsync."
+        )
+
+    forbidden = [out_root / name for name in ("system", "compat", "logs", "diff")]
+    if reference_dir is not None:
+        ref = Path(reference_dir).resolve()
+        if ref == remote_root:
+            raise ValueError(
+                "--remote-root cannot equal --reference-dir in local mode; "
+                "fetch_results would delete reference_dir before rsync."
+            )
+        forbidden.append(ref)
+
+    for dest in forbidden:
+        try:
+            remote_root.relative_to(dest)
+        except ValueError:
+            continue
+        raise ValueError(
+            f"--remote-root {remote_root} lives inside fetch destination "
+            f"{dest}; fetch_results would delete the staging tree before "
+            f"rsync. Pick a remote_root outside out_root/{{system,compat,"
+            f"logs,diff}} and outside --reference-dir."
+        )
+
+
 def sync_repo(args):
+    if args.local:
+        Path(args.remote_root).mkdir(parents=True, exist_ok=True)
+        return str(ROOT)
     remote_repo = f"{args.remote_root}/repo"
     run(["ssh", args.remote, "mkdir", "-p", args.remote_root])
     rsync(
@@ -86,6 +152,10 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 """
 
+    # Offset compat-side Xvfb by 1 so the parallel screenshot block
+    # below can run system-side and compat-side captures concurrently.
+    compat_display_num = int(args.display) + 1
+
     return f"""
 set -eu
 
@@ -119,6 +189,7 @@ compat_logs="$remote_root/logs/compat"
 system_screens="$remote_root/screens/system"
 compat_screens="$remote_root/screens/compat"
 display=:{q(args.display)}
+compat_display=:{compat_display_num}
 
 run_logged() {{
     log=$1
@@ -146,6 +217,12 @@ capture_osiris() {{
     replay_out="$remote_root/replay-$name"
     rm -rf "$replay_out" "$remote_root/home-$name"
     mkdir -p "$log_dir" "$screen_dir" "$remote_root/home-$name"
+    # Read display from the current env so the parallel capture
+    # subshells can each target their own Xvfb. Strip the leading
+    # colon and any trailing .screen suffix to recover the numeric
+    # display index that run-ui-replay's --display flag wants.
+    display_num=${{DISPLAY#:}}
+    display_num=${{display_num%%.*}}
     python3 "$repo/scripts/run-ui-replay.py" \\
         --name "osiris-$name" \\
         --app "$app" \\
@@ -153,12 +230,12 @@ capture_osiris() {{
         --workdir "$workdir" \\
         --replay "$repo/tests/ui/replays/$replay" \\
         --out-root "$replay_out" \\
-        --display {q(args.display)} \\
+        --display "$display_num" \\
         --geometry {q(args.geometry)} \\
         --input-backend "$input_backend" \\
         --screenshot-command import \\
         --screenshot-region {q(args.screenshot_region)} \\
-        --env DISPLAY="$display" \\
+        --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
         --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
         --env LIBX11_COMPAT_FONT_DIR="$repo/fonts"
@@ -178,26 +255,84 @@ rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
 mkdir -p "$system_build" "$system_out" "$system_logs" "$compat_logs" \\
     "$system_screens" "$compat_screens" "$remote_root/logs"
 
-cd "$repo"
-make -j{q(args.jobs)} CC=gcc osiris
+# Wrap gcc with ccache so the system-side Osiris meson build and the
+# compat-side osiris build both hit the ccache populated by the
+# GitHub Actions cache action. Meson bakes $CC into its build.ninja
+# at configure time, so set it before `meson setup`.
+if command -v ccache >/dev/null 2>&1; then
+    if [ -d /usr/lib/ccache ]; then
+        export PATH="/usr/lib/ccache:$PATH"
+    fi
+    export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
+fi
+cc_wrapped="gcc"
+cxx_wrapped="g++"
 
 osiris_src="$repo/build/upstream/osiris"
-if [ ! -f "$system_build/.configure-stamp" ]; then
-    rm -rf "$system_build"
-    mkdir -p "$system_build"
-    run_logged "$remote_root/logs/system-configure.log" \\
-        meson setup "$system_build" "$osiris_src" \\
-            --prefix="$system_out/install" \\
-            -Dxft=disabled \\
-            -Dopengl=disabled \\
-            -Dsm=disabled \\
-            -Dmng=disabled \\
-            -Dgif=disabled \\
-            -Dexamples=enabled \\
-            -Dtutorial=enabled
-    touch "$system_build/.configure-stamp"
+
+# Pre-extract upstream Osiris so the parallel compat-side and
+# system-side builds below don't race on the source-stamp step. The
+# make rule is a no-op when the actions/cache step already restored
+# the osiris-src cache.
+(cd "$repo" && make build/upstream/osiris/.source-stamp)
+
+# Run compat-side and system-side builds concurrently. They write into
+# disjoint trees ($repo/build/osiris vs $system_build) and share only
+# the read-only upstream source. ccache is process-safe via its own
+# locking. Pin ninja's parallelism on both sides; its default
+# auto-detect would otherwise launch $vCPU+2 per side and oversubscribe
+# the runner when the two builds run concurrently.
+compat_make_log="$remote_root/logs/compat-make.log"
+: >"$compat_make_log"
+(
+    set -e
+    cd "$repo"
+    make -j{q(args.jobs)} CC="$cc_wrapped" CXX="$cxx_wrapped" \\
+        OSIRIS_NINJA="ninja -j{q(args.jobs)}" osiris
+) >"$compat_make_log" 2>&1 &
+compat_pid=$!
+
+(
+    set -e
+    if [ ! -f "$system_build/.configure-stamp" ]; then
+        rm -rf "$system_build"
+        mkdir -p "$system_build"
+        run_logged "$remote_root/logs/system-configure.log" \\
+            env CC="$cc_wrapped" CXX="$cxx_wrapped" \\
+            meson setup "$system_build" "$osiris_src" \\
+                --prefix="$system_out/install" \\
+                -Dxft=disabled \\
+                -Dopengl=disabled \\
+                -Dsm=disabled \\
+                -Dmng=disabled \\
+                -Dgif=disabled \\
+                -Dexamples=enabled \\
+                -Dtutorial=enabled
+        touch "$system_build/.configure-stamp"
+    fi
+    run_logged "$remote_root/logs/system-build.log" ninja -j{q(args.jobs)} -C "$system_build"
+) &
+system_pid=$!
+
+compat_status=0
+wait "$compat_pid" || compat_status=$?
+system_status=0
+wait "$system_pid" || system_status=$?
+
+# Surface diagnostics for any failed side before exiting; show both
+# tails when both fail so the first-listed exit code does not mask a
+# concurrent failure on the other side.
+if [ "$compat_status" -ne 0 ]; then
+    echo "compat-side build failed (exit $compat_status); see $compat_make_log" >&2
+    tail -60 "$compat_make_log" >&2 || true
 fi
-run_logged "$remote_root/logs/system-build.log" ninja -C "$system_build"
+if [ "$system_status" -ne 0 ]; then
+    echo "system-side build failed (exit $system_status); see system-configure.log / system-build.log" >&2
+    tail -60 "$remote_root/logs/system-configure.log" >&2 || true
+    tail -60 "$remote_root/logs/system-build.log" >&2 || true
+fi
+[ "$compat_status" -eq 0 ] || exit "$compat_status"
+[ "$system_status" -eq 0 ] || exit "$system_status"
 
 check_target() {{
     test -x "$1" || {{
@@ -222,91 +357,129 @@ for target in \\
     check_target "$target"
 done
 
-rm -f "/tmp/.X{q(args.display)}-lock"
-Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb.log" 2>&1 &
+rm -f "/tmp/.X{q(args.display)}-lock" "/tmp/.X{compat_display_num}-lock"
+Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-system.log" 2>&1 &
 xvfb_pid=$!
-trap 'kill "$xvfb_pid" >/dev/null 2>&1 || true' EXIT
+Xvfb "$compat_display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-compat.log" 2>&1 &
+compat_xvfb_pid=$!
+trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
 sleep 1
 
-capture_osiris system-application \\
-    "$system_application" \\
-    "$osiris_src/examples/application" \\
-    osiris-application.replay \\
-    520x680+0+0 \\
-    "$system_build" \\
-    "$system_logs" \\
-    "$system_screens" \\
-    xdotool
+# Osiris has 4 demos per side and each capture runs a replay so the
+# capture phase dominates the job. Run system-side and compat-side
+# captures concurrently on separate Xvfb instances.
+system_cap_log="$remote_root/logs/system-capture.log"
+compat_cap_log="$remote_root/logs/compat-capture.log"
+: >"$system_cap_log"
+: >"$compat_cap_log"
 
-capture_osiris system-listviews \\
-    "$system_listviews" \\
-    "$osiris_src/examples/listviews" \\
-    osiris-listviews.replay \\
-    720x540+0+0 \\
-    "$system_build" \\
-    "$system_logs" \\
-    "$system_screens" \\
-    xdotool
+(
+    set -e
+    export DISPLAY="$display"
+    capture_osiris system-application \\
+        "$system_application" \\
+        "$osiris_src/examples/application" \\
+        osiris-application.replay \\
+        520x680+0+0 \\
+        "$system_build" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
+    capture_osiris system-listviews \\
+        "$system_listviews" \\
+        "$osiris_src/examples/listviews" \\
+        osiris-listviews.replay \\
+        720x540+0+0 \\
+        "$system_build" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
+    capture_osiris system-fileiconview \\
+        "$system_fileiconview" \\
+        "$osiris_src/examples/fileiconview" \\
+        osiris-fileiconview.replay \\
+        760x560+0+0 \\
+        "$system_build" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
+    capture_osiris system-designer \\
+        "$system_designer" \\
+        "$osiris_src/tools/designer/designer" \\
+        osiris-designer.replay \\
+        940x740+0+0 \\
+        "$system_build" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
+) >"$system_cap_log" 2>&1 &
+system_cap_pid=$!
 
-capture_osiris system-fileiconview \\
-    "$system_fileiconview" \\
-    "$osiris_src/examples/fileiconview" \\
-    osiris-fileiconview.replay \\
-    760x560+0+0 \\
-    "$system_build" \\
-    "$system_logs" \\
-    "$system_screens" \\
-    xdotool
+(
+    set -e
+    export DISPLAY="$compat_display"
+    capture_osiris compat-application \\
+        "$compat_application" \\
+        "$osiris_src/examples/application" \\
+        osiris-application.replay \\
+        520x680+0+0 \\
+        "$repo/build/osiris/build:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+    capture_osiris compat-listviews \\
+        "$compat_listviews" \\
+        "$osiris_src/examples/listviews" \\
+        osiris-listviews.replay \\
+        720x540+0+0 \\
+        "$repo/build/osiris/build:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+    capture_osiris compat-fileiconview \\
+        "$compat_fileiconview" \\
+        "$osiris_src/examples/fileiconview" \\
+        osiris-fileiconview.replay \\
+        760x560+0+0 \\
+        "$repo/build/osiris/build:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+    capture_osiris compat-designer \\
+        "$compat_designer" \\
+        "$osiris_src/tools/designer/designer" \\
+        osiris-designer.replay \\
+        940x740+0+0 \\
+        "$repo/build/osiris/build:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+) >"$compat_cap_log" 2>&1 &
+compat_cap_pid=$!
 
-capture_osiris system-designer \\
-    "$system_designer" \\
-    "$osiris_src/tools/designer/designer" \\
-    osiris-designer.replay \\
-    940x740+0+0 \\
-    "$system_build" \\
-    "$system_logs" \\
-    "$system_screens" \\
-    xdotool
+system_cap_status=0
+wait "$system_cap_pid" || system_cap_status=$?
+compat_cap_status=0
+wait "$compat_cap_pid" || compat_cap_status=$?
 
-capture_osiris compat-application \\
-    "$compat_application" \\
-    "$osiris_src/examples/application" \\
-    osiris-application.replay \\
-    520x680+0+0 \\
-    "$repo/build/osiris/build:$repo/build" \\
-    "$compat_logs" \\
-    "$compat_screens" \\
-    internal
+# Stage Xvfb logs and any partial replay traces into $remote_root/logs
+# so the artifact upload picks them up regardless of capture success.
+for replay_dir in "$remote_root"/replay-*; do
+    [ -d "$replay_dir" ] || continue
+    cp -r "$replay_dir" "$remote_root/logs/$(basename "$replay_dir")" 2>/dev/null || true
+done
+cp "$remote_root"/xvfb-*.log "$remote_root/logs/" 2>/dev/null || true
 
-capture_osiris compat-listviews \\
-    "$compat_listviews" \\
-    "$osiris_src/examples/listviews" \\
-    osiris-listviews.replay \\
-    720x540+0+0 \\
-    "$repo/build/osiris/build:$repo/build" \\
-    "$compat_logs" \\
-    "$compat_screens" \\
-    internal
-
-capture_osiris compat-fileiconview \\
-    "$compat_fileiconview" \\
-    "$osiris_src/examples/fileiconview" \\
-    osiris-fileiconview.replay \\
-    760x560+0+0 \\
-    "$repo/build/osiris/build:$repo/build" \\
-    "$compat_logs" \\
-    "$compat_screens" \\
-    internal
-
-capture_osiris compat-designer \\
-    "$compat_designer" \\
-    "$osiris_src/tools/designer/designer" \\
-    osiris-designer.replay \\
-    940x740+0+0 \\
-    "$repo/build/osiris/build:$repo/build" \\
-    "$compat_logs" \\
-    "$compat_screens" \\
-    internal
+if [ "$system_cap_status" -ne 0 ]; then
+    echo "system screenshot capture failed (exit $system_cap_status); see $system_cap_log" >&2
+    tail -60 "$system_cap_log" >&2 || true
+fi
+if [ "$compat_cap_status" -ne 0 ]; then
+    echo "compat screenshot capture failed (exit $compat_cap_status); see $compat_cap_log" >&2
+    tail -60 "$compat_cap_log" >&2 || true
+fi
+[ "$system_cap_status" -eq 0 ] || exit "$system_cap_status"
+[ "$compat_cap_status" -eq 0 ] || exit "$compat_cap_status"
 """
 
 
@@ -343,21 +516,30 @@ def fetch_results(args, *, fetch_remote_compare=False):
             shutil.rmtree(path)
         path.mkdir(parents=True)
 
-    rsync(f"{args.remote}:{args.remote_root}/screens/system/", system_dir)
-    rsync(f"{args.remote}:{args.remote_root}/screens/compat/", compat_dir)
-    rsync(f"{args.remote}:{args.remote_root}/logs/", log_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/screens/system/"), system_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/screens/compat/"), compat_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/logs/"), log_dir)
 
     if args.reference_dir:
         reference_dir = args.reference_dir
         if reference_dir.exists():
             shutil.rmtree(reference_dir)
         reference_dir.mkdir(parents=True)
-        rsync(f"{args.remote}:{args.remote_root}/screens/system/", reference_dir)
+        rsync(
+            remote_uri(args, f"{args.remote_root}/screens/system/"),
+            reference_dir,
+        )
 
     if fetch_remote_compare:
-        rsync(f"{args.remote}:{args.remote_root}/diff/", diff_dir)
-        rsync(f"{args.remote}:{args.remote_root}/report.tsv", out_root / "report.tsv")
-        rsync(f"{args.remote}:{args.remote_root}/junit.xml", out_root / "junit.xml")
+        rsync(remote_uri(args, f"{args.remote_root}/diff/"), diff_dir)
+        rsync(
+            remote_uri(args, f"{args.remote_root}/report.tsv"),
+            out_root / "report.tsv",
+        )
+        rsync(
+            remote_uri(args, f"{args.remote_root}/junit.xml"),
+            out_root / "junit.xml",
+        )
     return system_dir, compat_dir, out_root
 
 
@@ -405,9 +587,11 @@ def main():
     )
     parser.add_argument(
         "--remote-root",
-        default=parse_env_default(
-            "OSIRIS_DIFF_REMOTE_ROOT",
-            "/tmp/libx11-compat-osiris-differential",
+        default=None,
+        help=(
+            "staging directory. Precedence: CLI flag > OSIRIS_DIFF_REMOTE_ROOT "
+            "env > local-mode default (out_root/_work) > SSH default "
+            "(/tmp/libx11-compat-osiris-differential)."
         ),
     )
     parser.add_argument(
@@ -431,6 +615,16 @@ def main():
         "--install-deps",
         action="store_true",
         help="install minimal Ubuntu packages on the remote via sudo apt-get",
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        default=parse_env_bool("OSIRIS_DIFF_LOCAL"),
+        help=(
+            "run the build / capture / compare pipeline on the local host "
+            "instead of SSHing to --remote. Used by the GitHub Actions "
+            "differential workflow."
+        ),
     )
     parser.add_argument(
         "--mae-threshold",
@@ -464,7 +658,7 @@ def main():
     parser.add_argument(
         "--compare-location",
         choices=("remote", "local"),
-        default=parse_env_default("OSIRIS_DIFF_COMPARE_LOCATION", "remote"),
+        default=None,
     )
     args = parser.parse_args()
 
@@ -477,18 +671,56 @@ def main():
     if not re.fullmatch(r"\d+,\d+,\d+,\d+", args.screenshot_region):
         parser.error("--screenshot-region must use x,y,width,height")
 
+    # Resolve --remote-root precedence: explicit CLI flag wins, then
+    # the OSIRIS_DIFF_REMOTE_ROOT env var, then the local-mode default
+    # (out_root/_work) or the SSH default.
+    if args.remote_root is None:
+        env_remote_root = os.environ.get("OSIRIS_DIFF_REMOTE_ROOT")
+        if env_remote_root:
+            args.remote_root = env_remote_root
+        elif args.local:
+            args.remote_root = str(args.out_root / "_work")
+        else:
+            args.remote_root = "/tmp/libx11-compat-osiris-differential"
+
+    # Resolve --compare-location precedence: explicit CLI flag wins,
+    # then the OSIRIS_DIFF_COMPARE_LOCATION env var, then the local-mode
+    # default (local) or the SSH default (remote).
+    if args.compare_location is None:
+        env_compare_location = os.environ.get("OSIRIS_DIFF_COMPARE_LOCATION")
+        if env_compare_location:
+            if env_compare_location not in ("remote", "local"):
+                parser.error(
+                    "OSIRIS_DIFF_COMPARE_LOCATION must be 'remote' or 'local'"
+                )
+            args.compare_location = env_compare_location
+        elif args.local:
+            args.compare_location = "local"
+        else:
+            args.compare_location = "remote"
+
+    if args.local:
+        try:
+            check_local_paths(
+                args.out_root,
+                Path(args.remote_root),
+                reference_dir=args.reference_dir,
+            )
+        except ValueError as error:
+            parser.error(str(error))
+
     remote_repo = sync_repo(args)
     remote_status = 0
     compare_status = 0
     fetch_status = 0
     try:
-        ssh(args.remote, remote_script(args, remote_repo))
+        execute(args, remote_script(args, remote_repo))
     except subprocess.CalledProcessError as error:
         remote_status = error.returncode
 
     if args.compare_location == "remote" and not remote_status:
         try:
-            ssh(args.remote, remote_compare_script(args))
+            execute(args, remote_compare_script(args))
         except subprocess.CalledProcessError as error:
             compare_status = error.returncode
 

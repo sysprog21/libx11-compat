@@ -4,12 +4,24 @@
 # libx11-compat-specific stale-glyph heuristics. Keep this replay focused
 # on externally driven input and visible state changes.
 delay 2500
-wait-window "vw|Viola" 3000
+# 15 second wait-window: the parallel differential scaffold runs two
+# Xvfb instances and two captures concurrently, so vw startup can drift
+# past the 3 second budget that worked for the single-Xvfb smoke job.
+wait-window "vw|Viola" 15000
+# Post-wait-window settle: the window can match name regex before vw
+# finishes parsing the fixture HTML, so a wheel-down event arriving
+# immediately afterward gets queued against a non-scrollable layout.
+# Two seconds is enough for the fixture to fully lay out under load.
+delay 2000
 screenshot initial
 assert-image initial common-visible.json
 motion 360 540
 wheel down 5
-delay 1000
+# Wait long enough for libx11-compat's internal event loop to drain the
+# wheel-down sequence and for vw to apply the scroll. The previous
+# 1 second budget passed roughly four runs out of five but flaked when
+# the runner was under load; this matches the resize delay below.
+delay 3000
 screenshot scrolled
 assert-image scrolled common-visible.json
 assert-image scrolled violawww-scroll-changed.json

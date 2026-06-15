@@ -15,6 +15,11 @@
 # upstream tarball + extracted-header tree under build/upstream/, the
 # thentenaar/motif, thentenaar/mosaic-ng, osiris, and xfig clones, and
 # per-job ccache directories for C object reuse.
+#
+# Screenshot differential gates (Motif / ViolaWWW / Mosaic / Osiris /
+# Xfig vs. system libX11) live in differential.yml. They run in
+# parallel with this workflow on the same trigger so PR feedback is
+# not blocked by the heavier double-build pipeline.
 name: CI
 
 on:
@@ -158,8 +163,9 @@ jobs:
         # check-unit is the sanitizer-friendly subset: in-tree binaries
         # + symbol-coverage, no motif/violawww gates. The motif job below
         # owns the heavy integration gates (check-link-motif,
-        # check-demos-motif, check-smoke, check-differential) with the
-        # MOTIF_DEMO_SKIP env this job does not set.
+        # check-demos-motif, check-smoke) with the MOTIF_DEMO_SKIP env
+        # this job does not set. Screenshot differential gates live in
+        # differential.yml.
         env:
           UI_REPLAY_XVFB: --xvfb
           UI_REPLAY_SCREENSHOT_COMMAND: import
@@ -335,9 +341,10 @@ jobs:
   # Build the thentenaar/motif libXm and libMrm against the compat stack,
   # build every Motif demo program, and run the demo smoke checks
   # (validate-motif-demos.sh launches each demo briefly and asserts no
-  # fatal output / abnormal exit). ViolaWWW and Mosaic are built locally and,
-  # when a remote differential host is configured, Motif, ViolaWWW, and Mosaic are
-  # screenshot-compared against system libX11 under Xvfb.
+  # fatal output / abnormal exit). ViolaWWW and Mosaic are also built
+  # locally against the compat stack and exercised under Xvfb via the
+  # replay-driven smoke checks. The system-libX11 screenshot diff lives
+  # in differential.yml.
   motif:
     runs-on: ubuntu-24.04
     env:
@@ -449,16 +456,16 @@ jobs:
         id: violawww
         # Build the bolknote/violawww browser against libx11-compat +
         # libXt-compat + libXpm-compat + libXmu-compat + bundled Motif.
-        # This is a build-only differential gate: the source is cloned
-        # at the pinned commit in mk/violawww.mk and compiled. A clean
-        # build verifies the full Xt + Motif + Xext surface the demos
-        # alone don't cover (e.g. selection helpers, XmuConvertStandard,
-        # Xpm pixmap loaders). The full per-step log is written to
+        # This is a build-only smoke gate: the source is cloned at the
+        # pinned commit in mk/violawww.mk and compiled. A clean build
+        # verifies the full Xt + Motif + Xext surface the demos alone
+        # don't cover (e.g. selection helpers, XmuConvertStandard, Xpm
+        # pixmap loaders). The full per-step log is written to
         # build/violawww/build.log and uploaded on failure.
         #
-        # !cancelled() runs this step even if check-demos-motif
-        # above failed, so the two differential gates report
-        # independently. A workflow cancellation still aborts.
+        # !cancelled() runs this step even if check-demos-motif above
+        # failed, so the build steps report independently. A workflow
+        # cancellation still aborts.
         if: ${{ !cancelled() }}
         run: make violawww
 
@@ -500,54 +507,6 @@ jobs:
           UI_REPLAY_DISPLAY: 122
         run: make check-smoke-mosaic
 
-      - name: Run Motif differential screenshots
-        id: motif-differential
-        # SSHes to a Linux/Xvfb host, builds the pinned Motif inputs
-        # against system libX11 and libx11-compat, captures screenshots
-        # for both paths, and compares visible output. Configure
-        # MOTIF_DIFF_REMOTE as a repository variable when CI can reach
-        # the host; otherwise the gate is skipped, leaving the ViolaWWW
-        # differential step below independently runnable.
-        if: ${{ !cancelled() && vars.MOTIF_DIFF_REMOTE != '' }}
-        env:
-          MOTIF_DIFF_REMOTE: ${{ vars.MOTIF_DIFF_REMOTE }}
-          MOTIF_DIFF_INSTALL_DEPS: ${{ vars.MOTIF_DIFF_INSTALL_DEPS || '0' }}
-          MOTIF_DIFF_JOBS: ${{ vars.MOTIF_DIFF_JOBS || '1' }}
-          MOTIF_DIFF_COMPARE_LOCATION: remote
-          MOTIF_DIFF_REPLAY: ${{ vars.MOTIF_DIFF_REPLAY || '0' }}
-        run: make check-differential-motif
-
-      - name: Run ViolaWWW differential screenshots
-        id: violawww-differential
-        # Companion to the Motif step above. Runs only when ViolaWWW
-        # built successfully (otherwise the screenshot capture would
-        # exercise a stale or missing binary and produce misleading
-        # diffs) and when VIOLAWWW_DIFF_REMOTE is configured. Gated
-        # independently of motif-differential so each surfaces its own
-        # outcome and artifact-upload trigger.
-        if: ${{ !cancelled() && steps.violawww.outcome == 'success' && vars.VIOLAWWW_DIFF_REMOTE != '' }}
-        env:
-          VIOLAWWW_DIFF_REMOTE: ${{ vars.VIOLAWWW_DIFF_REMOTE }}
-          VIOLAWWW_DIFF_INSTALL_DEPS: ${{ vars.VIOLAWWW_DIFF_INSTALL_DEPS || '0' }}
-          VIOLAWWW_DIFF_JOBS: ${{ vars.VIOLAWWW_DIFF_JOBS || '1' }}
-          VIOLAWWW_DIFF_COMPARE_LOCATION: remote
-        run: make check-differential-violawww
-
-      - name: Run Mosaic differential screenshots
-        id: mosaic-differential
-        # Companion browser differential gate for thentenaar/mosaic-ng.
-        # Runs only when Mosaic built successfully and MOSAIC_DIFF_REMOTE
-        # is configured, keeping normal CI independent of the SSH host
-        # while allowing browser-visible regressions to be compared
-        # against system libX11 under Xvfb.
-        if: ${{ !cancelled() && steps.mosaic.outcome == 'success' && vars.MOSAIC_DIFF_REMOTE != '' }}
-        env:
-          MOSAIC_DIFF_REMOTE: ${{ vars.MOSAIC_DIFF_REMOTE }}
-          MOSAIC_DIFF_INSTALL_DEPS: ${{ vars.MOSAIC_DIFF_INSTALL_DEPS || '0' }}
-          MOSAIC_DIFF_JOBS: ${{ vars.MOSAIC_DIFF_JOBS || '1' }}
-          MOSAIC_DIFF_COMPARE_LOCATION: remote
-        run: make check-differential-mosaic
-
       - name: Upload ViolaWWW build log on failure
         # Upload only when this specific step failed. A bare
         # `if: failure()` would also fire on an earlier failure (e.g.
@@ -579,51 +538,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload Motif differential artifacts on failure
-        if: ${{ failure() && steps.motif-differential.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: motif-differential
-          path: |
-            build/motif-differential/report.tsv
-            build/motif-differential/junit.xml
-            build/motif-differential/logs
-            build/motif-differential/diff
-            build/motif-differential/system
-            build/motif-differential/compat
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload ViolaWWW differential artifacts on failure
-        if: ${{ failure() && steps.violawww-differential.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: violawww-differential
-          path: |
-            build/violawww-differential/report.tsv
-            build/violawww-differential/junit.xml
-            build/violawww-differential/logs
-            build/violawww-differential/diff
-            build/violawww-differential/system
-            build/violawww-differential/compat
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload Mosaic differential artifacts on failure
-        if: ${{ failure() && steps.mosaic-differential.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: mosaic-differential
-          path: |
-            build/mosaic-differential/report.tsv
-            build/mosaic-differential/junit.xml
-            build/mosaic-differential/logs
-            build/mosaic-differential/diff
-            build/mosaic-differential/system
-            build/mosaic-differential/compat
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: ccache stats
         # Always log ccache stats so we can see whether earlier-step
         # failures still produced cache activity. !cancelled() keeps
@@ -637,8 +551,9 @@ jobs:
   # Osiris targets libX11-compat, libXext-compat, libXmu-compat, and the
   # link-only libICE-compat / libSM-compat shims, with no Motif coupling.
   # Splitting it out of the motif job lets the Qt2 build, demo smoke,
-  # replay smoke, and differential chain run in parallel with the
-  # Motif + ViolaWWW + Mosaic chain instead of queueing behind it.
+  # and replay smoke run in parallel with the Motif + ViolaWWW + Mosaic
+  # chain instead of queueing behind it. Osiris differential screenshot
+  # comparison lives in differential.yml.
   osiris:
     runs-on: ubuntu-24.04
     steps:
@@ -736,24 +651,6 @@ jobs:
           UI_REPLAY_DISPLAY: 121
         run: make check-smoke-osiris
 
-      - name: Run Osiris differential screenshots
-        id: osiris-differential
-        # Qt2 differential gate. Runs only when Osiris built successfully
-        # and OSIRIS_DIFF_REMOTE is configured; the t1 + Designer
-        # screenshot compares against system libX11 under Xvfb on the
-        # remote host. OSIRIS_DIFF_MAE_THRESHOLD / *_CHANGED_THRESHOLD
-        # default to the values in mk/osiris.mk; override via repo vars
-        # when tightening or loosening per-revision.
-        if: ${{ !cancelled() && steps.osiris.outcome == 'success' && vars.OSIRIS_DIFF_REMOTE != '' }}
-        env:
-          OSIRIS_DIFF_REMOTE: ${{ vars.OSIRIS_DIFF_REMOTE }}
-          OSIRIS_DIFF_INSTALL_DEPS: ${{ vars.OSIRIS_DIFF_INSTALL_DEPS || '0' }}
-          OSIRIS_DIFF_JOBS: ${{ vars.OSIRIS_DIFF_JOBS || '1' }}
-          OSIRIS_DIFF_COMPARE_LOCATION: remote
-          OSIRIS_DIFF_MAE_THRESHOLD: ${{ vars.OSIRIS_DIFF_MAE_THRESHOLD || '0.16' }}
-          OSIRIS_DIFF_CHANGED_THRESHOLD: ${{ vars.OSIRIS_DIFF_CHANGED_THRESHOLD || '0.46' }}
-        run: make check-differential-osiris
-
       - name: Upload Osiris build log on failure
         # Captures the Meson configure + Ninja build log so a future
         # patch / revision drift can be triaged without rerunning the
@@ -790,21 +687,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      - name: Upload Osiris differential artifacts on failure
-        if: ${{ failure() && steps.osiris-differential.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: osiris-differential
-          path: |
-            build/osiris-differential/report.tsv
-            build/osiris-differential/junit.xml
-            build/osiris-differential/logs
-            build/osiris-differential/diff
-            build/osiris-differential/system
-            build/osiris-differential/compat
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: ccache stats
         if: ${{ !cancelled() }}
         run: ccache --show-stats
@@ -814,11 +696,11 @@ jobs:
   # Xfig 3.2.9a builds against libX11-compat, libXt-compat, libXmu-compat,
   # libXft-compat, and the bundled libXaw, with no Motif coupling. The
   # job builds the binary and runs the replay-driven xfig-startup smoke
-  # check; when XFIG_DIFF_REMOTE is configured, it also screenshots the
-  # canvas under system libX11 and the compat stack and compares. The
-  # Xft and Xaw API link gates (test-xft-link, test-libxaw-link) are not
-  # duplicated here: they ride the make check-unit invocations in the
-  # build / debug-build / sanitize jobs above.
+  # check. The Xft and Xaw API link gates (test-xft-link,
+  # test-libxaw-link) are not duplicated here: they ride the make
+  # check-unit invocations in the build / debug-build / sanitize jobs
+  # above. Xfig differential screenshot comparison lives in
+  # differential.yml.
   xfig:
     runs-on: ubuntu-24.04
     steps:
@@ -903,22 +785,6 @@ jobs:
           UI_REPLAY_DISPLAY: 123
         run: make check-smoke-xfig
 
-      - name: Run Xfig differential screenshots
-        id: xfig-differential
-        # Companion to the motif / violawww / mosaic / osiris differential
-        # gates. SSHes to a Linux/Xvfb host, builds the pinned Xfig source
-        # against system libX11 and libx11-compat, captures canvas
-        # screenshots for both paths, and compares visible output. Leaving
-        # XFIG_DIFF_REMOTE unset keeps this step skipped on runners without
-        # access to that host.
-        if: ${{ !cancelled() && steps.xfig.outcome == 'success' && vars.XFIG_DIFF_REMOTE != '' }}
-        env:
-          XFIG_DIFF_REMOTE: ${{ vars.XFIG_DIFF_REMOTE }}
-          XFIG_DIFF_INSTALL_DEPS: ${{ vars.XFIG_DIFF_INSTALL_DEPS || '0' }}
-          XFIG_DIFF_JOBS: ${{ vars.XFIG_DIFF_JOBS || '1' }}
-          XFIG_DIFF_COMPARE_LOCATION: remote
-        run: make check-differential-xfig
-
       - name: Upload Xfig build log on failure
         if: ${{ failure() && steps.xfig.outcome == 'failure' }}
         uses: actions/upload-artifact@v7
@@ -936,21 +802,6 @@ jobs:
         with:
           name: ui-smoke-xfig
           path: build/ui-smoke
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Upload Xfig differential artifacts on failure
-        if: ${{ failure() && steps.xfig-differential.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: xfig-differential
-          path: |
-            build/xfig-differential/report.tsv
-            build/xfig-differential/junit.xml
-            build/xfig-differential/logs
-            build/xfig-differential/diff
-            build/xfig-differential/system
-            build/xfig-differential/compat
           if-no-files-found: warn
           retention-days: 7
 

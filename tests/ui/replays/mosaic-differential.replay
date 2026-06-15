@@ -3,7 +3,11 @@
 # Keep this replay focused on externally driven input and screenshots. Pixel
 # similarity is evaluated by the differential comparison after both captures.
 delay 3000
-wait-window "Mosaic|NCSA" 5000
+# 15 second wait-window: the parallel differential scaffold runs two
+# Xvfb instances and two captures concurrently, so Mosaic startup
+# contends with the system-side Motif build and can drift past the
+# 5 second budget that worked for the single-Xvfb smoke job.
+wait-window "Mosaic|NCSA" 15000
 delay 5000
 screenshot initial
 assert-image initial common-visible.json

@@ -180,11 +180,12 @@ XFIG_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-xfig-differential
 XFIG_DIFF_DISPLAY ?= 125
 XFIG_DIFF_JOBS ?= 1
 XFIG_DIFF_INSTALL_DEPS ?= 0
+XFIG_DIFF_LOCAL ?= 0
 XFIG_DIFF_MAE_THRESHOLD ?= 0.16
 XFIG_DIFF_CHANGED_THRESHOLD ?= 0.42
 XFIG_DIFF_GEOMETRY ?= 1280x1024x24
 XFIG_DIFF_TOP ?= 12
-XFIG_DIFF_COMPARE_LOCATION ?= remote
+XFIG_DIFF_COMPARE_LOCATION ?= $(if $(filter 1 yes true,$(XFIG_DIFF_LOCAL)),local,remote)
 XFIG_DIFF_OUT_ROOT ?= $(OUT)/xfig-differential
 XFIG_DIFF_SCREENSHOT_REGION ?= 0,0,1024,768
 
@@ -201,10 +202,14 @@ xfig_diff_env = \
     XFIG_DIFF_OUT_ROOT='$(abspath $(XFIG_DIFF_OUT_ROOT))' \
     XFIG_DIFF_SCREENSHOT_REGION='$(XFIG_DIFF_SCREENSHOT_REGION)'
 
-## Compare Xfig screenshots for system libX11 vs libx11-compat on node11
+## Compare Xfig screenshots for system libX11 vs libx11-compat. Set
+## XFIG_DIFF_LOCAL=1 to run the build / capture / compare pipeline on
+## the current host (used by the GitHub Actions differential workflow);
+## otherwise the script SSHes to XFIG_DIFF_REMOTE.
 check-differential-xfig:
 	$(Q)$(xfig_diff_env) $(PYTHON) scripts/run-xfig-differential-tests.py \
-	    $(if $(filter 1 yes true,$(XFIG_DIFF_INSTALL_DEPS)),--install-deps)
+	    $(if $(filter 1 yes true,$(XFIG_DIFF_INSTALL_DEPS)),--install-deps) \
+	    $(if $(filter 1 yes true,$(XFIG_DIFF_LOCAL)),--local)
 
 XFIG_SMOKE_GEOMETRY ?= 1024x768+0+0
 XFIG_SMOKE_REGION   ?= 0,0,1024,768
