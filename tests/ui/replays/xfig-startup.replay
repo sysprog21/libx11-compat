@@ -1,0 +1,13 @@
+# xfig startup smoke test - validates that the toolbox, canvas, and
+# indicator panel each map and paint at least one non-background pixel
+# through the libXaw + libXt + libXft + libX11 compat stack. xfig's
+# top-level form pulls in the bulk of the Athena widget surface
+# (commandWidgetClass, formWidgetClass, viewportWidgetClass,
+# asciiTextWidgetClass) so a clean startup paint exercises the
+# Athena render path end to end.
+delay 3000
+wait-window "Xfig|xfig" 8000
+delay 2000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial xfig-three-panes.json

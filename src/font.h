@@ -4,8 +4,20 @@
 #include <X11/Xlib.h>
 #include <SDL2/SDL.h>
 
+struct TTF_Font;
+
 extern void freeFontStorage(void);
 Bool initFontStorage(void);
+
+/* Open a TTF font for `familyHint` at `size`, sharing the same
+ * per-family probe-path tables (sans / sans-bold / serif / monospace)
+ * the core font path uses for XLoadQueryFont fallbacks. familyHint
+ * may be NULL (treated as "sans") or any free-form family / XLFD
+ * substring - the heuristics inside font.c decide which probe list
+ * applies. Returns a TTF_Font * the caller must TTF_CloseFont, or
+ * NULL when no probe path is openable on this host.
+ */
+struct TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size);
 
 Bool compatFontIsClientUsable(Font fontXid);
 Bool compatFontRetainForGC(Font fontXid);

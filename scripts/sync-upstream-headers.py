@@ -104,6 +104,14 @@ SOURCES = [
         "src_subdir": "src-libXmu",
         "src_take_all": True,
     },
+    {
+        "name": "libXaw",
+        "version": "libXaw-1.0.16",
+        "url": "https://xorg.freedesktop.org/archive/individual/lib/libXaw-1.0.16.tar.xz",
+        "sha256": "731d572b54c708f81e197a6afa8016918e2e06dfd3025e066ca642a5b8c39c8f",
+        "src_subdir": "src-libXaw",
+        "src_take_all": True,
+    },
 ]
 
 # Build-system noise that we never want to extract.

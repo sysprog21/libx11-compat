@@ -1,0 +1,16 @@
+Add missing <stdio.h> include for fputs/stderr in w_dir.c.
+
+Upstream xfig 3.2.9a relies on transitive includes that the host clang
+toolchain on macOS does not provide; on Linux they leak in via X11
+headers.  Explicitly include stdio.h so the build is portable.
+
+--- a/src/w_dir.c
++++ b/src/w_dir.c
+@@ -65,6 +65,7 @@
+
+ #include <errno.h>
+ #include <pwd.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/stat.h>

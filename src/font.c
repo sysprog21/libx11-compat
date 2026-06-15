@@ -432,6 +432,7 @@ static Bool isFontAlias(const char *name)
      */
     return !strcmp(name, "fixed") || !strcmp(name, "variable") ||
            !strcmp(name, "cursor") || !strcmp(name, "6x13") ||
+           !strcmp(name, "7x13") || !strcmp(name, "7x13bold") ||
            !strcmp(name, "8x13") || !strcmp(name, "7x14") ||
            !strcmp(name, "9x13") || !strcmp(name, "9x15") ||
            !strcmp(name, "9x18") || !strcmp(name, "12x24") ||
@@ -593,14 +594,22 @@ static int requestedFontSize(const char *name)
     const char *x = strchr(name, 'x');
     if (x && x > name && x[1] != '\0') {
         char widthBuffer[16];
+        char heightBuffer[16];
         size_t widthLen = (size_t) (x - name);
+        const char *heightEnd = x + 1;
+        while (*heightEnd >= '0' && *heightEnd <= '9')
+            heightEnd++;
+        size_t heightLen = (size_t) (heightEnd - (x + 1));
         int width = 0;
         int height = 0;
-        if (widthLen < sizeof(widthBuffer)) {
+        if (widthLen < sizeof(widthBuffer) && heightLen > 0 &&
+            heightLen < sizeof(heightBuffer)) {
             memcpy(widthBuffer, name, widthLen);
             widthBuffer[widthLen] = '\0';
+            memcpy(heightBuffer, x + 1, heightLen);
+            heightBuffer[heightLen] = '\0';
             if (parsePositiveInt(widthBuffer, &width) &&
-                parsePositiveInt(x + 1, &height)) {
+                parsePositiveInt(heightBuffer, &height)) {
                 (void) width;
                 return clampFontSize(height);
             }
@@ -716,6 +725,12 @@ static Bool coreFontMetricsForName(const char *name,
         *ascent = 11;
         *descent = 2;
         *width = 6;
+        return True;
+    }
+    if (haveBitmap && (!strcmp(name, "7x13") || !strcmp(name, "7x13bold"))) {
+        *ascent = 11;
+        *descent = 2;
+        *width = 7;
         return True;
     }
     if (haveBitmap && !strcmp(name, "7x14")) {
@@ -990,6 +1005,9 @@ static FontCacheEntry *findAliasedFontForName(const char *name)
         }
         return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
     }
+    if (containsIgnoreCase(name, "bold"))
+        return findProbeFont(SANS_BOLD_PROBE_PATHS,
+                             ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS));
     return findAliasedFixedWidthFont();
 }
 
@@ -1074,6 +1092,18 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
         TTF_CloseFont(font);
     }
     return NULL;
+}
+
+/* Public entry point that mirrors the per-family probe chain used by
+ * XLoadQueryFont fallbacks (sans / sans-bold / serif / monospace). The Xft shim
+ * routes through this so anti-aliased text rendered by client code lands on the
+ * same TTF file the core font path would have picked.
+ */
+struct TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size)
+{
+    const char *name = familyHint ? familyHint : "sans";
+    return (struct TTF_Font *) openRenderableFallbackFont(
+        name, clampFontSize(size), NULL);
 }
 
 static FontCacheEntry *findFontCacheEntryByName(const char *name)
@@ -2279,7 +2309,8 @@ Bool renderText(Display *display,
         }
     }
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
-    if (fontResource && fontResource->useFixedBitmap &&
+    Bool stringHasEmbeddedNul = strlen(string) != length;
+    if (stringHasEmbeddedNul && fontResource && fontResource->useFixedBitmap &&
         renderFixedBitmapText(drawable, renderer, gc, x, y, string, length,
                               drawnBounds)) {
         return True;
@@ -2291,7 +2322,6 @@ Bool renderText(Display *display,
      * skip lookup and insert when length != strlen to avoid storing or
      * mis-hitting a truncated key.
      */
-    Bool stringHasEmbeddedNul = strlen(string) != length;
     SDL_Texture *fontTexture = NULL;
     int textureWidth = 0;
     int textureHeight = 0;
@@ -2317,6 +2347,11 @@ Bool renderText(Display *display,
             TTF_RenderUTF8_Blended(GET_FONT(gContext->font), string, color);
         if (!fontSurface) {
             textCacheUnlock();
+            if (fontResource && fontResource->useFixedBitmap &&
+                renderFixedBitmapText(drawable, renderer, gc, x, y, string,
+                                      length, drawnBounds)) {
+                return True;
+            }
             return False;
         }
         textureWidth = fontSurface->w;
@@ -2325,6 +2360,11 @@ Bool renderText(Display *display,
         SDL_FreeSurface(fontSurface);
         if (!fontTexture) {
             textCacheUnlock();
+            if (fontResource && fontResource->useFixedBitmap &&
+                renderFixedBitmapText(drawable, renderer, gc, x, y, string,
+                                      length, drawnBounds)) {
+                return True;
+            }
             return False;
         }
         SDL_SetTextureBlendMode(fontTexture, SDL_BLENDMODE_BLEND);
@@ -2338,10 +2378,20 @@ Bool renderText(Display *display,
     }
 
     SDL_Rect destR;
-    destR.w = textureWidth;
-    destR.h = textureHeight;
     destR.x = x;
-    destR.y = y - textureAscent;
+    if (fontResource && fontResource->hasCoreMetrics &&
+        fontResource->coreWidth > 0) {
+        size_t textLen = length;
+        if (textLen > (size_t) (INT_MAX / fontResource->coreWidth))
+            textLen = (size_t) (INT_MAX / fontResource->coreWidth);
+        destR.w = (int) textLen * fontResource->coreWidth;
+        destR.h = fontResource->coreAscent + fontResource->coreDescent;
+        destR.y = y - fontResource->coreAscent;
+    } else {
+        destR.w = textureWidth;
+        destR.h = textureHeight;
+        destR.y = y - textureAscent;
+    }
     if (drawnBounds)
         *drawnBounds = destR;
     ShapeGuard sg;
@@ -2406,18 +2456,18 @@ static int drawImageString(Display *display,
     int ascent = 0;
     int descent = 0;
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
-    /* The clear box must match the renderer that will actually run. Use the
-     * bitmap 11/2 box only when renderFixedBitmapText will fire; otherwise the
-     * TTF fallback box is needed to cover its glyphs.
+    /* The clear box must match the renderer that will actually run. The fixed
+     * aliases render through SDL_ttf now, but their X11-visible metrics stay at
+     * the historical 6x13 cell so Xt/Xaw layout does not shift.
      */
-    if (fontResource && fontResource->useFixedBitmap &&
-        fixedBitmapCanRenderText(text, length) && loadFixedBitmapFont()) {
+    if (fontResource && fontResource->hasCoreMetrics &&
+        fontResource->coreWidth > 0) {
         size_t textLen = length;
-        if (textLen > (size_t) (INT_MAX / FIXED_BITMAP_WIDTH))
-            textLen = (size_t) (INT_MAX / FIXED_BITMAP_WIDTH);
-        width = (int) (textLen * FIXED_BITMAP_WIDTH);
-        ascent = FIXED_BITMAP_ASCENT;
-        descent = FIXED_BITMAP_DESCENT;
+        if (textLen > (size_t) (INT_MAX / fontResource->coreWidth))
+            textLen = (size_t) (INT_MAX / fontResource->coreWidth);
+        width = (int) textLen * fontResource->coreWidth;
+        ascent = fontResource->coreAscent;
+        descent = fontResource->coreDescent;
     } else {
         TTF_Font *font = GET_FONT(gContext->font);
         if (TTF_SizeUTF8(font, text, &width, &height) != 0) {

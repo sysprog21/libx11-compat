@@ -22,11 +22,14 @@ include mk/library.mk
 include mk/libxt.mk
 include mk/libxpm.mk
 include mk/xcompat-libs.mk
+include mk/libxaw.mk
 include mk/pkgconfig.mk
 include mk/motif.mk
 include mk/violawww.mk
 include mk/mosaic.mk
 include mk/osiris.mk
+include mk/xclock.mk
+include mk/xfig.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/upstream-headers.mk

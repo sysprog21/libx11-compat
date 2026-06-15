@@ -10,10 +10,10 @@ typedef unsigned long PictFormat;
 typedef int XFixed;
 
 /* XFixed is 16.16 fixed-point; representable range is approximately
- * [-32768, +32768). A bare cast of an out-of-range double to int is
- * undefined in C, which upstream Xrender's macro form invites. Clamp
- * to the representable range so misbehaving clients cannot trigger UB
- * inside the compat layer.
+ * [-32768, +32768). A bare cast of an out-of-range double to int is undefined
+ * in C, which upstream Xrender's macro form invites. Clamp to the
+ * representable range so misbehaving clients cannot trigger UB inside the
+ * compat layer.
  */
 static inline XFixed _xCompatDoubleToFixed(double f)
 {
@@ -56,6 +56,15 @@ typedef struct {
     unsigned short blue;
     unsigned short alpha;
 } XRenderColor;
+
+typedef struct {
+    unsigned short width;
+    unsigned short height;
+    short x;
+    short y;
+    short xOff;
+    short yOff;
+} XGlyphInfo;
 
 typedef struct {
     XFixed matrix[3][3];
