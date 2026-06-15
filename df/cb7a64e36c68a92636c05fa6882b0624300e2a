@@ -1,0 +1,21 @@
+.github/workflows/ci.yml
+  s_c770def9b291b1::t_48462f40658e64 312-319
+mk/xfig.mk
+  s_c770def9b291b1::t_72d947842d7790 59-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "dfcb7a64e36c68a92636c05fa6882b0624300e2a",
+  "prompts": {},
+  "sessions": {
+    "s_c770def9b291b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dddb668-037c-4648-92a3-d33549c31855",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
