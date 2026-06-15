@@ -1,0 +1,19 @@
+mk/libxaw.mk
+  s_c770def9b291b1::t_1a6c10842b46b2 36-42
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "2a675538f4e1b804197407014680c5091c6c3129",
+  "prompts": {},
+  "sessions": {
+    "s_c770def9b291b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dddb668-037c-4648-92a3-d33549c31855",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
