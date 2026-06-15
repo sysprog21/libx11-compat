@@ -1,0 +1,25 @@
+scripts/run-xfig-differential-tests.py
+  s_8932899d472820::t_6320b0ad816244 212-217,225,230
+scripts/run-violawww-differential-tests.py
+  s_8932899d472820::t_3d0d15f99e68b5 218-223,231,235
+scripts/run-mosaic-differential-tests.py
+  s_8932899d472820::t_196362e3df5c63 219-224,233,238
+scripts/run-osiris-differential-tests.py
+  s_8932899d472820::t_6cd6df67675c01 220-225,233,238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "d7d840dada8d31567ad989516fbe31fa7b6924b6",
+  "prompts": {},
+  "sessions": {
+    "s_8932899d472820": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8cadaebf-e63f-4d5e-b9f6-de366394a2bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
