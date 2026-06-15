@@ -1,0 +1,47 @@
+tests/data/flowchart.fig
+  s_c770def9b291b1::t_231fa30726a574 1-57
+tests/data/sample.fig
+  s_c770def9b291b1::t_5fde8707c72986 1-18
+README.md
+  s_c770def9b291b1::t_05741962987dd2 125
+  s_c770def9b291b1::t_d8e9d164a3b9ea 114
+  s_c770def9b291b1::t_52ed7c01e59b7c 101-112
+  s_c770def9b291b1::t_33a85e7d149787 49
+.github/workflows/ci.yml
+  s_c770def9b291b1::t_1f93d17e981f10 7-17
+  s_c770def9b291b1::t_c6f5b49578240d 804-840,842-903,907-952
+  s_c770def9b291b1::t_d3d58de78845f0 134,206,276,367,665
+  s_b78a044153dda0::t_f653a2338cdc5f 904-906
+  s_c770def9b291b1::t_f9bf014a1c447b 135,207,277,368,666,841
+tests/data/stress.fig
+  s_c770def9b291b1::t_338c647cab94b1 1-114
+tests/data/circuit.fig
+  s_c770def9b291b1::t_9c4219118d6e32 1-37,41-47
+  s_c770def9b291b1::t_a9f0f48af6fbc7 38-40
+tests/data/mindmap.fig
+  s_c770def9b291b1::t_cc9cafe2b90d41 1-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "f2bf6b693683bfcd21107f9249804c02f2eb0e9e",
+  "prompts": {},
+  "sessions": {
+    "s_b78a044153dda0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec9dc-2b6c-7971-9013-e60437b585cf",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_c770def9b291b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dddb668-037c-4648-92a3-d33549c31855",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
