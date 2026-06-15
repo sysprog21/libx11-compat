@@ -1,0 +1,19 @@
+mk/motif.mk
+  s_8932899d472820::t_9f1f0e52de0e0c 244-253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "e3800f7e9056284e4c4ec532415cea258e4ac21f",
+  "prompts": {},
+  "sessions": {
+    "s_8932899d472820": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8cadaebf-e63f-4d5e-b9f6-de366394a2bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
