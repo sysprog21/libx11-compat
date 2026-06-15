@@ -1,0 +1,98 @@
+src/missing.c
+  s_c770def9b291b1::t_117999b01073a2 2076-2083,2085-2087
+  s_c770def9b291b1::t_56c76948325c11 2152-2168,2170-2183,2185-2213,2220-2245
+  s_c770def9b291b1::t_80067f291eb0d6 2024-2055
+  s_126cb6c633ba64::t_89457003b9f75f 2214-2219
+  s_126cb6c633ba64::t_bab973bdb54590 2169,2184
+  s_c770def9b291b1::t_19e6b0d5245d8e 2683-2691
+  s_c770def9b291b1::t_f31b35a385da9d 2130
+  s_20e0c6bf6818f9::t_29a759adef4a2e 388-389,395-396,403,405-406,409-412,415-424,427
+  s_c770def9b291b1::t_4691677bc06f95 2134-2136
+  s_20e0c6bf6818f9::t_0e9f945c5f7976 397-399,413
+  s_c770def9b291b1::t_2454cba5259aaa 2011-2016
+  s_c770def9b291b1::t_dad226f0672db0 400,414
+  s_a478b1c01943dc::t_94d7031771b705 364-371,374-377,407-408,425-426,428-430
+  s_20e0c6bf6818f9::t_76c3c7f8752925 63-107
+  s_20e0c6bf6818f9::t_a10bdfd128404d 401-402,404
+  s_20e0c6bf6818f9::t_b3683117fd0d1c 2075
+  s_c770def9b291b1::t_dbca4493c3f532 1961-2010,2017-2023,2061-2074,2084,2088-2089,2096,2109-2110,2116-2124,2126,2139,2141,2143
+  s_c770def9b291b1::t_2e55d2f1fb7ab1 2090-2091,2097-2108,2111-2115,2125,2127-2129,2131-2133,2137-2138,2140,2142
+  s_c770def9b291b1::t_fdd7a697e217e9 372-373,378-387,391-394
+src/wrapper/sdl-wrapper.c
+  s_c770def9b291b1::t_47d40a31a3c960 154-165
+  s_c770def9b291b1::t_bd25fcf721df17 285-288
+  s_c770def9b291b1::t_803095d22c2ef2 492-498
+src/drawing.c
+  s_c770def9b291b1::t_4d8cc4df540ca1 1843,1866,1882,1884-1903,1905-1906
+  s_c770def9b291b1::t_a2daeb5c5fd97c 286,299-308,314-332
+  s_c770def9b291b1::t_dcb4a6298b4b13 2079-2080,2114
+  s_c770def9b291b1::t_8063fb11e2527a 1958-1959,1974
+  s_c770def9b291b1::t_aedeefd5c2244a 105-117
+  s_c770def9b291b1::t_efae2790e507aa 441-469,472-475
+  s_c770def9b291b1::t_a5336d70cb63f9 400,402,422,438-440,470-471,476-480,482,491-492
+  s_c770def9b291b1::t_ce770c1c8e483b 1963
+  s_c770def9b291b1::t_48cbbc956fd9c0 2134-2140
+  s_c770def9b291b1::t_dd360e41e1d3e1 1842,1847-1865,1876-1881,1883,1904,1907-1920
+  s_c770def9b291b1::t_0412791adf0083 2081-2084
+  s_c770def9b291b1::t_d8d75acbe22624 291-298
+tests/check.c
+  s_c770def9b291b1::t_0fc366e733ba60 7867
+  s_126cb6c633ba64::t_89457003b9f75f 4238-4262,4264-4269,4272-4279,4281-4286,4289-4296,4298-4315,4317-4321
+  s_c770def9b291b1::t_c960fc97d3616e 2154-2228
+  s_c770def9b291b1::t_48f4dcce7fc6b7 4188-4237
+  s_20e0c6bf6818f9::t_d9d8d90c7e188d 5760,5766-5767
+  s_20e0c6bf6818f9::t_7270100a2a2216 6057-6071
+  s_20e0c6bf6818f9::t_cf2baab51063b5 4130-4151,4153-4159
+  s_c770def9b291b1::t_77dd15b2e5e780 4093-4129,4160,4165-4187
+  s_126cb6c633ba64::t_75deacf22ece10 4263,4270-4271,4280,4287-4288,4297,4316
+  s_20e0c6bf6818f9::t_4beb20dbc2eef2 5758-5759
+  s_20e0c6bf6818f9::t_75cb05cfbd7c33 5761-5765
+  s_c770def9b291b1::t_766e85d20d73b0 18-19
+  s_20e0c6bf6818f9::t_c25b581c275578 4152,4161-4164
+src/window.c
+  s_c770def9b291b1::t_3761c99ea67cb1 88-98
+src/window.h
+  s_c770def9b291b1::t_f18d78bcc941c3 47
+src/gc.c
+  s_c770def9b291b1::t_c5bb90da9f01ae 280-283,288-289,302-315,445-463
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "3932602093240161264df6ef0a3440a249d7b0b4",
+  "prompts": {},
+  "sessions": {
+    "s_126cb6c633ba64": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec9bd-a8a6-78b0-ae6d-7faa81b8e1a1",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_20e0c6bf6818f9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec5c0-14bd-7e50-adf6-8a01e1121045",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_a478b1c01943dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec526-fef4-7aa3-959e-cfd3ef343da4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_c770def9b291b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dddb668-037c-4648-92a3-d33549c31855",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
