@@ -636,6 +636,7 @@ Xutf8LookupString
 Xutf8TextEscapement
 Xutf8TextExtents
 Xutf8TextPerCharExtents
+Xutf8TextPropertyToTextList
 XwcDrawImageString
 XwcDrawString
 XwcDrawText

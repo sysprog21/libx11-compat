@@ -7,7 +7,12 @@ PKGCONFIG_FILES := \
     $(PKGCONFIG_DIR)/xext.pc \
     $(PKGCONFIG_DIR)/xinerama.pc \
     $(PKGCONFIG_DIR)/ice.pc \
-    $(PKGCONFIG_DIR)/sm.pc
+    $(PKGCONFIG_DIR)/sm.pc \
+    $(PKGCONFIG_DIR)/xaw7.pc \
+    $(PKGCONFIG_DIR)/xproto.pc \
+    $(PKGCONFIG_DIR)/fontconfig.pc \
+    $(PKGCONFIG_DIR)/xrender.pc \
+    $(PKGCONFIG_DIR)/xft.pc
 
 $(PKGCONFIG_DIR):
 	@mkdir -p $@
@@ -60,6 +65,46 @@ $(PKGCONFIG_DIR)/ice.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG
 $(PKGCONFIG_DIR)/sm.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
 	$(call write_pc,sm,1.2,-lSM-compat -lICE-compat,)
+
+$(PKGCONFIG_DIR)/xaw7.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,xaw7,1.0.16,-lXaw-compat -lXt-compat -lXmu-compat -lXpm-compat -lX11-compat,-I$$(pwd)/include/libxt-build)
+
+# xproto.pc covers protocol-only headers. Apps like xclock pkg-config it
+# to get the X11/Xproto.h include path; the upstream-headers stamp already
+# stages every xproto header under build/upstream/include/X11/, so there
+# is no library to link against - just the same -I paths the other shims
+# emit.
+$(PKGCONFIG_DIR)/xproto.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,xproto,7.0.31,,)
+
+# fontconfig.pc routes clients (Xfig) through libXft-compat.so for the
+# whole Fc* surface instead of the host libfontconfig. libXft-compat
+# exports its own FcPatternCreate / FcPatternDestroy / etc with a struct
+# layout that has nothing in common with upstream fontconfig's; linking
+# both at once corrupts patterns the moment one library walks an object
+# created by the other. Provide this .pc so a pkg-config probe lands on
+# the shim instead of the host package, and PKG_CONFIG_PATH wins over
+# system /opt/homebrew on Darwin and /usr/lib/x86_64-linux-gnu on Linux.
+$(PKGCONFIG_DIR)/fontconfig.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,fontconfig,2.13.99,-lXft-compat -lX11-compat,)
+
+# Xrender.pc is header-only on this shim; the actual XRender* entry
+# points reject any call with WARN_UNIMPLEMENTED. Xfig and Osiris pkg-
+# config xrender as a transitive dep of Xft; the cflags get them the
+# Xrender.h shim and the empty libs line stops them from accidentally
+# linking the host libXrender.
+$(PKGCONFIG_DIR)/xrender.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,xrender,0.9.10,-lX11-compat,)
+
+# xft.pc lets a downstream that pkg-configs xft (Osiris -Dxft=enabled,
+# Xfig's PKG_CHECK_MODULES) land on libXft-compat instead of host libXft.
+$(PKGCONFIG_DIR)/xft.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,xft,2.3.99,-lXft-compat -lX11-compat,)
 
 .PHONY: pkgconfig
 ## Generate pkg-config files for the compatibility libraries

@@ -4,6 +4,7 @@
 #include <X11/XKBlib.h>
 #include <X11/Xresource.h>
 #include <X11/Xlibint.h>
+#include <X11/Xft/Xft.h>
 #include <X11/extensions/sync.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/XShm.h>
@@ -222,6 +223,7 @@ int main(void)
     REF(Xutf8TextExtents);
     REF(Xutf8TextPerCharExtents);
     REF(Xutf8TextListToTextProperty);
+    REF(Xutf8TextPropertyToTextList);
     REF(Xutf8SetWMProperties);
     REF(XReadBitmapFile);
     REF(XReadBitmapFileData);
@@ -236,5 +238,64 @@ int main(void)
     REF(XrmParseCommand);
     REF(XrmPutStringResource);
     REF(XrmDestroyDatabase);
+    REF(FcPatternCreate);
+    REF(FcPatternDestroy);
+    REF(FcPatternDuplicate);
+    REF(FcPatternReference);
+    REF(FcPatternDel);
+    REF(FcPatternRemove);
+    REF(FcPatternAddMatrix);
+    REF(FcUcs4ToUtf8);
+    REF(FcNameParse);
+    REF(FcConfigSubstitute);
+    REF(FcDefaultSubstitute);
+    REF(FcPatternAddString);
+    REF(FcPatternAddInteger);
+    REF(FcPatternAddDouble);
+    REF(FcPatternAddBool);
+    REF(FcPatternGet);
+    REF(FcPatternGetString);
+    REF(FcPatternGetInteger);
+    REF(FcPatternGetDouble);
+    REF(FcPatternGetBool);
+    REF(XftInit);
+    REF(XftGetVersion);
+    REF(XftDefaultHasRender);
+    REF(XftDefaultSubstitute);
+    REF(XftNameParse);
+    REF(XftFontMatch);
+    REF(XftFontOpen);
+    REF(XftFontOpenName);
+    REF(XftFontOpenPattern);
+    REF(XftFontOpenXlfd);
+    REF(XftFontClose);
+    REF(XftDrawCreate);
+    REF(XftDrawDestroy);
+    REF(XftDrawChange);
+    REF(XftDrawDisplay);
+    REF(XftDrawDrawable);
+    REF(XftDrawColormap);
+    REF(XftDrawVisual);
+    REF(XftColorAllocValue);
+    REF(XftColorAllocName);
+    REF(XftColorFree);
+    REF(XftDrawString8);
+    REF(XftDrawString16);
+    REF(XftDrawString32);
+    REF(XftDrawStringUtf8);
+    REF(XftDrawStringUtf16);
+    REF(XftTextExtents8);
+    REF(XftTextExtents16);
+    REF(XftTextExtents32);
+    REF(XftTextExtentsUtf8);
+    REF(XftTextExtentsUtf16);
+    REF(XftUtf8Len);
+    REF(XftUtf8ToUcs4);
+    REF(XftFontCopy);
+    REF(XftCharIndex);
+    REF(XftCharExists);
+    REF(XftGlyphExtents);
+    REF(XftDrawGlyphs);
+    REF(XftDrawRect);
     return 0;
 }

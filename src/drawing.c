@@ -102,6 +102,19 @@ static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
     }
     if (rect->w <= 0 || rect->h <= 0)
         return;
+    /* Pixman validates `x + w` and `y + h` as signed-int extents and flags the
+     * rect with a stderr BUG print when they overflow. Drawing primitives
+     * feeding this path can synthesize wildly extreme bboxes from parent-chain
+     * accumulation or unclamped arc math, so guard the addition here. A
+     * degenerate-or-overflowing extent contributes no visible pixels, so
+     * collapsing to fullyDirty rather than logging a pixman error is the safest
+     * fallback for top-level callers that expect the present pipeline to absorb
+     * anything they hand it.
+     */
+    if (rect->x > INT_MAX - rect->w || rect->y > INT_MAX - rect->h) {
+        windowStruct->fullyDirty = True;
+        return;
+    }
 
     if (!windowStruct->hasPresentRect) {
         windowStruct->presentRect = *rect;
@@ -265,16 +278,58 @@ void drawWindowDataToScreen()
         int clampW = w;
         if (texW < clampW)
             clampW = texW;
-        if (winSurface->w < clampW)
-            clampW = winSurface->w;
         int clampH = h;
         if (texH < clampH)
             clampH = texH;
+        if (clampW <= 0 || clampH <= 0)
+            continue;
+        /* HiDPI scale derived from the X11 logical extent vs the host surface
+         * size. Per-axis so a non-square pixel ratio still presents correctly.
+         * Snapshot before any resize-shrink clamp so a transient winSurface
+         * that is *smaller* than clampW does not disable scaling for the next
+         * present when the surface catches up.
+         */
+        double scaleX = 1.0;
+        double scaleY = 1.0;
+        if (winSurface->w > clampW)
+            scaleX = (double) winSurface->w / (double) clampW;
+        if (winSurface->h > clampH)
+            scaleY = (double) winSurface->h / (double) clampH;
+        Bool needsScale = scaleX != 1.0 || scaleY != 1.0;
+        /* Resize-shrink defense: the SDL window surface can temporarily be
+         * smaller than the X11 backing while a host resize is in flight.
+         * Clamping clampW / clampH down to the live surface size keeps the
+         * readback and the blit inside the surface bounds in the non-HiDPI fast
+         * path. scaleX / scaleY were computed against the original clampW /
+         * clampH above, so this does not disable HiDPI presentation when the
+         * surface legitimately exceeds the logical size.
+         */
+        if (winSurface->w < clampW)
+            clampW = winSurface->w;
         if (winSurface->h < clampH)
             clampH = winSurface->h;
         if (clampW <= 0 || clampH <= 0)
             continue;
         SDL_Rect bounds = {0, 0, clampW, clampH};
+        /* One-time per-window log so we can see whether SDL actually gave us a
+         * HiDPI surface. SDL_GetWindowSurface is the legacy software-blit
+         * surface API and on some platforms it does not honor
+         * SDL_WINDOW_ALLOW_HIGHDPI - the surface comes back at logical size
+         * even when the renderer would have given us a physical-size backing.
+         * If presentScale stays at 1.0 on a Retina host, that is what is
+         * happening and the long-term fix is the SDL_RenderCopy +
+         * SDL_RenderPresent migration that TODO.md tracks as a follow-up.
+         */
+        if (!child->loggedPresentScale) {
+            int rendererOutputW = 0, rendererOutputH = 0;
+            SDL_GetRendererOutputSize(screen, &rendererOutputW,
+                                      &rendererOutputH);
+            LOG("present-scale: window=%lu x11=(%dx%d) tex=(%dx%d) "
+                "winSurface=(%dx%d) rendererOutput=(%dx%d) scale=(%.3f,%.3f)\n",
+                children[i], w, h, texW, texH, winSurface->w, winSurface->h,
+                rendererOutputW, rendererOutputH, scaleX, scaleY);
+            child->loggedPresentScale = True;
+        }
 
         enum { DIRTY_RECT_BUDGET = 256 };
         SDL_Rect rects[DIRTY_RECT_BUDGET];
@@ -342,8 +397,9 @@ void drawWindowDataToScreen()
         Uint32 winFmt = winSurface->format->format;
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
         int readRc = 0;
+        SDL_Rect surfaceRects[DIRTY_RECT_BUDGET];
         uint64_t readStart = monotonicNowNs();
-        if (winFmt == readFmt) {
+        if (winFmt == readFmt && !needsScale) {
             /* Direct readback into the window's framebuffer. Saves one
              * full-image memcpy on every present. SDL_RenderReadPixels accepts
              * repeated writes into a single locked surface, so locking once
@@ -363,6 +419,7 @@ void drawWindowDataToScreen()
                         readRc = rc;
                         break;
                     }
+                    surfaceRects[r] = rects[r];
                 }
                 SDL_UnlockSurface(winSurface);
             } else {
@@ -378,10 +435,51 @@ void drawWindowDataToScreen()
                 }
                 int rc = SDL_RenderReadPixels(screen, &rects[r], readFmt,
                                               staging->pixels, staging->pitch);
-                if (rc == 0)
-                    SDL_BlitSurface(staging, NULL, winSurface, &rects[r]);
-                else
+                if (rc == 0) {
+                    SDL_Rect dst = rects[r];
+                    if (needsScale) {
+                        /* Floor the origin and ceil the extent so an upscaled
+                         * glyph never exposes a fringe of stale pixels at the
+                         * rect edge. ceil with a tiny negative epsilon survives
+                         * fractional zoom factors that floating-point rounding
+                         * would otherwise inflate (e.g. 5/3 scale representing
+                         * the source width exactly but the product overshooting
+                         * by 1 ULP). The double intermediates are clamped
+                         * against winSurface bounds before the cast back to
+                         * int, so an attacker-controlled clampW or scale cannot
+                         * drive the cast past INT_MAX (UB under C).
+                         */
+                        double dstX0d = (double) rects[r].x * scaleX;
+                        double dstY0d = (double) rects[r].y * scaleY;
+                        double dstX1d = ceil(
+                            (double) (rects[r].x + rects[r].w) * scaleX - 1e-9);
+                        double dstY1d = ceil(
+                            (double) (rects[r].y + rects[r].h) * scaleY - 1e-9);
+                        if (dstX0d < 0.0)
+                            dstX0d = 0.0;
+                        if (dstY0d < 0.0)
+                            dstY0d = 0.0;
+                        if (dstX1d > (double) winSurface->w)
+                            dstX1d = (double) winSurface->w;
+                        if (dstY1d > (double) winSurface->h)
+                            dstY1d = (double) winSurface->h;
+                        int dstX0 = (int) dstX0d;
+                        int dstY0 = (int) dstY0d;
+                        int dstX1 = (int) dstX1d;
+                        int dstY1 = (int) dstY1d;
+                        dst.x = dstX0;
+                        dst.y = dstY0;
+                        dst.w = dstX1 > dstX0 ? dstX1 - dstX0 : 0;
+                        dst.h = dstY1 > dstY0 ? dstY1 - dstY0 : 0;
+                        if (dst.w > 0 && dst.h > 0)
+                            SDL_BlitScaled(staging, NULL, winSurface, &dst);
+                    } else {
+                        SDL_BlitSurface(staging, NULL, winSurface, &dst);
+                    }
+                    surfaceRects[r] = dst;
+                } else {
                     readRc = rc;
+                }
                 SDL_FreeSurface(staging);
                 if (readRc != 0)
                     break;
@@ -390,7 +488,8 @@ void drawWindowDataToScreen()
         readbackNs += monotonicNowNs() - readStart;
         if (readRc == 0) {
             uint64_t updateStart = monotonicNowNs();
-            SDL_UpdateWindowSurfaceRects(child->sdlWindow, rects, nrects);
+            SDL_UpdateWindowSurfaceRects(child->sdlWindow, surfaceRects,
+                                         nrects);
             updateNs += monotonicNowNs() - updateStart;
             child->needsPresent = False;
             child->hasPresentRect = False;
@@ -1740,6 +1839,85 @@ static Uint32 colorToArgb8888(unsigned long color)
            (Uint32) GET_BLUE_FROM_COLOR(color);
 }
 
+/* Resolve the renderer's current target texture and its pixel format.
+ * Returns the target texture and writes its format to *formatOut, or returns
+ * NULL when there is no target or the format is not 32-bit packed
+ * (applyRasterFunction operates on Uint32 pixels and the commit path uses
+ * SDL_ConvertPixels which needs a known format).
+ */
+static SDL_Texture *rasterOpResolveTarget(SDL_Renderer *renderer,
+                                          Uint32 *formatOut)
+{
+    *formatOut = SDL_PIXELFORMAT_ARGB8888;
+    if (!renderer)
+        return NULL;
+    SDL_Texture *target = SDL_GetRenderTarget(renderer);
+    if (!target)
+        return NULL;
+    Uint32 format = 0;
+    if (SDL_QueryTexture(target, &format, NULL, NULL, NULL) != 0)
+        return NULL;
+    if (SDL_BITSPERPIXEL(format) != 32)
+        return NULL;
+    *formatOut = format;
+    return target;
+}
+
+/* Commit a raster-op pixel buffer (in SDL_PIXELFORMAT_ARGB8888) back to the
+ * renderer. When the target is a texture we own and its native format differs
+ * from ARGB8888, convert into a scratch buffer first; then prefer
+ * SDL_UpdateTexture, which is a direct memory blit and skips the GPU shader
+ * pipeline that SDL_RenderCopy would otherwise drive. The Metal backend's
+ * RenderCopy goes through float / sRGB / premultiplied-alpha conversions that
+ * break bit-for-bit XOR self-inversion - that is why the previous surface +
+ * texture + RenderCopy path leaked rubber-band trails on macOS. The RenderCopy
+ * path stays as a last-resort fallback for the rare case where the renderer is
+ * drawing straight to a window swap chain with no intermediate target texture.
+ */
+static void rasterOpCommitPixels(SDL_Renderer *renderer,
+                                 SDL_Texture *target,
+                                 const SDL_Rect *clipped,
+                                 unsigned char *pixels,
+                                 size_t pitch,
+                                 Uint32 targetFormat)
+{
+    if (target) {
+        if (targetFormat == SDL_PIXELFORMAT_ARGB8888) {
+            if (SDL_UpdateTexture(target, clipped, pixels, (int) pitch) == 0)
+                return;
+        } else {
+            unsigned char *converted = malloc(pitch * (size_t) clipped->h);
+            if (converted) {
+                if (SDL_ConvertPixels(clipped->w, clipped->h,
+                                      SDL_PIXELFORMAT_ARGB8888, pixels,
+                                      (int) pitch, targetFormat, converted,
+                                      (int) pitch) == 0 &&
+                    SDL_UpdateTexture(target, clipped, converted,
+                                      (int) pitch) == 0) {
+                    free(converted);
+                    return;
+                }
+                free(converted);
+            }
+        }
+    }
+    SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
+        pixels, clipped->w, clipped->h, 32, (int) pitch,
+        SDL_PIXELFORMAT_ARGB8888);
+    if (!surface)
+        return;
+    SDL_Texture *staging = SDL_CreateTextureFromSurface(renderer, surface);
+    if (staging) {
+        SDL_SetTextureBlendMode(staging, SDL_BLENDMODE_NONE);
+        if (SDL_RenderCopy(renderer, staging, NULL, clipped) != 0) {
+            LOG("SDL_RenderCopy fallback failed in %s: %s\n", __func__,
+                SDL_GetError());
+        }
+        SDL_DestroyTexture(staging);
+    }
+    SDL_FreeSurface(surface);
+}
+
 static void rasterOpRendererRect(SDL_Renderer *renderer,
                                  const SDL_Rect *rect,
                                  int function,
@@ -1777,6 +1955,12 @@ static void rasterOpRendererRect(SDL_Renderer *renderer,
     if (!pixels)
         return;
 
+    Uint32 format;
+    SDL_Texture *target = rasterOpResolveTarget(renderer, &format);
+    /* Always read in ARGB8888 so applyRasterFunction's "preserve the top byte
+     * as alpha" contract holds. The commit path converts back to the target's
+     * native format only at the UpdateTexture boundary.
+     */
     if (SDL_RenderReadPixels(renderer, &clipped, SDL_PIXELFORMAT_ARGB8888,
                              pixels, (int) pitch) == 0) {
         Uint32 src = colorToArgb8888(sourceColor);
@@ -1787,22 +1971,7 @@ static void rasterOpRendererRect(SDL_Renderer *renderer,
                     applyRasterFunction(function, planeMask, src, row[px]);
             }
         }
-        SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
-            pixels, clipped.w, clipped.h, 32, (int) pitch,
-            SDL_PIXELFORMAT_ARGB8888);
-        if (surface) {
-            SDL_Texture *texture =
-                SDL_CreateTextureFromSurface(renderer, surface);
-            if (texture) {
-                SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
-                if (SDL_RenderCopy(renderer, texture, NULL, &clipped) != 0) {
-                    LOG("SDL_RenderCopy failed in %s: %s\n", __func__,
-                        SDL_GetError());
-                }
-                SDL_DestroyTexture(texture);
-            }
-            SDL_FreeSurface(surface);
-        }
+        rasterOpCommitPixels(renderer, target, &clipped, pixels, pitch, format);
     }
 
     free(pixels);
@@ -1907,6 +2076,12 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
     if (!pixels)
         return;
 
+    Uint32 format;
+    SDL_Texture *target = rasterOpResolveTarget(renderer, &format);
+    /* See the matching block in rasterOpRendererRect for why this stays locked
+     * to ARGB8888 - format-aware writeback happens in the commit helper, not in
+     * the XOR step.
+     */
     if (SDL_RenderReadPixels(renderer, &clipped, SDL_PIXELFORMAT_ARGB8888,
                              pixels, (int) pitch) == 0) {
         Uint32 src = colorToArgb8888(sourceColor);
@@ -1936,22 +2111,7 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
                 py += sy;
             }
         }
-        SDL_Surface *surface = SDL_CreateRGBSurfaceWithFormatFrom(
-            pixels, clipped.w, clipped.h, 32, (int) pitch,
-            SDL_PIXELFORMAT_ARGB8888);
-        if (surface) {
-            SDL_Texture *texture =
-                SDL_CreateTextureFromSurface(renderer, surface);
-            if (texture) {
-                SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
-                if (SDL_RenderCopy(renderer, texture, NULL, &clipped) != 0) {
-                    LOG("SDL_RenderCopy failed in %s: %s\n", __func__,
-                        SDL_GetError());
-                }
-                SDL_DestroyTexture(texture);
-            }
-            SDL_FreeSurface(surface);
-        }
+        rasterOpCommitPixels(renderer, target, &clipped, pixels, pitch, format);
     }
     free(pixels);
 }
@@ -1971,8 +2131,13 @@ static void rasterOpRendererRectOutline(SDL_Renderer *renderer,
                                         unsigned long planeMask,
                                         unsigned long sourceColor)
 {
-    int xRight = x + (int) width;
-    int yBot = y + (int) height;
+    /* Match the int64 clamp XDrawRectangle uses on the fast path: an
+     * attacker-controlled width near UINT_MAX would otherwise wrap the
+     * right-edge / bottom-edge computation before any subsequent clipping in
+     * the per-edge raster-op walk could catch it.
+     */
+    int xRight = clampToInt((int64_t) x + (int64_t) width);
+    int yBot = clampToInt((int64_t) y + (int64_t) height);
     if (width == 0 && height == 0) {
         rasterOpRendererPoint(renderer, x, y, function, planeMask, sourceColor);
         return;

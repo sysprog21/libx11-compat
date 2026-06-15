@@ -1,0 +1,14 @@
+# xclock tick smoke test - the second hand region must look different
+# between t=0 and t=2s. Drives the XtAppAddTimeOut -> Clock_Repaint
+# redraw cycle through libXt-compat without any user input. Validates
+# that timer-driven redraws actually post Expose events the toolkit
+# observes (the regression we hit when the input-method pump shadowed
+# Xt's timer queue).
+delay 1500
+wait-window "xclock|XClock" 5000
+delay 1000
+screenshot first
+delay 2200
+screenshot second
+assert-image second common-visible.json
+assert-image second xclock-tick-changed.json

@@ -5,10 +5,20 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
               $(OUT)/tests/test-ice-sm-link \
               $(OUT)/tests/test-xinerama-link \
               $(OUT)/tests/test-libxpm-link \
+              $(OUT)/tests/test-xft-link \
               $(OUT)/tests/test-xtest
+# The libXaw link test only runs in-process on Linux. The macOS dyld loader
+# hangs before main() while resolving the libXaw -> libXt -> libXmu chain
+# under SDL_VIDEODRIVER=dummy (see TODO.md "Athena widget stack" Tier 1).
+# Until that lockup has a fix, the test binary is still produced via
+# check-link-xaw so the build path is gated, but it is not auto-run on
+# Darwin.
+ifeq ($(UNAME_S),Linux)
+  CHECK_BINS += $(OUT)/tests/test-libxaw-link
+endif
 BENCH_BINS := $(OUT)/tests/bench-paths
 
-.PHONY: check check-unit check-differential symbol-coverage api-symbol-coverage bench bench-paths
+.PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths
 
 ## Run only the in-tree binary regression tests + api-symbol coverage.
 ## This is the cheap, sanitizer-friendly subset: no motif autoconf, no
@@ -42,6 +52,9 @@ check: check-unit
 
 ## Run all system-libX11-vs-libx11-compat differential checks
 check-differential: check-differential-motif check-differential-violawww
+
+## Build the Athena libXaw link-test binary.
+check-link-xaw: $(OUT)/tests/test-libxaw-link
 
 ## Run exported-symbol coverage checks
 symbol-coverage: $(OUT)/tests/symbol-coverage api-symbol-coverage
@@ -107,6 +120,21 @@ $(OUT)/tests/test-xinerama-link: tests/test-xinerama-link.c $(XINERAMA_COMPAT_TA
 	    $(XINERAMA_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) \
 	    -o $@
 
+$(OUT)/tests/test-xft-link: tests/test-xft-link.c $(XFT_COMPAT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(XFT_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+$(OUT)/tests/test-libxaw-link: tests/test-libxaw-link.c $(LIBXAW_TARGET) \
+    $(LIBXT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(LIBXAW_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(LIBXAW_TARGET) $(LIBXT_TARGET) $(XMU_COMPAT_TARGET) \
+	    $(LIBXPM_TARGET) $(TARGET) $(LDLIBS) $(LIBXT_TEST_LDFLAGS) \
+	    $(TEST_LDFLAGS) -o $@
+
 $(OUT)/tests/test-ice-sm-link: tests/test-ice-sm-link.c \
     $(SM_COMPAT_TARGET) $(ICE_COMPAT_TARGET)
 	@mkdir -p $(dir $@)
@@ -114,6 +142,16 @@ $(OUT)/tests/test-ice-sm-link: tests/test-ice-sm-link.c \
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(SM_COMPAT_TARGET) $(ICE_COMPAT_TARGET) $(LDLIBS) \
 	    $(TEST_LDFLAGS) -o $@
+
+## symbol-coverage references both libX11 and libXft symbols, so it must
+## link against libXft-compat.so in addition to $(TARGET). The generic
+## tests/%.c rule below only adds $(TARGET), so the explicit rule comes
+## first to win pattern-precedence.
+$(OUT)/tests/symbol-coverage: tests/symbol-coverage.c $(TARGET) $(XFT_COMPAT_TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(TARGET) $(XFT_COMPAT_TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)

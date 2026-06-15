@@ -4,13 +4,17 @@
 # LLVM apt repo is added so clang-format-20 is available on ubuntu-24.04
 # (which ships clang-format-18 by default).
 #
-# All six top-level jobs (lint, build, debug-build, sanitize, motif,
-# osiris) run in parallel. Osiris has no Motif dependency, so it lives
-# in its own job rather than queueing behind the Motif + ViolaWWW +
-# Mosaic chain. Cross-run state that's deterministic by content hash is
-# cached: the upstream tarball + extracted-header tree under
-# build/upstream/, the thentenaar/motif, thentenaar/mosaic-ng, and
-# osiris clones, and per-job ccache directories for C object reuse.
+# All seven top-level jobs (lint, build, debug-build, sanitize, motif,
+# osiris, xfig) run in parallel. Osiris and Xfig each have no Motif
+# dependency, so they live in their own jobs rather than queueing behind
+# the Motif + ViolaWWW + Mosaic chain. The Xft and Xaw link tests
+# (test-xft-link, test-libxaw-link) run as part of make check-unit in
+# the build / debug-build / sanitize jobs, so the Athena-stack link
+# surface is gated even when the dedicated xfig job is skipped.
+# Cross-run state that's deterministic by content hash is cached: the
+# upstream tarball + extracted-header tree under build/upstream/, the
+# thentenaar/motif, thentenaar/mosaic-ng, osiris, and xfig clones, and
+# per-job ccache directories for C object reuse.
 name: CI
 
 on:
@@ -127,6 +131,8 @@ jobs:
             !build/upstream/motif
             !build/upstream/mosaic
             !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -197,6 +203,8 @@ jobs:
             !build/upstream/motif
             !build/upstream/mosaic
             !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -265,6 +273,8 @@ jobs:
             !build/upstream/motif
             !build/upstream/mosaic
             !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -299,7 +309,14 @@ jobs:
           # SDL2's dummy driver retains pools across XCloseDisplay, so
           # leak detection produces unrelated noise. Keep memory-error
           # detection on; revisit leaks separately.
-          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:strict_string_checks=1
+          # detect_odr_violation=0: libXaw deliberately overrides
+          # libXt's vendorShellClassRec (Vendor.c:158) so the Athena
+          # VendorShell behaves correctly when both libraries are
+          # loaded. ELF + ASan flags the duplicate definition as an
+          # ODR violation, but this is the documented Athena hook
+          # point; turn detection off so the rest of the sanitize
+          # surface stays gated.
+          ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:abort_on_error=1:strict_string_checks=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" -j"$(nproc)"
@@ -354,6 +371,8 @@ jobs:
             !build/upstream/motif
             !build/upstream/mosaic
             !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -650,6 +669,8 @@ jobs:
             !build/upstream/motif
             !build/upstream/mosaic
             !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -781,6 +802,155 @@ jobs:
             build/osiris-differential/diff
             build/osiris-differential/system
             build/osiris-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Xfig (Athena vector drawing) integration and validation ----
+  #
+  # Xfig 3.2.9a builds against libX11-compat, libXt-compat, libXmu-compat,
+  # libXft-compat, and the bundled libXaw, with no Motif coupling. The
+  # job builds the binary and runs the replay-driven xfig-startup smoke
+  # check; when XFIG_DIFF_REMOTE is configured, it also screenshots the
+  # canvas under system libX11 and the compat stack and compares. The
+  # Xft and Xaw API link gates (test-xft-link, test-libxaw-link) are not
+  # duplicated here: they ride the make check-unit invocations in the
+  # build / debug-build / sanitize jobs above.
+  xfig:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        # Xfig ships a pre-generated configure script (no autoreconf
+        # step), so MOTIF_BUILD_PKGS is not pulled in here.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Xfig source tree
+        # Exact-match key only. XFIG_VERSION and XFIG_SHA256 in
+        # mk/xfig.mk pin the tarball, and the in-tree patches under
+        # compat/xfig-patches/ are applied to that stamped tree, so a
+        # fallback restore on stale inputs would risk landing newer
+        # patches on an older source set.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/xfig-3.2.9a
+          key: xfig-src-${{ runner.os }}-${{ hashFiles('mk/xfig.mk', 'compat/xfig-patches/**') }}
+
+      - name: Cache ccache
+        # Distinct key from motif and osiris so the xfig .o set does not
+        # collide with objects compiled with a different include path.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xfig-v2-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xfig-v2-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=400M
+          ccache --zero-stats
+          echo "CC=ccache clang" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for Xfig)
+        run: make -j"$(nproc)"
+
+      - name: Build Xfig against compat stack
+        id: xfig
+        # mk/xfig.mk fetches Xfig 3.2.9a, applies the compat/xfig-patches/
+        # set, points the linker at the build/lib-aliases/ symlink farm so
+        # -lXft / -lXt / -lX11 / -lXaw resolve to the compat shims, and
+        # runs the upstream configure with --without-xaw3d / --without-xi
+        # / --disable-tablet. Build log lives at build/xfig/build.log and
+        # is uploaded on failure.
+        run: make xfig -j"$(nproc)"
+
+      - name: Run Xfig replay smoke check
+        id: xfig-smoke
+        # xfig-startup replays the canvas paint under Xvfb and asserts on
+        # the rendered region. Display 123 is distinct from motif (121),
+        # mosaic (122), and osiris's job-local 121 so a future shared
+        # runner does not collide.
+        if: ${{ !cancelled() && steps.xfig.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 123
+        run: make check-smoke-xfig
+
+      - name: Run Xfig differential screenshots
+        id: xfig-differential
+        # Companion to the motif / violawww / mosaic / osiris differential
+        # gates. SSHes to a Linux/Xvfb host, builds the pinned Xfig source
+        # against system libX11 and libx11-compat, captures canvas
+        # screenshots for both paths, and compares visible output. Leaving
+        # XFIG_DIFF_REMOTE unset keeps this step skipped on runners without
+        # access to that host.
+        if: ${{ !cancelled() && steps.xfig.outcome == 'success' && vars.XFIG_DIFF_REMOTE != '' }}
+        env:
+          XFIG_DIFF_REMOTE: ${{ vars.XFIG_DIFF_REMOTE }}
+          XFIG_DIFF_INSTALL_DEPS: ${{ vars.XFIG_DIFF_INSTALL_DEPS || '0' }}
+          XFIG_DIFF_JOBS: ${{ vars.XFIG_DIFF_JOBS || '1' }}
+          XFIG_DIFF_COMPARE_LOCATION: remote
+        run: make check-differential-xfig
+
+      - name: Upload Xfig build log on failure
+        if: ${{ failure() && steps.xfig.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: xfig-build-log
+          path: build/xfig/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload UI smoke artifacts on failure
+        # Distinct artifact name from the motif and osiris jobs so
+        # concurrent uploads do not overwrite each other.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-xfig
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Xfig differential artifacts on failure
+        if: ${{ failure() && steps.xfig-differential.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: xfig-differential
+          path: |
+            build/xfig-differential/report.tsv
+            build/xfig-differential/junit.xml
+            build/xfig-differential/logs
+            build/xfig-differential/diff
+            build/xfig-differential/system
+            build/xfig-differential/compat
           if-no-files-found: warn
           retention-days: 7
 

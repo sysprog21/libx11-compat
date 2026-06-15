@@ -1,0 +1,10 @@
+# xclock startup smoke test - validates that the analog dial maps and
+# paints at least one non-blank pixel through the libXaw + libXt + libX11
+# compat stack. Drives the XawSimple widget + Clock private widget class
+# plus the per-second XtAppAddTimeOut redraw cycle.
+delay 1500
+wait-window "xclock|XClock" 5000
+delay 1000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial xclock-dial.json

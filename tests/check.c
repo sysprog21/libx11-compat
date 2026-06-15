@@ -15,6 +15,8 @@
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
 #include <SDL2/SDL.h>
+#include <wchar.h>
+#include <fontconfig/fontconfig.h>
 
 #include "drawing.h"
 #include "events.h"
@@ -2149,6 +2151,81 @@ static int test_drawing_coverage(Display *display)
     return 1;
 }
 
+/* GXxor must be self-inverse: drawing the same primitive twice through a
+ * GXxor GC with the same foreground must restore the original pixels
+ * bit-for-bit. xfig's rubber-band relies on this for the drag preview:
+ * each mouse-move XOR-erases the previous frame and XOR-draws the new
+ * one. If the read / modify / write round-trip through SDL is not
+ * bit-exact (e.g. because SDL_RenderCopy of the staging texture goes
+ * through a shader pipeline with float conversion / premultiplied alpha
+ * / sRGB), the second XOR fails to cancel and we leak a trail of stale
+ * rubber-band outlines on screen.
+ */
+static int test_gxxor_self_inverse(Display *display)
+{
+    int screen = DefaultScreen(display);
+    Window root = RootWindow(display, screen);
+    enum { TEST_W = 48, TEST_H = 32 };
+    Pixmap pm = XCreatePixmap(display, root, TEST_W, TEST_H,
+                              (unsigned int) DefaultDepth(display, screen));
+    CHECK(pm != None, "XCreatePixmap for GXxor test failed");
+
+    /* Solid background fill so XGetImage returns a deterministic baseline. */
+    GC fill = XCreateGC(display, pm, 0, NULL);
+    XSetForeground(display, fill, WhitePixel(display, screen));
+    XFillRectangle(display, pm, fill, 0, 0, TEST_W, TEST_H);
+    XFreeGC(display, fill);
+
+    XImage *before =
+        XGetImage(display, pm, 0, 0, TEST_W, TEST_H, AllPlanes, ZPixmap);
+    CHECK(before != NULL, "XGetImage(before) failed");
+
+    XGCValues gcv;
+    gcv.function = GXxor;
+    gcv.foreground = 0xFFAABBCCul;
+    GC xorGc = XCreateGC(display, pm, GCFunction | GCForeground, &gcv);
+    CHECK(xorGc != NULL, "XCreateGC(GXxor) failed");
+
+    XDrawRectangle(display, pm, xorGc, 4, 4, 32, 18);
+    XDrawRectangle(display, pm, xorGc, 4, 4, 32, 18);
+
+    XImage *after =
+        XGetImage(display, pm, 0, 0, TEST_W, TEST_H, AllPlanes, ZPixmap);
+    CHECK(after != NULL, "XGetImage(after) failed");
+
+    int mismatches = 0;
+    unsigned long beforeSample = 0, afterSample = 0;
+    int sampleX = -1, sampleY = -1;
+    for (int y = 0; y < TEST_H; y++) {
+        for (int x = 0; x < TEST_W; x++) {
+            unsigned long b = XGetPixel(before, x, y);
+            unsigned long a = XGetPixel(after, x, y);
+            if (b != a) {
+                if (mismatches == 0) {
+                    beforeSample = b;
+                    afterSample = a;
+                    sampleX = x;
+                    sampleY = y;
+                }
+                mismatches++;
+            }
+        }
+    }
+    if (mismatches) {
+        fprintf(stderr,
+                "GXxor self-inverse leaked %d pixels; first at (%d, %d): "
+                "before=0x%08lx after=0x%08lx\n",
+                mismatches, sampleX, sampleY, beforeSample, afterSample);
+    }
+    XDestroyImage(before);
+    XDestroyImage(after);
+    XFreeGC(display, xorGc);
+    XFreePixmap(display, pm);
+    CHECK(mismatches == 0,
+          "GXxor was not self-inverse - rubber-band drag will leak trails");
+    return 1;
+}
+
 static int test_images(Display *display)
 {
     CHECK(XImageByteOrder(display) == ImageByteOrder(display),
@@ -4013,6 +4090,235 @@ static int test_properties(Display *display)
         XDestroyWindow(display, titleWin);
     }
 
+    /* Xutf8TextPropertyToTextList must reject attacker-controlled nitems
+     * BEFORE the calloc/memcpy or the +1 NUL terminator wraps SIZE_MAX
+     * and the subsequent memcpy writes ULONG_MAX bytes off the heap.
+     * Additionally, only UTF8_STRING / XA_STRING encodings are decoded
+     * verbatim; COMPOUND_TEXT and unknown atoms must return
+     * XConverterNotFound, not silently mis-decode.
+     */
+    {
+        XTextProperty tp;
+        memset(&tp, 0, sizeof(tp));
+        tp.value = (unsigned char *) "hello";
+        tp.encoding = XInternAtom(display, "UTF8_STRING", False);
+        tp.format = 8;
+        tp.nitems = 5;
+        char **listOut = NULL;
+        int countOut = -1;
+        CHECK(Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                  Success,
+              "Xutf8TextPropertyToTextList UTF8_STRING failed");
+        CHECK(countOut == 1 && listOut && listOut[0] &&
+                  !strcmp(listOut[0], "hello"),
+              "UTF8_STRING decode did not round-trip");
+        XFreeStringList(listOut);
+        listOut = NULL;
+        countOut = -1;
+
+        tp.encoding = XA_STRING;
+        CHECK(Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                  Success,
+              "Xutf8TextPropertyToTextList XA_STRING failed");
+        CHECK(countOut == 1 && listOut && listOut[0] &&
+                  !strcmp(listOut[0], "hello"),
+              "XA_STRING decode did not round-trip");
+        XFreeStringList(listOut);
+        listOut = NULL;
+        countOut = -1;
+
+        unsigned char latin1Value[] = {'c', 'a', 'f', 0xe9};
+        char utf8Cafe[] = {'c', 'a', 'f', '\xc3', '\xa9', '\0'};
+        tp.value = latin1Value;
+        tp.nitems = sizeof(latin1Value);
+        CHECK(Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                  Success,
+              "Xutf8TextPropertyToTextList Latin-1 XA_STRING failed");
+        CHECK(countOut == 1 && listOut && listOut[0] &&
+                  !strcmp(listOut[0], utf8Cafe),
+              "XA_STRING Latin-1 byte was not transcoded to UTF-8");
+        XFreeStringList(listOut);
+        listOut = NULL;
+        countOut = -1;
+
+        unsigned char multiValue[] = {'o', 'n', 'e', '\0', 't', 'w', 'o'};
+        tp.value = multiValue;
+        tp.encoding = XInternAtom(display, "UTF8_STRING", False);
+        tp.nitems = sizeof(multiValue);
+        CHECK(Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                  Success,
+              "Xutf8TextPropertyToTextList multi-string UTF8_STRING failed");
+        CHECK(countOut == 2 && listOut && listOut[0] && listOut[1] &&
+                  !strcmp(listOut[0], "one") && !strcmp(listOut[1], "two"),
+              "UTF8_STRING NUL-separated list was not split");
+        XFreeStringList(listOut);
+        listOut = NULL;
+        countOut = -1;
+
+        tp.value = (unsigned char *) "hello";
+        tp.nitems = 5;
+        tp.encoding = XInternAtom(display, "COMPOUND_TEXT", False);
+        CHECK(
+            Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                XConverterNotFound,
+            "COMPOUND_TEXT must return XConverterNotFound, not silent decode");
+        CHECK(listOut == NULL && countOut == 0,
+              "unsupported encoding must leave list_ret NULL");
+
+        tp.encoding = XA_STRING;
+        tp.format = 16;
+        CHECK(Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                  XConverterNotFound,
+              "non-8-bit format must return XConverterNotFound");
+
+        tp.encoding = XA_STRING;
+        tp.format = 8;
+        tp.nitems = (unsigned long) INT_MAX + 1ul;
+        CHECK(Xutf8TextPropertyToTextList(display, &tp, &listOut, &countOut) ==
+                  XNoMemory,
+              "huge nitems must reject before allocation");
+        CHECK(listOut == NULL && countOut == 0,
+              "overflow path must leave outputs cleared");
+
+        CHECK(Xutf8TextPropertyToTextList(display, NULL, &listOut, &countOut) ==
+                  XNoMemory,
+              "NULL text_prop must reject");
+    }
+
+    /* XwcTextPropertyToTextList shares the NUL-splitting contract with
+     * the UTF-8 path. ICCCM list properties (WM_COMMAND, etc.) round
+     * through the wide-char surface inside libXaw text widgets, so a
+     * collapsed list there cuts off every argv entry past the first.
+     */
+    {
+        XTextProperty tp;
+        memset(&tp, 0, sizeof(tp));
+        unsigned char multiValue[] = {'o', 'n', 'e', '\0', 't', 'w', 'o'};
+        tp.value = multiValue;
+        tp.encoding = XInternAtom(display, "UTF8_STRING", False);
+        tp.format = 8;
+        tp.nitems = sizeof(multiValue);
+        wchar_t **wlistOut = NULL;
+        int wcountOut = -1;
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  Success,
+              "XwcTextPropertyToTextList multi-string UTF8_STRING failed");
+        CHECK(wcountOut == 2 && wlistOut && wlistOut[0] && wlistOut[1] &&
+                  wcslen(wlistOut[0]) == 3 && wlistOut[0][0] == L'o' &&
+                  wlistOut[0][1] == L'n' && wlistOut[0][2] == L'e' &&
+                  wcslen(wlistOut[1]) == 3 && wlistOut[1][0] == L't' &&
+                  wlistOut[1][1] == L'w' && wlistOut[1][2] == L'o',
+              "Xwc NUL-separated UTF-8 list was not split");
+        XwcFreeStringList(wlistOut);
+        wlistOut = NULL;
+        wcountOut = -1;
+
+        unsigned char latin1Value[] = {'c', 'a', 'f', 0xe9};
+        tp.value = latin1Value;
+        tp.encoding = XA_STRING;
+        tp.nitems = sizeof(latin1Value);
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  Success,
+              "XwcTextPropertyToTextList Latin-1 XA_STRING failed");
+        CHECK(wcountOut == 1 && wlistOut && wlistOut[0] &&
+                  wlistOut[0][0] == L'c' && wlistOut[0][1] == L'a' &&
+                  wlistOut[0][2] == L'f' &&
+                  (FcChar32) wlistOut[0][3] == 0xe9u && wlistOut[0][4] == 0,
+              "XA_STRING Latin-1 byte was not widened to its codepoint");
+        XwcFreeStringList(wlistOut);
+        wlistOut = NULL;
+        wcountOut = -1;
+
+        tp.nitems = (unsigned long) INT_MAX + 1ul;
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  XNoMemory,
+              "Xwc huge nitems must reject before allocation");
+    }
+
+    /* Wide-char text properties must label bytes with the encoding actually
+     * emitted. Non-UTF-8 styles use the same 8-bit Latin-1 path that
+     * XwcTextPropertyToTextList decodes for XA_STRING, TEXT, and
+     * COMPOUND_TEXT.
+     */
+    {
+        wchar_t cafe[] = {L'c', L'a', L'f', (wchar_t) 0xe9, 0};
+        wchar_t *wlistIn[] = {cafe};
+        XTextProperty tp;
+        wchar_t **wlistOut = NULL;
+        int wcountOut = -1;
+
+        CHECK(XwcTextListToTextProperty(display, wlistIn, 1, XStringStyle,
+                                        &tp) == Success,
+              "XwcTextListToTextProperty XStringStyle failed");
+        CHECK(tp.encoding == XA_STRING && tp.format == 8 && tp.nitems == 4 &&
+                  tp.value && tp.value[0] == 'c' && tp.value[1] == 'a' &&
+                  tp.value[2] == 'f' && tp.value[3] == 0xe9,
+              "XStringStyle must emit Latin-1 bytes");
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  Success,
+              "XStringStyle round-trip decode failed");
+        CHECK(wcountOut == 1 && wlistOut && wlistOut[0] &&
+                  wlistOut[0][0] == L'c' && wlistOut[0][1] == L'a' &&
+                  wlistOut[0][2] == L'f' &&
+                  (FcChar32) wlistOut[0][3] == 0xe9u && wlistOut[0][4] == 0,
+              "XStringStyle wide-char round-trip corrupted Latin-1");
+        XwcFreeStringList(wlistOut);
+        XFree(tp.value);
+        wlistOut = NULL;
+        wcountOut = -1;
+
+        CHECK(XwcTextListToTextProperty(display, wlistIn, 1, XTextStyle, &tp) ==
+                  Success,
+              "XwcTextListToTextProperty XTextStyle failed");
+        CHECK(tp.encoding == XInternAtom(display, "TEXT", False) &&
+                  tp.nitems == 4 && tp.value && tp.value[3] == 0xe9,
+              "XTextStyle must emit Latin-1 bytes");
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  Success,
+              "XTextStyle round-trip decode failed");
+        CHECK(wcountOut == 1 && wlistOut && wlistOut[0] &&
+                  (FcChar32) wlistOut[0][3] == 0xe9u && wlistOut[0][4] == 0,
+              "XTextStyle wide-char round-trip corrupted Latin-1");
+        XwcFreeStringList(wlistOut);
+        XFree(tp.value);
+        wlistOut = NULL;
+        wcountOut = -1;
+
+        CHECK(XwcTextListToTextProperty(display, wlistIn, 1, XCompoundTextStyle,
+                                        &tp) == Success,
+              "XwcTextListToTextProperty XCompoundTextStyle failed");
+        CHECK(tp.encoding == XInternAtom(display, "COMPOUND_TEXT", False) &&
+                  tp.nitems == 4 && tp.value && tp.value[3] == 0xe9,
+              "XCompoundTextStyle must emit Latin-1 bytes");
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  Success,
+              "XCompoundTextStyle round-trip decode failed");
+        CHECK(wcountOut == 1 && wlistOut && wlistOut[0] &&
+                  (FcChar32) wlistOut[0][3] == 0xe9u && wlistOut[0][4] == 0,
+              "XCompoundTextStyle wide-char round-trip corrupted Latin-1");
+        XwcFreeStringList(wlistOut);
+        XFree(tp.value);
+        wlistOut = NULL;
+        wcountOut = -1;
+
+        CHECK(XwcTextListToTextProperty(display, wlistIn, 1, XUTF8StringStyle,
+                                        &tp) == Success,
+              "XwcTextListToTextProperty XUTF8StringStyle failed");
+        CHECK(tp.encoding == XInternAtom(display, "UTF8_STRING", False) &&
+                  tp.nitems == 5 && tp.value && tp.value[0] == 'c' &&
+                  tp.value[1] == 'a' && tp.value[2] == 'f' &&
+                  tp.value[3] == 0xc3 && tp.value[4] == 0xa9,
+              "XUTF8StringStyle must keep UTF-8 bytes");
+        CHECK(XwcTextPropertyToTextList(display, &tp, &wlistOut, &wcountOut) ==
+                  Success,
+              "XUTF8StringStyle round-trip decode failed");
+        CHECK(wcountOut == 1 && wlistOut && wlistOut[0] &&
+                  (FcChar32) wlistOut[0][3] == 0xe9u && wlistOut[0][4] == 0,
+              "XUTF8StringStyle wide-char round-trip corrupted UTF-8");
+        XwcFreeStringList(wlistOut);
+        XFree(tp.value);
+    }
+
     XDestroyWindow(display, transientFor);
     XDestroyWindow(display, window);
     return 1;
@@ -5449,6 +5755,16 @@ static int test_fonts(Display *display)
               "6x13 alias XTextWidth did not use native width");
         XFreeFont(display, sixByThirteen);
 
+        XFontStruct *sevenByThirteenBold = XLoadQueryFont(display, "7x13bold");
+        CHECK(sevenByThirteenBold != NULL && sevenByThirteenBold->fid != None,
+              "7x13bold alias did not load");
+        CHECK(sevenByThirteenBold->ascent == 11 &&
+                  sevenByThirteenBold->descent == 2,
+              "7x13bold alias did not use native ascent/descent");
+        CHECK(XTextWidth(sevenByThirteenBold, "Menu", 4) == 28,
+              "7x13bold alias did not use native width");
+        XFreeFont(display, sevenByThirteenBold);
+
         XFontStruct *nineByThirteen = XLoadQueryFont(display, "9x13");
         CHECK(nineByThirteen != NULL && nineByThirteen->fid != None,
               "9x13 alias did not load");
@@ -5738,6 +6054,21 @@ static int test_fonts(Display *display)
         CHECK(XDrawString(display, metricPixmap, metricGc, 0, metricBaseline,
                           "gjpqy", 5),
               "fixed metric draw failed");
+        GET_RENDERER(metricPixmap, renderer);
+        textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "fixed antialias readback failed");
+        int sawFixedAntialiasPixel = 0;
+        for (int ty = 0; ty < textSurface->h && !sawFixedAntialiasPixel; ty++) {
+            for (int tx = 0; tx < textSurface->w; tx++) {
+                if (pixel_is_between_black_and_white(textSurface, tx, ty)) {
+                    sawFixedAntialiasPixel = 1;
+                    break;
+                }
+            }
+        }
+        SDL_FreeSurface(textSurface);
+        CHECK(sawFixedAntialiasPixel,
+              "fixed font rendered no antialiased edge pixels");
         CHECK(XSetForeground(display, metricGc, 0x00FFFFFF),
               "fixed metric clear color setup failed");
         int metricClearHeight = metricStruct->ascent + metricStruct->descent;
@@ -7533,6 +7864,7 @@ int main(void)
     run_test("pixmaps", test_pixmaps);
     run_test("drawables_and_gcs", test_drawables_and_gcs);
     run_test("drawing_coverage", test_drawing_coverage);
+    run_test("gxxor_self_inverse", test_gxxor_self_inverse);
     run_test("images", test_images);
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);

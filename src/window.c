@@ -85,6 +85,17 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         windowStruct->eventMask & KeyReleaseMask) {
         flags |= SDL_WINDOW_INPUT_FOCUS;
     }
+    /* Ask SDL to create a HiDPI-aware backing on hosts that report a fractional
+     * or 2x display scale. Without this on Apple Silicon the OS upscales the
+     * SDL framebuffer at display time (the "fuzzy non-Retina look" -
+     * XDrawString output and Xft text both come out blurry).
+     * drawWindowDataToScreen detects the resulting size mismatch between the 1x
+     * X11 backing texture and the 2x window surface and SDL_BlitScales the
+     * readback so the present matches the actual backing resolution. SDL
+     * silently ignores the flag on displays without high-DPI, so leaving it
+     * always-on is safe.
+     */
+    flags |= SDL_WINDOW_ALLOW_HIGHDPI;
     int hostX = windowStruct->x, hostY = windowStruct->y;
     topLevelWindowHostPosition(window, windowStruct->x, windowStruct->y, &hostX,
                                &hostY);

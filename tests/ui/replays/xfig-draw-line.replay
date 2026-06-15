@@ -1,0 +1,26 @@
+# xfig draw-line smoke test - synthesize a click on the line drawing
+# tool followed by two clicks on the canvas, asserting that the canvas
+# region picks up a non-zero changed pixel ratio. Drives the GXxor
+# rubber-band feedback path and the canvas backing pixmap XCopyArea
+# flow that libx11-compat is most likely to regress.
+#
+# Coordinates assume the default xfig toolbox layout against the
+# XFIG_SMOKE_GEOMETRY value baked into mk/xfig.mk. The button-1 click
+# on (32, 96) targets the "line" tool icon; the two canvas clicks at
+# (480, 320) and (640, 480) walk a diagonal line endpoint pair.
+delay 3000
+wait-window "Xfig|xfig" 8000
+delay 2000
+screenshot initial
+motion 32 96
+button 1 click
+delay 500
+motion 480 320
+button 1 click
+delay 200
+motion 640 480
+button 1 click
+delay 500
+screenshot drawn
+assert-image drawn common-visible.json
+assert-image drawn xfig-canvas-changed.json
