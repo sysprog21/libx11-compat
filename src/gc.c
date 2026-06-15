@@ -277,31 +277,16 @@ Status XGetGCValues(Display *display,
         values_return->fill_style = graphicContext->fillStyle;
     if (HAS_VALUE(valuemask, GCFillRule))
         values_return->fill_rule = graphicContext->fillRule;
-    if (HAS_VALUE(valuemask, GCTile)) {
-        if (graphicContext->tile == None) {
-            values_return->tile = 0xFFFFFFFF;
-        } else {
-            values_return->tile = graphicContext->tile;
-        }
-    }
-    if (HAS_VALUE(valuemask, GCStipple)) {
-        if (graphicContext->stipple == None) {
-            values_return->stipple = 0xFFFFFFFF;
-        } else {
-            values_return->stipple = graphicContext->stipple;
-        }
-    }
+    if (HAS_VALUE(valuemask, GCTile))
+        values_return->tile = graphicContext->tile;
+    if (HAS_VALUE(valuemask, GCStipple))
+        values_return->stipple = graphicContext->stipple;
     if (HAS_VALUE(valuemask, GCTileStipXOrigin))
         values_return->ts_x_origin = graphicContext->tileStipOriginX;
     if (HAS_VALUE(valuemask, GCTileStipYOrigin))
         values_return->ts_y_origin = graphicContext->tileStipOriginY;
-    if (HAS_VALUE(valuemask, GCFont)) {
-        if (graphicContext->font == None) {
-            values_return->font = 0xFFFFFFFF;
-        } else {
-            values_return->font = graphicContext->font;
-        }
-    }
+    if (HAS_VALUE(valuemask, GCFont))
+        values_return->font = graphicContext->font;
     if (HAS_VALUE(valuemask, GCSubwindowMode))
         values_return->subwindow_mode = graphicContext->subWindowMode;
     if (HAS_VALUE(valuemask, GCGraphicsExposures))
@@ -314,6 +299,20 @@ Status XGetGCValues(Display *display,
         values_return->clip_mask = graphicContext->clipMask;
     if (HAS_VALUE(valuemask, GCDashOffset))
         values_return->dash_offset = graphicContext->dashOffset;
+    if (HAS_VALUE(valuemask, GCDashList)) {
+        /* XGCValues.dashes is the default uniform on-off length for the dash
+         * pattern; XGetDashes returns the full array. If no dashes have been
+         * programmed, real Xlib reports 4 (the X protocol default). Anything
+         * but a non-zero byte trips setDashes's BadValue guard, so leaving this
+         * field uninitialized would crash XCopyGC the first time it asks for
+         * the full GC value set.
+         */
+        if (graphicContext->dashes && graphicContext->numDashes > 0 &&
+            graphicContext->dashes[0])
+            values_return->dashes = graphicContext->dashes[0];
+        else
+            values_return->dashes = 4;
+    }
     if (HAS_VALUE(valuemask, GCArcMode))
         values_return->arc_mode = graphicContext->arcMode;
     return 1;
@@ -443,8 +442,25 @@ int XSetPlaneMask(Display *dpy, GC gc, unsigned long planemask)
 
 int XSetFont(Display *display, GC gc, Font font)
 {
-    // http://www.net.uom.gr/Books/Manuals/xlib/GC/convenience-functions/XSetFont.html
-    if (font == None || font == (Font) ~0UL || font == (Font) 0xffffffffUL ||
+    /* http://www.net.uom.gr/Books/Manuals/xlib/GC/convenience-functions/XSetFont.html
+     *
+     * Real Xlib silently accepts font == None: it just clears the GC's font
+     * slot so the server falls back to its default. Athena and Xt clients
+     * exercise this through XCopyGC with a full mask against a GC that was
+     * never given an explicit font (XGetGCValues returns the stored None);
+     * rejecting that with BadFont broke xfig and any widget set that copies a
+     * default GC. Treat None as a release.
+     */
+    GraphicContext *g = GET_GC(gc);
+    if (font == None) {
+        if (g->font != None) {
+            compatFontReleaseForGC(g->font);
+            g->font = None;
+            GC_BUMP_GENERATION(g);
+        }
+        return 1;
+    }
+    if (font == (Font) ~0UL || font == (Font) 0xffffffffUL ||
         (uintptr_t) font < 4096) {
         handleError(0, display, font, 0, BadFont, 0);
         return 0;
@@ -454,7 +470,6 @@ int XSetFont(Display *display, GC gc, Font font)
         handleError(0, display, font, 0, BadFont, 0);
         return 0;
     }
-    GraphicContext *g = GET_GC(gc);
     if (g->font == font)
         return 1;
     if (!compatFontRetainForGC(font)) {

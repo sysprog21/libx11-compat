@@ -8,23 +8,21 @@
 #endif
 
 /* ASan (and other interceptor-based sanitizers) aborts on dlopen with
- * RTLD_DEEPBIND because deep binding bypasses their symbol interception.
- * Drop the flag in sanitizer builds. The escape hatch
- * LIBX11_COMPAT_NO_RTLD_DEEPBIND lets the build system force the same
- * downgrade when a sanitizer variant the wrapper does not auto-detect
- * is in play.
+ * RTLD_DEEPBIND because deep binding bypasses their symbol interception. Drop
+ * the flag in sanitizer builds. The escape hatch LIBX11_COMPAT_NO_RTLD_DEEPBIND
+ * lets the build system force the same downgrade when a sanitizer variant the
+ * wrapper does not auto-detect is in play.
  *
- * Caveat: RTLD_DEEPBIND was protecting against the real libSDL2 looking
- * up SDL_* symbols via RTLD_DEFAULT and finding this wrapper's exports
- * instead (which would recurse). RTLD_LOCAL on the dlopen sites doesn't
- * fully replace that; it only hides the loaded SDL's symbols from
- * later lookups, it doesn't stop libSDL2 itself from peeking back into
- * the global scope where the wrapper lives. In practice libSDL2 calls
- * its own internal symbols directly (resolved against its own .so at
- * its link time) rather than via RTLD_DEFAULT, so the recursion has not
- * been observed. If a future SDL release reintroduces RTLD_DEFAULT
- * lookups for its own symbols, sanitizer runs will need to link the
- * real libSDL2 directly and skip the wrapper.
+ * Caveat: RTLD_DEEPBIND was protecting against the real libSDL2 looking up
+ * SDL_* symbols via RTLD_DEFAULT and finding this wrapper's exports instead
+ * (which would recurse). RTLD_LOCAL on the dlopen sites doesn't fully replace
+ * that; it only hides the loaded SDL's symbols from later lookups, it doesn't
+ * stop libSDL2 itself from peeking back into the global scope where the wrapper
+ * lives. In practice libSDL2 calls its own internal symbols directly (resolved
+ * against its own .so at its link time) rather than via RTLD_DEFAULT, so the
+ * recursion has not been observed. If a future SDL release reintroduces
+ * RTLD_DEFAULT lookups for its own symbols, sanitizer runs will need to link
+ * the real libSDL2 directly and skip the wrapper.
  */
 #ifndef __has_feature
 #define __has_feature(x) 0
@@ -39,14 +37,13 @@
 #endif
 
 /* The lazy caches below (the shared handle plus the per-wrapper realFunc
- * statics expanded by the SDL_WRAP macros) are accessed via
- * __atomic_load_n / __atomic_store_n with ACQUIRE/RELEASE ordering so
- * concurrent first calls have a well-defined outcome under the C memory
- * model rather than UB. The race is benign in practice because dlopen
- * reference-counts the underlying library and dlsym is idempotent, so
- * both racers see the same handle and pointer; the atomics give the
- * compiler permission to reason about it instead of folding the load
- * into a single read.
+ * statics expanded by the SDL_WRAP macros) are accessed via __atomic_load_n /
+ * __atomic_store_n with ACQUIRE/RELEASE ordering so concurrent first calls have
+ * a well-defined outcome under the C memory model rather than UB. The race is
+ * benign in practice because dlopen reference-counts the underlying library and
+ * dlsym is idempotent, so both racers see the same handle and pointer; the
+ * atomics give the compiler permission to reason about it instead of folding
+ * the load into a single read.
  */
 static void *realSdlHandle(void)
 {
@@ -81,11 +78,11 @@ static void *realSdlHandle(void)
                 dlerror());
         abort();
     }
-    /* Publish via CAS so racing first-callers don't each keep their own
-     * dlopen refcount alive. The loser dlcloses to balance its dlopen
-     * and uses the winner's handle. POSIX dlopen reference-counts the
-     * underlying library, so the loser's dlclose just decrements that
-     * count back to where the winner left it.
+    /* Publish via CAS so racing first-callers don't each keep their own dlopen
+     * refcount alive. The loser dlcloses to balance its dlopen and uses the
+     * winner's handle. POSIX dlopen reference-counts the underlying library, so
+     * the loser's dlclose just decrements that count back to where the winner
+     * left it.
      */
     void *expected = NULL;
     if (__atomic_compare_exchange_n(&handle, &expected, opened, 0,
@@ -154,6 +151,18 @@ SDL_WRAP(SDL_Cursor *,
          (SDL_Surface * surface, int hot_x, int hot_y),
          (surface, hot_x, hot_y))
 SDL_WRAP(SDL_mutex *, SDL_CreateMutex, (void), ())
+SDL_WRAP(
+    int,
+    SDL_ConvertPixels,
+    (int width,
+     int height,
+     Uint32 src_format,
+     const void *src,
+     int src_pitch,
+     Uint32 dst_format,
+     void *dst,
+     int dst_pitch),
+    (width, height, src_format, src, src_pitch, dst_format, dst, dst_pitch))
 SDL_WRAP(SDL_Surface *,
          SDL_CreateRGBSurface,
          (Uint32 flags,
@@ -273,6 +282,10 @@ SDL_WRAP_VOID(SDL_GetWindowPosition,
 SDL_WRAP_VOID(SDL_GetWindowSize,
               (SDL_Window * window, int *w, int *h),
               (window, w, h))
+SDL_WRAP(int,
+         SDL_GetRendererOutputSize,
+         (SDL_Renderer * renderer, int *w, int *h),
+         (renderer, w, h))
 SDL_WRAP(SDL_Surface *, SDL_GetWindowSurface, (SDL_Window * window), (window))
 SDL_WRAP(const char *, SDL_GetWindowTitle, (SDL_Window * window), (window))
 SDL_WRAP(SDL_bool, SDL_HasClipboardText, (void), ())
@@ -471,6 +484,13 @@ SDL_WRAP(int,
          (window, rects, numrects))
 SDL_WRAP(int,
          SDL_UpperBlit,
+         (SDL_Surface * src,
+          const SDL_Rect *srcrect,
+          SDL_Surface *dst,
+          SDL_Rect *dstrect),
+         (src, srcrect, dst, dstrect))
+SDL_WRAP(int,
+         SDL_UpperBlitScaled,
          (SDL_Surface * src,
           const SDL_Rect *srcrect,
           SDL_Surface *dst,

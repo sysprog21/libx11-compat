@@ -44,6 +44,7 @@ typedef struct {
      */
     Bool needsPresent;
     Bool hasPresentRect;
+    Bool loggedPresentScale;
     SDL_Rect presentRect;
     /* Dirty region in window-local coords for the next present.
      * drawWindowDataToScreen walks this region and emits one

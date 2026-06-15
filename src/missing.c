@@ -60,6 +60,51 @@ static void fillTextExtents(XFontStruct *fs,
                             XCharStruct *overall);
 static void freeQueriedFontStruct(XFontStruct *fs);
 
+static void freeTextList(char **list, int count)
+{
+    if (!list)
+        return;
+    for (int i = 0; i < count; i++)
+        free(list[i]);
+    free(list);
+}
+
+static size_t latin1Utf8Length(const unsigned char *src, size_t len)
+{
+    size_t outLen = 0;
+    for (size_t i = 0; i < len; i++)
+        outLen += src[i] < 0x80 ? 1 : 2;
+    return outLen;
+}
+
+static char *copyTextPropertyString(const unsigned char *src,
+                                    size_t len,
+                                    Bool latin1)
+{
+    size_t outLen = latin1 ? latin1Utf8Length(src, len) : len;
+    char *out = malloc(outLen + 1);
+    if (!out)
+        return NULL;
+    if (!latin1) {
+        memcpy(out, src, len);
+        out[len] = '\0';
+        return out;
+    }
+
+    char *dst = out;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = src[i];
+        if (c < 0x80) {
+            *dst++ = (char) c;
+        } else {
+            *dst++ = (char) (0xc0 | (c >> 6));
+            *dst++ = (char) (0x80 | (c & 0x3f));
+        }
+    }
+    *dst = '\0';
+    return out;
+}
+
 /*
  * Compatibility stub triage:
  * - Build/smoke coverage: return stable Xlib-compatible defaults where callers
@@ -314,6 +359,73 @@ int XmbTextPropertyToTextList(Display *dpy,
 {
     WARN_UNIMPLEMENTED;
     return 0;
+}
+
+int Xutf8TextPropertyToTextList(Display *dpy,
+                                const XTextProperty *text_prop,
+                                char ***list_ret,
+                                int *count_ret)
+{
+    if (!text_prop || !list_ret || !count_ret) {
+        if (count_ret)
+            *count_ret = 0;
+        if (list_ret)
+            *list_ret = NULL;
+        return XNoMemory;
+    }
+    *list_ret = NULL;
+    *count_ret = 0;
+    if (text_prop->format != 8)
+        return XConverterNotFound;
+    /* Reject obviously bogus nitems before any arithmetic. The +1 NUL
+     * terminator on the duplicated payload must not wrap, and count_ret is a
+     * signed int. Cap at INT_MAX so the eventual memcpy length is always
+     * representable.
+     */
+    if (text_prop->nitems > (unsigned long) INT_MAX)
+        return XNoMemory;
+    /* Only accept encodings whose 8-bit payload is already UTF-8 (the
+     * UTF8_STRING atom) or Latin-1 (XA_STRING, the ICCCM "8-bit string"
+     * representation). COMPOUND_TEXT requires real iconv work and is routed via
+     * XmbTextPropertyToTextList instead.
+     */
+    Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
+    if (text_prop->encoding != utf8 && text_prop->encoding != XA_STRING)
+        return XConverterNotFound;
+
+    const unsigned char *value = text_prop->value;
+    unsigned long nitems = value ? text_prop->nitems : 0;
+    int count = 1;
+    for (unsigned long i = 0; i < nitems; i++) {
+        if (value[i] == '\0') {
+            if (count == INT_MAX)
+                return XNoMemory;
+            count++;
+        }
+    }
+    char **list = calloc((size_t) count + 1, sizeof(*list));
+    if (!list)
+        return XNoMemory;
+
+    Bool latin1 = text_prop->encoding == XA_STRING;
+    unsigned long start = 0;
+    int item = 0;
+    for (unsigned long i = 0; i <= nitems; i++) {
+        if (i < nitems && value[i] != '\0')
+            continue;
+        size_t len = (size_t) (i - start);
+        const unsigned char *src = value ? value + start : (unsigned char *) "";
+        list[item] = copyTextPropertyString(src, len, latin1);
+        if (!list[item]) {
+            freeTextList(list, item);
+            return XNoMemory;
+        }
+        item++;
+        start = i + 1;
+    }
+    *list_ret = list;
+    *count_ret = count;
+    return Success;
 }
 
 int XmbTextListToTextProperty(Display *dpy,
@@ -1846,13 +1958,189 @@ int XwcLookupString(XIC ic,
     return 0;
 }
 
+/* Decode one UTF-8 sequence from `src[0..len)` into `cp`.
+ *
+ * Returns the number of bytes consumed (1..4) or 0 on a malformed sequence.
+ * Treats the source as Latin-1 when the leading byte is a stray continuation
+ * (0x80..0xbf) - matches what Xlib does for legacy XA_STRING properties that
+ * turned out to be ISO-8859-1 in practice.
+ */
+static int decodeUtf8Codepoint(const unsigned char *src,
+                               size_t len,
+                               wchar_t *cp)
+{
+    if (len == 0)
+        return 0;
+    unsigned char c = src[0];
+    if (c < 0x80) {
+        *cp = c;
+        return 1;
+    }
+    int extra;
+    wchar_t value;
+    unsigned int minCp;
+    if ((c & 0xe0) == 0xc0) {
+        extra = 1;
+        value = c & 0x1f;
+        minCp = 0x80;
+    } else if ((c & 0xf0) == 0xe0) {
+        extra = 2;
+        value = c & 0x0f;
+        minCp = 0x800;
+    } else if ((c & 0xf8) == 0xf0) {
+        extra = 3;
+        value = c & 0x07;
+        minCp = 0x10000;
+    } else {
+        /* Stray continuation; pass through as Latin-1. */
+        *cp = c;
+        return 1;
+    }
+    if (len < (size_t) (1 + extra)) {
+        *cp = c;
+        return 1;
+    }
+    for (int i = 0; i < extra; i++) {
+        unsigned char cont = src[1 + i];
+        if ((cont & 0xc0) != 0x80) {
+            *cp = c;
+            return 1;
+        }
+        value = (value << 6) | (cont & 0x3f);
+    }
+    if ((unsigned) value < minCp || value > 0x10ffff ||
+        (value >= 0xd800 && value <= 0xdfff)) {
+        /* Overlong, out-of-range, or UTF-16 surrogate codepoint - fall back to
+         * Latin-1 on the lead byte so the decoder still makes forward progress.
+         * Matches XftUtf8ToUcs4's policy.
+         */
+        *cp = c;
+        return 1;
+    }
+    *cp = value;
+    return 1 + extra;
+}
+
+/* Decode one ICCCM text-property segment (between embedded NULs) into the wide
+ * buffer.
+ *
+ * Returns the number of wchar_t entries written, not counting the
+ * caller-appended terminator. Latin-1 input widens byte-for-byte; UTF-8 input
+ * runs through decodeUtf8Codepoint, which already handles malformed sequences
+ * by falling back to the Latin-1 byte so the loop always makes progress.
+ */
+static size_t decodeTextPropertySegment(const unsigned char *segment,
+                                        size_t segLen,
+                                        Bool utf8Source,
+                                        wchar_t *out)
+{
+    if (!utf8Source) {
+        for (size_t j = 0; j < segLen; j++)
+            out[j] = (wchar_t) segment[j];
+        return segLen;
+    }
+    size_t written = 0;
+    size_t remaining = segLen;
+    while (remaining > 0) {
+        wchar_t cp = 0;
+        int used = decodeUtf8Codepoint(segment, remaining, &cp);
+        if (used <= 0 || (size_t) used > remaining)
+            break;
+        out[written++] = cp;
+        segment += used;
+        remaining -= (size_t) used;
+    }
+    return written;
+}
+
 int XwcTextPropertyToTextList(Display *dpy,
                               const XTextProperty *text_prop,
                               wchar_t ***list_ret,
                               int *count_ret)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    if (!text_prop || !list_ret || !count_ret) {
+        if (count_ret)
+            *count_ret = 0;
+        if (list_ret)
+            *list_ret = NULL;
+        return XNoMemory;
+    }
+    *list_ret = NULL;
+    *count_ret = 0;
+    if (text_prop->format != 8)
+        return XConverterNotFound;
+    if (text_prop->nitems > (unsigned long) INT_MAX)
+        return XNoMemory;
+    Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
+    Atom compoundText = dpy ? XInternAtom(dpy, "COMPOUND_TEXT", False) : None;
+    /* XmbTextListToTextProperty stamps XTextStyle payloads with the "TEXT"
+     * atom; per ICCCM that means "whatever locale-encoded text the server
+     * wants", which on this shim is the caller's UTF-8 / Latin-1 bytes
+     * round-tripping back. Accept TEXT alongside the other 8-bit encodings so
+     * libXaw's text source paths (_XawTextMBToWC -> XwcTextPropertyToTextList)
+     * stay functional.
+     */
+    Atom textAtom = dpy ? XInternAtom(dpy, "TEXT", False) : None;
+    Bool utf8Source = text_prop->encoding == utf8;
+    Bool latin1Source = text_prop->encoding == XA_STRING ||
+                        text_prop->encoding == compoundText ||
+                        text_prop->encoding == textAtom;
+    if (!utf8Source && !latin1Source)
+        return XConverterNotFound;
+
+    /* ICCCM text properties may pack multiple strings separated by embedded NUL
+     * bytes (WM_COMMAND argv, WM_CLIENT_MACHINE, etc.). Pre-count separators so
+     * list_ret has the right number of slots, each pointing into the single
+     * contiguous wchar_t buffer that XwcFreeStringList tears down via list[0] +
+     * list.
+     */
+    const unsigned char *value = text_prop->value;
+    unsigned long nitems = value ? text_prop->nitems : 0;
+    int count = 1;
+    for (unsigned long i = 0; i < nitems; i++) {
+        if (value[i] == '\0') {
+            if (count == INT_MAX)
+                return XNoMemory;
+            count++;
+        }
+    }
+
+    wchar_t **list = calloc((size_t) count + 1, sizeof(*list));
+    if (!list)
+        return XNoMemory;
+    /* nitems + count fits in size_t (both already INT_MAX-capped) and bounds
+     * the wide buffer: each source byte decodes to at most one wchar, and each
+     * segment gets one trailing NUL.
+     */
+    size_t cap = (size_t) nitems + (size_t) count;
+    if (cap > SIZE_MAX / sizeof(wchar_t)) {
+        free(list);
+        return XNoMemory;
+    }
+    wchar_t *wstr = calloc(cap, sizeof(wchar_t));
+    if (!wstr) {
+        free(list);
+        return XNoMemory;
+    }
+
+    size_t wlen = 0;
+    unsigned long start = 0;
+    int item = 0;
+    for (unsigned long i = 0; i <= nitems; i++) {
+        if (i < nitems && value[i] != '\0')
+            continue;
+        list[item++] = wstr + wlen;
+        size_t segLen = (size_t) (i - start);
+        if (segLen > 0 && value)
+            wlen += decodeTextPropertySegment(value + start, segLen, utf8Source,
+                                              wstr + wlen);
+        wstr[wlen++] = 0;
+        start = i + 1;
+    }
+    list[item] = NULL;
+    *list_ret = list;
+    *count_ret = count;
+    return Success;
 }
 
 int XwcTextListToTextProperty(Display *dpy,
@@ -1861,8 +2149,100 @@ int XwcTextListToTextProperty(Display *dpy,
                               XICCEncodingStyle style,
                               XTextProperty *text_prop)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    /* The previous WARN_UNIMPLEMENTED stub returned 0 = Success per Xlib
+     * convention but left every text_prop field uninitialized. _XawTextWCToMB
+     * then returned (char *) text_prop->value to libXaw as the multi-byte
+     * buffer, which - having been read from the caller's stack - happened to
+     * alias whatever Xt was holding in registers at the time. Athena's MultiSrc
+     * then stored that bogus pointer into src->multi_src.string and freed it on
+     * the next _XawMultiSave, crashing xfig's file dialog. Implement the real
+     * surface here so the wide-char path round-trips through UTF-8.
+     */
+    if (!text_prop || count < 0)
+        return XNoMemory;
+    text_prop->value = NULL;
+    text_prop->nitems = 0;
+    text_prop->format = 8;
+    Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
+    Atom textAtom = dpy ? XInternAtom(dpy, "TEXT", False) : None;
+    Atom compoundText = dpy ? XInternAtom(dpy, "COMPOUND_TEXT", False) : None;
+    Bool utf8Target = False;
+    switch (style) {
+    case XStringStyle:
+    case XStdICCTextStyle:
+        text_prop->encoding = XA_STRING;
+        break;
+    case XCompoundTextStyle:
+        text_prop->encoding = compoundText;
+        break;
+    case XTextStyle:
+        text_prop->encoding = textAtom;
+        break;
+    case XUTF8StringStyle:
+    default:
+        text_prop->encoding = utf8;
+        utf8Target = True;
+        break;
+    }
+    if (!list || count == 0) {
+        text_prop->value = (unsigned char *) calloc(1, 1);
+        if (!text_prop->value)
+            return XNoMemory;
+        return Success;
+    }
+    /* Worst case per wchar_t: 4 UTF-8 bytes. Add one NUL separator between
+     * strings plus a trailing NUL terminator.
+     */
+    size_t bytes = 1;
+    for (int i = 0; i < count; i++) {
+        if (list[i]) {
+            size_t wlen = wcslen(list[i]);
+            if (wlen > SIZE_MAX / 4 - bytes - 1)
+                return XNoMemory;
+            bytes += wlen * 4;
+        }
+        bytes += 1;
+    }
+    unsigned char *buf = calloc(bytes, 1);
+    if (!buf)
+        return XNoMemory;
+    size_t pos = 0;
+    for (int i = 0; i < count; i++) {
+        if (list[i]) {
+            for (const wchar_t *p = list[i]; *p; p++) {
+                uint32_t cp = (uint32_t) *p;
+                if (!utf8Target) {
+                    if (cp <= 0xff)
+                        buf[pos++] = (unsigned char) cp;
+                    else
+                        buf[pos++] = '?';
+                } else if (cp < 0x80) {
+                    buf[pos++] = (unsigned char) cp;
+                } else if (cp < 0x800) {
+                    buf[pos++] = (unsigned char) (0xc0 | (cp >> 6));
+                    buf[pos++] = (unsigned char) (0x80 | (cp & 0x3f));
+                } else if (cp < 0x10000) {
+                    buf[pos++] = (unsigned char) (0xe0 | (cp >> 12));
+                    buf[pos++] = (unsigned char) (0x80 | ((cp >> 6) & 0x3f));
+                    buf[pos++] = (unsigned char) (0x80 | (cp & 0x3f));
+                } else if (cp < 0x110000) {
+                    buf[pos++] = (unsigned char) (0xf0 | (cp >> 18));
+                    buf[pos++] = (unsigned char) (0x80 | ((cp >> 12) & 0x3f));
+                    buf[pos++] = (unsigned char) (0x80 | ((cp >> 6) & 0x3f));
+                    buf[pos++] = (unsigned char) (0x80 | (cp & 0x3f));
+                }
+            }
+        }
+        /* NUL-separate strings; final NUL is the C-string terminator that
+         * XtFree / strlen-based callers expect.
+         */
+        if (i + 1 < count)
+            buf[pos++] = 0;
+    }
+    buf[pos] = 0;
+    text_prop->value = buf;
+    text_prop->nitems = pos;
+    return Success;
 }
 
 Status XcmsRGBiToCIEXYZ(
@@ -2300,7 +2680,15 @@ Status XGetClassHint(Display *dpy, Window w, XClassHint *classhint) /* RETURN */
 
 void XwcFreeStringList(wchar_t **list)
 {
-    WARN_UNIMPLEMENTED;
+    if (!list)
+        return;
+    /* XwcTextPropertyToTextList allocates a single contiguous wchar_t buffer
+     * for list[0] (the first and only element on this shim's path) and a
+     * NULL-terminated list array. Free both so the caller does not have to
+     * track the allocation pair separately.
+     */
+    free(list[0]);
+    free(list);
 }
 
 /* Per ICCCM section 6.4, the RGB_COLOR_MAP family of properties stores a list
