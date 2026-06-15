@@ -1,0 +1,33 @@
+scripts/run-violawww-differential-tests.py
+  s_8932899d472820::t_9b5c4e6f56c142 474-475
+  s_8932899d472820::t_7e45ec67a4af0e 394-396,403-404,406-407
+scripts/run-motif-differential-tests.py
+  s_8932899d472820::t_7fda72a6ab0749 437-438
+  s_8932899d472820::t_f956f1cc2ebcbe 221
+  s_8932899d472820::t_27d7384084c197 361-363,370,372-373
+scripts/run-mosaic-differential-tests.py
+  s_8932899d472820::t_646102b751aec3 442-443
+  s_8932899d472820::t_030a3a8f777856 364-366,373-374,376-377
+scripts/run-xfig-differential-tests.py
+  s_8932899d472820::t_e6a7dcc7506c37 443-444
+  s_8932899d472820::t_1df129fb357f1d 344-346,353-354,356-357
+scripts/run-osiris-differential-tests.py
+  s_8932899d472820::t_eace91753192ee 481-482
+  s_8932899d472820::t_9d974f954a671b 322-324,331-332,334-335
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "7066850d80bd45351b5bf987401dc2bf23f515f1",
+  "prompts": {},
+  "sessions": {
+    "s_8932899d472820": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8cadaebf-e63f-4d5e-b9f6-de366394a2bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
