@@ -46,7 +46,7 @@ The screenshot above is from the larger ViolaWWW port described in [Larger Workl
 
 ## Larger Workloads Under Investigation
 
-Four ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
+Five ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
 They are still compatibility workloads rather than daily-use application ports,
 but each exercises behavior that small examples do not reach.
 
@@ -98,8 +98,20 @@ but each exercises behavior that small examples do not reach.
   make check-differential-osiris         # screenshot diff vs system libX11 (needs remote host)
   ```
 
+- [Xfig](https://mcj.sourceforge.net/): the classic Athena-based vector drawing program builds against the compat stack and the bundled libXaw.
+  It exercises the full Xt + Athena widget stack (menus, scrollbars, text widgets), large-canvas polyline and ellipse redraw, `XDrawString` font metrics, GXxor rubber-band feedback during mouse drags, and ICCCM text-property round-tripping in the File Open dialog.
+  Sample drawings live in [`tests/data/`](tests/data/) and cover a small flowchart, a voltage-divider circuit, a mind map, and an 8x6 rendering stress grid.
+
+  <a href="assets/xfig.png"><img src="assets/xfig.png" alt="Xfig running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make xfig                              # build Xfig (depends on libXaw)
+  build/xfig/source/src/xfig tests/data/mindmap.fig
+  make check-smoke-xfig                  # replay-driven startup smoke check
+  ```
+
 The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
-`make profile-ui` runs the same replay suite and prints the generated `metrics.tsv` and `render-stats.tsv` paths, making XTest/replay the shared basis for UI automation and performance profiling across Motif, ViolaWWW, Mosaic, and Osiris.
+`make profile-ui` runs the Motif, ViolaWWW, and Mosaic replay smokes with timing capture and prints the generated `metrics.tsv` and `render-stats.tsv` paths; the Osiris and Xfig smokes are still invoked individually via `make check-smoke-osiris` / `make check-smoke-xfig`.
 They do not require `node11`, `xdotool`, or a native X11 reference run.
 Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
 
@@ -110,7 +122,7 @@ but that they keep legacy Xlib clients building and running on platforms where n
 
 These ports rely on community input.
 Concrete reproducers, screenshot diffs, and small fixes posted to [GitHub Issues](https://github.com/sysprog21/libx11-compat/issues) are the most effective way to push these workloads forward.
-Specific gaps worth opening issues for include widget paths that misrender, Motif demos that crash or differ visibly from the native baseline, Osiris/Qt2 menu or Designer interactions that differ from native X11, and ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did.
+Specific gaps worth opening issues for include widget paths that misrender, Motif demos that crash or differ visibly from the native baseline, Osiris/Qt2 menu or Designer interactions that differ from native X11, ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did, and Xfig drawings whose objects rasterize differently than under a real X server.
 
 ## Coverage and Compatibility
 
