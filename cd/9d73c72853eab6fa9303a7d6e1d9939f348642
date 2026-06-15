@@ -1,0 +1,230 @@
+scripts/sync-upstream-headers.py
+  s_a478b1c01943dc::t_7ebfef9f59c4c9 107-114
+src/font.c
+  s_20e0c6bf6818f9::t_972c291e6bd8bf 435
+  s_20e0c6bf6818f9::t_94f4dfd8fda968 597,599-602,605-606,609-610,612
+  s_20e0c6bf6818f9::t_e279403b8457e4 730
+  s_20e0c6bf6818f9::t_33bb6a8e6906bf 731-735
+  s_20e0c6bf6818f9::t_9dc64edcd95089 1008-1010
+  s_c770def9b291b1::t_bf62b5411a0f05 1097,1101,1103-1104,1107-1108
+  s_20e0c6bf6818f9::t_a05fabd5b85d34 1102
+  s_c770def9b291b1::t_fd8cafc95a9089 1105-1106
+  s_20e0c6bf6818f9::t_c8a89f85fc9279 2312-2313,2350-2354,2363-2367,2388-2394
+  s_20e0c6bf6818f9::t_333e8de0332e32 2382-2387
+  s_20e0c6bf6818f9::t_35796eeaab011e 2459-2461,2469-2470
+  s_20e0c6bf6818f9::t_816d36ef6d84d7 2463-2464,2466-2468
+tests/test-xft-link.c
+  s_a478b1c01943dc::t_212f6acf4ab1f6 1-2,5-7,19-21,24-26,41-43,46-48,151-158,167-174,179-186,213-217,219-223,227-228,230-237,241-243,247-250,254-257
+  s_a478b1c01943dc::t_6b5b4752bccb4d 3-4
+  s_856c113557d0a3::t_9554df662f3b06 8-16,98-99,119-150,160-163
+  s_c770def9b291b1::t_69fd3551b7d6cf 17-18,30-35,40
+  s_c770def9b291b1::t_877ee43234ab92 22-23,36-39
+  s_c770def9b291b1::t_46fec23d85224e 27-29
+  s_20e0c6bf6818f9::t_c25b581c275578 44-45
+  s_20e0c6bf6818f9::t_fc77fd7076d9a8 49-51,80-81,84
+  s_c770def9b291b1::t_bc1c9c5f1ef917 52-55,60,63,91,93,96,100,117-118,159,164-166
+  s_c770def9b291b1::t_c655f28bd2d3f9 56-57,59,92,110-115
+  s_c770def9b291b1::t_8935b2f7f151ae 58,62,67,69-73,77,83,90,95,101-109,116
+  s_c770def9b291b1::t_376907a4905c61 61,66,76,82,89,94
+  s_20e0c6bf6818f9::t_62fbd33b68a24e 64-65,68,74-75,78-79,85-88
+  s_856c113557d0a3::t_54a53576c61d9f 97
+  s_a478b1c01943dc::t_0731670bc30037 175-178
+  s_20e0c6bf6818f9::t_20b14688988d2d 187-188,191-212,218,229,246
+  s_20e0c6bf6818f9::t_10230232f1323e 189-190
+  s_a478b1c01943dc::t_bbe96adb0b8255 224-226,238-239
+  s_c770def9b291b1::t_b79bd65328b19e 240,244-245,251-253
+tests/ui/assertions/xfig-canvas-changed.json
+  s_c770def9b291b1::t_74b391356a5e3f 1-11
+mk/pkgconfig.mk
+  s_c770def9b291b1::t_f948b252511461 10-11
+  s_c770def9b291b1::t_ea1aed21388f19 12-15
+  s_c770def9b291b1::t_6e1b9c5a7799d3 69-81
+  s_c770def9b291b1::t_0278a281c3605e 82-108
+tests/api-symbols.txt
+  s_a478b1c01943dc::t_ea12ccd67f64aa 639
+include/fontconfig/fontconfig.h
+  s_a478b1c01943dc::t_4af63156e6536d 1-6,9-15,22-24,39-52,57-65,82-90,116-117,119,124-132,140-157
+  s_c770def9b291b1::t_dee801d249ee72 7-8,25-38,53-56,66-81,91,100-115,120-121,136-139
+  s_c770def9b291b1::t_93cc46775acc35 16-21
+  s_c770def9b291b1::t_1a924f71fcc417 92-99
+  s_c770def9b291b1::t_7d9e49c373a234 118
+  s_c770def9b291b1::t_8f98d0b4cf495f 122
+  s_c770def9b291b1::t_c71e7e993a615d 123
+  s_c770def9b291b1::t_f58bc2ecbc264a 133-135
+tests/test-libxaw-link.c
+  s_a478b1c01943dc::t_84c41ea1f1a5fa 1-4,6-9,12-20,23-25,33,35
+  s_a478b1c01943dc::t_7a3d0b9a420311 5,10-11,26-32,34
+  s_a478b1c01943dc::t_bbe96adb0b8255 21-22
+scripts/run-xfig-differential-tests.py
+  s_b78a044153dda0::t_f653a2338cdc5f 1-142,151-164,166,200-482
+  s_b78a044153dda0::t_782f7160531124 143-150,165
+  s_b78a044153dda0::t_b68618715d93b0 167-186,188-197,199
+  s_b78a044153dda0::t_0801a39ca54859 187
+  s_b78a044153dda0::t_b2bc5b3b82b451 198
+mk/xclock.mk
+  s_c770def9b291b1::t_6a1ef3006703e8 1-90
+  s_c770def9b291b1::t_b3bb88d37a11bf 91-143
+src/font.h
+  s_c770def9b291b1::t_a8164de86e5d28 7
+  s_c770def9b291b1::t_f7609480beab66 8,12-19
+  s_c770def9b291b1::t_7ed2eab0688d45 20
+tests/ui/assertions/xclock-dial.json
+  s_c770def9b291b1::t_c86ab9ff1b9b1f 1-11
+tests/symbol-coverage.c
+  s_a478b1c01943dc::t_22654d73c9dbce 7,241-242,249-255,257-291
+  s_a478b1c01943dc::t_ea12ccd67f64aa 226
+  s_c770def9b291b1::t_9e72cfedcfe22a 243,247
+  s_c770def9b291b1::t_16572be7244223 244-245,256
+  s_c770def9b291b1::t_e5284eb3ddc8af 246
+  s_c770def9b291b1::t_6b84eadf542681 248
+  s_c770def9b291b1::t_313fd2b286d899 292-293
+  s_c770def9b291b1::t_b937a28daa6910 294-298
+  s_c770def9b291b1::t_3ff5e12f34f847 299
+mk/xcompat-libs.mk
+  s_a478b1c01943dc::t_35c2acb7758206 6,12,60-64,90-95,106-107,110
+  s_a478b1c01943dc::t_50c6654ac3b9d0 13-15,19-20,33-39,42-44,69-70,72-73
+  s_a478b1c01943dc::t_d4e3e228f4d26a 16
+  s_a478b1c01943dc::t_054c837bcfa6c2 17-18
+  s_a478b1c01943dc::t_557c327d492f88 40-41
+mk/libxaw.mk
+  s_a478b1c01943dc::t_7ebfef9f59c4c9 1-35,43-61
+  s_c770def9b291b1::t_47c97543c33753 36-42
+mk/xfig.mk
+  s_c770def9b291b1::t_0a023ee3555596 1-47,55,59-60,63-65,75-94,96-109,111-121,123-160
+  s_c770def9b291b1::t_47c97543c33753 48-54,56-58,61-62,69-74
+  s_c770def9b291b1::t_0ae116c0c3a5cf 66-68
+  s_c770def9b291b1::t_5177119b376ec2 95,110
+  s_b78a044153dda0::t_f653a2338cdc5f 122,161-191
+  s_c770def9b291b1::t_49d7be0357114a 192-240
+mk/deps.mk
+  s_a478b1c01943dc::t_212f6acf4ab1f6 11-12
+  s_a478b1c01943dc::t_50c6654ac3b9d0 13-15
+  s_a478b1c01943dc::t_84c41ea1f1a5fa 22-24
+tests/ui/replays/xclock-startup.replay
+  s_c770def9b291b1::t_f00d550a7f000c 1-10
+mk/tests.mk
+  s_a478b1c01943dc::t_212f6acf4ab1f6 8,123-127
+  s_c770def9b291b1::t_bb8ec24aafa939 10-18
+  s_a478b1c01943dc::t_7b60962ca00f01 21,56-57
+  s_a478b1c01943dc::t_84c41ea1f1a5fa 128-136
+  s_c770def9b291b1::t_a6645eb64adaf3 146-155
+tests/ui/replays/xclock-tick.replay
+  s_c770def9b291b1::t_19b7fea4b5d7b2 1-14
+src/xft.c
+  s_a478b1c01943dc::t_f3ad0bc3755efb 1-12,14-34,42-53,55-91,100-146,151-152,159-162,167-173,288-293,296-312,379-490,500-510,519-521,527-532,534-571,586,589-606,608-610,617-627,629-644,646-664,666-675,679-740,745-820,841,843-848,850-900,905-925,979-987,992-993,995-1000,1003-1029,1033-1055,1057-1074,1078-1088,1102-1122,1127-1145,1147-1161
+  s_c770def9b291b1::t_00e458fbe82313 13
+  s_c770def9b291b1::t_cac8f6d82c0579 35,40-41
+  s_856c113557d0a3::t_5d83be9410094e 54,611-613,616,676-678
+  s_c770def9b291b1::t_43ad71376dca11 92,95-97
+  s_20e0c6bf6818f9::t_10230232f1323e 98-99
+  s_c770def9b291b1::t_96bf5e7dbe5cf3 147-150,153-158,163-166,174-197,260-287
+  s_c770def9b291b1::t_5951e006d7e140 198,203-232
+  s_c770def9b291b1::t_d5a6e699e8a860 233-237
+  s_c770def9b291b1::t_7b4d8465f93096 238-259
+  s_a478b1c01943dc::t_bbe96adb0b8255 294-295,1075-1077
+  s_c770def9b291b1::t_3adc4e9ff6f6bc 313-317,323-338,342-378
+  s_c770def9b291b1::t_b704ea81b182f6 491-499
+  s_c770def9b291b1::t_9fa9aa9b2f9bc1 511-518,522,526,533
+  s_c770def9b291b1::t_4a1903ca67b6dc 572-576,579,587,614-615,628,665
+  s_20e0c6bf6818f9::t_8c43123af51855 577-578,580-585,588
+  s_a478b1c01943dc::t_3313593f6de552 607
+  s_c770def9b291b1::t_07d91e3c850f61 645
+  s_c770def9b291b1::t_bc7e00e69dd24c 741-744
+  s_20e0c6bf6818f9::t_e0290bbf2a1711 821-834,1030-1032,1123-1126
+  s_c770def9b291b1::t_2fc04435714905 835,839-840,842,849
+  s_c770def9b291b1::t_58c81538d87160 901-904
+  s_c770def9b291b1::t_7d7f4c7956f49c 933-940,943-962,965-978,988-991,994,1001-1002
+  s_20e0c6bf6818f9::t_c25b581c275578 941-942,963-964,1315
+  s_c770def9b291b1::t_d605c6007e6782 1056,1146
+  s_c770def9b291b1::t_a280ee6aee20d7 1089,1094-1101
+  s_c770def9b291b1::t_c2126d1f0908ea 1162,1258,1263-1304,1314,1316,1326,1328,1330,1335,1339,1345
+  s_c770def9b291b1::t_8c4e1ab5a460ba 1163-1164,1168-1172,1178-1180,1182-1183,1185-1200,1209-1235
+  s_856c113557d0a3::t_faa36cd2d309e4 1173-1177
+  s_c770def9b291b1::t_d9283fea05beb1 1201,1205-1208
+  s_c770def9b291b1::t_7e2a215d12b9e4 1240-1257
+  s_c770def9b291b1::t_4716ebae65bf8e 1305,1313,1318,1327,1329,1332-1333,1337-1338,1343-1344
+  s_c770def9b291b1::t_7ed2b4f86ba2df 1317,1319-1325,1331,1334,1336,1340-1342
+tests/ui/assertions/xfig-three-panes.json
+  s_c770def9b291b1::t_15270e6c17c63d 1-18
+tests/ui/replays/xfig-draw-line.replay
+  s_c770def9b291b1::t_b27720521514c8 1-26
+tests/ui/replays/xfig-startup.replay
+  s_c770def9b291b1::t_d7344169b4f9b3 1-13
+include/X11/extensions/Xrender.h
+  s_a478b1c01943dc::t_35c2acb7758206 61-68
+include/libxaw-build/config.h
+  s_a478b1c01943dc::t_7ebfef9f59c4c9 1-6,9-16,18-20
+  s_a478b1c01943dc::t_5baf795cd771e9 7
+  s_a478b1c01943dc::t_c97f41a010e5ea 8
+  s_a478b1c01943dc::t_9966ce7a2f6ef8 17
+compat/xfig-patches/001-w_dir-stdio.patch
+  s_c770def9b291b1::t_48b195eda7e41b 1-16
+tests/ui/assertions/xclock-tick-changed.json
+  s_c770def9b291b1::t_eeb6b9ead638df 1-11
+Makefile
+  s_a478b1c01943dc::t_84c41ea1f1a5fa 25
+  s_c770def9b291b1::t_180221d71dbc2d 31
+  s_c770def9b291b1::t_34f89156f8865d 32
+include/X11/Xft/Xft.h
+  s_a478b1c01943dc::t_4af63156e6536d 1-7,71-127,129-191,243
+  s_a478b1c01943dc::t_1a1ef77899be6a 8,17
+  s_c770def9b291b1::t_17d9d256787720 9-16,18-19
+  s_c770def9b291b1::t_b10b9b97c8f679 20-23,25,36-70
+  s_c770def9b291b1::t_29e02c499aa81e 24
+  s_20e0c6bf6818f9::t_a5f32ecd023fbd 26-35
+  s_a478b1c01943dc::t_bbe96adb0b8255 128
+  s_20e0c6bf6818f9::t_10230232f1323e 192,226-230,232-241
+  s_c770def9b291b1::t_570aad75d5936d 193-194
+  s_c770def9b291b1::t_2e0e21fd1557fa 195-209,216
+  s_c770def9b291b1::t_74349955f468e9 210-215
+  s_c770def9b291b1::t_1b7f31e42ff70e 217-225,242
+  s_c770def9b291b1::t_0f0b014b33e665 231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "cd9d73c72853eab6fa9303a7d6e1d9939f348642",
+  "prompts": {},
+  "sessions": {
+    "s_20e0c6bf6818f9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec5c0-14bd-7e50-adf6-8a01e1121045",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_856c113557d0a3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec67d-fcb2-7af0-ba4e-538401160018",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_a478b1c01943dc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec526-fef4-7aa3-959e-cfd3ef343da4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_b78a044153dda0": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ec9dc-2b6c-7971-9013-e60437b585cf",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    },
+    "s_c770def9b291b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dddb668-037c-4648-92a3-d33549c31855",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
