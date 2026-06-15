@@ -33,6 +33,19 @@ def ssh(remote, script):
     run(["ssh", remote, "sh", "-s"], input_text=script)
 
 
+def execute(args, script):
+    """Run a build/capture/compare shell payload locally or via SSH."""
+    if args.local:
+        run(["sh", "-s"], input_text=script)
+    else:
+        ssh(args.remote, script)
+
+
+def remote_uri(args, path):
+    """Format a path for rsync; local mode strips the remote: prefix."""
+    return str(path) if args.local else f"{args.remote}:{path}"
+
+
 def q(value):
     return shlex.quote(str(value))
 
@@ -52,7 +65,50 @@ def parse_env_default(name, default):
     return value
 
 
+def parse_env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.lower() in ("1", "yes", "true", "on")
+
+
+def check_local_paths(out_root, remote_root):
+    """Reject --remote-root values that fetch_results would delete.
+
+    fetch_results() rmtrees out_root/{system,compat,logs,diff} before
+    rsyncing from remote_root/{screens/system,screens/compat,logs,diff}.
+    If remote_root equals out_root or lives inside one of those four
+    subdirectories, the rmtree wipes the staging tree before rsync can
+    read from it.
+    """
+    out_root = Path(out_root).resolve()
+    remote_root = Path(remote_root).resolve()
+
+    if remote_root == out_root:
+        raise ValueError(
+            "--remote-root cannot equal --out-root in local mode; "
+            "fetch_results would delete out_root/logs and out_root/diff "
+            "before rsync."
+        )
+
+    for name in ("system", "compat", "logs", "diff"):
+        dest = out_root / name
+        try:
+            remote_root.relative_to(dest)
+        except ValueError:
+            continue
+        raise ValueError(
+            f"--remote-root {remote_root} lives inside fetch destination "
+            f"{dest}; fetch_results would delete the staging tree before "
+            f"rsync. Pick a remote_root outside out_root/{{system,compat,"
+            f"logs,diff}}."
+        )
+
+
 def sync_repo(args):
+    if args.local:
+        Path(args.remote_root).mkdir(parents=True, exist_ok=True)
+        return str(ROOT)
     remote_repo = f"{args.remote_root}/repo"
     run(["ssh", args.remote, "mkdir", "-p", args.remote_root])
     rsync(
@@ -102,6 +158,12 @@ fi
 
     replay_deps = "need xdotool\n" if args.replay_smoke else ""
 
+    # The parallel screenshot capture runs system-side and compat-side
+    # demos concurrently on separate Xvfb instances. Pick a numeric
+    # display offset by one so the two X servers do not collide on lock
+    # files or socket paths.
+    compat_display_num = int(args.display) + 1
+
     return f"""
 set -eu
 
@@ -143,6 +205,7 @@ compat_logs="$remote_root/logs/compat"
 system_build_log="$remote_root/logs/system-build.log"
 system_config_log="$remote_root/logs/system-configure.log"
 display=:{q(args.display)}
+compat_display=:{compat_display_num}
 
 run_logged() {{
     log=$1
@@ -155,7 +218,7 @@ run_logged() {{
     else
         status=$?
         echo "FAIL $*; see $log" >&2
-        tail -40 "$log" >&2 || true
+        tail -60 "$log" >&2 || true
         exit "$status"
     fi
 }}
@@ -223,61 +286,159 @@ mkdir -p "$system_build" "$system_out" "$system_screens" "$compat_screens" \\
     "$system_logs" "$compat_logs"
 : >"$system_build_log"
 
-cd "$repo"
-make -j{q(args.jobs)} CC=gcc motif-demos
+# Wrap gcc with ccache so the system-side Motif build and the compat
+# motif-demos build both hit the ccache populated by the GitHub
+# Actions cache action. Bare `CC=gcc` would skip the cache and
+# recompile cold every CI run.
+if command -v ccache >/dev/null 2>&1; then
+    if [ -d /usr/lib/ccache ]; then
+        export PATH="/usr/lib/ccache:$PATH"
+    fi
+    export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
+fi
+cc_wrapped="gcc"
 
 motif_src="$repo/build/upstream/motif"
-cd "$system_build"
-if [ ! -f .configure-stamp ]; then
-    : >"$system_config_log"
-    run_logged "$system_config_log" env \\
-        CPP="gcc -E" \\
-        CFLAGS="-g -O0 -include stdlib.h" \\
-        YACC="$yacc_bin" \\
-        "$motif_src/configure" \\
-        --prefix="$system_out/motif-install" \\
-        --disable-glw \\
-        --disable-tests \\
-        --without-xft \\
-        --with-jpeg=no \\
-        --with-png=no \\
-        --with-xrandr=no \\
-        --with-xrender=no \\
-        --with-xcursor=no \\
-        --with-xinerama=no \\
-        --enable-demos
-    touch .configure-stamp
-fi
-run_logged "$system_build_log" make -C config
-run_logged "$system_build_log" make -C lib/Xm CFLAGS="-g -O0 -include stdlib.h"
-run_logged "$system_build_log" make -C lib/Mrm CFLAGS="-g -O0 -include stdlib.h"
-run_logged "$system_build_log" make -C tools/wml CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
-run_logged "$system_build_log" make -C clients/uil CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
-run_logged "$system_build_log" make -C demos CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
 
-rm -f "/tmp/.X{q(args.display)}-lock"
+# Pre-extract upstream Motif so the parallel compat-side and system-side
+# builds below don't race on the source / autoreconf step. The make
+# rule is a no-op when the actions/cache step already restored the
+# motif-src cache; on a cache miss it clones + autoreconfs once.
+(cd "$repo" && make build/upstream/motif/.autogen-stamp)
+
+# Run compat-side and system-side builds concurrently. They write into
+# disjoint trees ($repo/build/motif-demos vs $system_build) and share
+# only the read-only upstream source. ccache is process-safe via its
+# own locking. Per-side stdout/stderr is captured to a dedicated log so
+# failure triage stays unambiguous.
+compat_make_log="$remote_root/logs/compat-make.log"
+: >"$compat_make_log"
+(
+    set -e
+    cd "$repo"
+    make -j{q(args.jobs)} CC="$cc_wrapped" motif-demos
+) >"$compat_make_log" 2>&1 &
+compat_pid=$!
+
+(
+    set -e
+    cd "$system_build"
+    if [ ! -f .configure-stamp ]; then
+        : >"$system_config_log"
+        run_logged "$system_config_log" env \\
+            CC="$cc_wrapped" \\
+            CPP="gcc -E" \\
+            CFLAGS="-g -O0 -include stdlib.h" \\
+            YACC="$yacc_bin" \\
+            "$motif_src/configure" \\
+            --prefix="$system_out/motif-install" \\
+            --disable-glw \\
+            --disable-tests \\
+            --without-xft \\
+            --with-jpeg=no \\
+            --with-png=no \\
+            --with-xrandr=no \\
+            --with-xrender=no \\
+            --with-xcursor=no \\
+            --with-xinerama=no \\
+            --enable-demos
+        touch .configure-stamp
+    fi
+    run_logged "$system_build_log" make -j{q(args.jobs)} -C config
+    run_logged "$system_build_log" make -j{q(args.jobs)} -C lib/Xm CC="$cc_wrapped" CFLAGS="-g -O0 -include stdlib.h"
+    run_logged "$system_build_log" make -j{q(args.jobs)} -C lib/Mrm CC="$cc_wrapped" CFLAGS="-g -O0 -include stdlib.h"
+    run_logged "$system_build_log" make -j{q(args.jobs)} -C tools/wml CC="$cc_wrapped" CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
+    run_logged "$system_build_log" make -j{q(args.jobs)} -C clients/uil CC="$cc_wrapped" CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
+    run_logged "$system_build_log" make -j{q(args.jobs)} -C demos CC="$cc_wrapped" CPP="gcc -E" CFLAGS="-g -O0 -include stdlib.h"
+) &
+system_pid=$!
+
+compat_status=0
+wait "$compat_pid" || compat_status=$?
+system_status=0
+wait "$system_pid" || system_status=$?
+
+# Surface diagnostics for any failed side before exiting; show both
+# tails when both fail so the first-listed exit code does not mask a
+# concurrent failure on the other side.
+if [ "$compat_status" -ne 0 ]; then
+    echo "compat-side build failed (exit $compat_status); see $compat_make_log" >&2
+    tail -60 "$compat_make_log" >&2 || true
+fi
+if [ "$system_status" -ne 0 ]; then
+    echo "system-side build failed (exit $system_status); see $system_build_log" >&2
+    tail -60 "$system_build_log" >&2 || true
+fi
+[ "$compat_status" -eq 0 ] || exit "$compat_status"
+[ "$system_status" -eq 0 ] || exit "$system_status"
+
+rm -f "/tmp/.X{q(args.display)}-lock" "/tmp/.X{compat_display_num}-lock"
 Xvfb "$display" -screen 0 {q(args.geometry)} \\
-    >"$remote_root/xvfb.log" 2>&1 &
+    >"$remote_root/xvfb-system.log" 2>&1 &
 xvfb_pid=$!
-trap 'kill "$xvfb_pid" >/dev/null 2>&1 || true' EXIT
+Xvfb "$compat_display" -screen 0 {q(args.geometry)} \\
+    >"$remote_root/xvfb-compat.log" 2>&1 &
+compat_xvfb_pid=$!
+trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
 sleep 1
 
-export DISPLAY="$display"
 export MOTIF_SCREENSHOT_COMMAND=import
 export MOTIF_DEMO_SCREENSHOT_SECONDS={q(args.seconds)}
 export MOTIF_DEMO_SOURCE_DIR="$motif_src"
 {filter_export}
 
-export MOTIF_DEMO_SCREENSHOT_DIR="$system_screens"
-export MOTIF_DEMO_SCREENSHOT_LOG_DIR="$system_logs"
-sh "$repo/scripts/capture-motif-demo-screenshots.sh" "$system_build" "$system_out"
+# Capture system-side and compat-side screenshots on separate Xvfb
+# instances in parallel. capture-motif-demo-screenshots.sh runs each
+# demo serially and waits MOTIF_DEMO_SCREENSHOT_SECONDS per shot, so
+# halving its serial run via two Xvfb is the only way to cut its
+# wallclock contribution without dropping demos.
+system_cap_log="$remote_root/logs/system-capture.log"
+compat_cap_log="$remote_root/logs/compat-capture.log"
+: >"$system_cap_log"
+: >"$compat_cap_log"
 
-export MOTIF_DEMO_SCREENSHOT_DIR="$compat_screens"
-export MOTIF_DEMO_SCREENSHOT_LOG_DIR="$compat_logs"
-sh "$repo/scripts/capture-motif-demo-screenshots.sh" \\
-    "$repo/build/motif-demos" "$repo/build"
+(
+    set -e
+    export DISPLAY="$display"
+    export MOTIF_DEMO_SCREENSHOT_DIR="$system_screens"
+    export MOTIF_DEMO_SCREENSHOT_LOG_DIR="$system_logs"
+    sh "$repo/scripts/capture-motif-demo-screenshots.sh" "$system_build" "$system_out"
+) >"$system_cap_log" 2>&1 &
+system_cap_pid=$!
+
+(
+    set -e
+    export DISPLAY="$compat_display"
+    export MOTIF_DEMO_SCREENSHOT_DIR="$compat_screens"
+    export MOTIF_DEMO_SCREENSHOT_LOG_DIR="$compat_logs"
+    sh "$repo/scripts/capture-motif-demo-screenshots.sh" \\
+        "$repo/build/motif-demos" "$repo/build"
+) >"$compat_cap_log" 2>&1 &
+compat_cap_pid=$!
+
+system_cap_status=0
+wait "$system_cap_pid" || system_cap_status=$?
+compat_cap_status=0
+wait "$compat_cap_pid" || compat_cap_status=$?
+
+# Stage Xvfb logs into $remote_root/logs so the artifact upload picks
+# them up regardless of capture success, then surface the diagnostics
+# for any side that failed.
+cp "$remote_root"/xvfb-*.log "$remote_root/logs/" 2>/dev/null || true
+
+if [ "$system_cap_status" -ne 0 ]; then
+    echo "system screenshot capture failed (exit $system_cap_status); see $system_cap_log" >&2
+    tail -60 "$system_cap_log" >&2 || true
+fi
+if [ "$compat_cap_status" -ne 0 ]; then
+    echo "compat screenshot capture failed (exit $compat_cap_status); see $compat_cap_log" >&2
+    tail -60 "$compat_cap_log" >&2 || true
+fi
+[ "$system_cap_status" -eq 0 ] || exit "$system_cap_status"
+[ "$compat_cap_status" -eq 0 ] || exit "$compat_cap_status"
 
 if [ {q("1" if args.replay_smoke else "0")} = 1 ]; then
+    export DISPLAY="$display"
     mkdir -p "$remote_root/home-system" "$remote_root/home-compat" \\
         "$remote_root/home-system-wsm" "$remote_root/home-compat-wsm"
     write_wsm_home "$remote_root/home-system-wsm"
@@ -359,13 +520,19 @@ def fetch_results(args, *, fetch_remote_compare=False):
             shutil.rmtree(path)
         path.mkdir(parents=True)
 
-    rsync(f"{args.remote}:{args.remote_root}/screens/system/", system_dir)
-    rsync(f"{args.remote}:{args.remote_root}/screens/compat/", compat_dir)
-    rsync(f"{args.remote}:{args.remote_root}/logs/", log_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/screens/system/"), system_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/screens/compat/"), compat_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/logs/"), log_dir)
     if fetch_remote_compare:
-        rsync(f"{args.remote}:{args.remote_root}/diff/", diff_dir)
-        rsync(f"{args.remote}:{args.remote_root}/report.tsv", out_root / "report.tsv")
-        rsync(f"{args.remote}:{args.remote_root}/junit.xml", out_root / "junit.xml")
+        rsync(remote_uri(args, f"{args.remote_root}/diff/"), diff_dir)
+        rsync(
+            remote_uri(args, f"{args.remote_root}/report.tsv"),
+            out_root / "report.tsv",
+        )
+        rsync(
+            remote_uri(args, f"{args.remote_root}/junit.xml"),
+            out_root / "junit.xml",
+        )
     return system_dir, compat_dir, out_root
 
 
@@ -413,9 +580,11 @@ def main():
     )
     parser.add_argument(
         "--remote-root",
-        default=parse_env_default(
-            "MOTIF_DIFF_REMOTE_ROOT",
-            "/tmp/libx11-compat-motif-differential",
+        default=None,
+        help=(
+            "staging directory. Precedence: CLI flag > MOTIF_DIFF_REMOTE_ROOT "
+            "env > local-mode default (out_root/_work) > SSH default "
+            "(/tmp/libx11-compat-motif-differential)."
         ),
     )
     parser.add_argument(
@@ -459,6 +628,16 @@ def main():
         action="store_true",
         help="install minimal Ubuntu packages on the remote via sudo apt-get",
     )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        default=parse_env_bool("MOTIF_DIFF_LOCAL"),
+        help=(
+            "run the build / capture / compare pipeline on the local host "
+            "instead of SSHing to --remote. Used by the GitHub Actions "
+            "differential workflow."
+        ),
+    )
     # Defaults match mk/motif.mk and scripts/compare-motif-reference.py.
     # The MAE gate tolerates font hinting / AA differences between Xft on
     # system X11 and our SDL_ttf path; the changed-pixel gate stays tighter so
@@ -488,10 +667,10 @@ def main():
     parser.add_argument(
         "--compare-location",
         choices=("remote", "local"),
-        default=parse_env_default("MOTIF_DIFF_COMPARE_LOCATION", "remote"),
+        default=None,
         help=(
-            "where to run screenshot image comparison; Motif execution always "
-            "runs on the remote"
+            "where to run screenshot image comparison; defaults to local "
+            "when --local is set, otherwise remote"
         ),
     )
     parser.add_argument(
@@ -518,18 +697,52 @@ def main():
             file=sys.stderr,
         )
 
+    # Resolve --remote-root precedence: explicit CLI flag wins, then
+    # the MOTIF_DIFF_REMOTE_ROOT env var, then the local-mode default
+    # (out_root/_work) or the SSH default.
+    if args.remote_root is None:
+        env_remote_root = os.environ.get("MOTIF_DIFF_REMOTE_ROOT")
+        if env_remote_root:
+            args.remote_root = env_remote_root
+        elif args.local:
+            args.remote_root = str(args.out_root / "_work")
+        else:
+            args.remote_root = "/tmp/libx11-compat-motif-differential"
+
+    # Resolve --compare-location precedence: explicit CLI flag wins,
+    # then the MOTIF_DIFF_COMPARE_LOCATION env var, then the local-mode
+    # default (local) or the SSH default (remote).
+    if args.compare_location is None:
+        env_compare_location = os.environ.get("MOTIF_DIFF_COMPARE_LOCATION")
+        if env_compare_location:
+            if env_compare_location not in ("remote", "local"):
+                parser.error(
+                    "MOTIF_DIFF_COMPARE_LOCATION must be 'remote' or 'local'"
+                )
+            args.compare_location = env_compare_location
+        elif args.local:
+            args.compare_location = "local"
+        else:
+            args.compare_location = "remote"
+
+    if args.local:
+        try:
+            check_local_paths(args.out_root, Path(args.remote_root))
+        except ValueError as error:
+            parser.error(str(error))
+
     remote_repo = sync_repo(args)
     remote_status = 0
     compare_status = 0
     fetch_status = 0
     try:
-        ssh(args.remote, remote_script(args, remote_repo))
+        execute(args, remote_script(args, remote_repo))
     except subprocess.CalledProcessError as error:
         remote_status = error.returncode
 
     if args.compare_location == "remote" and not remote_status:
         try:
-            ssh(args.remote, remote_compare_script(args))
+            execute(args, remote_compare_script(args))
         except subprocess.CalledProcessError as error:
             compare_status = error.returncode
 

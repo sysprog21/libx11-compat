@@ -143,12 +143,13 @@ VIOLAWWW_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-violawww-differential
 VIOLAWWW_DIFF_DISPLAY ?= 120
 VIOLAWWW_DIFF_JOBS ?= 1
 VIOLAWWW_DIFF_INSTALL_DEPS ?= 0
+VIOLAWWW_DIFF_LOCAL ?= 0
 VIOLAWWW_DIFF_MAE_THRESHOLD ?= 0.12
 VIOLAWWW_DIFF_CHANGED_THRESHOLD ?= 0.35
 VIOLAWWW_DIFF_SECONDS ?= 5
 VIOLAWWW_DIFF_GEOMETRY ?= 1280x1024x24
 VIOLAWWW_DIFF_TOP ?= 12
-VIOLAWWW_DIFF_COMPARE_LOCATION ?= remote
+VIOLAWWW_DIFF_COMPARE_LOCATION ?= $(if $(filter 1 yes true,$(VIOLAWWW_DIFF_LOCAL)),local,remote)
 VIOLAWWW_DIFF_OUT_ROOT ?= $(OUT)/violawww-differential
 VIOLAWWW_SMOKE_DEPS ?= violawww
 
@@ -165,10 +166,14 @@ violawww_diff_env = \
     VIOLAWWW_DIFF_COMPARE_LOCATION='$(VIOLAWWW_DIFF_COMPARE_LOCATION)' \
     VIOLAWWW_DIFF_OUT_ROOT='$(abspath $(VIOLAWWW_DIFF_OUT_ROOT))'
 
-## Compare ViolaWWW screenshots for system libX11 vs libx11-compat on node11
+## Compare ViolaWWW screenshots for system libX11 vs libx11-compat. Set
+## VIOLAWWW_DIFF_LOCAL=1 to run the pipeline on the current host (used
+## by the GitHub Actions differential workflow); otherwise the script
+## SSHes to VIOLAWWW_DIFF_REMOTE.
 check-differential-violawww:
 	$(Q)$(violawww_diff_env) $(PYTHON) scripts/run-violawww-differential-tests.py \
-	    $(if $(filter 1 yes true,$(VIOLAWWW_DIFF_INSTALL_DEPS)),--install-deps)
+	    $(if $(filter 1 yes true,$(VIOLAWWW_DIFF_INSTALL_DEPS)),--install-deps) \
+	    $(if $(filter 1 yes true,$(VIOLAWWW_DIFF_LOCAL)),--local)
 
 # Pin vw's window at a known origin/size so screenshot crops capture
 # the X client's pixels instead of whatever the host desktop happens to

@@ -152,11 +152,12 @@ MOSAIC_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-mosaic-differential
 MOSAIC_DIFF_DISPLAY ?= 123
 MOSAIC_DIFF_JOBS ?= 1
 MOSAIC_DIFF_INSTALL_DEPS ?= 0
+MOSAIC_DIFF_LOCAL ?= 0
 MOSAIC_DIFF_MAE_THRESHOLD ?= 0.16
 MOSAIC_DIFF_CHANGED_THRESHOLD ?= 0.42
 MOSAIC_DIFF_GEOMETRY ?= 1280x1024x24
 MOSAIC_DIFF_TOP ?= 12
-MOSAIC_DIFF_COMPARE_LOCATION ?= remote
+MOSAIC_DIFF_COMPARE_LOCATION ?= $(if $(filter 1 yes true,$(MOSAIC_DIFF_LOCAL)),local,remote)
 MOSAIC_DIFF_OUT_ROOT ?= $(OUT)/mosaic-differential
 MOSAIC_DIFF_REPLAY ?= mosaic-differential.replay
 
@@ -173,10 +174,14 @@ mosaic_diff_env = \
     MOSAIC_DIFF_OUT_ROOT='$(abspath $(MOSAIC_DIFF_OUT_ROOT))' \
     MOSAIC_DIFF_REPLAY='$(MOSAIC_DIFF_REPLAY)'
 
-## Compare Mosaic screenshots for system libX11 vs libx11-compat on node11
+## Compare Mosaic screenshots for system libX11 vs libx11-compat. Set
+## MOSAIC_DIFF_LOCAL=1 to run on the current host (used by the GitHub
+## Actions differential workflow); otherwise the script SSHes to
+## MOSAIC_DIFF_REMOTE.
 check-differential-mosaic:
 	$(Q)$(mosaic_diff_env) $(PYTHON) scripts/run-mosaic-differential-tests.py \
-	    $(if $(filter 1 yes true,$(MOSAIC_DIFF_INSTALL_DEPS)),--install-deps)
+	    $(if $(filter 1 yes true,$(MOSAIC_DIFF_INSTALL_DEPS)),--install-deps) \
+	    $(if $(filter 1 yes true,$(MOSAIC_DIFF_LOCAL)),--local)
 
 MOSAIC_SMOKE_GEOMETRY ?= 900x720+0+0
 MOSAIC_SMOKE_REGION ?= 0,0,900,720

@@ -1,0 +1,517 @@
+# Differential gates for the SDL2-based libx11-compat stack.
+#
+# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig) is
+# built twice on the same GitHub-hosted runner: once against the
+# system libX11 stack from apt and once against libx11-compat. The
+# resulting screenshots are compared under Xvfb. This is the local
+# counterpart to the SSH-driven path in scripts/run-*-differential-tests.py
+# and is gated by XXX_DIFF_LOCAL=1.
+#
+# Differential gates live in a separate workflow from ci.yml so the
+# fast PR feedback loop (lint / build / smoke) is not delayed by the
+# heavier double-build pipeline, and so each downstream target reports
+# its own status check independent of the others. The five jobs run
+# in parallel; total wallclock is bounded by the slowest single job
+# rather than the sum of all jobs.
+#
+# Caches are shared with ci.yml via identical keys so a warm CI run
+# primes the differential jobs (and vice versa). Per-job ccache caches
+# stay distinct because Motif / Osiris / Xfig pull in different include
+# paths than a plain compat-only build.
+name: Differential
+
+on:
+  push:
+    branches: [main, cicd]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# PR reruns cancel older queued differential work; main pushes never
+# cancel so the post-merge result is recorded for every commit.
+concurrency:
+  group: differential-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # The differential scripts build the downstream target against
+  # libx11-compat AND against the apt-installed system X11 stack on
+  # the same runner. SYSTEM_X11_DEV_PKGS covers the headers / link
+  # libraries every target needs; individual jobs append target-specific
+  # dev packages on top (libxaw7-dev for Xfig, libfreetype-dev for
+  # Osiris, etc).
+  COMMON_BUILD_PKGS: "clang ccache make pkg-config python3 libsdl2-dev libsdl2-ttf-dev libpixman-1-dev"
+  # xbitmaps ships /usr/include/X11/bitmaps/*, which Motif lib/Xm
+  # includes directly. libxpm-dev provides xpm.pc which Motif configure
+  # demands via pkg-config (world feature group).
+  SYSTEM_X11_DEV_PKGS: "libice-dev libsm-dev libx11-dev libxext-dev libxmu-dev libxpm-dev libxt-dev xbitmaps"
+  # xfonts-* ships the legacy bitmap families ("-misc-fixed-*",
+  # "-adobe-helvetica-*", "-adobe-times-*", etc.) that Motif demos and
+  # ViolaWWW request via XLoadQueryFont. Without them the system-side
+  # binaries either crash (ViolaWWW's bundled xloadimage SEGVs on font
+  # resolution failure) or render with the default 9x15 fallback, which
+  # blows up the diff threshold against the libx11-compat side's
+  # SDL_ttf font path.
+  DIFFERENTIAL_PKGS: "imagemagick python3-pil rsync xauth xvfb xdotool xfonts-base xfonts-100dpi xfonts-75dpi xfonts-scalable"
+  MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4"
+  OSIRIS_BUILD_PKGS: "meson ninja-build libjpeg-dev libpng-dev libfreetype-dev"
+
+jobs:
+  # ---- Motif representative-demo differential ----
+  motif-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      MOTIF_YACC: "bison -y"
+      # Screenshot capture is a runtime cost (sleep $SECONDS per demo).
+      # 1s is enough for the representative set to settle on Xvfb; the
+      # default of 3 was tuned for slower hardware than the GH runner.
+      MOTIF_DIFF_SECONDS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.SYSTEM_X11_DEV_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        # Match the ci.yml key so a warm CI cache primes this job.
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache ccache
+        # Shared restore-keys prefix across motif / violawww / mosaic
+        # so the Motif gcc objects (system-side build) populated by any
+        # prior run of any of the three jobs are picked up here. Save
+        # keys stay distinct per job so all three persist their own
+        # post-run snapshots.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-motif
+          restore-keys: |
+            ccache-motifstack-diff-v3-${{ runner.os }}-
+
+      - name: Cache Motif system-side build tree
+        # Skip the system-side Motif rebuild when the configure inputs
+        # and script logic are unchanged. The script gates configure
+        # behind a .configure-stamp file; restoring that stamp plus the
+        # built lib/* and demos/* trees lets make hit incrementally
+        # rather than rerun autoreconf + configure cold.
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/motif-differential/_work/system-build
+            build/motif-differential/_work/system-out
+          key: motif-sysbuild-v1-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'scripts/run-motif-differential-tests.py', '.github/workflows/differential.yml') }}
+          restore-keys: |
+            motif-sysbuild-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        # 2 GB per job sits right at the 10 GB per-repo Actions cache
+        # quota when all 5 jobs save (5 x 2 GB). The differential payload
+        # routes both system-side and compat-side builds through
+        # ccache gcc, so a single compiler's object set dominates and
+        # 2 GB keeps the cold-cache hit rate from collapsing under the
+        # Motif system rebuild.
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run Motif differential
+        env:
+          MOTIF_DIFF_LOCAL: "1"
+          MOTIF_DIFF_COMPARE_LOCATION: local
+          MOTIF_DIFF_JOBS: "2"
+        run: make check-differential-motif
+
+      - name: Upload Motif differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: motif-differential
+          path: |
+            build/motif-differential/report.tsv
+            build/motif-differential/junit.xml
+            build/motif-differential/logs
+            build/motif-differential/diff
+            build/motif-differential/system
+            build/motif-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- ViolaWWW build + screenshot differential ----
+  violawww-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      MOTIF_YACC: "bison -y"
+      # ViolaWWW startup is slower than Motif demos but 2s is sufficient
+      # for the home-page render to settle under Xvfb.
+      VIOLAWWW_DIFF_SECONDS: "2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        # libxrender-dev covers the ViolaWWW build paths the base
+        # SYSTEM_X11_DEV_PKGS list doesn't include.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.SYSTEM_X11_DEV_PKGS }} ${{ env.DIFFERENTIAL_PKGS }} \
+            libxrender-dev
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache ccache
+        # Shares the ccache-motifstack-diff-v3-* restore-keys prefix
+        # with motif-differential and mosaic-differential so the
+        # cross-job Motif gcc object cache primes this job's
+        # system-Motif rebuild.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-violawww
+          restore-keys: |
+            ccache-motifstack-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run ViolaWWW differential
+        env:
+          VIOLAWWW_DIFF_LOCAL: "1"
+          VIOLAWWW_DIFF_COMPARE_LOCATION: local
+          VIOLAWWW_DIFF_JOBS: "2"
+        run: make check-differential-violawww
+
+      - name: Upload ViolaWWW differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: violawww-differential
+          path: |
+            build/violawww-differential/report.tsv
+            build/violawww-differential/junit.xml
+            build/violawww-differential/logs
+            build/violawww-differential/diff
+            build/violawww-differential/system
+            build/violawww-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Mosaic build + screenshot differential ----
+  mosaic-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.SYSTEM_X11_DEV_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache Mosaic source clone
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/mosaic
+          key: mosaic-src-${{ runner.os }}-${{ hashFiles('mk/mosaic.mk', 'compat/mosaic-patches/**') }}
+
+      - name: Cache ccache
+        # Shares the ccache-motifstack-diff-v3-* restore-keys prefix
+        # with motif-differential and violawww-differential so the
+        # cross-job Motif gcc object cache primes this job's
+        # system-Motif rebuild.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-mosaic
+          restore-keys: |
+            ccache-motifstack-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run Mosaic differential
+        env:
+          MOSAIC_DIFF_LOCAL: "1"
+          MOSAIC_DIFF_COMPARE_LOCATION: local
+          MOSAIC_DIFF_JOBS: "2"
+        run: make check-differential-mosaic
+
+      - name: Upload Mosaic differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mosaic-differential
+          path: |
+            build/mosaic-differential/report.tsv
+            build/mosaic-differential/junit.xml
+            build/mosaic-differential/logs
+            build/mosaic-differential/diff
+            build/mosaic-differential/system
+            build/mosaic-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Osiris (Qt 2.3.2) screenshot differential ----
+  osiris-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.OSIRIS_BUILD_PKGS }} \
+            ${{ env.SYSTEM_X11_DEV_PKGS }} ${{ env.DIFFERENTIAL_PKGS }} \
+            zlib1g-dev
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Osiris source clone
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/osiris
+          key: osiris-src-${{ runner.os }}-${{ hashFiles('mk/osiris.mk', 'compat/osiris-patches/**') }}
+
+      - name: Cache ccache
+        # Osiris has no Motif coupling so it keeps a distinct ccache
+        # key from the motifstack jobs.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-osiris-diff-v3-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-osiris-diff-v3-${{ runner.os }}-
+
+      - name: Cache Osiris system-side build tree
+        # Skip the system-side meson configure + ninja link when the
+        # script and mk inputs are unchanged. The script gates configure
+        # behind a .configure-stamp file; restoring the meson build dir
+        # lets ninja hit incrementally rather than reconfigure cold.
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/osiris-differential/_work/system-build
+            build/osiris-differential/_work/system-out
+          key: osiris-sysbuild-v1-${{ runner.os }}-${{ hashFiles('mk/osiris.mk', 'scripts/run-osiris-differential-tests.py', '.github/workflows/differential.yml') }}
+          restore-keys: |
+            osiris-sysbuild-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run Osiris differential
+        env:
+          OSIRIS_DIFF_LOCAL: "1"
+          OSIRIS_DIFF_COMPARE_LOCATION: local
+          OSIRIS_DIFF_JOBS: "2"
+        run: make check-differential-osiris
+
+      - name: Upload Osiris differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: osiris-differential
+          path: |
+            build/osiris-differential/report.tsv
+            build/osiris-differential/junit.xml
+            build/osiris-differential/logs
+            build/osiris-differential/diff
+            build/osiris-differential/system
+            build/osiris-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Xfig (Athena vector drawing) screenshot differential ----
+  xfig-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        # libxaw7-dev / libxft-dev / libxpm-dev cover the Xfig build
+        # paths the base SYSTEM_X11_DEV_PKGS list doesn't include.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} \
+            libfontconfig1-dev libxaw7-dev libxft-dev libxpm-dev patch
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Xfig source tree
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/xfig-3.2.9a
+          key: xfig-src-${{ runner.os }}-${{ hashFiles('mk/xfig.mk', 'compat/xfig-patches/**') }}
+
+      - name: Cache ccache
+        # Xfig has no Motif coupling so it keeps a distinct ccache
+        # key from the motifstack jobs.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xfig-diff-v3-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xfig-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run Xfig differential
+        env:
+          XFIG_DIFF_LOCAL: "1"
+          XFIG_DIFF_COMPARE_LOCATION: local
+          XFIG_DIFF_JOBS: "2"
+        run: make check-differential-xfig
+
+      - name: Upload Xfig differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xfig-differential
+          path: |
+            build/xfig-differential/report.tsv
+            build/xfig-differential/junit.xml
+            build/xfig-differential/logs
+            build/xfig-differential/diff
+            build/xfig-differential/system
+            build/xfig-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats

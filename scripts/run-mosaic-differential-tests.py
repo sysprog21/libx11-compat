@@ -29,6 +29,19 @@ def ssh(remote, script):
     run(["ssh", remote, "sh", "-s"], input_text=script)
 
 
+def execute(args, script):
+    """Run a build/capture/compare shell payload locally or via SSH."""
+    if args.local:
+        run(["sh", "-s"], input_text=script)
+    else:
+        ssh(args.remote, script)
+
+
+def remote_uri(args, path):
+    """Format a path for rsync; local mode strips the remote: prefix."""
+    return str(path) if args.local else f"{args.remote}:{path}"
+
+
 def q(value):
     return shlex.quote(str(value))
 
@@ -40,7 +53,50 @@ def parse_env_default(name, default):
     return value
 
 
+def parse_env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.lower() in ("1", "yes", "true", "on")
+
+
+def check_local_paths(out_root, remote_root):
+    """Reject --remote-root values that fetch_results would delete.
+
+    fetch_results() rmtrees out_root/{system,compat,logs,diff} before
+    rsyncing from remote_root/{screens/system,screens/compat,logs,diff}.
+    If remote_root equals out_root or lives inside one of those four
+    subdirectories, the rmtree wipes the staging tree before rsync can
+    read from it.
+    """
+    out_root = Path(out_root).resolve()
+    remote_root = Path(remote_root).resolve()
+
+    if remote_root == out_root:
+        raise ValueError(
+            "--remote-root cannot equal --out-root in local mode; "
+            "fetch_results would delete out_root/logs and out_root/diff "
+            "before rsync."
+        )
+
+    for name in ("system", "compat", "logs", "diff"):
+        dest = out_root / name
+        try:
+            remote_root.relative_to(dest)
+        except ValueError:
+            continue
+        raise ValueError(
+            f"--remote-root {remote_root} lives inside fetch destination "
+            f"{dest}; fetch_results would delete the staging tree before "
+            f"rsync. Pick a remote_root outside out_root/{{system,compat,"
+            f"logs,diff}}."
+        )
+
+
 def sync_repo(args):
+    if args.local:
+        Path(args.remote_root).mkdir(parents=True, exist_ok=True)
+        return str(ROOT)
     remote_repo = f"{args.remote_root}/repo"
     run(["ssh", args.remote, "mkdir", "-p", args.remote_root])
     rsync(
@@ -86,6 +142,11 @@ if command -v apt-get >/dev/null 2>&1; then
 fi
 """
 
+    # Offset compat-side Xvfb by 1 so the parallel screenshot block can
+    # run system-side and compat-side captures concurrently without lock
+    # collisions on the X server socket.
+    compat_display_num = int(args.display) + 1
+
     return f"""
 set -eu
 
@@ -128,6 +189,7 @@ system_screens="$remote_root/screens/system"
 compat_screens="$remote_root/screens/compat"
 fixture="$repo/tests/ui/fixtures/mosaic/link-index.html"
 display=:{q(args.display)}
+compat_display=:{compat_display_num}
 replay={q(args.replay)}
 
 run_logged() {{
@@ -154,6 +216,12 @@ capture_mosaic() {{
     replay_out="$remote_root/replay-$name"
     rm -rf "$replay_out" "$remote_root/home-$name"
     mkdir -p "$log_dir" "$screen_dir" "$remote_root/home-$name"
+    # Read display from the current env so the parallel capture
+    # subshells can each target their own Xvfb. Strip the leading
+    # colon and any trailing .screen suffix to recover the numeric
+    # display index that run-ui-replay's --display flag wants.
+    display_num=${{DISPLAY#:}}
+    display_num=${{display_num%%.*}}
     python3 "$repo/scripts/run-ui-replay.py" \\
         --name "mosaic-$name-link" \\
         --app "$bin" \\
@@ -162,12 +230,12 @@ capture_mosaic() {{
         --workdir "$workdir" \\
         --replay "$repo/tests/ui/replays/$replay" \\
         --out-root "$replay_out" \\
-        --display {q(args.display)} \\
+        --display "$display_num" \\
         --geometry {q(args.geometry)} \\
         --input-backend "$input_backend" \\
         --screenshot-command import \\
         --screenshot-region 0,0,900,720 \\
-        --env DISPLAY="$display" \\
+        --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
         --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
         --env XAPPLRESDIR="$workdir" \\
@@ -185,94 +253,194 @@ rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
 mkdir -p "$system_build" "$system_out" "$system_mosaic" "$system_logs" \\
     "$compat_logs" "$system_screens" "$compat_screens" "$remote_root/logs"
 
-cd "$repo"
-make -j{q(args.jobs)} CC=gcc mosaic
+# Wrap gcc with ccache so the system-side Motif build, the system-side
+# Mosaic build, and the compat-side mosaic build all hit the ccache
+# populated by the GitHub Actions cache action. Use PATH-based wrapping
+# rather than CC="ccache gcc" so recursive Makefiles that pass $(CC)
+# unquoted to sub-make (Mosaic's makefiles/Makefile.linux is one) do
+# not tokenize the value into "CC=ccache gcc-target".
+if command -v ccache >/dev/null 2>&1; then
+    if [ -d /usr/lib/ccache ]; then
+        export PATH="/usr/lib/ccache:$PATH"
+    fi
+    export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
+fi
+cc_wrapped="gcc"
 
 motif_src="$repo/build/upstream/motif"
-cd "$system_build"
-if [ ! -f .configure-stamp ]; then
-    : >"$remote_root/logs/system-motif-configure.log"
-    run_logged "$remote_root/logs/system-motif-configure.log" env \\
-        CPP="gcc -E" \\
-        CFLAGS="-g -O0 -include stdlib.h" \\
-        YACC="$yacc_bin" \\
-        "$motif_src/configure" \\
-        --prefix="$system_out/motif-install" \\
-        --disable-glw \\
-        --disable-tests \\
-        --without-xft \\
-        --with-jpeg=no \\
-        --with-png=no \\
-        --with-xrandr=no \\
-        --with-xrender=no \\
-        --with-xcursor=no \\
-        --with-xinerama=no
-    touch .configure-stamp
+
+# Pre-extract upstream Motif + Mosaic so the parallel compat-side and
+# system-side builds below don't race on the source / autoreconf steps.
+# Each make is a no-op when the actions/cache step already restored
+# the matching cache.
+(cd "$repo" && make build/upstream/motif/.autogen-stamp build/upstream/mosaic/.source-stamp)
+
+# Run compat-side and system-side builds concurrently. They write into
+# disjoint trees ($repo/build/mosaic vs $system_build / $system_mosaic)
+# and share only the read-only upstream sources. ccache is process-safe
+# via its own locking.
+compat_make_log="$remote_root/logs/compat-make.log"
+: >"$compat_make_log"
+(
+    set -e
+    cd "$repo"
+    make -j{q(args.jobs)} CC="$cc_wrapped" mosaic
+) >"$compat_make_log" 2>&1 &
+compat_pid=$!
+
+(
+    set -e
+    cd "$system_build"
+    if [ ! -f .configure-stamp ]; then
+        : >"$remote_root/logs/system-motif-configure.log"
+        run_logged "$remote_root/logs/system-motif-configure.log" env \\
+            CC="$cc_wrapped" \\
+            CPP="gcc -E" \\
+            CFLAGS="-g -O0 -include stdlib.h" \\
+            YACC="$yacc_bin" \\
+            "$motif_src/configure" \\
+            --prefix="$system_out/motif-install" \\
+            --disable-glw \\
+            --disable-tests \\
+            --without-xft \\
+            --with-jpeg=no \\
+            --with-png=no \\
+            --with-xrandr=no \\
+            --with-xrender=no \\
+            --with-xcursor=no \\
+            --with-xinerama=no
+        touch .configure-stamp
+    fi
+    : >"$remote_root/logs/system-motif-build.log"
+    run_logged "$remote_root/logs/system-motif-build.log" make -j{q(args.jobs)} -C config
+    run_logged "$remote_root/logs/system-motif-build.log" make -j{q(args.jobs)} -C lib/Xm CC="$cc_wrapped" CFLAGS="-g -O0 -include stdlib.h"
+    run_logged "$remote_root/logs/system-motif-build.log" make -j{q(args.jobs)} -C lib/Mrm CC="$cc_wrapped" CFLAGS="-g -O0 -include stdlib.h"
+
+    rm -rf "$system_mosaic/source"
+    mkdir -p "$system_mosaic/source"
+    tar --exclude .git --exclude '*.o' --exclude '*.a' \\
+        --exclude '*.dSYM' --exclude src/Mosaic \\
+        -cf - -C "$repo/build/upstream/mosaic" . | tar -xf - -C "$system_mosaic/source"
+    for patch_file in "$repo"/compat/mosaic-patches/*.patch; do
+        [ -e "$patch_file" ] || continue
+        patch -d "$system_mosaic/source" -p1 < "$patch_file"
+    done
+    touch "$system_mosaic/source/config.h"
+
+    x11_cflags=$(pkg-config --cflags x11 xext xmu xt xpm 2>/dev/null || true)
+    x11_libs=$(pkg-config --libs x11 xext xmu xt xpm 2>/dev/null || \\
+        printf '%s\\n' "-lXext -lXmu -lXt -lXpm -lX11")
+    motif_cflags="-I$motif_src/lib -I$system_build/lib"
+    motif_libs="-L$system_build/lib/Xm/.libs -L$system_build/lib/Mrm/.libs"
+    : >"$remote_root/logs/system-mosaic-build.log"
+    run_logged "$remote_root/logs/system-mosaic-build.log" \\
+        make -j{q(args.jobs)} -C "$system_mosaic/source" -f makefiles/Makefile.linux \\
+            MAKEFLAGS= MFLAGS= \\
+            CC="$cc_wrapped" \\
+            RANLIB=ranlib \\
+            CFLAGS="-O0 -g -std=gnu89 -fcommon -w -DMOTIF -DMOTIF1_2 -DLINUX -DXMOSAIC -D_GNU_SOURCE -D_DARWIN_C_SOURCE" \\
+            sysconfigflags="-DMOTIF -DMOTIF1_2 -DLINUX" \\
+            prereleaseflags="" \\
+            customflags='-DHOME_PAGE_DEFAULT=\\\\\\"http://info.cern.ch/\\\\\\"' \\
+            xinc="$motif_cflags $x11_cflags" \\
+            xlibs="-lXm $x11_libs" \\
+            ldflags="$motif_libs -Wl,-rpath,$system_build/lib/Xm/.libs -Wl,-rpath,$system_build/lib/Mrm/.libs" \\
+            pngflags="" \\
+            pnglibs="" \\
+            jpegflags="" \\
+            jpeglibs="" \\
+            krbflags="" \\
+            krblibs="" \\
+            syslibs="-lm" \\
+            default
+) &
+system_pid=$!
+
+compat_status=0
+wait "$compat_pid" || compat_status=$?
+system_status=0
+wait "$system_pid" || system_status=$?
+
+# Surface diagnostics for any failed side before exiting; show both
+# tails when both fail so the first-listed exit code does not mask a
+# concurrent failure on the other side.
+if [ "$compat_status" -ne 0 ]; then
+    echo "compat-side build failed (exit $compat_status); see $compat_make_log" >&2
+    tail -60 "$compat_make_log" >&2 || true
 fi
-: >"$remote_root/logs/system-motif-build.log"
-run_logged "$remote_root/logs/system-motif-build.log" make -C config
-run_logged "$remote_root/logs/system-motif-build.log" make -C lib/Xm CFLAGS="-g -O0 -include stdlib.h"
-run_logged "$remote_root/logs/system-motif-build.log" make -C lib/Mrm CFLAGS="-g -O0 -include stdlib.h"
+if [ "$system_status" -ne 0 ]; then
+    echo "system-side build failed (exit $system_status); see system-motif-build.log / system-mosaic-build.log" >&2
+    tail -60 "$remote_root/logs/system-motif-build.log" >&2 || true
+    tail -60 "$remote_root/logs/system-mosaic-build.log" >&2 || true
+fi
+[ "$compat_status" -eq 0 ] || exit "$compat_status"
+[ "$system_status" -eq 0 ] || exit "$system_status"
 
-rm -rf "$system_mosaic/source"
-mkdir -p "$system_mosaic/source"
-tar --exclude .git --exclude '*.o' --exclude '*.a' \\
-    --exclude '*.dSYM' --exclude src/Mosaic \\
-    -cf - -C "$repo/build/upstream/mosaic" . | tar -xf - -C "$system_mosaic/source"
-for patch_file in "$repo"/compat/mosaic-patches/*.patch; do
-    [ -e "$patch_file" ] || continue
-    patch -d "$system_mosaic/source" -p1 < "$patch_file"
-done
-touch "$system_mosaic/source/config.h"
-
-x11_cflags=$(pkg-config --cflags x11 xext xmu xt xpm 2>/dev/null || true)
-x11_libs=$(pkg-config --libs x11 xext xmu xt xpm 2>/dev/null || \\
-    printf '%s\\n' "-lXext -lXmu -lXt -lXpm -lX11")
-motif_cflags="-I$motif_src/lib -I$system_build/lib"
-motif_libs="-L$system_build/lib/Xm/.libs -L$system_build/lib/Mrm/.libs"
-: >"$remote_root/logs/system-mosaic-build.log"
-run_logged "$remote_root/logs/system-mosaic-build.log" \\
-    make -C "$system_mosaic/source" -f makefiles/Makefile.linux \\
-        MAKEFLAGS= MFLAGS= \\
-        CC=gcc \\
-        RANLIB=ranlib \\
-        CFLAGS="-O0 -g -std=gnu89 -fcommon -w -DMOTIF -DMOTIF1_2 -DLINUX -DXMOSAIC -D_GNU_SOURCE -D_DARWIN_C_SOURCE" \\
-        sysconfigflags="-DMOTIF -DMOTIF1_2 -DLINUX" \\
-        prereleaseflags="" \\
-        customflags='-DHOME_PAGE_DEFAULT=\\\\\\"http://info.cern.ch/\\\\\\"' \\
-        xinc="$motif_cflags $x11_cflags" \\
-        xlibs="-lXm $x11_libs" \\
-        ldflags="$motif_libs -Wl,-rpath,$system_build/lib/Xm/.libs -Wl,-rpath,$system_build/lib/Mrm/.libs" \\
-        pngflags="" \\
-        pnglibs="" \\
-        jpegflags="" \\
-        jpeglibs="" \\
-        krbflags="" \\
-        krblibs="" \\
-        syslibs="-lm" \\
-        default
-
-rm -f "/tmp/.X{q(args.display)}-lock"
-Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb.log" 2>&1 &
+rm -f "/tmp/.X{q(args.display)}-lock" "/tmp/.X{compat_display_num}-lock"
+Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-system.log" 2>&1 &
 xvfb_pid=$!
-trap 'kill "$xvfb_pid" >/dev/null 2>&1 || true' EXIT
+Xvfb "$compat_display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-compat.log" 2>&1 &
+compat_xvfb_pid=$!
+trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
 sleep 1
 
-capture_mosaic system \\
-    "$system_mosaic/source/src/Mosaic" \\
-    "$system_mosaic/source" \\
-    "$system_build/lib/Xm/.libs:$system_build/lib/Mrm/.libs" \\
-    "$system_logs" \\
-    "$system_screens" \\
-    xdotool
+# Mosaic system-side and compat-side captures each run a replay
+# scripted against the binary; running them on disjoint X servers in
+# parallel cuts the capture phase by roughly half.
+system_cap_log="$remote_root/logs/system-capture.log"
+compat_cap_log="$remote_root/logs/compat-capture.log"
+: >"$system_cap_log"
+: >"$compat_cap_log"
 
-capture_mosaic compat \\
-    "$repo/build/mosaic/source/src/Mosaic" \\
-    "$repo/build/mosaic/source" \\
-    "$repo/build:$repo/build/motif-install/lib" \\
-    "$compat_logs" \\
-    "$compat_screens" \\
-    internal
+(
+    set -e
+    export DISPLAY="$display"
+    capture_mosaic system \\
+        "$system_mosaic/source/src/Mosaic" \\
+        "$system_mosaic/source" \\
+        "$system_build/lib/Xm/.libs:$system_build/lib/Mrm/.libs" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
+) >"$system_cap_log" 2>&1 &
+system_cap_pid=$!
+
+(
+    set -e
+    export DISPLAY="$compat_display"
+    capture_mosaic compat \\
+        "$repo/build/mosaic/source/src/Mosaic" \\
+        "$repo/build/mosaic/source" \\
+        "$repo/build:$repo/build/motif-install/lib" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+) >"$compat_cap_log" 2>&1 &
+compat_cap_pid=$!
+
+system_cap_status=0
+wait "$system_cap_pid" || system_cap_status=$?
+compat_cap_status=0
+wait "$compat_cap_pid" || compat_cap_status=$?
+
+# Stage Xvfb logs and any partial replay traces into $remote_root/logs
+# so the artifact upload picks them up regardless of capture success.
+for replay_dir in "$remote_root"/replay-*; do
+    [ -d "$replay_dir" ] || continue
+    cp -r "$replay_dir" "$remote_root/logs/$(basename "$replay_dir")" 2>/dev/null || true
+done
+cp "$remote_root"/xvfb-*.log "$remote_root/logs/" 2>/dev/null || true
+
+if [ "$system_cap_status" -ne 0 ]; then
+    echo "system screenshot capture failed (exit $system_cap_status); see $system_cap_log" >&2
+    tail -60 "$system_cap_log" >&2 || true
+fi
+if [ "$compat_cap_status" -ne 0 ]; then
+    echo "compat screenshot capture failed (exit $compat_cap_status); see $compat_cap_log" >&2
+    tail -60 "$compat_cap_log" >&2 || true
+fi
+[ "$system_cap_status" -eq 0 ] || exit "$system_cap_status"
+[ "$compat_cap_status" -eq 0 ] || exit "$compat_cap_status"
 
 """
 
@@ -310,13 +478,19 @@ def fetch_results(args, *, fetch_remote_compare=False):
             shutil.rmtree(path)
         path.mkdir(parents=True)
 
-    rsync(f"{args.remote}:{args.remote_root}/screens/system/", system_dir)
-    rsync(f"{args.remote}:{args.remote_root}/screens/compat/", compat_dir)
-    rsync(f"{args.remote}:{args.remote_root}/logs/", log_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/screens/system/"), system_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/screens/compat/"), compat_dir)
+    rsync(remote_uri(args, f"{args.remote_root}/logs/"), log_dir)
     if fetch_remote_compare:
-        rsync(f"{args.remote}:{args.remote_root}/diff/", diff_dir)
-        rsync(f"{args.remote}:{args.remote_root}/report.tsv", out_root / "report.tsv")
-        rsync(f"{args.remote}:{args.remote_root}/junit.xml", out_root / "junit.xml")
+        rsync(remote_uri(args, f"{args.remote_root}/diff/"), diff_dir)
+        rsync(
+            remote_uri(args, f"{args.remote_root}/report.tsv"),
+            out_root / "report.tsv",
+        )
+        rsync(
+            remote_uri(args, f"{args.remote_root}/junit.xml"),
+            out_root / "junit.xml",
+        )
     return system_dir, compat_dir, out_root
 
 
@@ -363,9 +537,11 @@ def main():
     )
     parser.add_argument(
         "--remote-root",
-        default=parse_env_default(
-            "MOSAIC_DIFF_REMOTE_ROOT",
-            "/tmp/libx11-compat-mosaic-differential",
+        default=None,
+        help=(
+            "staging directory. Precedence: CLI flag > MOSAIC_DIFF_REMOTE_ROOT "
+            "env > local-mode default (out_root/_work) > SSH default "
+            "(/tmp/libx11-compat-mosaic-differential)."
         ),
     )
     parser.add_argument(
@@ -391,6 +567,16 @@ def main():
         help="install minimal Ubuntu packages on the remote via sudo apt-get",
     )
     parser.add_argument(
+        "--local",
+        action="store_true",
+        default=parse_env_bool("MOSAIC_DIFF_LOCAL"),
+        help=(
+            "run the build / capture / compare pipeline on the local host "
+            "instead of SSHing to --remote. Used by the GitHub Actions "
+            "differential workflow."
+        ),
+    )
+    parser.add_argument(
         "--mae-threshold",
         type=float,
         default=float(parse_env_default("MOSAIC_DIFF_MAE_THRESHOLD", "0.16")),
@@ -414,7 +600,7 @@ def main():
     parser.add_argument(
         "--compare-location",
         choices=("remote", "local"),
-        default=parse_env_default("MOSAIC_DIFF_COMPARE_LOCATION", "remote"),
+        default=None,
     )
     args = parser.parse_args()
 
@@ -427,18 +613,52 @@ def main():
     if "/" in args.replay or args.replay.startswith("."):
         parser.error("--replay must name a replay file under tests/ui/replays")
 
+    # Resolve --remote-root precedence: explicit CLI flag wins, then
+    # the MOSAIC_DIFF_REMOTE_ROOT env var, then the local-mode default
+    # (out_root/_work) or the SSH default.
+    if args.remote_root is None:
+        env_remote_root = os.environ.get("MOSAIC_DIFF_REMOTE_ROOT")
+        if env_remote_root:
+            args.remote_root = env_remote_root
+        elif args.local:
+            args.remote_root = str(args.out_root / "_work")
+        else:
+            args.remote_root = "/tmp/libx11-compat-mosaic-differential"
+
+    # Resolve --compare-location precedence: explicit CLI flag wins,
+    # then the MOSAIC_DIFF_COMPARE_LOCATION env var, then the local-mode
+    # default (local) or the SSH default (remote).
+    if args.compare_location is None:
+        env_compare_location = os.environ.get("MOSAIC_DIFF_COMPARE_LOCATION")
+        if env_compare_location:
+            if env_compare_location not in ("remote", "local"):
+                parser.error(
+                    "MOSAIC_DIFF_COMPARE_LOCATION must be 'remote' or 'local'"
+                )
+            args.compare_location = env_compare_location
+        elif args.local:
+            args.compare_location = "local"
+        else:
+            args.compare_location = "remote"
+
+    if args.local:
+        try:
+            check_local_paths(args.out_root, Path(args.remote_root))
+        except ValueError as error:
+            parser.error(str(error))
+
     remote_repo = sync_repo(args)
     remote_status = 0
     compare_status = 0
     fetch_status = 0
     try:
-        ssh(args.remote, remote_script(args, remote_repo))
+        execute(args, remote_script(args, remote_repo))
     except subprocess.CalledProcessError as error:
         remote_status = error.returncode
 
     if args.compare_location == "remote" and not remote_status:
         try:
-            ssh(args.remote, remote_compare_script(args))
+            execute(args, remote_compare_script(args))
         except subprocess.CalledProcessError as error:
             compare_status = error.returncode
 

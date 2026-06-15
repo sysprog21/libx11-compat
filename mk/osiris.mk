@@ -154,11 +154,12 @@ OSIRIS_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-osiris-differential
 OSIRIS_DIFF_DISPLAY ?= 124
 OSIRIS_DIFF_JOBS ?= 1
 OSIRIS_DIFF_INSTALL_DEPS ?= 0
+OSIRIS_DIFF_LOCAL ?= 0
 OSIRIS_DIFF_MAE_THRESHOLD ?= 0.16
 OSIRIS_DIFF_CHANGED_THRESHOLD ?= 0.46
 OSIRIS_DIFF_GEOMETRY ?= 1280x1024x24
 OSIRIS_DIFF_TOP ?= 12
-OSIRIS_DIFF_COMPARE_LOCATION ?= remote
+OSIRIS_DIFF_COMPARE_LOCATION ?= $(if $(filter 1 yes true,$(OSIRIS_DIFF_LOCAL)),local,remote)
 OSIRIS_DIFF_OUT_ROOT ?= $(OUT)/osiris-differential
 OSIRIS_DIFF_SCREENSHOT_REGION ?= $(OSIRIS_SMOKE_REGION)
 OSIRIS_REFERENCE_SCREEN_DIR ?= $(OUT)/osiris-reference-screens
@@ -219,10 +220,14 @@ $(UI_SMOKE_OUT_ROOT)/osiris-designer-menu/.stamp: FORCE osiris
 	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
 	$(Q)touch $@
 
-## Compare Osiris screenshots for system libX11 vs libx11-compat on node11
+## Compare Osiris screenshots for system libX11 vs libx11-compat. Set
+## OSIRIS_DIFF_LOCAL=1 to run on the current host (used by the GitHub
+## Actions differential workflow); otherwise the script SSHes to
+## OSIRIS_DIFF_REMOTE.
 check-differential-osiris:
 	$(Q)$(osiris_diff_env) $(PYTHON) scripts/run-osiris-differential-tests.py \
-	    $(if $(filter 1 yes true,$(OSIRIS_DIFF_INSTALL_DEPS)),--install-deps)
+	    $(if $(filter 1 yes true,$(OSIRIS_DIFF_INSTALL_DEPS)),--install-deps) \
+	    $(if $(filter 1 yes true,$(OSIRIS_DIFF_LOCAL)),--local)
 
 osiris-clean:
 	@echo "  CLEAN   osiris"
