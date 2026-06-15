@@ -1,0 +1,23 @@
+scripts/run-xfig-differential-tests.py
+  s_8932899d472820::t_f665ab44cf2947 312-317,324,328
+.github/workflows/differential.yml
+  s_8932899d472820::t_6b5c3859efb833 44-47
+  s_8932899d472820::t_8ee380b009a3fa 176-177,183
+  s_8932899d472820::t_f5c27d6013ffc9 265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "add6a031fdf703d608716220d6f16225aa2f4000",
+  "prompts": {},
+  "sessions": {
+    "s_8932899d472820": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8cadaebf-e63f-4d5e-b9f6-de366394a2bd",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
