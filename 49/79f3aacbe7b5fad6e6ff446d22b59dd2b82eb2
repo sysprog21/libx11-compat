@@ -1,0 +1,19 @@
+mk/xfig.mk
+  s_c770def9b291b1::t_85a09953df5058 48-54,56-58,61-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "4979f3aacbe7b5fad6e6ff446d22b59dd2b82eb2",
+  "prompts": {},
+  "sessions": {
+    "s_c770def9b291b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1dddb668-037c-4648-92a3-d33549c31855",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
