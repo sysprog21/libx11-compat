@@ -1,53 +1,53 @@
-.ci/check-newline.sh
-  s_4ae3a30c2feeb9::t_b95e3aee1588c1 1-9,11-17
-  s_4ae3a30c2feeb9::t_4cdd12a923739c 10
-src/util.h
-  s_4ae3a30c2feeb9::t_6e6ad51131c415 34-48
-mk/format.mk
-  s_4ae3a30c2feeb9::t_04e732d162a3d7 5,9,28-40,47-50,52-53,60-62
-  s_4ae3a30c2feeb9::t_ec1c5a57f99061 11-26,41,54
-.ci/check-security.sh
-  s_4ae3a30c2feeb9::t_3c97da00abd584 1-17,29-45
-  s_4ae3a30c2feeb9::t_eaae29af6eed9f 18-28
+src/events.h
+  s_4ae3a30c2feeb9::t_4876eea09af404 14
 mk/toolchain.mk
   s_4ae3a30c2feeb9::t_59157cbdded359 5-6
   s_4ae3a30c2feeb9::t_fb2102d0ed1370 16
   s_4ae3a30c2feeb9::t_ef5f9ec281cd77 17-37
-src/xlibint-stubs.c
-  s_4ae3a30c2feeb9::t_23bc9d25def8cd 16,21-33,35-37,39-40,42-44,46-47,53-54
-.github/workflows/ci.yml
-  s_4ae3a30c2feeb9::t_4eabe01e381f61 1-21,26-27,29,32,35,40-47,53-57,63-124
-  s_4ae3a30c2feeb9::t_c265e9ee00bfe8 22-25,28,30-31,33
-  s_4ae3a30c2feeb9::t_4807a189de094b 34,36-39,48-52
-  s_4ae3a30c2feeb9::t_b0a2233b227bc1 58-62
-.ci/check-format.sh
-  s_4ae3a30c2feeb9::t_5364abc9a43d1d 1-42
 .ci/check-cppcheck.sh
   s_4ae3a30c2feeb9::t_df1e8e49f934a6 1-31
-tests/check.c
-  s_4ae3a30c2feeb9::t_fd178cb937c831 699-702
-mk/library.mk
-  s_4ae3a30c2feeb9::t_b79749949701ba 8,21,24
-  s_4ae3a30c2feeb9::t_f07cd2a4f859f5 9-20,23
+src/xlibint-stubs.c
+  s_4ae3a30c2feeb9::t_23bc9d25def8cd 16,21-33,35-37,39-40,42-44,46-47,53-54
+mk/format.mk
+  s_4ae3a30c2feeb9::t_04e732d162a3d7 5,9,28-40,47-50,52-53,60-62
+  s_4ae3a30c2feeb9::t_ec1c5a57f99061 11-26,41,54
+src/display.c
+  s_4ae3a30c2feeb9::t_c070f2d93cf744 24-26,29-30
+  s_4ae3a30c2feeb9::t_89654b9adc7894 87
 .editorconfig
   s_4ae3a30c2feeb9::t_36fac67ff06976 12-21
 src/events.c
   s_4ae3a30c2feeb9::t_6ff074c1a4c107 344-379,410,421-423,427,431-437
   s_4ae3a30c2feeb9::t_f93c269de209cf 380-395
-src/events.h
-  s_4ae3a30c2feeb9::t_4876eea09af404 14
-src/display.c
-  s_4ae3a30c2feeb9::t_c070f2d93cf744 24-26,29-30
-  s_4ae3a30c2feeb9::t_89654b9adc7894 87
 include/X11/extensions/Xrender.h
   s_abea5c86e21c3d::t_74f0487d4f5916 67,69,71,74
   s_abea5c86e21c3d::t_2e371f528df68d 68
 mk/config.mk
   s_4ae3a30c2feeb9::t_2e7fc4b6fdd0c4 34
+tests/check.c
+  s_4ae3a30c2feeb9::t_fd178cb937c831 699-702
+.ci/check-format.sh
+  s_4ae3a30c2feeb9::t_5364abc9a43d1d 1-42
+src/util.h
+  s_4ae3a30c2feeb9::t_6e6ad51131c415 34-48
+mk/library.mk
+  s_4ae3a30c2feeb9::t_b79749949701ba 8,21,24
+  s_4ae3a30c2feeb9::t_f07cd2a4f859f5 9-20,23
+.ci/check-security.sh
+  s_4ae3a30c2feeb9::t_3c97da00abd584 1-17,29-45
+  s_4ae3a30c2feeb9::t_eaae29af6eed9f 18-28
+.ci/check-newline.sh
+  s_4ae3a30c2feeb9::t_b95e3aee1588c1 1-9,11-17
+  s_4ae3a30c2feeb9::t_4cdd12a923739c 10
+.github/workflows/ci.yml
+  s_4ae3a30c2feeb9::t_4eabe01e381f61 1-21,26-27,29,32,35,40-47,53-57,63-124
+  s_4ae3a30c2feeb9::t_c265e9ee00bfe8 22-25,28,30-31,33
+  s_4ae3a30c2feeb9::t_4807a189de094b 34,36-39,48-52
+  s_4ae3a30c2feeb9::t_b0a2233b227bc1 58-62
 ---
 {
   "schema_version": "authorship/3.0.0",
-  "git_ai_version": "1.5.2",
+  "git_ai_version": "1.5.7",
   "base_commit_sha": "cf1ba57b086405346ab4908f1f18474cefada044",
   "prompts": {},
   "sessions": {
