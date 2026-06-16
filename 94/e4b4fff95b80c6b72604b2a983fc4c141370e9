@@ -1,0 +1,21 @@
+scripts/run-ui-replay.py
+  s_21455ba2802cc0::t_a6549d31828e7a 1363-1365,1367-1371
+src/replay.c
+  s_21455ba2802cc0::t_a6549d31828e7a 315-324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "94e4b4fff95b80c6b72604b2a983fc4c141370e9",
+  "prompts": {},
+  "sessions": {
+    "s_21455ba2802cc0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "89824d35-1e49-4cdd-a066-bfed9567c728",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
