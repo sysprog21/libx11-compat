@@ -18,10 +18,16 @@ assert-image initial common-visible.json
 motion 360 540
 wheel down 5
 # Wait long enough for libx11-compat's internal event loop to drain the
-# wheel-down sequence and for vw to apply the scroll. The previous
-# 1 second budget passed roughly four runs out of five but flaked when
-# the runner was under load; this matches the resize delay below.
-delay 3000
+# wheel-down sequence and for vw to apply the scroll. The previous 3
+# second budget still flaked on heavily loaded GitHub runners
+# (changed_ratio 0.00000 on the differential job, recoverable by a
+# plain rerun), so match the 6 second budget that the smoke replay
+# tests/ui/replays/violawww-scroll.replay uses under
+# --in-process-snapshots. wait-converge is not a drop-in replacement:
+# the xdotool fallback ignores its arguments and sleeps 500 ms, and
+# the in-process detector can converge on pre-input idle before vw has
+# produced any Expose/Present activity.
+delay 6000
 screenshot scrolled
 assert-image scrolled common-visible.json
 assert-image scrolled violawww-scroll-changed.json
