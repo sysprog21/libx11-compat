@@ -2879,6 +2879,19 @@ static int test_events(Display *display)
     CHECK(out.type == Expose && out.xany.window == window,
           "unexpected window event");
 
+    uint64_t exposeTaps = timelineCounter(TIMELINE_KIND_EXPOSE);
+    XSendEvent(display, window, False, ExposureMask, &expose);
+    XSendEvent(display, window, False, 0, &client);
+    CHECK(XCheckTypedEvent(display, ClientMessage, &out),
+          "XCheckTypedEvent did not find ClientMessage after Expose");
+    CHECK(timelineCounter(TIMELINE_KIND_EXPOSE) == exposeTaps + 1,
+          "deferred converted Expose was not tapped once");
+    XNextEvent(display, &out);
+    CHECK(out.type == Expose && out.xany.window == window,
+          "XNextEvent did not preserve deferred Expose");
+    CHECK(timelineCounter(TIMELINE_KIND_EXPOSE) == exposeTaps + 1,
+          "deferred converted Expose was tapped twice");
+
     Window ignoredChild =
         XCreateSimpleWindow(display, window, 0, 0, 8, 8, 0, 0, 0);
     CHECK(ignoredChild != None, "child creation failed");
@@ -3048,9 +3061,13 @@ static int test_events(Display *display)
     CHECK(!XCheckTypedEvent(display, KeyPress, &out),
           "SDL_TEXTINPUT was converted into a duplicate KeyPress");
 
-    /* Wheel up -> ButtonPress Button4 with current modifier state. */
+    /* Wheel up -> ButtonPress + matching ButtonRelease for Button4. Real X11
+     * always pairs wheel button events, so the conversion layer queues both;
+     * the test must drain both so leftover Releases do not pollute the
+     * put-back queue ahead of the crossing assertions further down.
+     */
     SDL_Event wheelEvent;
-    XSelectInput(display, window, ButtonPressMask);
+    XSelectInput(display, window, ButtonPressMask | ButtonReleaseMask);
     SDL_zero(wheelEvent);
     wheelEvent.type = SDL_MOUSEWHEEL;
     wheelEvent.wheel.windowID =
@@ -3061,6 +3078,10 @@ static int test_events(Display *display)
     CHECK(XCheckTypedEvent(display, ButtonPress, &out),
           "SDL_MOUSEWHEEL did not produce ButtonPress");
     CHECK(out.xbutton.button == Button4, "wheel-up did not map to Button4");
+    CHECK(XCheckTypedEvent(display, ButtonRelease, &out),
+          "SDL_MOUSEWHEEL did not produce paired ButtonRelease");
+    CHECK(out.xbutton.button == Button4,
+          "wheel-up ButtonRelease did not match Button4");
 
     SDL_zero(wheelEvent);
     wheelEvent.type = SDL_MOUSEWHEEL;
@@ -3072,6 +3093,10 @@ static int test_events(Display *display)
     CHECK(XCheckTypedEvent(display, ButtonPress, &out),
           "wheel-down did not produce ButtonPress");
     CHECK(out.xbutton.button == Button5, "wheel-down did not map to Button5");
+    CHECK(XCheckTypedEvent(display, ButtonRelease, &out),
+          "wheel-down did not produce paired ButtonRelease");
+    CHECK(out.xbutton.button == Button5,
+          "wheel-down ButtonRelease did not match Button5");
 
     SDL_Event hintMotion;
     SDL_zero(hintMotion);

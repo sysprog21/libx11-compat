@@ -1792,8 +1792,15 @@ char **XListFontsWithInfo(Display *display,
 XFontStruct *XLoadQueryFont(Display *display, _Xconst char *name)
 {
     // https://tronche.com/gui/x/xlib/graphics/font-metrics/XLoadQueryFont.html
-    if (!findFontCacheEntryByName(name))
+    FontCacheEntry *cacheHit = findFontCacheEntryByName(name);
+    if (!cacheHit) {
+        LOG("XLoadQueryFont MISS: %s\n", name ? name : "(null)");
         return NULL;
+    }
+    LOG("XLoadQueryFont HIT: req='%s' -> XLF='%s' file='%s'\n",
+        name ? name : "(null)",
+        cacheHit->XLFName ? cacheHit->XLFName : "(null)",
+        cacheHit->filePath ? cacheHit->filePath : "(null)");
     Font fontId = XLoadFont(display, name);
     if (fontId == None)
         return NULL;

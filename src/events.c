@@ -153,6 +153,13 @@ static Bool shouldStartXtWakeTimer(void)
 typedef struct PutBackEvent {
     Display *display;
     XEvent event;
+    /* True when convertEvent's terminal tap already ran before the event was
+     * placed on this queue. Put-back delivery paths use this to avoid
+     * double-tapping such events into the timeline. Synthesized events that
+     * bypass convertEvent (e.g. crossings built by appendPointerCrossingEvent)
+     * leave this False so the timeline still sees them when consumed.
+     */
+    Bool alreadyTapped;
     struct PutBackEvent *next;
 } PutBackEvent;
 
@@ -348,7 +355,9 @@ static Bool getEventQueueLength(int *qlen)
     return True;
 }
 
-static Bool enqueuePutBackEvent(Display *display, const XEvent *event)
+static Bool enqueuePutBackEventWithTap(Display *display,
+                                       const XEvent *event,
+                                       Bool alreadyTapped)
 {
     PutBackEvent *node = malloc(sizeof(PutBackEvent));
     if (!node) {
@@ -358,6 +367,7 @@ static Bool enqueuePutBackEvent(Display *display, const XEvent *event)
 
     node->display = display;
     memcpy(&node->event, event, sizeof(XEvent));
+    node->alreadyTapped = alreadyTapped;
     lockPutBackEvents();
     node->next = putBackEvents;
     putBackEvents = node;
@@ -370,7 +380,14 @@ static Bool enqueuePutBackEvent(Display *display, const XEvent *event)
     return True;
 }
 
-static Bool appendPutBackEvent(Display *display, const XEvent *event)
+static Bool enqueuePutBackEvent(Display *display, const XEvent *event)
+{
+    return enqueuePutBackEventWithTap(display, event, False);
+}
+
+static Bool appendPutBackEventWithTap(Display *display,
+                                      const XEvent *event,
+                                      Bool alreadyTapped)
 {
     PutBackEvent *node = malloc(sizeof(PutBackEvent));
     if (!node) {
@@ -379,6 +396,7 @@ static Bool appendPutBackEvent(Display *display, const XEvent *event)
     }
     node->display = display;
     memcpy(&node->event, event, sizeof(XEvent));
+    node->alreadyTapped = alreadyTapped;
     node->next = NULL;
 
     lockPutBackEvents();
@@ -391,6 +409,32 @@ static Bool appendPutBackEvent(Display *display, const XEvent *event)
     return True;
 }
 
+static Bool appendPutBackEvent(Display *display, const XEvent *event)
+{
+    return appendPutBackEventWithTap(display, event, False);
+}
+
+static void deliverPutBackEvent(Display *display,
+                                PutBackEvent *node,
+                                XEvent *event)
+{
+    Bool alreadyTapped = node->alreadyTapped;
+    memcpy(event, &node->event, sizeof(XEvent));
+    free(node);
+    /* Match the pipe byte enqueuePutBackEvent wrote so the wake-up accounting
+     * stays consistent.
+     */
+    READ_EVENT_IN_PIPE(display);
+    /* Put-back events that bypass convertEvent's terminal tap (synthesized
+     * crossings, send-event payloads) need to be tapped here so timeline JSONL
+     * captures the full event stream. Events that already went through
+     * convertEvent's tap before being put back carry alreadyTapped=True so the
+     * timeline does not see them twice.
+     */
+    if (!alreadyTapped)
+        timelineTapXEvent(event);
+}
+
 static Bool popPutBackEvent(Display *display, XEvent *event)
 {
     lockPutBackEvents();
@@ -399,13 +443,8 @@ static Bool popPutBackEvent(Display *display, XEvent *event)
         PutBackEvent *node = *link;
         if (node->display == display) {
             *link = node->next;
-            memcpy(event, &node->event, sizeof(XEvent));
             unlockPutBackEvents();
-            free(node);
-            /* Match the pipe byte enqueuePutBackEvent wrote so the wake-up
-             * accounting stays consistent.
-             */
-            READ_EVENT_IN_PIPE(display);
+            deliverPutBackEvent(display, node, event);
             return True;
         }
         link = &node->next;
@@ -456,7 +495,11 @@ static int drainSdlEventsToPutBack(Display *display)
     for (int i = 0; i < qlen; i++) {
         XEvent converted;
         if (convertEvent(display, &events[i], &converted, True) == 0)
-            appendPutBackEvent(display, &converted);
+            /* convertEvent already ran its terminal timelineTapXEvent for these
+             * events; mark them so popPutBackEvent does not tap a second time
+             * when they are eventually consumed.
+             */
+            appendPutBackEventWithTap(display, &converted, True);
     }
     int remainingSdlEvents = 0;
     if (getEventQueueLength(&remainingSdlEvents)) {
@@ -850,10 +893,8 @@ static Bool removeMatchingPutBackEvent(
         if (node->display == display &&
             predicate(w, type, mask, &node->event)) {
             *link = node->next;
-            memcpy(event, &node->event, sizeof(XEvent));
             unlockPutBackEvents();
-            free(node);
-            READ_EVENT_IN_PIPE(display);
+            deliverPutBackEvent(display, node, event);
             return True;
         }
         link = &node->next;
@@ -875,10 +916,8 @@ static Bool removeMatchingPutBackIfEvent(Display *display,
         PutBackEvent *node = *link;
         if (node->display == display && predicate(display, &node->event, arg)) {
             *link = node->next;
-            memcpy(event, &node->event, sizeof(XEvent));
             unlockPutBackEvents();
-            free(node);
-            READ_EVENT_IN_PIPE(display);
+            deliverPutBackEvent(display, node, event);
             return True;
         }
         link = &node->next;
@@ -932,7 +971,7 @@ void discardQueuedEventsForWindow(Display *display, Window window)
             continue;
         if (converted.xany.window == window)
             continue;
-        appendPutBackEvent(display, &converted);
+        appendPutBackEventWithTap(display, &converted, True);
     }
     int remainingSdlEvents = 0;
     if (getEventQueueLength(&remainingSdlEvents)) {
@@ -1721,9 +1760,9 @@ int convertEvent(Display *display,
                     GET_WINDOW_STRUCT(eventWindow)->h =
                         (unsigned int) sdlEvent->window.data2;
                     resizeWindowTexture(eventWindow);
-                    /* The top-level's own cached visibleRegion is its
-                     * (0,0,w,h) frame; it goes stale on every resize
-                     * driven by SDL outside of configureWindow.
+                    /* The top-level's own cached visibleRegion is its (0,0,w,h)
+                     * frame; it goes stale on every resize driven by SDL
+                     * outside of configureWindow.
                      */
                     invalidateVisibleRegionForTopLevel(eventWindow);
                     clearWindowTreeWithoutExpose(display, eventWindow);
@@ -1965,7 +2004,35 @@ int convertEvent(Display *display,
                                     pointerButtonStateSnapshot();
             xEvent->xbutton.button = wheelButton;
             xEvent->xbutton.same_screen = True;
-            break;
+            /* Real X11 always pairs a wheel ButtonPress with an immediate
+             * matching ButtonRelease, and Motif translations (XmScrollBar,
+             * XmText) only fire their scroll actions once they see the full
+             * press/release sequence. Synthesizing only the press leaves
+             * Btn4Down/Btn5Down translations latched mid-sequence and the
+             * scroll never lands, which is why wheel input through libx11-
+             * compat appears as a no-op while the same replay driven via
+             * xdotool against system X11 scrolls correctly.
+             *
+             * Queue both ends at the put-back queue head (last enqueue ends
+             * up on top, so push Release first and Press second) and bail
+             * out with -1 so all consumer paths -- XNextEvent's main pump
+             * and the drainSdlEventsToPutBack drains -- pull them in the
+             * right order without the caller redundantly appending the
+             * Press behind the Release we already queued.
+             */
+            XEvent pressEvent = *xEvent;
+            pressEvent.xbutton.type = ButtonPress;
+            pressEvent.xbutton.serial = serial;
+            pressEvent.xbutton.send_event = sendEvent;
+            pressEvent.xbutton.display = display;
+            pressEvent.xbutton.window = eventWindow;
+            timelineTapXEvent(&pressEvent);
+            XEvent releaseEvent = pressEvent;
+            releaseEvent.xbutton.type = ButtonRelease;
+            timelineTapXEvent(&releaseEvent);
+            enqueuePutBackEventWithTap(display, &releaseEvent, True);
+            enqueuePutBackEventWithTap(display, &pressEvent, True);
+            return -1;
         }
     case SDL_JOYAXISMOTION: /**< Joystick axis motion */
         LOG("SDL_JOYAXISMOTION\n");
@@ -2085,6 +2152,16 @@ int convertEvent(Display *display,
                  * round-trip via the same condvar the snapshot path uses.
                  */
                 snapshotHandleResizeEvent(display, sdlEvent);
+                return -1;
+            }
+            if (snapshotOwnsEventType(sdlEvent->type) &&
+                sdlEvent->user.code == FOCUS_AT_EVENT_CODE) {
+                /* Replay-driven focus shift. getContainingWindow walks the
+                 * window tree and XSetInputFocus mutates global focus state;
+                 * both must run on the main thread to stay safe against
+                 * concurrent window-tree mutators.
+                 */
+                snapshotHandleFocusAtEvent(display, sdlEvent);
                 return -1;
             }
             if (stateSnapshotOwnsEventType(sdlEvent->type)) {
@@ -3266,7 +3343,8 @@ static Bool checkTypedEvent(Display *display,
             if (!foundMatch && predicate(w, type, mask, &convertedEvent)) {
                 memcpy(event, &convertedEvent, sizeof(XEvent));
                 foundMatch = True;
-            } else if (!appendPutBackEvent(display, &convertedEvent)) {
+            } else if (!appendPutBackEventWithTap(display, &convertedEvent,
+                                                  True)) {
                 free(tmp);
                 UnlockDisplay(display);
                 return False;
@@ -3332,7 +3410,8 @@ static Bool checkIfEvent(Display *display,
             if (!foundMatch && predicate(display, &convertedEvent, arg)) {
                 memcpy(event, &convertedEvent, sizeof(XEvent));
                 foundMatch = True;
-            } else if (!appendPutBackEvent(display, &convertedEvent)) {
+            } else if (!appendPutBackEventWithTap(display, &convertedEvent,
+                                                  True)) {
                 free(tmp);
                 UnlockDisplay(display);
                 return False;

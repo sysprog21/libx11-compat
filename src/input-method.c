@@ -655,6 +655,8 @@ XFontSet XCreateFontSet(Display *display,
     if (def_string_return)
         *def_string_return = "";
 
+    LOG("XCreateFontSet request: '%s'\n",
+        base_font_name_list ? base_font_name_list : "(null)");
     char *pattern = firstFontSetPattern(base_font_name_list);
     if (!pattern)
         return NULL;

@@ -44,4 +44,18 @@ Bool snapshotOwnsEventType(Uint32 eventType);
  */
 int snapshotHandleResizeEvent(Display *display, const SDL_Event *event);
 
+/* Resolve the X subwindow containing the replay-target-local point (x, y) and
+ * call XSetInputFocus on it. Blocks the caller until the lookup and focus
+ * mutation complete on the main thread, since both the window tree walk
+ * (getContainingWindow) and the focus state (keyboardFocus / postFocusChange)
+ * are unguarded against the main-thread mutators that build them. Used by the
+ * replay engine's focus-at verb. Returns 0 on success, -1 if the translation
+ * or containment lookup fails, -2 if the SDL_Event push failed.
+ */
+int snapshotRequestFocusAtAndWait(int x, int y);
+
+/* Handle a FOCUS_AT_EVENT_CODE SDL_USEREVENT on the main thread. Runs the
+ * tree walk and the XSetInputFocus call, then signals the waiter. */
+int snapshotHandleFocusAtEvent(Display *display, const SDL_Event *event);
+
 #endif

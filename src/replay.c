@@ -27,6 +27,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +95,44 @@ static void trim(char *s)
 static Bool isPressWord(const char *dir)
 {
     return strcasecmp(dir, "press") == 0 || strcasecmp(dir, "down") == 0;
+}
+
+/* Parse a single non-negative decimal coordinate, advance the cursor past
+ * trailing whitespace, and reject anything that would wrap-around or land
+ * outside int range.
+ *
+ * Returns True on success. Used by the focus-at verb so the x and y fields
+ * share one rejection path.
+ */
+static Bool parseFocusAtCoord(const char **cursor, int *out)
+{
+    while (**cursor == ' ' || **cursor == '\t')
+        (*cursor)++;
+    char *endp = NULL;
+    errno = 0;
+    long value = strtol(*cursor, &endp, 10);
+    if (*cursor == endp || errno == ERANGE || value < 0 || value > INT_MAX)
+        return False;
+    *cursor = endp;
+    while (**cursor == ' ' || **cursor == '\t')
+        (*cursor)++;
+    *out = (int) value;
+    return True;
+}
+
+static void writeWaitConvergeFailure(const char *path,
+                                     int lineno,
+                                     const char *reason)
+{
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        fprintf(stderr,
+                "replay: line %d: wait-converge failure marker %s failed\n",
+                lineno, path);
+        return;
+    }
+    fprintf(fp, "%s\n", reason);
+    fclose(fp);
 }
 
 /* Replay diagnostics go to stderr unconditionally rather than through LOG().
@@ -204,12 +243,54 @@ static void runScript(const char *path)
                 XTestFakeKeyEvent(replayDisplay, code, isPressWord(dir), 0);
                 replayLastInputAnchorMs = replayNowMs();
             }
+        } else if (!strcmp(cmd, "focus-at")) {
+            /* Translate target-local (x, y) to root coords, resolve the X
+             * subwindow under that point, and call XSetInputFocus on it on the
+             * main thread (via snapshotRequestFocusAtAndWait). Motif's
+             * translation table normally invokes XmProcessTraversal from its
+             * Arm() / BSelect() actions after a click, which then calls
+             * XSetInputFocus and lets the widget paint its focus highlight.
+             * Synthetic ButtonPress + ButtonRelease via the XTest fake-event
+             * path does not reliably trigger XmProcessTraversal under every
+             * Motif focus-policy configuration, so this verb is the opt-in knob
+             * that forces the focus shift in tests that need it.
+             *
+             * Parsing: strtol with full-consumption + range checks. Reject
+             * negatives and values outside int range so getContainingWindow
+             * cannot be handed wrap-around coordinates that resolve to
+             * SCREEN_WINDOW or walk past a valid window's bounds.
+             */
+            const char *cursor = args;
+            int x = 0, y = 0;
+            if (!parseFocusAtCoord(&cursor, &x)) {
+                fprintf(stderr, "replay: line %d: focus-at bad x '%s'\n",
+                        lineno, args);
+                break;
+            }
+            if (!parseFocusAtCoord(&cursor, &y)) {
+                fprintf(stderr, "replay: line %d: focus-at bad y '%s'\n",
+                        lineno, args);
+                break;
+            }
+            if (*cursor != '\0') {
+                fprintf(stderr,
+                        "replay: line %d: focus-at trailing garbage '%s'\n",
+                        lineno, cursor);
+                break;
+            }
+            int rc = snapshotRequestFocusAtAndWait(x, y);
+            if (rc != 0)
+                fprintf(stderr,
+                        "replay: line %d: focus-at (%d, %d) failed "
+                        "(rc=%d)\n",
+                        lineno, x, y, rc);
         } else if (!strcmp(cmd, "wait-converge")) {
             /* Block the worker until the post-input event stream goes quiet,
              * with an explicit divergence trip-wire. Arguments are optional and
              * have sensible defaults; full form is
              *   wait-converge [bucket_ms quiet_buckets diverged_buckets
-             *                  threshold_per_bucket timeout_ms]
+             *                  threshold_per_bucket timeout_ms
+             *                  failure-marker=path]
              *
              * Validation: parse with strtoull and reject any "-" prefix or
              * trailing garbage so a typo like `wait-converge -1` does not get
@@ -230,6 +311,16 @@ static void runScript(const char *path)
                 while (*cursor == ' ' || *cursor == '\t')
                     cursor++;
                 if (*cursor == '\0')
+                    break;
+                /* Allow `failure-marker=` to appear at any position, including
+                 * before any numeric field. Without this, forms like
+                 *   wait-converge failure-marker=foo
+                 *   wait-converge 200 failure-marker=foo
+                 * are rejected by strtoull as "bad arg N" because the marker
+                 * is not a digit. Break out here so remaining fields keep
+                 * their defaults and the post-loop check handles the marker.
+                 */
+                if (!strncmp(cursor, "failure-marker=", 15))
                     break;
                 if (*cursor == '-') {
                     fprintf(stderr,
@@ -254,6 +345,24 @@ static void runScript(const char *path)
                 fields[idx] = parsed;
                 cursor = endp;
             }
+            /* The promise in the leading comment is "reject trailing garbage";
+             * without this post-loop check `wait-converge 200 2 50 200
+             * 15000xyz` silently parses as 15000 and ignores the suffix. Skip
+             * whitespace and reject anything else so a typo surfaces as a
+             * deterministic failure (codex-flagged).
+             */
+            if (cursor) {
+                while (*cursor == ' ' || *cursor == '\t')
+                    cursor++;
+                if (*cursor != '\0' &&
+                    strncmp(cursor, "failure-marker=", 15) != 0) {
+                    fprintf(stderr,
+                            "replay: line %d: wait-converge trailing garbage "
+                            "after 5 args: '%s'\n",
+                            lineno, cursor);
+                    cursor = NULL;
+                }
+            }
             if (!cursor) {
                 /* Malformed input. Break out of the script so the runner cannot
                  * proceed past the failed synchronization point with the rest
@@ -269,24 +378,38 @@ static void runScript(const char *path)
             unsigned long long divergedBuckets = fields[2];
             unsigned long long thresholdPerBucket = fields[3];
             unsigned long long timeoutMs = fields[4];
+            const char *failurePath =
+                cursor && *cursor != '\0' ? cursor + 15 : NULL;
             uint64_t anchorMs =
                 replayWaitConvergeAnchorMs((uint64_t) timeoutMs);
             int rc = timelineWaitConverge(
                 anchorMs, (uint64_t) bucketMs, (int) quietBuckets,
                 (int) divergedBuckets, (uint64_t) thresholdPerBucket,
                 (uint64_t) timeoutMs);
-            if (rc < 0)
+            if (rc < 0) {
                 fprintf(stderr,
                         "replay: line %d: wait-converge diverged after "
                         "%llu ms windows\n",
                         lineno, bucketMs * divergedBuckets);
-            else if (rc == 0)
+                if (failurePath)
+                    writeWaitConvergeFailure(failurePath, lineno, "diverged");
+            } else if (rc == 0) {
                 fprintf(stderr,
                         "replay: line %d: wait-converge timed out after "
                         "%llu ms\n",
                         lineno, timeoutMs);
-            if (rc <= 0)
-                break;
+                if (failurePath)
+                    writeWaitConvergeFailure(failurePath, lineno, "timeout");
+            }
+            /* Do not break the script on timeout/divergence (rc <= 0). The
+             * runner's expanded replay puts a state-snapshot line immediately
+             * after every wait-converge and blocks waiting for the JSON
+             * marker. Breaking here leaves the marker unwritten, and the runner
+             * spends the full timeout plus slack polling before raising.
+             * Letting the next line run writes the JSON (with the current,
+             * possibly unsettled state) so the runner can observe the failure
+             * marker above instead of hanging on missing synchronization JSON.
+             */
         } else if (!strcmp(cmd, "state-snapshot")) {
             /* Marshal the in-process focus / grab / window / property state to
              * a JSON file. Synchronous so a follow-up assert-state in the

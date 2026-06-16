@@ -351,22 +351,37 @@ def wait_process_alive(proc, timeout_ms):
         time.sleep(0.1)
 
 
-def wait_converge_timeout_ms(parts):
+WAIT_CONVERGE_DEFAULTS = [50, 2, 16, 32, 5000]
+
+
+def wait_converge_fields(parts):
     # Defaults track the C-side handler in src/replay.c. Malformed input
     # raises ReplayError so the dispatcher converts it into a deterministic
     # step failure (otherwise int("abc") would surface as an uncaught
     # ValueError and crash the runner mid-replay).
-    if len(parts) < 6:
-        return 5000
+    if len(parts) > 6:
+        raise ReplayError("wait-converge expects at most 5 arguments")
+    fields = WAIT_CONVERGE_DEFAULTS.copy()
+    for idx, raw in enumerate(parts[1:]):
+        try:
+            value = int(raw)
+        except ValueError as error:
+            raise ReplayError(
+                f"wait-converge arg {idx + 1} must be an integer, got {raw!r}"
+            ) from error
+        if value < 0:
+            raise ReplayError(
+                f"wait-converge arg {idx + 1} must be non-negative, got {value}"
+            )
+        fields[idx] = value
+    return fields
+
+
+def wait_converge_timeout_ms(parts):
     try:
-        value = int(parts[5])
-    except ValueError as error:
-        raise ReplayError(
-            f"wait-converge timeout_ms must be an integer, got {parts[5]!r}"
-        ) from error
-    if value < 0:
-        raise ReplayError(f"wait-converge timeout_ms must be non-negative, got {value}")
-    return value
+        return wait_converge_fields(parts)[4]
+    except ReplayError as error:
+        raise ReplayError(str(error).replace("arg 5", "timeout_ms")) from error
 
 
 def wait_for_nonempty_file(path, timeout_s, poll_s=0.05, proc=None):
@@ -470,13 +485,37 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=No
             wait_ms = int(parts[2])
             if wait_ms > 0:
                 lines.append(f"delay {wait_ms}")
+        elif command == "focus-at":
+            if len(parts) != 3:
+                raise ReplayError(
+                    f"{source_path}:{lineno}: focus-at expects target-local x y"
+                )
+            try:
+                fx = int(parts[1])
+                fy = int(parts[2])
+            except ValueError as error:
+                raise ReplayError(
+                    f"{source_path}:{lineno}: focus-at coords must be "
+                    f"integers, got {parts[1]!r} {parts[2]!r}"
+                ) from error
+            if fx < 0 or fy < 0:
+                raise ReplayError(
+                    f"{source_path}:{lineno}: focus-at coords must be "
+                    f"non-negative, got {fx} {fy}"
+                )
+            lines.append(f"focus-at {fx} {fy}")
         elif command == "wait-converge":
             # Default args mirror the C-side defaults; allow override:
             # wait-converge [bucket_ms quiet diverged threshold timeout_ms]
-            extra = " ".join(parts[1:]) if len(parts) > 1 else ""
-            lines.append(f"wait-converge {extra}".rstrip())
+            fields = wait_converge_fields(parts)
             if sync_dir is not None:
+                failure_path = sync_dir / f"wait-converge-{lineno}.fail"
+                expanded = " ".join(str(value) for value in fields)
+                lines.append(f"wait-converge {expanded} failure-marker={failure_path}")
                 lines.append(f"state-snapshot {sync_dir}/wait-converge-{lineno}.json")
+            else:
+                extra = " ".join(parts[1:]) if len(parts) > 1 else ""
+                lines.append(f"wait-converge {extra}".rstrip())
         elif command == "state-snapshot":
             if len(parts) < 2:
                 raise ReplayError(
@@ -1307,6 +1346,29 @@ def run_replay(args):
                         raise ReplayError("key expects keysym")
                     if args.input_backend == "xdotool":
                         xdotool(env, "key", parts[1])
+                elif command == "focus-at":
+                    if len(parts) != 3:
+                        raise ReplayError("focus-at expects target-local x y")
+                    try:
+                        int(parts[1])
+                        int(parts[2])
+                    except ValueError as error:
+                        raise ReplayError(
+                            f"focus-at coords must be integers, got "
+                            f"{parts[1]!r} {parts[2]!r}"
+                        ) from error
+                    # The internal backend handles this through the expanded
+                    # replay script. For xdotool, fall back to a window
+                    # activate so the focus shift still happens on native.
+                    # Mirror target-motion: require a prior wait-window so a
+                    # missing target surfaces as a deterministic failure
+                    # rather than a silent no-op (cubic-flagged).
+                    if args.input_backend == "xdotool":
+                        if target_window_id is None:
+                            raise ReplayError(
+                                "focus-at requires a prior wait-window"
+                            )
+                        xdotool(env, "windowfocus", target_window_id)
                 elif command == "resize":
                     if len(parts) != 3:
                         raise ReplayError("resize expects W H")
@@ -1464,6 +1526,7 @@ def run_replay(args):
                 elif command == "wait-converge":
                     if args.input_backend == "internal":
                         sync_target = sync_dir / f"wait-converge-{lineno}.json"
+                        failure_target = sync_dir / f"wait-converge-{lineno}.fail"
                         wait_start = time.perf_counter()
                         timeout_s = wait_converge_timeout_ms(parts) / 1000.0 + 16.0
                         if not wait_for_nonempty_file(
@@ -1474,6 +1537,9 @@ def run_replay(args):
                                 f"appear within "
                                 f"{time.perf_counter() - wait_start:.2f}s"
                             )
+                        if failure_target.exists():
+                            detail = failure_target.read_text().strip() or "failed"
+                            raise ReplayError(f"wait-converge {detail}")
                     else:
                         # External backends have no detector; mirror the
                         # legacy delay-shaped behavior so the script stays
