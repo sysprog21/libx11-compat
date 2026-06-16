@@ -1,0 +1,20 @@
+tests/ui/replays/violawww-scroll-system.replay
+  s_2a9c5d0fc57e12::t_43b0d1ac811c09 21-29
+  s_2a9c5d0fc57e12::t_ce547138fa27bd 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "e2ca75201e0a0429dc65ae998a769fe57ca8d72c",
+  "prompts": {},
+  "sessions": {
+    "s_2a9c5d0fc57e12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f60b9cb6-45b7-429d-bdde-2000983e535d",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Jim Huang <jserv@ccns.ncku.edu.tw>"
+    }
+  }
+}
