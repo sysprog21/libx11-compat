@@ -632,9 +632,7 @@ def main():
         env_compare_location = os.environ.get("MOSAIC_DIFF_COMPARE_LOCATION")
         if env_compare_location:
             if env_compare_location not in ("remote", "local"):
-                parser.error(
-                    "MOSAIC_DIFF_COMPARE_LOCATION must be 'remote' or 'local'"
-                )
+                parser.error("MOSAIC_DIFF_COMPARE_LOCATION must be 'remote' or 'local'")
             args.compare_location = env_compare_location
         elif args.local:
             args.compare_location = "local"

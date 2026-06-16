@@ -25,6 +25,12 @@
  * drawing layer after X drawing operations that happen away from a blocking
  * XNextEvent/XFlush path, such as Motif popup menu expose redraws. */
 #define PRESENT_EVENT_CODE 5
+/* Set keyboard focus to the X subwindow under a replay-target-local point.
+ * user.data1 carries the target-local x, user.data2 the y, each as intptr_t.
+ * Runs synchronously on the main thread so the window-tree walk and
+ * XSetInputFocus mutation never race with main-thread mutators. Used by the
+ * replay engine's focus-at verb. */
+#define FOCUS_AT_EVENT_CODE 6
 
 #define HAS_EVENT_MASK(window, mask) \
     ((GET_WINDOW_STRUCT(window)->eventMask & mask) == mask)
