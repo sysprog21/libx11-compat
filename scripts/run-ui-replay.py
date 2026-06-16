@@ -1365,9 +1365,7 @@ def run_replay(args):
                     # rather than a silent no-op (cubic-flagged).
                     if args.input_backend == "xdotool":
                         if target_window_id is None:
-                            raise ReplayError(
-                                "focus-at requires a prior wait-window"
-                            )
+                            raise ReplayError("focus-at requires a prior wait-window")
                         xdotool(env, "windowfocus", target_window_id)
                 elif command == "resize":
                     if len(parts) != 3:
