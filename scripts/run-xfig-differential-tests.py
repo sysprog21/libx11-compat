@@ -131,7 +131,11 @@ def remote_script(args, remote_repo):
         install_deps = """
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update
+    # Do not let an unrelated third-party repo with a transient GPG or
+    # signature error abort the whole differential: the metadata refresh
+    # is best-effort, and the install below still fails loudly if a
+    # package we actually need cannot be resolved from the cached lists.
+    sudo apt-get update || true
     sudo apt-get install -y --no-install-recommends \\
         autoconf automake build-essential ca-certificates git imagemagick \\
         libfontconfig1-dev libice-dev libsm-dev libx11-dev libxaw7-dev \\
@@ -371,33 +375,69 @@ xvfb_pid=$!
 Xvfb "$compat_display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-compat.log" 2>&1 &
 compat_xvfb_pid=$!
 trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
-sleep 1
 
-# Run startup and draw-line replays for both sides concurrently on
-# separate Xvfb instances so the capture phase scales with one side
-# rather than both.
+# Wait for each Xvfb to accept connections instead of sleeping a fixed
+# second. On a loaded headless runner the server can take longer than a
+# second to come up, and the old `sleep 1` then raced the first xfig
+# launch and xdotool query against a display that was not listening yet,
+# surfacing as a spurious capture timeout. Probe with xdotool (already a
+# hard dependency above; xdpyinfo is not in the differential package set)
+# and fail fast if an Xvfb died, e.g. on a stale display lock.
+wait_for_display() {{
+    target=$1
+    server_pid=$2
+    waited=0
+    while [ "$waited" -lt 100 ]; do
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            echo "Xvfb for $target exited before accepting connections" >&2
+            return 1
+        fi
+        if DISPLAY="$target" xdotool getdisplaygeometry >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    echo "Xvfb for $target did not become ready within 10s" >&2
+    return 1
+}}
+wait_for_display "$display" "$xvfb_pid"
+wait_for_display "$compat_display" "$compat_xvfb_pid"
+
+# Run the startup replay for both sides concurrently on separate Xvfb
+# instances so the capture phase scales with one side rather than both.
+# Only startup is diffed; draw-line is intentionally excluded here (see
+# the note on the system capture below) and stays covered compat-side by
+# check-smoke-xfig.
 system_cap_log="$remote_root/logs/system-capture.log"
 compat_cap_log="$remote_root/logs/compat-capture.log"
 : >"$system_cap_log"
 : >"$compat_cap_log"
+echo "xfig differential: diffing startup + draw-line" >&2
 
+# Each side runs the startup replay then the draw-line replay in sequence
+# on its own Xvfb; the two sides run concurrently. The draw-line replay
+# selects the polyline tool at the 3.2.9a grid position and commits a
+# segment, so xdotool (system) and the internal backend (compat) both
+# render the same canvas. The legacy (32, 96) tool coordinate that the
+# smoke replay still uses landed in the inert "Drawing" label band on
+# system X11 and selected no tool, which is why the differential could
+# not run draw-line until xfig-draw-line-differential re-pointed it.
 (
     set -e
     export DISPLAY="$display"
-    # xfig-draw-line is intentionally not run here. The replay's
-    # toolbox-click coords (32, 96) target a tool icon that xfig 3.2.9a
-    # no longer puts at that pixel location (the "Drawing" label moved
-    # the tool grid down). The internal input backend used on the
-    # compat side translates the click through libx11-compat's event
-    # injection and somehow still triggers drawing, but xdotool sending
-    # a real X click at the same coord hits the empty label area on
-    # system X11 and selects no tool. Diff a startup screen only; the
-    # smoke job (mk/xfig.mk:check-smoke-xfig) keeps the draw-line
-    # coverage on the compat side.
     capture_xfig system-startup \\
         "$system_build/source/src/xfig" \\
         "$system_build/source" \\
-        xfig-startup \\
+        xfig-startup-differential \\
+        "" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
+    capture_xfig system-drawline \\
+        "$system_build/source/src/xfig" \\
+        "$system_build/source" \\
+        xfig-draw-line-differential \\
         "" \\
         "$system_logs" \\
         "$system_screens" \\
@@ -411,7 +451,15 @@ system_cap_pid=$!
     capture_xfig compat-startup \\
         "$repo/build/xfig/source/src/xfig" \\
         "$repo/build/xfig/source" \\
-        xfig-startup \\
+        xfig-startup-differential \\
+        "$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+    capture_xfig compat-drawline \\
+        "$repo/build/xfig/source/src/xfig" \\
+        "$repo/build/xfig/source" \\
+        xfig-draw-line-differential \\
         "$repo/build" \\
         "$compat_logs" \\
         "$compat_screens" \\
