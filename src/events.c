@@ -5,7 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include "events.h"
 #include "events-ewmh.h"
 #include "events-expose.h"
@@ -124,7 +124,7 @@ static void pumpEventsSafe(void)
     SDL_PumpEvents();
 }
 
-static Uint32 xtWakeTimerCallback(Uint32 interval, void *param)
+static Uint32 xtWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
 {
     (void) param;
     if (xtWakeEventType == (Uint32) -1)
@@ -169,7 +169,7 @@ typedef struct PutBackEvent {
 static PutBackEvent *putBackEvents = NULL;
 
 static void updateWindowRenderTargets(Display *display);
-static int onSdlEvent(void *userdata, SDL_Event *event);
+static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event);
 static Bool getEventQueueLength(int *qlen);
 static int countPutBackEvents(Display *display);
 int convertEvent(Display *display,
@@ -347,14 +347,14 @@ void wakeEventPipeForExternalEvent(Display *display)
  * src/events-expose.c.
  */
 
-static int onSdlEvent(void *userdata, SDL_Event *event)
+static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
 {
     if (SCREEN_WINDOW == None || !IS_TYPE(SCREEN_WINDOW, WINDOW))
         return 0;
 
     switch (event->type) {
         //        case SDL_QUIT:
-    case SDL_WINDOWEVENT:
+    XC_CASE_WINDOWEVENT:
         if (!GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlWindow ||
             event->window.windowID ==
                 SDL_GetWindowID(GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlWindow)) {
@@ -1565,8 +1565,8 @@ int convertEvent(Display *display,
         FILL_STANDARD_VALUES(xkey);
         Window sdlKeyWindow = getWindowFromId(sdlEvent->key.windowID);
         xEvent->xkey.root = SCREEN_WINDOW;
-        xEvent->xkey.state = convertModifierState(sdlEvent->key.keysym.mod);
-        xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.sym & 0xFF;
+        xEvent->xkey.state = convertModifierState(XC_EVENT_KEYMOD(sdlEvent));
+        xEvent->xkey.keycode = (unsigned int) XC_EVENT_KEYSYM(sdlEvent) & 0xFF;
         /* Route priority for key events:
          * 1. Active XGrabKeyboard (modal dialogs like Motif's Help popup)
          * 2. Passive XGrabKey match (Motif accelerators)
@@ -1587,7 +1587,7 @@ int convertEvent(Display *display,
         }
         xEvent->xkey.window = eventWindow;
         xEvent->xkey.subwindow = None;
-        xEvent->xkey.time = sdlEvent->key.timestamp;
+        xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         int pointerX = 0, pointerY = 0;
         if (!replayTargetReadPointer(&pointerX, &pointerY))
             SDL_GetMouseState(&pointerX, &pointerY);
@@ -1618,7 +1618,7 @@ int convertEvent(Display *display,
         FILL_STANDARD_VALUES(xbutton);
         Window sdlButtonWindow = getWindowFromId(sdlEvent->button.windowID);
         xEvent->xbutton.root = SCREEN_WINDOW;
-        xEvent->xbutton.time = sdlEvent->button.timestamp;
+        xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->button.timestamp);
         translateSdlPointToRoot(display, sdlButtonWindow, sdlEvent->button.x,
                                 sdlEvent->button.y, &xEvent->xbutton.x_root,
                                 &xEvent->xbutton.y_root);
@@ -1707,7 +1707,7 @@ int convertEvent(Display *display,
         FILL_STANDARD_VALUES(xmotion);
         Window sdlMotionWindow = getWindowFromId(sdlEvent->motion.windowID);
         xEvent->xmotion.root = SCREEN_WINDOW;
-        xEvent->xmotion.time = sdlEvent->motion.timestamp;
+        xEvent->xmotion.time = XC_EVENT_TIME_MS(sdlEvent->motion.timestamp);
         translateSdlPointToRoot(display, sdlMotionWindow, sdlEvent->motion.x,
                                 sdlEvent->motion.y, &xEvent->xmotion.x_root,
                                 &xEvent->xmotion.y_root);
@@ -1716,7 +1716,7 @@ int convertEvent(Display *display,
             convertModifierState(SDL_GetModState()) | motionButtonState;
         Bool crossingQueued = postPointerCrossingEvents(
             display, xEvent->xmotion.x_root, xEvent->xmotion.y_root,
-            motionState, sdlEvent->motion.timestamp);
+            motionState, XC_EVENT_TIME_MS(sdlEvent->motion.timestamp));
         long motionMask = motionMaskForButtonState(motionButtonState);
         /* Explicit XGrabPointer routing owns the event when
          * routePointerGrabEvent returns True; otherwise the implicit
@@ -1760,9 +1760,9 @@ int convertEvent(Display *display,
             return -1;
         }
         break;
-    case SDL_WINDOWEVENT:
+    XC_CASE_WINDOWEVENT:
         eventWindow = getWindowFromId(sdlEvent->window.windowID);
-        switch (sdlEvent->window.event) {
+        switch (XC_WINDOW_SUBEVENT(sdlEvent)) {
         case SDL_WINDOWEVENT_SHOWN:
             LOG("Window %d shown\n", sdlEvent->window.windowID);
             if (eventWindow != None) {
@@ -1807,16 +1807,16 @@ int convertEvent(Display *display,
             }
             /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
              * ConfigureNotify dispatch below; the unified handler keys off
-             * sdlEvent->window.event to decide which fields to query.
+             * XC_WINDOW_SUBEVENT(sdlEvent) to decide which fields to query.
              */
         case SDL_WINDOWEVENT_RESIZED:
-            if (sdlEvent->window.event == SDL_WINDOWEVENT_RESIZED) {
+            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED) {
                 LOG("Window %d resized to %dx%d\n", sdlEvent->window.windowID,
                     sdlEvent->window.data1, sdlEvent->window.data2);
             }
             /* fall through */
         case SDL_WINDOWEVENT_SIZE_CHANGED:
-            if (sdlEvent->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_SIZE_CHANGED) {
                 LOG("Window %d size changed to %dx%d\n",
                     sdlEvent->window.windowID, sdlEvent->window.data1,
                     sdlEvent->window.data2);
@@ -1825,7 +1825,7 @@ int convertEvent(Display *display,
             FILL_STANDARD_VALUES(xconfigure);
             xEvent->xconfigure.event = eventWindow;
             xEvent->xconfigure.window = xEvent->xconfigure.event;
-            if (sdlEvent->window.event == SDL_WINDOWEVENT_MOVED) {
+            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_MOVED) {
                 xEvent->xconfigure.x = sdlEvent->window.data1;
                 xEvent->xconfigure.y = sdlEvent->window.data2;
                 if (eventWindow != None) {
@@ -1843,8 +1843,8 @@ int convertEvent(Display *display,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
                 }
             }
-            if (sdlEvent->window.event == SDL_WINDOWEVENT_RESIZED ||
-                sdlEvent->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED ||
+                XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_SIZE_CHANGED) {
                 xEvent->xconfigure.width = sdlEvent->window.data1;
                 xEvent->xconfigure.height = sdlEvent->window.data2;
                 /* After unification, every mapped top-level window draws into a
@@ -1903,19 +1903,20 @@ int convertEvent(Display *display,
             LOG("Mouse entered window %d\n", sdlEvent->window.windowID);
             type = EnterNotify;
         case SDL_WINDOWEVENT_LEAVE:
-            if (sdlEvent->window.event == SDL_WINDOWEVENT_LEAVE) {
+            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_LEAVE) {
                 LOG("Mouse left window %d\n", sdlEvent->window.windowID);
                 type = LeaveNotify;
             }
             fillCrossingEvent(display, &xEvent->xcrossing, eventWindow, type,
                               NotifyNormal, NotifyAncestor,
                               convertModifierState(SDL_GetModState()));
-            xEvent->xcrossing.time = sdlEvent->window.timestamp;
+            xEvent->xcrossing.time =
+                XC_EVENT_TIME_MS(sdlEvent->window.timestamp);
             Bool queuedNestedLeaves = False;
             if (type == LeaveNotify) {
                 queuedNestedLeaves = queueNestedPointerLeaves(
                     display, eventWindow, xEvent->xcrossing.state,
-                    sdlEvent->window.timestamp);
+                    XC_EVENT_TIME_MS(sdlEvent->window.timestamp));
             }
             /* Keep pointerHoverWindow in sync with the SDL-level crossing that
              * was just emitted; otherwise the next motion event's
@@ -1936,7 +1937,7 @@ int convertEvent(Display *display,
             LOG("Window %d gained keyboard focus\n", sdlEvent->window.windowID);
             type = FocusIn;
         case SDL_WINDOWEVENT_FOCUS_LOST:
-            if (sdlEvent->window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_FOCUS_LOST) {
                 LOG("Window %d lost keyboard focus\n",
                     sdlEvent->window.windowID);
                 type = FocusOut;
@@ -1965,7 +1966,8 @@ int convertEvent(Display *display,
                         wmDeleteWindowAtom) {
                         postEvent(display, eventWindow, ClientMessage, 32,
                                   wmProtocolsAtom, wmDeleteWindowAtom,
-                                  (Time) sdlEvent->window.timestamp);
+                                  (Time) XC_EVENT_TIME_MS(
+                                      sdlEvent->window.timestamp));
                         clientHandlesDelete = True;
                         break;
                     }
@@ -1981,7 +1983,7 @@ int convertEvent(Display *display,
             break;
         default:
             LOG("Window %d got unknown event %d\n", sdlEvent->window.windowID,
-                sdlEvent->window.event);
+                XC_WINDOW_SUBEVENT(sdlEvent));
             return -1;
         }
         break;
@@ -2033,9 +2035,11 @@ int convertEvent(Display *display,
                             */
         LOG("SDL_APP_DIDENTERFOREGROUND\n");
         return -1;
+#ifndef LIBX11_COMPAT_SDL3
     case SDL_SYSWMEVENT: /**< System specific event */
         LOG("SDL_SYSWMEVENT\n");
         return -1;
+#endif
     case SDL_TEXTEDITING: /**< Keyboard text editing (composition) */
         LOG("SDL_TEXTEDITING\n");
         return -1;
@@ -2045,6 +2049,14 @@ int convertEvent(Display *display,
     case SDL_MOUSEWHEEL: /**< Mouse wheel motion */
         LOG("SDL_MOUSEWHEEL\n");
         {
+#ifdef LIBX11_COMPAT_SDL3
+            /* SDL3 wheel deltas are floats carrying any sub-notch fraction
+             * directly in x/y, so accumulate them through the same notch filter
+             * the SDL2 precise path used.
+             */
+            int wy = accumulateWheelNotch(0, sdlEvent->wheel.y, &wheelPreciseY);
+            int wx = accumulateWheelNotch(0, sdlEvent->wheel.x, &wheelPreciseX);
+#else
             int wy = sdlEvent->wheel.y, wx = sdlEvent->wheel.x;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
             /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y while
@@ -2055,6 +2067,7 @@ int convertEvent(Display *display,
                                       &wheelPreciseY);
             wx = accumulateWheelNotch(wx, sdlEvent->wheel.preciseX,
                                       &wheelPreciseX);
+#endif
 #endif
             if (sdlEvent->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
                 wy = -wy;
@@ -2091,7 +2104,7 @@ int convertEvent(Display *display,
             } else {
                 SDL_GetMouseState(&mx, &my);
             }
-            xEvent->xbutton.time = sdlEvent->wheel.timestamp;
+            xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->wheel.timestamp);
             translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
                                     &xEvent->xbutton.x_root,
                                     &xEvent->xbutton.y_root);
@@ -2201,7 +2214,7 @@ int convertEvent(Display *display,
         xEvent->xbutton.window =
             xEvent->xbutton.root;  // The event window is always the SDL Window.
         xEvent->xbutton.subwindow = None;
-        xEvent->xbutton.time = sdlEvent->tfinger.timestamp;
+        xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->tfinger.timestamp);
         xEvent->xbutton.x = sdlEvent->tfinger.x;
         xEvent->xbutton.y = sdlEvent->tfinger.y;
         xEvent->xbutton.x_root =
@@ -2214,6 +2227,7 @@ int convertEvent(Display *display,
     case SDL_FINGERMOTION:  // Should not happen
         LOG("SDL_FINGERMOTION\n");
         return -1;
+#ifndef LIBX11_COMPAT_SDL3
     case SDL_DOLLARGESTURE:
         LOG("SDL_DOLLARGESTURE\n");
         return -1;
@@ -2223,6 +2237,7 @@ int convertEvent(Display *display,
     case SDL_MULTIGESTURE:
         LOG("SDL_MULTIGESTURE\n");
         return -1;
+#endif
     case SDL_CLIPBOARDUPDATE: /**< The clipboard changed */
         LOG("SDL_CLIPBOARDUPDATE\n");
         return -1;
@@ -2522,7 +2537,7 @@ static Bool isInteractiveSdlEvent(const SDL_Event *event)
     case SDL_MOUSEWHEEL:
     case SDL_KEYDOWN:
     case SDL_KEYUP:
-    case SDL_WINDOWEVENT:
+    XC_CASE_WINDOWEVENT:
         return True;
     default:
         return False;

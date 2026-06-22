@@ -2,7 +2,7 @@
 #define _LIBX11_COMPAT_SNAPSHOT_INTERNAL_H_
 
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 /* Request a snapshot of the replay target SDL window's backing surface to
  * path (BMP, format chosen by SDL_SaveBMP). Blocks the calling thread

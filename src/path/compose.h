@@ -6,7 +6,7 @@
 #ifndef PATH_COMPOSE_H
 #define PATH_COMPOSE_H
 
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <X11/Xlib.h>
 
 #include "rasterize.h"

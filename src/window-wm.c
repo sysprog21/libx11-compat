@@ -239,8 +239,7 @@ void applyNetWmStateFromProperty(Window window)
     SDL_Window *sdlWindow = windowStruct->sdlWindow;
     if (!state.hidden)
         SDL_RestoreWindow(sdlWindow);
-    SDL_SetWindowFullscreen(
-        sdlWindow, state.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    XC_SetWindowFullscreen(sdlWindow, state.fullscreen);
     if (state.maximized)
         SDL_MaximizeWindow(sdlWindow);
     if (state.hidden)

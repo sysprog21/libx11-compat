@@ -22,7 +22,7 @@ static Bool isSupportedPixmapDepth(unsigned int depth)
     return depth == 1 || depth == 16 || depth == 24 || depth == 32;
 }
 
-static Uint32 mapPixel(SDL_PixelFormat *format, unsigned long pixel)
+static Uint32 mapPixel(XcPixelFormat format, unsigned long pixel)
 {
     pixel = colorWithOpaqueDefault(pixel);
     return SDL_MapRGBA(format, GET_RED_FROM_COLOR(pixel),
@@ -58,12 +58,50 @@ static Pixmap createPixmapFromPixels(Display *display,
         XFreePixmap(display, pixmap);
         return None;
     }
+#ifdef LIBX11_COMPAT_SDL3
+    /* SDL3's software renderer does not reliably reflect an SDL_UpdateTexture
+     * into a render-target texture's readable surface once the renderer has
+     * been used for other targets. Populate the target the canonical way:
+     * upload to a staging texture and render it onto the pixmap target with
+     * blending disabled so the source pixels overwrite verbatim.
+     */
+    SDL_Renderer *renderer = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
+    SDL_Texture *staging =
+        SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                          SDL_TEXTUREACCESS_STATIC, (int) width, (int) height);
+    if (!staging) {
+        LOG("SDL_CreateTexture (staging) failed in %s: %s\n", __func__,
+            SDL_GetError());
+        XFreePixmap(display, pixmap);
+        return None;
+    }
+    SDL_SetTextureBlendMode(staging, SDL_BLENDMODE_NONE);
+    if (SDL_UpdateTexture(staging, NULL, pixels,
+                          (int) (width * sizeof(Uint32))) != 0) {
+        LOG("SDL_UpdateTexture failed in %s: %s\n", __func__, SDL_GetError());
+        SDL_DestroyTexture(staging);
+        XFreePixmap(display, pixmap);
+        return None;
+    }
+    SDL_Texture *prevTarget = SDL_GetRenderTarget(renderer);
+    int copyResult = SDL_SetRenderTarget(renderer, texture);
+    if (copyResult == 0)
+        copyResult = SDL_RenderCopy(renderer, staging, NULL, NULL);
+    SDL_SetRenderTarget(renderer, prevTarget);
+    SDL_DestroyTexture(staging);
+    if (copyResult != 0) {
+        LOG("staging blit failed in %s: %s\n", __func__, SDL_GetError());
+        XFreePixmap(display, pixmap);
+        return None;
+    }
+#else
     if (SDL_UpdateTexture(texture, NULL, pixels,
                           (int) (width * sizeof(Uint32))) != 0) {
         LOG("SDL_UpdateTexture failed in %s: %s\n", __func__, SDL_GetError());
         XFreePixmap(display, pixmap);
         return None;
     }
+#endif
     return pixmap;
 }
 
@@ -176,7 +214,7 @@ Pixmap XCreatePixmapFromBitmapData(Display *display,
         handleError(0, display, None, 0, BadValue, 0);
         return None;
     }
-    SDL_PixelFormat *format = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
+    XcPixelFormat format = xcAllocFormat(SDL_PIXELFORMAT_RGBA8888);
     if (!format) {
         handleOutOfMemory(0, display, 0, 0);
         return None;
@@ -185,7 +223,7 @@ Pixmap XCreatePixmapFromBitmapData(Display *display,
     Uint32 background = mapPixel(format, bg);
     Uint32 *pixels = malloc(sizeof(Uint32) * (size_t) width * (size_t) height);
     if (!pixels) {
-        SDL_FreeFormat(format);
+        xcFreeFormat(format);
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
@@ -199,7 +237,7 @@ Pixmap XCreatePixmapFromBitmapData(Display *display,
     Pixmap pixmap =
         createPixmapFromPixels(display, width, height, pixels, depth);
     free(pixels);
-    SDL_FreeFormat(format);
+    xcFreeFormat(format);
     return pixmap;
 }
 

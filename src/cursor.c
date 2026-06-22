@@ -1,6 +1,6 @@
 #include "X11/Xlib.h"
 #include "X11/cursorfont.h"
-#include <SDL2/SDL_ttf.h>
+#include "sdl-ttf-compat.h"
 #include <limits.h>
 #include <stdint.h>
 #include "errors.h"
@@ -26,7 +26,7 @@ typedef struct {
     int height;
 } Cursor_;
 
-static Uint32 mapXColorOrDefault(SDL_PixelFormat *format,
+static Uint32 mapXColorOrDefault(XcPixelFormat format,
                                  const XColor *color,
                                  Uint8 fallback)
 {
@@ -51,9 +51,11 @@ static SDL_Cursor *buildColorCursorFromBits(const unsigned char *srcBits,
         0, width, height, 32, SDL_PIXELFORMAT_ARGB8888);
     if (!surface)
         return NULL;
-    Uint32 fg = mapXColorOrDefault(surface->format, foreground_color, 0x00);
-    Uint32 bg = mapXColorOrDefault(surface->format, background_color, 0xFF);
-    Uint32 transparent = SDL_MapRGBA(surface->format, 0, 0, 0, 0);
+    Uint32 fg =
+        mapXColorOrDefault(XC_SURFACE_FORMAT(surface), foreground_color, 0x00);
+    Uint32 bg =
+        mapXColorOrDefault(XC_SURFACE_FORMAT(surface), background_color, 0xFF);
+    Uint32 transparent = SDL_MapRGBA(XC_SURFACE_FORMAT(surface), 0, 0, 0, 0);
     int stride = (width + 7) / 8;
     Uint32 *pixels = (Uint32 *) surface->pixels;
     int pitchInPixels = surface->pitch / 4;

@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "visual.h"
 #include "util.h"
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include "errors.h"
 
 Visual *VISUAL_LIST = NULL;

@@ -21,7 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <X11/Xatom.h>
 #include "display.h"
 #include "events.h"

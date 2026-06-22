@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 /* Replay-time introspection. Runs on the main / X-client event thread (same
  * constraint src/snapshot.c enforces) so callbacks can safely read

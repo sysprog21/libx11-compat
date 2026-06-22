@@ -36,7 +36,7 @@
 #include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
-#include <SDL2/SDL_atomic.h>
+#include "sdl-compat.h"
 #include "replay.h"
 #include "replay-target.h"
 #include "snapshot.h"
@@ -316,9 +316,9 @@ static void runScript(const char *path)
                  * before any numeric field. Without this, forms like
                  *   wait-converge failure-marker=foo
                  *   wait-converge 200 failure-marker=foo
-                 * are rejected by strtoull as "bad arg N" because the marker
-                 * is not a digit. Break out here so remaining fields keep
-                 * their defaults and the post-loop check handles the marker.
+                 * are rejected by strtoull as "bad arg N" because the marker is
+                 * not a digit. Break out here so remaining fields keep their
+                 * defaults and the post-loop check handles the marker.
                  */
                 if (!strncmp(cursor, "failure-marker=", 15))
                     break;
@@ -403,12 +403,12 @@ static void runScript(const char *path)
             }
             /* Do not break the script on timeout/divergence (rc <= 0). The
              * runner's expanded replay puts a state-snapshot line immediately
-             * after every wait-converge and blocks waiting for the JSON
-             * marker. Breaking here leaves the marker unwritten, and the runner
-             * spends the full timeout plus slack polling before raising.
-             * Letting the next line run writes the JSON (with the current,
-             * possibly unsettled state) so the runner can observe the failure
-             * marker above instead of hanging on missing synchronization JSON.
+             * after every wait-converge and blocks waiting for the JSON marker.
+             * Breaking here leaves the marker unwritten, and the runner spends
+             * the full timeout plus slack polling before raising. Letting the
+             * next line run writes the JSON (with the current, possibly
+             * unsettled state) so the runner can observe the failure marker
+             * above instead of hanging on missing synchronization JSON.
              */
         } else if (!strcmp(cmd, "state-snapshot")) {
             /* Marshal the in-process focus / grab / window / property state to

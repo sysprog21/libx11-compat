@@ -2,7 +2,7 @@
 #define _EVENTS_H_
 
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 #define SEND_EVENT_CODE 1
 #define INTERNAL_EVENT_CODE 2

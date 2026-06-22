@@ -1,5 +1,5 @@
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <stdio.h>
 #include <sys/time.h>
 #include "window.h"

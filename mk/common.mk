@@ -35,7 +35,7 @@ endef
 $(OUT):
 	@mkdir -p $@
 
-$(OUT)/%.o: %.c | $(OUT)
+$(OUT)/%.o: %.c $(SDL_BACKEND_STAMP) | $(OUT)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
@@ -51,12 +51,11 @@ $(OUT)/%.o: %.c | $(OUT)
 # compiling these translation units and keeps the WIN32 macro rewrites in
 # Xlibint.h disabled so the function-pointer storage in src/xlibint-stubs.c
 # stays consistent across platforms.
-$(OUT)/upstream/src/%.o: $(OUT)/upstream/src/%.c | $(OUT)
+$(OUT)/upstream/src/%.o: $(OUT)/upstream/src/%.c $(SDL_BACKEND_STAMP) | $(OUT)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) -Wno-sign-compare -D_XLIBINT_ \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
-
 .PHONY: clean distclean
 
 ## Remove build artifacts

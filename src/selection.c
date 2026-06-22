@@ -1,7 +1,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
 #include <X11/Xatom.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

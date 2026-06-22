@@ -1,3 +1,10 @@
+# The dlopen wrapper shims exist only for the SDL2 backend. Under
+# SDL_BACKEND=sdl3 the compat stack links libSDL3 directly (see mk/sdl.mk), so
+# this whole fragment collapses to an empty target list.
+ifneq ($(SDL_USE_WRAPPER),1)
+SDL_WRAPPER_TARGETS :=
+else
+
 SDL_WRAPPER_TARGET := $(OUT)/libSDL2-x11compat.so
 SDL_TTF_WRAPPER_TARGET := $(OUT)/libSDL2_ttf-x11compat.so
 SDL_WRAPPER_TARGETS := $(SDL_WRAPPER_TARGET) $(SDL_TTF_WRAPPER_TARGET)
@@ -36,3 +43,5 @@ $(SDL_TTF_WRAPPER_TARGET): $(SDL_TTF_WRAPPER_OBJS) | $(OUT)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) $(call shared_lib_rpath_ldflags,$(notdir $@)) \
 	    -shared -o $@ $(SDL_TTF_WRAPPER_OBJS) $(SDL_WRAPPER_LDLIBS)
+
+endif

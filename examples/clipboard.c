@@ -9,7 +9,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <limits.h>
 #include <signal.h>
 #include <stdbool.h>

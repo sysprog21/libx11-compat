@@ -6,7 +6,7 @@
 #ifndef PATH_RASTER_H
 #define PATH_RASTER_H
 
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <X11/Xlib.h>
 
 #include "path.h"

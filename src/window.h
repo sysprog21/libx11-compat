@@ -1,7 +1,7 @@
 #ifndef _WINDOW_H_
 #define _WINDOW_H_
 
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <pixman.h>
 #include "window-debug.h"
 #include "resource-types.h"

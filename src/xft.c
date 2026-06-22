@@ -1,6 +1,6 @@
 #include <X11/Xft/Xft.h>
 #include <X11/Xutil.h>
-#include <SDL2/SDL_ttf.h>
+#include "sdl-ttf-compat.h"
 #include <ctype.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -882,7 +882,7 @@ static SDL_Color sdlColorFromXft(const XftColor *color)
 }
 
 static unsigned long blendPixel(unsigned long dst,
-                                SDL_PixelFormat *format,
+                                XcPixelFormat format,
                                 Uint32 srcPixel,
                                 Uint8 colorAlpha)
 {
@@ -990,8 +990,8 @@ static void drawUtf8String(XftDraw *draw,
             Uint32 *row = (Uint32 *) ((char *) glyphs->pixels +
                                       (yy + srcY) * glyphs->pitch);
             unsigned long dst = XGetPixel(image, xx, yy);
-            unsigned long blended =
-                blendPixel(dst, glyphs->format, row[xx + srcX], sdlColor.a);
+            unsigned long blended = blendPixel(dst, XC_SURFACE_FORMAT(glyphs),
+                                               row[xx + srcX], sdlColor.a);
             XPutPixel(image, xx, yy, blended);
         }
     }

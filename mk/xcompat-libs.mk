@@ -19,13 +19,14 @@ XMU_UPSTREAM_SRC_BASES := \
 XMU_UPSTREAM_SRCS := $(addprefix $(XMU_SRC_DIR)/,$(XMU_UPSTREAM_SRC_BASES))
 XMU_UPSTREAM_OBJS := $(patsubst $(XMU_SRC_DIR)/%.c,$(XMU_OBJ_DIR)/%.o,$(XMU_UPSTREAM_SRCS))
 
-$(OUT)/xext-compat.o: compat/xext-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
+$(OUT)/xext-compat.o: compat/xext-compat.c $(UPSTREAM_HEADERS_STAMP) \
+    $(SDL_BACKEND_STAMP) | $(OUT)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
 $(OUT)/xmu-compat.o: compat/xmu-compat.c $(UPSTREAM_HEADERS_STAMP) \
-    $(LIBXT_STAGED_H) | $(OUT)
+    $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(OUT)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
@@ -35,29 +36,34 @@ $(XMU_OBJ_DIR):
 
 $(XMU_UPSTREAM_SRCS): $(UPSTREAM_HEADERS_STAMP)
 
-$(XMU_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_STAGED_H) | $(XMU_OBJ_DIR)
+$(XMU_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_STAGED_H) \
+    $(SDL_BACKEND_STAMP) | $(XMU_OBJ_DIR)
 	@echo "  CC      $(XMU_SRC_DIR)/$*.c"
 	$(Q)$(CC) $(LIBXT_CPPFLAGS) -iquote $(OUT)/upstream/include/X11/Xmu \
 	    $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) \
 	    -c $(XMU_SRC_DIR)/$*.c -o $@
 
-$(OUT)/xinerama-compat.o: compat/xinerama-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
+$(OUT)/xinerama-compat.o: compat/xinerama-compat.c $(UPSTREAM_HEADERS_STAMP) \
+    $(SDL_BACKEND_STAMP) | $(OUT)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
-$(OUT)/ice-compat.o: compat/ice-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
+$(OUT)/ice-compat.o: compat/ice-compat.c $(UPSTREAM_HEADERS_STAMP) \
+    $(SDL_BACKEND_STAMP) | $(OUT)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
-$(OUT)/sm-compat.o: compat/sm-compat.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
+$(OUT)/sm-compat.o: compat/sm-compat.c $(UPSTREAM_HEADERS_STAMP) \
+    $(SDL_BACKEND_STAMP) | $(OUT)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
 
-$(OUT)/xft-compat.o: src/xft.c $(UPSTREAM_HEADERS_STAMP) | $(OUT)
+$(OUT)/xft-compat.o: src/xft.c $(UPSTREAM_HEADERS_STAMP) \
+    $(SDL_BACKEND_STAMP) | $(OUT)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@

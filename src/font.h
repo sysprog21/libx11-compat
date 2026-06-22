@@ -2,7 +2,7 @@
 #define FONT_H
 
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 struct TTF_Font;
 
