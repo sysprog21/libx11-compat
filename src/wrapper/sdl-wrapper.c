@@ -1,62 +1,14 @@
 #include <SDL.h>
-#include <dlfcn.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
 
-#ifndef RTLD_DEEPBIND
-#define RTLD_DEEPBIND 0
-#endif
+#include "dlwrap.h"
 
-/* ASan (and other interceptor-based sanitizers) aborts on dlopen with
- * RTLD_DEEPBIND because deep binding bypasses their symbol interception. Drop
- * the flag in sanitizer builds. The escape hatch LIBX11_COMPAT_NO_RTLD_DEEPBIND
- * lets the build system force the same downgrade when a sanitizer variant the
- * wrapper does not auto-detect is in play.
- *
- * Caveat: RTLD_DEEPBIND was protecting against the real libSDL2 looking up
- * SDL_* symbols via RTLD_DEFAULT and finding this wrapper's exports instead
- * (which would recurse). RTLD_LOCAL on the dlopen sites doesn't fully replace
- * that; it only hides the loaded SDL's symbols from later lookups, it doesn't
- * stop libSDL2 itself from peeking back into the global scope where the wrapper
- * lives. In practice libSDL2 calls its own internal symbols directly (resolved
- * against its own .so at its link time) rather than via RTLD_DEFAULT, so the
- * recursion has not been observed. If a future SDL release reintroduces
- * RTLD_DEFAULT lookups for its own symbols, sanitizer runs will need to link
- * the real libSDL2 directly and skip the wrapper.
- */
-#ifndef __has_feature
-#define __has_feature(x) 0
-#endif
-#if defined(LIBX11_COMPAT_NO_RTLD_DEEPBIND) ||                               \
-    defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) ||         \
-    defined(__SANITIZE_HWADDRESS__) || __has_feature(address_sanitizer) ||   \
-    __has_feature(hwaddress_sanitizer) || __has_feature(memory_sanitizer) || \
-    __has_feature(thread_sanitizer)
-#undef RTLD_DEEPBIND
-#define RTLD_DEEPBIND 0
-#endif
-
-/* The lazy caches below (the shared handle plus the per-wrapper realFunc
- * statics expanded by the SDL_WRAP macros) are accessed via __atomic_load_n /
- * __atomic_store_n with ACQUIRE/RELEASE ordering so concurrent first calls have
- * a well-defined outcome under the C memory model rather than UB. The race is
- * benign in practice because dlopen reference-counts the underlying library and
- * dlsym is idempotent, so both racers see the same handle and pointer; the
- * atomics give the compiler permission to reason about it instead of folding
- * the load into a single read.
- */
 static void *realSdlHandle(void)
 {
     static void *handle;
-    void *cached = __atomic_load_n(&handle, __ATOMIC_ACQUIRE);
-    if (cached)
-        return cached;
-
-    const char *override = getenv("LIBX11_COMPAT_REAL_SDL2");
-    const char *candidates[] = {
+    static const char *const candidates[] = {
 #ifdef LIBX11_COMPAT_SDL2_DYLIB
         LIBX11_COMPAT_SDL2_DYLIB,
 #endif
@@ -70,73 +22,26 @@ static void *realSdlHandle(void)
 #endif
         NULL,
     };
-
-    void *opened = NULL;
-    if (override && override[0])
-        opened = dlopen(override, RTLD_LAZY | RTLD_LOCAL | RTLD_DEEPBIND);
-    for (size_t i = 0; !opened && candidates[i]; i++)
-        opened = dlopen(candidates[i], RTLD_LAZY | RTLD_LOCAL | RTLD_DEEPBIND);
-    if (!opened) {
-        fprintf(stderr, "libX11-compat: failed to load real SDL2: %s\n",
-                dlerror());
-        abort();
-    }
-    /* Publish via CAS so racing first-callers don't each keep their own dlopen
-     * refcount alive. The loser dlcloses to balance its dlopen and uses the
-     * winner's handle. POSIX dlopen reference-counts the underlying library, so
-     * the loser's dlclose just decrements that count back to where the winner
-     * left it.
-     */
-    void *expected = NULL;
-    if (__atomic_compare_exchange_n(&handle, &expected, opened, 0,
-                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-        return opened;
-    dlclose(opened);
-    return expected;
+    return dlwrapOpen(&handle, "LIBX11_COMPAT_REAL_SDL2", candidates,
+                      "real SDL2");
 }
 
 static void *realSdlSymbol(const char *name)
 {
-    void *symbol = dlsym(realSdlHandle(), name);
-    if (!symbol) {
-        fprintf(stderr, "libX11-compat: failed to resolve SDL2 symbol %s: %s\n",
-                name, dlerror());
-        abort();
-    }
-    return symbol;
+    return dlwrapSym(realSdlHandle(), name, "SDL2");
 }
 
-#define SDL_WRAP(ret, name, args, callargs)                             \
-    ret SDLCALL name args                                               \
-    {                                                                   \
-        typedef ret(SDLCALL * RealFunc) args;                           \
-        static RealFunc realFunc;                                       \
-        RealFunc cached = __atomic_load_n(&realFunc, __ATOMIC_ACQUIRE); \
-        if (!cached) {                                                  \
-            cached = (RealFunc) realSdlSymbol(#name);                   \
-            __atomic_store_n(&realFunc, cached, __ATOMIC_RELEASE);      \
-        }                                                               \
-        return cached callargs;                                         \
-    }
+#define SDL_WRAP(ret, name, args, callargs) \
+    DLWRAP_THUNK(realSdlSymbol, ret, name, args, callargs)
 
-#define SDL_WRAP_VOID(name, args, callargs)                             \
-    void SDLCALL name args                                              \
-    {                                                                   \
-        typedef void(SDLCALL * RealFunc) args;                          \
-        static RealFunc realFunc;                                       \
-        RealFunc cached = __atomic_load_n(&realFunc, __ATOMIC_ACQUIRE); \
-        if (!cached) {                                                  \
-            cached = (RealFunc) realSdlSymbol(#name);                   \
-            __atomic_store_n(&realFunc, cached, __ATOMIC_RELEASE);      \
-        }                                                               \
-        cached callargs;                                                \
-    }
+#define SDL_WRAP_VOID(name, args, callargs) \
+    DLWRAP_THUNK_VOID(realSdlSymbol, name, args, callargs)
 
 /* Lazily resolve a symbol into a function-local cache slot using the same
  * atomic ACQUIRE/RELEASE dance as the SDL_WRAP macros, then bind it to a
- * variable named "cached". Type is a typedef'd function-pointer type, slot is
- * a static variable of that type, and resolve is the expression that produces
- * the symbol (realSdlSymbol(...) or dlsym(...)).
+ * variable named "cached". Type is a typedef'd function-pointer type, slot is a
+ * static variable of that type, and resolve is the expression that produces the
+ * symbol (realSdlSymbol(...) or dlsym(...)).
  */
 #define CACHED_SYMBOL(Type, slot, resolve)                    \
     Type cached = __atomic_load_n(&(slot), __ATOMIC_ACQUIRE); \
@@ -317,20 +222,20 @@ SDL_WRAP(Uint32,
          (format, r, g, b, a))
 SDL_WRAP_VOID(SDL_MaximizeWindow, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_MinimizeWindow, (SDL_Window * window), (window))
-/* sdl2-compat (the SDL2 API implemented over SDL3) crashes inside
- * SDL_PushEvent / SDL_PeepEvents when an SDL_TEXTINPUT or SDL_TEXTEDITING event
- * is *pushed* into its queue: SDL2 carries the text inline in a fixed char[]
- * field, SDL3 carries it as a heap pointer, and that translation does not
- * survive the push direction (it hands SDL3 a NULL event). Real input flows the
- * other way, SDL3 -> SDL2, and is unaffected; only synthetic injection of a
- * text event hits this. To keep that injection working without crashing, the
- * wrapper diverts these events into a small side queue and merges them back in
- * through the wrapped SDL queue APIs below. The registered event filter is
- * invoked on the way in, exactly as SDL would; when a side-queued filtered
- * event is later removed through SDL APIs, a narrow libX11-compat hook undoes
- * the X event wakeup accounting for that removed entry. On a classic SDL2
- * runtime no text push ever lands here in practice (only synthetic injection
- * does), so the workaround is inert for real workloads.
+/* sdl2-compat (the SDL2 API implemented over SDL3) crashes inside SDL_PushEvent
+ * / SDL_PeepEvents when an SDL_TEXTINPUT or SDL_TEXTEDITING event is *pushed*
+ * into its queue: SDL2 carries the text inline in a fixed char[] field, SDL3
+ * carries it as a heap pointer, and that translation does not survive the push
+ * direction (it hands SDL3 a NULL event). Real input flows the other way, SDL3
+ * -> SDL2, and is unaffected; only synthetic injection of a text event hits
+ * this. To keep that injection working without crashing, the wrapper diverts
+ * these events into a small side queue and merges them back in through the
+ * wrapped SDL queue APIs below. The registered event filter is invoked on the
+ * way in, exactly as SDL would; when a side-queued filtered event is later
+ * removed through SDL APIs, a narrow libX11-compat hook undoes the X event
+ * wakeup accounting for that removed entry. On a classic SDL2 runtime no text
+ * push ever lands here in practice (only synthetic injection does), so the
+ * workaround is inert for real workloads.
  *
  * Limitations, acceptable because real code never injects text events: the side
  * queue drains before real SDL events, so a text event injected after another
@@ -446,8 +351,8 @@ static int sideQueueTextPush(SDL_Event *event)
 }
 
 /* Drain (GET) or copy (PEEK) side-queued text events whose type falls in
- * [minType, maxType] into the caller's buffer, FIFO order, up to numevents.
- * A non-removing PEEK is forced when events is NULL (the SDL count form).
+ * [minType, maxType] into the caller's buffer, FIFO order, up to numevents. A
+ * non-removing PEEK is forced when events is NULL (the SDL count form).
  * Returns how many were placed (or would be placed, for the count form).
  */
 /* When reclaim is true the caller consumes the drained events itself and
@@ -568,7 +473,8 @@ SDL_bool SDLCALL SDL_HasEvent(Uint32 type)
 }
 
 /* Range forms must consult the side queue too, so a flush/has spanning the
- * text-event types stays correct. */
+ * text-event types stays correct.
+ */
 void SDLCALL SDL_FlushEvents(Uint32 minType, Uint32 maxType)
 {
     sideQueueRemoveRange(minType, maxType);
@@ -624,8 +530,8 @@ int SDLCALL SDL_PeepEvents(SDL_Event *events,
 
     /* events == NULL is SDL's count form: count matching side entries without
      * removing them (sideQueueDrain forces PEEK when events is NULL), then add
-     * the real queue's count. numevents is per-SDL ignored for counting, so
-     * cap the side scan at the ring size.
+     * the real queue's count. numevents is per-SDL ignored for counting, so cap
+     * the side scan at the ring size.
      */
     int sideMax = events ? numevents : TEXT_SIDEQ_CAP;
     bool reclaim = action == SDL_GETEVENT && sideQueueDrainShouldReclaim();
@@ -758,6 +664,10 @@ SDL_WRAP(int,
          SDL_SetTextureBlendMode,
          (SDL_Texture * texture, SDL_BlendMode blendMode),
          (texture, blendMode))
+SDL_WRAP(int,
+         SDL_SetTextureScaleMode,
+         (SDL_Texture * texture, SDL_ScaleMode scaleMode),
+         (texture, scaleMode))
 #if SDL_VERSION_ATLEAST(2, 0, 16)
 SDL_WRAP_VOID(SDL_SetWindowAlwaysOnTop,
               (SDL_Window * window, SDL_bool on_top),

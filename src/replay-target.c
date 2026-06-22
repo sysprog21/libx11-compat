@@ -1,5 +1,5 @@
 #include "replay-target.h"
-#include <SDL2/SDL_atomic.h>
+#include "sdl-compat.h"
 #include <limits.h>
 #include <stdint.h>
 #include "util.h"

@@ -170,11 +170,11 @@ KeySym *XGetKeyboardMapping(Display *display,
     }
 
     int firstAfterRange = first_keycode + count;
-    for (int kc = SDLK_0; kc <= SDLK_9; kc++) {
+    for (int kc = SDLK_0; kc <= (int) SDLK_9; kc++) {
         if (first_keycode <= kc && kc < firstAfterRange)
             mapping[kc - first_keycode] = XkbKeycodeToKeysym(display, kc, 0, 0);
     }
-    for (int kc = SDLK_a; kc <= SDLK_z; kc++) {
+    for (int kc = SDLK_a; kc <= (int) SDLK_z; kc++) {
         if (first_keycode <= kc && kc < firstAfterRange)
             mapping[kc - first_keycode] = XkbKeycodeToKeysym(display, kc, 0, 0);
     }

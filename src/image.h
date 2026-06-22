@@ -1,7 +1,7 @@
 #ifndef IMAGE_H
 #define IMAGE_H
 
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 void freeImageStorage(void);
 void invalidatePutImageStagingTexture(SDL_Renderer *renderer);

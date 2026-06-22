@@ -1,8 +1,13 @@
 # libx11-compat
 
-`libx11-compat` is an in-process implementation of the [X Window System](https://en.wikipedia.org/wiki/X_Window_System) client library (Xlib) layered on top of [SDL2](https://www.libsdl.org/), SDL2_ttf, and pixman.
+`libx11-compat` is an in-process implementation of the [X Window System](https://en.wikipedia.org/wiki/X_Window_System) client library (Xlib) layered on top of [SDL](https://www.libsdl.org/) (SDL2 or SDL3), SDL_ttf, and pixman.
 It lets existing Xlib clients keep their source unchanged while running on platforms where a conventional X server is unavailable or inconvenient:
-macOS without XQuartz, Wayland-only sessions, headless CI, Android apps with their own SDL2 integration, and similar environments.
+macOS without XQuartz, Wayland-only sessions, headless CI, Android apps with their own SDL integration, and similar environments.
+
+Both SDL major versions are supported from a single source tree: the build
+auto-detects SDL3 (when both SDL3 and SDL3_ttf are visible to `pkg-config`) and
+otherwise uses SDL2, and the backend can be selected explicitly. See
+[SDL backend](#sdl-backend) below.
 
 The library is not a re-implementation of the X11 wire protocol and does not replace a real X server.
 Its goal is to keep legacy Xlib code building and running while it is being migrated to a different toolkit or display stack.
@@ -10,7 +15,8 @@ Its goal is to keep legacy Xlib code building and running while it is being migr
 ## Building
 
 The build is Makefile-based and organized as small `mk/` fragments.
-The required dependencies are SDL2, SDL2_ttf, and pixman.
+The required dependencies are pixman plus one SDL stack: either SDL2 + SDL2_ttf
+or SDL3 + SDL3_ttf (see [SDL backend](#sdl-backend)).
 Optional validation workloads may need their upstream build tools; Osiris uses
 Meson and Ninja at build time and links against libjpeg, libpng, and freetype.
 
@@ -18,6 +24,30 @@ Meson and Ninja at build time and links against libjpeg, libpng, and freetype.
 make
 make check
 ```
+
+### SDL backend
+
+The same source builds against either SDL major version, selected by the
+`SDL_BACKEND` make variable:
+
+```sh
+make                      # auto-detect: SDL3 if present, otherwise SDL2
+make SDL_BACKEND=sdl2     # force the SDL2 backend
+make SDL_BACKEND=sdl3     # force the native SDL3 backend
+```
+
+When `SDL_BACKEND` is unset, the build prefers SDL3 when both `sdl3` and
+`sdl3-ttf` are visible to `pkg-config`, and falls back to SDL2 otherwise; an
+explicit `SDL_BACKEND=...` always wins.
+
+Under the SDL2 backend the compat stack links small in-tree wrapper shims
+(`libSDL2-x11compat.so`, `libSDL2_ttf-x11compat.so`) that `dlopen` the host SDL2
+at runtime, so a system SDL2 that is itself
+[sdl2-compat](https://github.com/libsdl-org/sdl2-compat) over SDL3 also works.
+Under the SDL3 backend the stack links `libSDL3` and `libSDL3_ttf` directly; a
+single chokepoint header (`src/sdl-compat.h`) translates the SDL2-spelled API
+the sources are written against to SDL3, so no source changes are needed to
+switch backends.
 
 `make check` runs the in-tree C tests, exported-symbol coverage, Motif link and demo checks, replay-driven UI smoke tests, and system-X11 differential checks.
 For faster local loops, use `make check-unit`, `make check-smoke`, or `make check-differential` depending on the subsystem being changed.
@@ -152,7 +182,7 @@ See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the per-subsystem status table, s
 Most Xlib sources need no edits (porting is a build-system and runtime-environment exercise).
 The general shape:
 
-1. Link the application against `build/libX11-compat.so` plus SDL2, SDL2_ttf, and pixman, replacing the system `-lX11`.
+1. Link the application against `build/libX11-compat.so` plus the SDL stack it was built with (SDL2 + SDL2_ttf, or SDL3 + SDL3_ttf) and pixman, replacing the system `-lX11`.
 2. Keep the existing Xlib source unchanged.
 3. Drive the event loop with `XPending` / `XNextEvent` and `ConnectionNumber` + `select()`;
    the library pumps SDL internally.

@@ -142,16 +142,17 @@ $(OUT)/upstream/include/X11/Shell.h: $(LIBXT_GEN_DIR)/Shell.h
 # files have been staged before the recipe reads them; the explicit
 # dependency on LIBXT_GEN_HEADERS ensures StringDefs.h is available before
 # any unit that quotes it compiles.
-$(LIBXT_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_GEN_HEADERS) $(LIBXT_STAGED_H) | \
-    $(LIBXT_OBJ_DIR)
+$(LIBXT_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_GEN_HEADERS) \
+    $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(LIBXT_OBJ_DIR)
 	@echo "  CC      $(LIBXT_SRC_DIR)/$*.c"
 	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) \
 	    -c $(LIBXT_SRC_DIR)/$*.c -o $@
 
 # StringDefs.c lives in $(LIBXT_GEN_DIR), not LIBXT_SRC_DIR.
-$(LIBXT_OBJ_DIR)/StringDefs.o: $(LIBXT_GEN_C) $(LIBXT_GEN_HEADERS) $(LIBXT_STAGED_H) | \
-    $(LIBXT_OBJ_DIR) $(UPSTREAM_HEADERS_STAMP)
+$(LIBXT_OBJ_DIR)/StringDefs.o: $(LIBXT_GEN_C) $(LIBXT_GEN_HEADERS) \
+    $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(LIBXT_OBJ_DIR) \
+    $(UPSTREAM_HEADERS_STAMP)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
 	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@

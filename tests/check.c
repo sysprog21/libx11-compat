@@ -14,7 +14,7 @@
 #include <X11/Xlibint.h>
 #include <X11/keysym.h>
 #include <X11/cursorfont.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <wchar.h>
 #include <fontconfig/fontconfig.h>
 
@@ -1038,7 +1038,8 @@ static int pixel_is_rgba(SDL_Surface *surface,
     Uint8 gotBlue = 0;
     Uint8 gotAlpha = 0;
     SDL_GetRGBA(getPixel(surface, (unsigned int) x, (unsigned int) y),
-                surface->format, &gotRed, &gotGreen, &gotBlue, &gotAlpha);
+                XC_SURFACE_FORMAT(surface), &gotRed, &gotGreen, &gotBlue,
+                &gotAlpha);
     return gotRed == red && gotGreen == green && gotBlue == blue &&
            gotAlpha == alpha;
 }
@@ -1050,7 +1051,7 @@ static int pixel_is_between_black_and_white(SDL_Surface *surface, int x, int y)
     Uint8 blue = 0;
     Uint8 alpha = 0;
     SDL_GetRGBA(getPixel(surface, (unsigned int) x, (unsigned int) y),
-                surface->format, &red, &green, &blue, &alpha);
+                XC_SURFACE_FORMAT(surface), &red, &green, &blue, &alpha);
     return alpha == 255 && red == green && green == blue && red > 0 &&
            red < 255;
 }
@@ -3056,7 +3057,7 @@ static int test_events(Display *display)
     SDL_Event textEvent;
     SDL_zero(textEvent);
     textEvent.type = SDL_TEXTINPUT;
-    strcpy(textEvent.text.text, "a");
+    XC_SET_TEXT_EVENT(textEvent, "a");
     int queuedBeforeText = XEventsQueued(display, QueuedAlready);
     SDL_PushEvent(&textEvent);
     CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText + 1,
@@ -3138,7 +3139,7 @@ static int test_events(Display *display)
     wheelEvent.type = SDL_MOUSEWHEEL;
     wheelEvent.wheel.windowID =
         SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
-    wheelEvent.wheel.preciseY = 0.25f;
+    XC_SET_WHEEL_Y(&wheelEvent, 0.25f);
     wheelEvent.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
     CHECK(convertEvent(display, &wheelEvent, &out, True) == -1,
           "fractional precise wheel delta converted directly");
@@ -3149,7 +3150,7 @@ static int test_events(Display *display)
     wheelEvent.type = SDL_MOUSEWHEEL;
     wheelEvent.wheel.windowID =
         SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
-    wheelEvent.wheel.preciseY = 0.75f;
+    XC_SET_WHEEL_Y(&wheelEvent, 0.75f);
     wheelEvent.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
     CHECK(convertEvent(display, &wheelEvent, &out, True) == -1,
           "accumulated precise wheel delta converted directly");
@@ -3261,10 +3262,10 @@ static int test_events(Display *display)
 
     SDL_Event topLeave;
     SDL_zero(topLeave);
-    topLeave.type = SDL_WINDOWEVENT;
+    XC_INIT_WINDOW_EVENT(&topLeave);
     topLeave.window.windowID =
         SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
-    topLeave.window.event = SDL_WINDOWEVENT_LEAVE;
+    XC_SET_WINDOW_SUBEVENT(&topLeave, SDL_WINDOWEVENT_LEAVE);
     CHECK(convertEvent(display, &topLeave, &out, True) != 0,
           "top-level leave should queue child leave first");
     XNextEvent(display, &out);
@@ -3582,15 +3583,15 @@ static int test_events(Display *display)
     XSelectInput(display, window, EnterWindowMask | LeaveWindowMask);
     SDL_Event crossingEvent;
     SDL_zero(crossingEvent);
-    crossingEvent.type = SDL_WINDOWEVENT;
+    XC_INIT_WINDOW_EVENT(&crossingEvent);
     crossingEvent.window.windowID =
         SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
-    crossingEvent.window.event = SDL_WINDOWEVENT_ENTER;
+    XC_SET_WINDOW_SUBEVENT(&crossingEvent, SDL_WINDOWEVENT_ENTER);
     CHECK(convertEvent(display, &crossingEvent, &out, True) == 0,
           "SDL window enter did not convert");
     CHECK(out.type == EnterNotify && out.xcrossing.mode == NotifyNormal,
           "SDL window enter crossing fields were incorrect");
-    crossingEvent.window.event = SDL_WINDOWEVENT_LEAVE;
+    XC_SET_WINDOW_SUBEVENT(&crossingEvent, SDL_WINDOWEVENT_LEAVE);
     CHECK(convertEvent(display, &crossingEvent, &out, True) == 0,
           "SDL window leave did not convert");
     CHECK(out.type == LeaveNotify && out.xcrossing.mode == NotifyNormal,
@@ -3775,8 +3776,8 @@ static int test_events(Display *display)
 
     SDL_Event resizeEvent;
     SDL_zero(resizeEvent);
-    resizeEvent.type = SDL_WINDOWEVENT;
-    resizeEvent.window.event = SDL_WINDOWEVENT_RESIZED;
+    XC_INIT_WINDOW_EVENT(&resizeEvent);
+    XC_SET_WINDOW_SUBEVENT(&resizeEvent, SDL_WINDOWEVENT_RESIZED);
     resizeEvent.window.windowID =
         SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
     resizeEvent.window.data1 = 48;
@@ -3817,10 +3818,10 @@ static int test_events(Display *display)
     XFreeGC(display, resizeGc);
     SDL_Event windowEvent;
     SDL_zero(windowEvent);
-    windowEvent.type = SDL_WINDOWEVENT;
+    XC_INIT_WINDOW_EVENT(&windowEvent);
     windowEvent.window.windowID =
         SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
-    windowEvent.window.event = SDL_WINDOWEVENT_MOVED;
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_MOVED);
     windowEvent.window.data1 = 11;
     windowEvent.window.data2 = 12;
     CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
@@ -3832,12 +3833,12 @@ static int test_events(Display *display)
               movedWindowAttrs.y == out.xconfigure.y,
           "SDL move did not update window attributes");
 
-    windowEvent.window.event = SDL_WINDOWEVENT_HIDDEN;
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_HIDDEN);
     CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
           "SDL hidden did not convert to UnmapNotify");
     CHECK(expect_map_state(display, window, IsUnmapped),
           "SDL hidden did not update map state");
-    windowEvent.window.event = SDL_WINDOWEVENT_SHOWN;
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_SHOWN);
     GET_WINDOW_STRUCT(window)->needsPresent = False;
     CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
           "SDL shown did not convert to MapNotify");
@@ -3846,18 +3847,18 @@ static int test_events(Display *display)
     CHECK(GET_WINDOW_STRUCT(window)->needsPresent,
           "SDL shown did not request repaint of the mapped window");
     GET_WINDOW_STRUCT(window)->needsPresent = False;
-    windowEvent.window.event = SDL_WINDOWEVENT_EXPOSED;
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_EXPOSED);
     CHECK(convertEvent(display, &windowEvent, &out, True) < 0,
           "SDL exposed should be consumed internally");
     CHECK(GET_WINDOW_STRUCT(window)->needsPresent,
           "SDL exposed did not request repaint of the existing backing store");
     GET_WINDOW_STRUCT(window)->needsPresent = False;
-    windowEvent.window.event = SDL_WINDOWEVENT_MINIMIZED;
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_MINIMIZED);
     CHECK(convertEvent(display, &windowEvent, &out, True) < 0,
           "SDL minimized should be consumed internally");
     CHECK(expect_map_state(display, window, IsUnmapped),
           "SDL minimized did not update map state");
-    windowEvent.window.event = SDL_WINDOWEVENT_RESTORED;
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_RESTORED);
     CHECK(convertEvent(display, &windowEvent, &out, True) < 0,
           "SDL restored should be consumed internally");
     CHECK(expect_map_state(display, window, IsViewable),
@@ -4962,6 +4963,11 @@ static int test_icccm_transient_for_modal(Display *display)
 #if SDL_VERSION_ATLEAST(2, 0, 5)
     CHECK(GET_WINDOW_STRUCT(child)->deferredTransientApplied,
           "transient: modal hint did not trigger SDL_SetWindowModalFor");
+#ifdef LIBX11_COMPAT_SDL3
+    bool driverTracksParent =
+        SDL_GetWindowParent(GET_WINDOW_STRUCT(child)->sdlWindow) ==
+        GET_WINDOW_STRUCT(parent)->sdlWindow;
+#endif
 
     GET_WINDOW_STRUCT(child)->deferredTransientApplied = False;
     XEvent event = {.xclient = {
@@ -4983,6 +4989,11 @@ static int test_icccm_transient_for_modal(Display *display)
           "transient: XDeleteProperty(_NET_WM_STATE) failed");
     CHECK(!GET_WINDOW_STRUCT(child)->deferredTransientApplied,
           "transient: clearing modal did not drop applied flag");
+#ifdef LIBX11_COMPAT_SDL3
+    CHECK(!driverTracksParent ||
+              SDL_GetWindowParent(GET_WINDOW_STRUCT(child)->sdlWindow) == NULL,
+          "transient: clearing modal did not drop SDL3 native parent");
+#endif
 
     /* XDeleteProperty(WM_TRANSIENT_FOR) clears the deferred parent. */
     CHECK(XChangeProperty(display, child, netWmState, XA_ATOM, 32,

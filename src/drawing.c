@@ -156,7 +156,7 @@ static FILE *renderStatsFile(void)
     return file;
 }
 
-static Uint32 presentWakeTimerCallback(Uint32 interval, void *param)
+static Uint32 presentWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
 {
     (void) interval;
     (void) param;
@@ -394,7 +394,7 @@ void drawWindowDataToScreen()
             continue;
         }
         screenTargetMutated = True;
-        Uint32 winFmt = winSurface->format->format;
+        Uint32 winFmt = XC_SURFACE_FMT_ENUM(winSurface);
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
         int readRc = 0;
         SDL_Rect surfaceRects[DIRTY_RECT_BUDGET];
@@ -412,7 +412,7 @@ void drawWindowDataToScreen()
                         (Uint8 *) winSurface->pixels +
                         (size_t) rects[r].y * (size_t) winSurface->pitch +
                         (size_t) rects[r].x *
-                            (size_t) winSurface->format->BytesPerPixel;
+                            (size_t) XC_SURFACE_BYTESPERPIXEL(winSurface);
                     int rc = SDL_RenderReadPixels(screen, &rects[r], readFmt,
                                                   pixels, winSurface->pitch);
                     if (rc != 0) {
@@ -1609,7 +1609,7 @@ static Bool pixelInsideShape(const ShapeMaskView *view, int64_t wx, int64_t wy)
             return False;
         Uint32 mp = getPixel(mask, (unsigned int) mx, (unsigned int) my);
         Uint8 r = 0, g = 0, b = 0;
-        SDL_GetRGB(mp, mask->format, &r, &g, &b);
+        SDL_GetRGB(mp, XC_SURFACE_FORMAT(mask), &r, &g, &b);
         if (!(r || g || b))
             return False;
     }
@@ -1621,7 +1621,7 @@ void putPixel(SDL_Surface *surface,
               unsigned int y,
               Uint32 pixel)
 {
-    int bytesPerPixel = surface->format->BytesPerPixel;
+    int bytesPerPixel = XC_SURFACE_BYTESPERPIXEL(surface);
     Uint8 *p =
         (Uint8 *) surface->pixels + y * surface->pitch + x * bytesPerPixel;
     switch (bytesPerPixel) {
@@ -1650,7 +1650,7 @@ void putPixel(SDL_Surface *surface,
 
 Uint32 getPixel(SDL_Surface *surface, unsigned int x, unsigned int y)
 {
-    int bytesPerPixel = surface->format->BytesPerPixel;
+    int bytesPerPixel = XC_SURFACE_BYTESPERPIXEL(surface);
     Uint8 *pointer =
         (Uint8 *) surface->pixels + y * surface->pitch + x * bytesPerPixel;
     switch (bytesPerPixel) {
@@ -2723,7 +2723,7 @@ int XCopyPlane(Display *display,
         opaqueColorIfAlphaUnset(gContext->foreground);
     unsigned long backgroundColor =
         opaqueColorIfAlphaUnset(gContext->background);
-    SDL_PixelFormat *format = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA8888);
+    XcPixelFormat format = xcAllocFormat(SDL_PIXELFORMAT_RGBA8888);
     if (!format) {
         SDL_FreeSurface(srcSurface);
         handleOutOfMemory(0, display, 0, 0);
@@ -2755,7 +2755,7 @@ int XCopyPlane(Display *display,
          */
         destSurface = getRenderSurfaceRect(destRenderer, &destRect);
         if (!destSurface) {
-            SDL_FreeFormat(format);
+            xcFreeFormat(format);
             SDL_FreeSurface(srcSurface);
             handleError(0, display, dest, 0, BadMatch, 0);
             return 0;
@@ -2764,7 +2764,7 @@ int XCopyPlane(Display *display,
     Uint32 *pixels = malloc((size_t) width * (size_t) height * sizeof(Uint32));
     if (!pixels) {
         SDL_FreeSurface(destSurface);
-        SDL_FreeFormat(format);
+        xcFreeFormat(format);
         SDL_FreeSurface(srcSurface);
         handleOutOfMemory(0, display, 0, 0);
         return 0;
@@ -2785,14 +2785,15 @@ int XCopyPlane(Display *display,
             }
             Uint32 srcPixel = getPixel(srcSurface, x, y);
             Uint8 red = 0, green = 0, blue = 0;
-            SDL_GetRGB(srcPixel, srcSurface->format, &red, &green, &blue);
+            SDL_GetRGB(srcPixel, XC_SURFACE_FORMAT(srcSurface), &red, &green,
+                       &blue);
             Bool bitSet =
                 plane == 1 ? (red || green || blue) : ((srcPixel & plane) != 0);
             pixels[y * width + x] = bitSet ? foreground : background;
         }
     }
     SDL_FreeSurface(destSurface);
-    SDL_FreeFormat(format);
+    xcFreeFormat(format);
     SDL_FreeSurface(srcSurface);
 
     SDL_Texture *texture =

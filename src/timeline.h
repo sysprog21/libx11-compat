@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 /* Stable JSONL trace of X events, window lifecycle, present activity, focus
  * and grab transitions. Gated on LIBX11_COMPAT_TIMELINE=1; off in release

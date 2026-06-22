@@ -10,8 +10,8 @@
 #include <dirent.h>
 #include <limits.h>
 #include <X11/Xlib.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_ttf.h>
+#include "sdl-compat.h"
+#include "sdl-ttf-compat.h"
 #include "errors.h"
 #include "colors.h"
 #include "resource-types.h"
@@ -2378,6 +2378,13 @@ Bool renderText(Display *display,
             return False;
         }
         SDL_SetTextureBlendMode(fontTexture, SDL_BLENDMODE_BLEND);
+        /* Match SDL2's default nearest scaling: when the glyph texture is
+         * scaled to the core-metric cell, linear filtering (SDL3's default)
+         * would smear opaque strokes into partial coverage.
+         */
+#if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
+        SDL_SetTextureScaleMode(fontTexture, XC_SCALEMODE_NEAREST);
+#endif
         textureAscent = TTF_FontAscent(GET_FONT(gContext->font));
         if (stringHasEmbeddedNul ||
             !textCacheInsert(gContext->font, (Uint32) foreground, renderer,

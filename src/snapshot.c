@@ -22,7 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 
 #include "drawing.h"
 #include "events.h"

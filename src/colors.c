@@ -63,7 +63,7 @@ void freeColorStorage(void)
     }
 }
 
-SDL_Color uLongToColor(SDL_PixelFormat *pixelFormat, unsigned long color)
+SDL_Color uLongToColor(XcPixelFormat pixelFormat, unsigned long color)
 {
     SDL_Color res;
     SDL_GetRGBA(color, pixelFormat, &res.r, &res.g, &res.b, &res.a);

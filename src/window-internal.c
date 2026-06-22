@@ -830,7 +830,7 @@ static Bool shapeMaskPixelActive(SDL_Surface *mask, int x, int y)
         return False;
     Uint32 pixel = getPixel(mask, (unsigned int) x, (unsigned int) y);
     Uint8 r = 0, g = 0, b = 0;
-    SDL_GetRGB(pixel, mask->format, &r, &g, &b);
+    SDL_GetRGB(pixel, XC_SURFACE_FORMAT(mask), &r, &g, &b);
     return r || g || b;
 }
 

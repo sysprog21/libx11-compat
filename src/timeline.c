@@ -22,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include "util.h"
 
 static SDL_atomic_t timelineCounters[TIMELINE_KIND_COUNT];

@@ -1,5 +1,5 @@
 #include "errors.h"
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "display.h"

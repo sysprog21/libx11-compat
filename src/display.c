@@ -1,8 +1,8 @@
 #include <math.h>
 #include <X11/Xlibint.h>
 #include "X11/Xutil.h"
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_ttf.h>
+#include "sdl-compat.h"
+#include "sdl-ttf-compat.h"
 #include "window.h"
 #include "errors.h"
 #include "events.h"
@@ -146,7 +146,12 @@ Display *XOpenDisplay(_Xconst char *display_name)
     Bool sdlOwned = False;
     Bool ttfOwned = False;
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
+#ifndef LIBX11_COMPAT_SDL3
+        /* SDL3's SDL_SetMainReady lives in the separate SDL3_main helper, not
+         * libSDL3; this library drives SDL_Init itself and does not need it.
+         */
         SDL_SetMainReady();
+#endif
         SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
 
         /* On macOS, the click that activates a background window is consumed by

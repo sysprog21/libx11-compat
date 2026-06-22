@@ -20,7 +20,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
 #include <X11/extensions/XTest.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include "extension.h"
 #include "window.h"
 #include "events.h"
@@ -94,7 +94,7 @@ int XTestFakeMotionEvent(Display *display,
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = SDL_MOUSEMOTION;
-    ev.motion.timestamp = SDL_GetTicks();
+    ev.motion.timestamp = XC_NOW_EVENT_TS();
     ev.motion.windowID = winId;
     ev.motion.x = localX;
     ev.motion.y = localY;
@@ -119,7 +119,7 @@ int XTestFakeRelativeMotionEvent(Display *display,
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = SDL_MOUSEMOTION;
-    ev.motion.timestamp = SDL_GetTicks();
+    ev.motion.timestamp = XC_NOW_EVENT_TS();
     ev.motion.windowID = winId;
     ev.motion.x = newX;
     ev.motion.y = newY;
@@ -160,7 +160,7 @@ int XTestFakeButtonEvent(Display *display,
         SDL_Event ev;
         SDL_zero(ev);
         ev.type = SDL_MOUSEWHEEL;
-        ev.wheel.timestamp = SDL_GetTicks();
+        ev.wheel.timestamp = XC_NOW_EVENT_TS();
         ev.wheel.windowID = winId;
         ev.wheel.y = (button == 4) ? 1 : -1;
         ev.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
@@ -185,10 +185,10 @@ int XTestFakeButtonEvent(Display *display,
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = is_press ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
-    ev.button.timestamp = SDL_GetTicks();
+    ev.button.timestamp = XC_NOW_EVENT_TS();
     ev.button.windowID = winId;
     ev.button.button = (Uint8) sdlButton;
-    ev.button.state = is_press ? SDL_PRESSED : SDL_RELEASED;
+    XC_EVENT_SET_BUTTON_PRESSED(&ev, is_press);
     ev.button.clicks = 1;
     ev.button.x = curX;
     ev.button.y = curY;
@@ -207,9 +207,9 @@ int XTestFakeKeyEvent(Display *display,
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = is_press ? SDL_KEYDOWN : SDL_KEYUP;
-    ev.key.timestamp = SDL_GetTicks();
+    ev.key.timestamp = XC_NOW_EVENT_TS();
     ev.key.windowID = winId;
-    ev.key.state = is_press ? SDL_PRESSED : SDL_RELEASED;
+    XC_EVENT_SET_KEY_PRESSED(&ev, is_press);
     /* X keycodes are server-defined; SDL scancodes are SDL's own enum and the
      * convertEvent path derives the X keycode back from keysym.sym (low byte).
      * Pass the requested code through as the SDL_Keycode so the round-trip
@@ -217,8 +217,8 @@ int XTestFakeKeyEvent(Display *display,
      * SDL_GetScancodeFromKey fill in the scancode for callers that consume it.
      * Callers wanting a specific keysym should XStringToKeysym first.
      */
-    ev.key.keysym.sym = (SDL_Keycode) keycode;
-    ev.key.keysym.scancode = SDL_GetScancodeFromKey((SDL_Keycode) keycode);
+    XC_EVENT_SET_KEYSYM(&ev, (SDL_Keycode) keycode);
+    XC_EVENT_SET_SCANCODE(&ev, SDL_GetScancodeFromKey((SDL_Keycode) keycode));
     return pushFakeEvent(display, &ev);
 }
 

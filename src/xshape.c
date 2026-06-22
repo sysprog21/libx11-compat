@@ -61,7 +61,7 @@ static SDL_Surface *createShapeSurface(int w, int h)
         DEFAULT_BLUE_MASK, DEFAULT_ALPHA_MASK);
     if (!surface)
         return NULL;
-    Uint32 black = SDL_MapRGBA(surface->format, 0, 0, 0, 255);
+    Uint32 black = SDL_MapRGBA(XC_SURFACE_FORMAT(surface), 0, 0, 0, 255);
     SDL_FillRect(surface, NULL, black);
     return surface;
 }
@@ -72,7 +72,7 @@ static Bool maskPixelActive(SDL_Surface *mask, int x, int y)
         return False;
     Uint32 pixel = getPixel(mask, (unsigned int) x, (unsigned int) y);
     Uint8 r = 0, g = 0, b = 0;
-    SDL_GetRGB(pixel, mask->format, &r, &g, &b);
+    SDL_GetRGB(pixel, XC_SURFACE_FORMAT(mask), &r, &g, &b);
     return r || g || b;
 }
 
@@ -122,7 +122,7 @@ static SDL_Surface *copyShapeSurface(SDL_Surface *src)
     SDL_Surface *copy = createShapeSurface(src->w, src->h);
     if (!copy)
         return NULL;
-    Uint32 white = SDL_MapRGBA(copy->format, 255, 255, 255, 255);
+    Uint32 white = SDL_MapRGBA(XC_SURFACE_FORMAT(copy), 255, 255, 255, 255);
     for (int y = 0; y < src->h; y++) {
         for (int x = 0; x < src->w; x++) {
             if (maskPixelActive(src, x, y))
@@ -225,7 +225,7 @@ static SDL_Surface *combineShapeSurfaces(WindowStruct *window,
     if (!out)
         return NULL;
 
-    Uint32 white = SDL_MapRGBA(out->format, 255, 255, 255, 255);
+    Uint32 white = SDL_MapRGBA(XC_SURFACE_FORMAT(out), 255, 255, 255, 255);
     /* Track whether the produced mask actually excludes any window pixel. A
      * combine that ends up admitting every window pixel within the mask bbox
      * AND whose bbox covers the whole window is a no-op. The mask in that case

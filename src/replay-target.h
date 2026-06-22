@@ -2,7 +2,7 @@
 #define LIBX11_COMPAT_REPLAY_TARGET_H
 
 #include <X11/Xlib.h>
-#include <SDL2/SDL_stdinc.h>
+#include "sdl-compat.h"
 
 /* Shared target state for in-process replay, XTest injection, snapshots,
  * and replay-driven resize. The target is captured on the main thread when

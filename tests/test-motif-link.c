@@ -39,7 +39,7 @@ static int image_has_visible_pixels(XImage *image)
 
 static int surface_has_visible_pixels(SDL_Surface *surface)
 {
-    if (!surface || surface->format->BytesPerPixel != 4)
+    if (!surface || XC_SURFACE_BYTESPERPIXEL(surface) != 4)
         return 0;
 
     if (SDL_LockSurface(surface) != 0)
@@ -51,7 +51,7 @@ static int surface_has_visible_pixels(SDL_Surface *surface)
                                 y * surface->pitch);
         for (int x = 0; x < surface->w; x++) {
             Uint8 r, g, b, a;
-            SDL_GetRGBA(row[x], surface->format, &r, &g, &b, &a);
+            SDL_GetRGBA(row[x], XC_SURFACE_FORMAT(surface), &r, &g, &b, &a);
             if (r != 0 || g != 0 || b != 0 || a != 0) {
                 visible = 1;
                 break;

@@ -18,7 +18,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/XTest.h>
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include "replay-target.h"
 
 #define CHECK(cond, msg)                                                    \

@@ -1,7 +1,7 @@
 #ifndef _COLORS_H_
 #define _COLORS_H_
 
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <X11/Xlib.h>
 
 // #if SDL_BYTEORDER != SDL_BIG_ENDIAN
@@ -51,7 +51,7 @@ static inline unsigned long colorWithOpaqueDefault(unsigned long color)
 extern Colormap GREY_SCALE_COLORMAP;
 extern Colormap REAL_COLOR_COLORMAP;
 
-SDL_Color uLongToColor(SDL_PixelFormat *pixelFormat, unsigned long color);
+SDL_Color uLongToColor(XcPixelFormat pixelFormat, unsigned long color);
 Bool initColorStorage(void);
 void freeColorStorage(void);
 

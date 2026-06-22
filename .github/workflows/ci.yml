@@ -4,8 +4,11 @@
 # LLVM apt repo is added so clang-format-20 is available on ubuntu-24.04
 # (which ships clang-format-18 by default).
 #
-# All eight top-level jobs (lint, build, debug-build, sanitize, motif,
-# osiris, xfig, gimp) run in parallel. Osiris and Xfig each have no Motif
+# All nine top-level jobs (lint, build, debug-build, sanitize, motif,
+# osiris, xfig, gimp, sdl3) run in parallel. The sdl3 job builds the
+# compat stack against the native SDL3 backend (SDL_BACKEND=sdl3); every
+# other job uses the default SDL2 backend, so the SDL3 translation shim in
+# src/sdl-compat.h is only exercised there. Osiris and Xfig each have no Motif
 # dependency, so they live in their own jobs rather than queueing behind
 # the Motif + ViolaWWW + Mosaic chain. GIMP 0.54 is a Motif client but
 # gets its own job too: its plug-in build pulls in libpng/jpeg/tiff that
@@ -966,6 +969,140 @@ jobs:
           path: build/ui-smoke
           if-no-files-found: warn
           retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Native SDL3 backend build + regression tests ----
+  # ubuntu-24.04 ships no SDL3 in its repos (SDL3 GA'd after noble), and no
+  # GitHub runner image or readily-available PPA carries libsdl3-dev for
+  # noble (the savoury1 multimedia PPA, for instance, packages only SDL2),
+  # so build SDL3 + SDL3_ttf from their latest stable release-3.2.* tags
+  # into a cached prefix, then build the compat stack with SDL_BACKEND=sdl3
+  # and run the sanitizer-friendly regression subset. This is the only job
+  # that exercises the native-SDL3 translation shim (src/sdl-compat.h).
+  sdl3:
+    runs-on: ubuntu-24.04
+    env:
+      SDL3_PREFIX: ${{ github.workspace }}/.sdl3-prefix
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        # cmake/ninja drive the SDL3 source build; freetype/harfbuzz back
+        # SDL3_ttf (built with SDLTTF_VENDORED=OFF). No libsdl2-dev: the SDL3
+        # backend links the libSDL3 / libSDL3_ttf built below directly.
+        #
+        # libx11-dev is still needed: the staged upstream libXt/libX11 sources
+        # fall through to a few system X11 protocol/private headers (e.g.
+        # X11/Xpoll.h) that the compat header tree does not stage. The other
+        # jobs pull these in transitively via libsdl2-dev -> libx11-dev; this
+        # job has no SDL2, so install libx11-dev explicitly.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang ccache make pkg-config python3 libpixman-1-dev \
+            cmake ninja-build git libfreetype-dev libharfbuzz-dev libx11-dev
+
+      - name: Cache SDL3 + SDL3_ttf prefix
+        id: sdl3-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.SDL3_PREFIX }}
+          key: sdl3-src-prefix-v1-${{ runner.os }}
+
+      - name: Build SDL3 + SDL3_ttf from source
+        if: steps.sdl3-cache.outputs.cache-hit != 'true'
+        # --filter=blob:none keeps history + tags cheap so the latest stable
+        # release-3.2.* tag can be selected without a full checkout.
+        # SDL_UNIX_CONSOLE_BUILD=ON builds the dummy/offscreen video drivers
+        # without requiring X11 or Wayland development libraries; the compat
+        # regression tests run under SDL_VIDEODRIVER=dummy with the software
+        # renderer, so no real windowing backend is needed in CI.
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/libsdl-org/SDL.git "$tmp/SDL"
+          git -C "$tmp/SDL" checkout \
+            "$(git -C "$tmp/SDL" tag -l 'release-3.2.*' | sort -V | tail -1)"
+          cmake -S "$tmp/SDL" -B "$tmp/SDL/b" -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$SDL3_PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF \
+            -DSDL_UNIX_CONSOLE_BUILD=ON
+          cmake --build "$tmp/SDL/b"
+          cmake --install "$tmp/SDL/b"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/libsdl-org/SDL_ttf.git "$tmp/SDL_ttf"
+          git -C "$tmp/SDL_ttf" checkout \
+            "$(git -C "$tmp/SDL_ttf" tag -l 'release-3.2.*' | sort -V | tail -1)"
+          cmake -S "$tmp/SDL_ttf" -B "$tmp/SDL_ttf/b" -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$SDL3_PREFIX" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$SDL3_PREFIX" -DBUILD_SHARED_LIBS=ON \
+            -DSDLTTF_VENDORED=OFF -DSDLTTF_SAMPLES=OFF
+          cmake --build "$tmp/SDL_ttf/b"
+          cmake --install "$tmp/SDL_ttf/b"
+          rm -rf "$tmp"
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-sdl3-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-sdl3-v1-${{ runner.os }}-
+
+      - name: Configure ccache and SDL3 environment
+        # PKG_CONFIG_PATH lets the build auto-detect sdl3/sdl3-ttf from the
+        # prefix; LD_LIBRARY_PATH lets the test binaries find libSDL3 at
+        # runtime. Both lib and lib64 are covered regardless of the prefix's
+        # GNUInstallDirs layout.
+        run: |
+          ccache --max-size=400M
+          ccache --zero-stats
+          {
+            echo "CC=ccache clang"
+            echo "PKG_CONFIG_PATH=$SDL3_PREFIX/lib/pkgconfig:$SDL3_PREFIX/lib64/pkgconfig"
+            echo "LD_LIBRARY_PATH=$SDL3_PREFIX/lib:$SDL3_PREFIX/lib64"
+          } >>"$GITHUB_ENV"
+
+      - name: Confirm SDL3 is detected
+        run: |
+          pkg-config --exists sdl3 sdl3-ttf
+          echo "SDL3 $(pkg-config --modversion sdl3), SDL3_ttf $(pkg-config --modversion sdl3-ttf)"
+
+      - name: Build libX11-compat.so (SDL_BACKEND=sdl3)
+        run: make SDL_BACKEND=sdl3 -j"$(nproc)"
+
+      - name: Run regression tests (SDL_BACKEND=sdl3 make check-unit)
+        # check-unit runs the in-tree binaries headless (SDL_VIDEODRIVER=
+        # dummy, software renderer) plus symbol coverage; it does not need
+        # Xvfb. The make test runner also folds SDL_RUNTIME_LIBDIR (the sdl3
+        # pkg-config libdir) onto LD_LIBRARY_PATH so libSDL3 resolves.
+        run: make SDL_BACKEND=sdl3 check-unit
+
+      - name: Build bundled examples (SDL_BACKEND=sdl3)
+        run: make SDL_BACKEND=sdl3 examples -j"$(nproc)"
 
       - name: ccache stats
         if: ${{ !cancelled() }}

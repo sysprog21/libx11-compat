@@ -1,7 +1,7 @@
 #ifndef _DRAWING_H_
 #define _DRAWING_H_
 
-#include <SDL2/SDL.h>
+#include "sdl-compat.h"
 #include <limits.h>
 #include <stdint.h>
 #include "resource-types.h"
