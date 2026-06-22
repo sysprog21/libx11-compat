@@ -1,0 +1,36 @@
+# xfig draw-line differential capture: select the polyline (open line)
+# tool, drop two canvas points, then middle-click to commit a single line
+# segment. The compat (internal) and system (xdotool) backends both drive
+# this same replay so the differential can pixel-diff the drawn canvas.
+#
+# Coordinate note: xfig 3.2.9 added the "Drawing" section label at the top
+# of the mode panel, which pushed the tool grid down from the legacy
+# (32, 96) the smoke replay still assumes. The polyline cell now sits at
+# column 2, row 3 of the grid, near (55, 215); a real X click there
+# selects the line tool on both system X11 and libx11-compat, where the
+# stale (32, 96) landed in the inert label band on system X11 and selected
+# nothing. The middle-click commits the polyline so the canvas shows a
+# finished segment rather than an in-progress rubber-band, which keeps the
+# two backends pixel-identical.
+#
+# 15 second wait-window: the differential scaffold runs two Xvfb instances
+# and two captures concurrently, so the window can drift past the 8 second
+# smoke budget. Matches xfig-startup-differential.
+delay 3000
+wait-window "Xfig|xfig" 15000
+delay 2000
+screenshot initial
+motion 55 215
+button 1 click
+delay 500
+motion 480 320
+button 1 click
+delay 200
+motion 640 480
+button 1 click
+delay 200
+button 2 click
+delay 500
+screenshot drawn
+assert-image drawn common-visible.json
+assert-image drawn xfig-canvas-changed.json

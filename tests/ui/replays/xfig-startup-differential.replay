@@ -1,0 +1,9 @@
+# xfig differential startup smoke test - uses a longer wait for the
+# system-side capture path, where parallel Xvfb instances and captures
+# can make xfig drift past the single-Xvfb smoke budget.
+delay 3000
+wait-window "Xfig|xfig" 15000
+delay 2000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial xfig-three-panes.json

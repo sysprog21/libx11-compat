@@ -664,10 +664,17 @@ SDL_WRAP(int,
          SDL_SetTextureBlendMode,
          (SDL_Texture * texture, SDL_BlendMode blendMode),
          (texture, blendMode))
+/* SDL_ScaleMode and SDL_SetTextureScaleMode arrived in SDL 2.0.12. Guard the
+ * thunk so the SDL2 wrapper still builds against older headers (e.g. Ubuntu
+ * focal ships 2.0.10); font.c gates its only call site on the same version, so
+ * nothing references this thunk on older SDL.
+ */
+#if SDL_VERSION_ATLEAST(2, 0, 12)
 SDL_WRAP(int,
          SDL_SetTextureScaleMode,
          (SDL_Texture * texture, SDL_ScaleMode scaleMode),
          (texture, scaleMode))
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 16)
 SDL_WRAP_VOID(SDL_SetWindowAlwaysOnTop,
               (SDL_Window * window, SDL_bool on_top),
