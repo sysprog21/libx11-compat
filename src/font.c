@@ -444,6 +444,7 @@ static Bool isFontAlias(const char *name)
            containsIgnoreCase(name, "lucidatypewriter") ||
            containsIgnoreCase(name, "adobe-times") ||
            containsIgnoreCase(name, "times") ||
+           containsIgnoreCase(name, "schoolbook") ||
            (name[0] == '-' && containsIgnoreCase(name, "iso8859")) ||
            ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
             strstr(name, "-p-"));
@@ -984,7 +985,8 @@ static FontCacheEntry *findAliasedFontForName(const char *name)
     if (!strcmp(name, "variable"))
         return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
     if (containsIgnoreCase(name, "times") ||
-        containsIgnoreCase(name, "adobe-times"))
+        containsIgnoreCase(name, "adobe-times") ||
+        containsIgnoreCase(name, "schoolbook"))
         return findProbeFont(SERIF_PROBE_PATHS,
                              ARRAY_LENGTH(SERIF_PROBE_PATHS));
     if (containsIgnoreCase(name, "helvetica") ||
@@ -1049,7 +1051,8 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
 {
     TTF_Font *font = NULL;
     if (containsIgnoreCase(name, "times") ||
-        containsIgnoreCase(name, "adobe-times")) {
+        containsIgnoreCase(name, "adobe-times") ||
+        containsIgnoreCase(name, "schoolbook")) {
         font = openRenderableProbeFont(
             SERIF_PROBE_PATHS, ARRAY_LENGTH(SERIF_PROBE_PATHS), size, skipPath);
         if (font)

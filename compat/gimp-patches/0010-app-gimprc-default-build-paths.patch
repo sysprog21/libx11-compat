@@ -1,0 +1,96 @@
+--- a/app/gimprc.c
++++ b/app/gimprc.c
+@@ -35,8 +35,46 @@
+ char *    brush_path = NULL;
+ char *    default_brush = NULL;
+ 
++/*  Set in main.c to argv[0]. Used to locate the build tree's gimprc and the
++ *  plug-in / brush directories so GIMP runs without an installed gimprc.  */
++extern char *prog_name;
++
+ /*  static function prototypes  */
+ static char* get_token (char *, int);
++static char* gimp_data_dir (void);
++
++/*  GIMP's data directory holds plug-ins/, brushes/, and the shipped gimprc.
++ *  The binary lives in <data_dir>/app, so derive the data dir by stripping the
++ *  program name and the "app" component from prog_name. This lets the build
++ *  tree self-configure without an installed or generated gimprc.  */
++static char*
++gimp_data_dir ()
++{
++  static char dir[1024];
++  static int computed = 0;
++  char *slash;
++
++  if (computed)
++    return dir;
++  strncpy (dir, prog_name ? prog_name : "", sizeof (dir) - 1);
++  dir[sizeof (dir) - 1] = 0;
++  slash = strrchr (dir, '/');         /*  drop "/gimp"  */
++  if (slash)
++    *slash = 0;
++  else
++    {
++      strcpy (dir, ".");
++      computed = 1;
++      return dir;
++    }
++  slash = strrchr (dir, '/');         /*  drop "/app"  */
++  if (slash)
++    *slash = 0;
++  else
++    strcpy (dir, "..");
++  computed = 1;
++  return dir;
++}
+ 
+ void
+ parse_gimprc ()
+@@ -44,6 +82,7 @@
+   FILE *fp;
+   char str[200];
+   char *token;
++  Boolean use_build_paths = False;
+   struct stat stat_buf;
+ 
+   {
+@@ -66,7 +105,18 @@
+ 	      fatal_error ("Unable to open \"gimprc\"");
+ 	  }
+ 	else
+-	  fatal_error ("\"gimprc\" file not found");
++	  {
++	    /*  No installed gimprc: fall back to the one shipped in the build
++	     *  tree beside the binary, and resolve plug-in / brush paths from
++	     *  that tree (below) instead of aborting.  */
++	    char shipped[1024];
++
++	    snprintf (shipped, sizeof (shipped), "%s/gimprc", gimp_data_dir ());
++	    fp = fopen (shipped, "rt");
++	    if (!fp)
++	      fatal_error ("\"gimprc\" file not found");
++	    use_build_paths = True;
++	  }
+       }
+   }
+ 
+@@ -168,6 +218,18 @@
+ 
+   fclose (fp);
+ 
++  /*  When self-configuring from the build tree, force the plug-in and brush
++   *  search paths to that tree so the freshly built plug-ins are found
++   *  regardless of the install-time paths the shipped gimprc declares.  */
++  if (use_build_paths)
++    {
++      char buf[1024];
++
++      snprintf (buf, sizeof (buf), "%s/plug-ins", gimp_data_dir ());
++      plug_in_path = xstrdup (buf);
++      snprintf (buf, sizeof (buf), "%s/brushes", gimp_data_dir ());
++      brush_path = xstrdup (buf);
++    }
+ }
+ 
+ 

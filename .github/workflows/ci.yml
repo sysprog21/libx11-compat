@@ -4,10 +4,12 @@
 # LLVM apt repo is added so clang-format-20 is available on ubuntu-24.04
 # (which ships clang-format-18 by default).
 #
-# All seven top-level jobs (lint, build, debug-build, sanitize, motif,
-# osiris, xfig) run in parallel. Osiris and Xfig each have no Motif
+# All eight top-level jobs (lint, build, debug-build, sanitize, motif,
+# osiris, xfig, gimp) run in parallel. Osiris and Xfig each have no Motif
 # dependency, so they live in their own jobs rather than queueing behind
-# the Motif + ViolaWWW + Mosaic chain. The Xft and Xaw link tests
+# the Motif + ViolaWWW + Mosaic chain. GIMP 0.54 is a Motif client but
+# gets its own job too: its plug-in build pulls in libpng/jpeg/tiff that
+# the Motif chain does not need. The Xft and Xaw link tests
 # (test-xft-link, test-libxaw-link) run as part of make check-unit in
 # the build / debug-build / sanitize jobs, so the Athena-stack link
 # surface is gated even when the dedicated xfig job is skipped.
@@ -45,6 +47,14 @@ env:
   # these are pulled in by COMMON_BUILD_PKGS, so install them in the
   # osiris job (the only job that runs `make osiris`).
   OSIRIS_BUILD_PKGS: "meson ninja-build libjpeg-dev libpng-dev libfreetype-dev"
+  # GIMP 0.54's image-format plug-ins (plug-ins/{png,jpeg}) link the system
+  # format libraries into the standalone plug-in executables, never into the
+  # compat .so, so the SDL2/SDL2_ttf/pixman core-dep boundary is preserved.
+  # zlib1g-dev backs libpng's -lz. TIFF is dropped on purpose (see
+  # compat/gimp-patches/0012-plugins-drop-tiff.patch), so no libtiff-dev. The
+  # GIMP autoconf step also needs the MOTIF_BUILD_PKGS chain (autoconf + the
+  # bundled Motif build).
+  GIMP_BUILD_PKGS: "libpng-dev libjpeg-dev zlib1g-dev"
   DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
 
 jobs:
@@ -138,6 +148,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -211,6 +223,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -281,6 +295,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -380,6 +396,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -586,6 +604,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -728,6 +748,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -801,6 +823,146 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ui-smoke-xfig
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- GIMP 0.54 (Motif image editor) integration and validation ----
+  #
+  # GIMP 0.54.1 (1996) is the last Motif-based GIMP. It builds against
+  # libX11-compat, libXt-compat, libXext-compat, libXmu-compat,
+  # libXpm-compat, and the bundled thentenaar/motif (libXm + libMrm), with
+  # the compat/gimp-patches/ balooii LP64 rework applied. `make gimp-motif`
+  # pulls in the bundled Motif build as a prerequisite, so this job carries
+  # the MOTIF_BUILD_PKGS autoreconf chain and the MOTIF_YACC override like
+  # the motif job, plus the libpng/jpeg/tiff dev packages the image-format
+  # plug-ins link. The job builds the editor and runs the replay-driven
+  # gimp-motif-startup toolbox smoke check. GIMP has no differential gate
+  # yet, so it does not appear in differential.yml.
+  gimp:
+    runs-on: ubuntu-24.04
+    env:
+      # Same bison yacc-compat shim the motif job uses for the Mrm parser
+      # generation; the bundled Motif is a build prerequisite of GIMP.
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.GIMP_BUILD_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        # GIMP reuses the in-tree thentenaar/motif as its libXm/libMrm
+        # provider, so cache the same clone+autoreconf the motif job does.
+        # Exact-match key only, matching the motif job's rationale.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache GIMP source tree
+        # Exact-match key only. GIMP_VERSION / GIMP_SHA256 in
+        # mk/gimp-motif.mk pin the tarball, and the compat/gimp-patches/
+        # set is applied to a throwaway work tree (build/gimp-motif/source),
+        # so the extracted tree here stays pristine. Cache the tarball too
+        # so a cache hit avoids both the re-download and the re-extract.
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream/gimp-0.54.1
+            build/upstream/.cache/gimp-0.54.1.fixed.tar.gz
+          key: gimp-src-${{ runner.os }}-${{ hashFiles('mk/gimp-motif.mk', 'compat/gimp-patches/**') }}
+
+      - name: Cache ccache
+        # Distinct key from motif/osiris/xfig so the GIMP .o set does not
+        # collide with objects compiled with a different include path.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-gimp-v2-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-gimp-v2-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=600M
+          ccache --zero-stats
+          echo "CC=ccache clang" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for GIMP)
+        run: make -j"$(nproc)"
+
+      - name: Build Motif libXm and libMrm (prerequisite for GIMP)
+        run: make motif -j"$(nproc)"
+
+      - name: Build GIMP 0.54 against compat stack
+        id: gimp
+        # mk/gimp-motif.mk fetches gimp-0.54.1.fixed.tar.gz, applies the
+        # compat/gimp-patches/ balooii LP64 rework, stages the lib-aliases
+        # symlink farm and merged include sysroot, runs the 1996 autoconf
+        # build for app/gimp, then a second isolated make for the
+        # image-format plug-ins. The recursive make is invoked with
+        # built-in rules restored (the 1996 Makefiles depend on them).
+        # Full log lives at build/gimp-motif/build.log, uploaded on failure.
+        run: make gimp-motif -j"$(nproc)"
+
+      - name: Run GIMP replay smoke check
+        id: gimp-smoke
+        # gimp-motif-startup launches app/gimp under an empty HOME (which
+        # exercises the gimprc-default-build-paths patch) and asserts on
+        # the rendered toolbox region. Display 124 is distinct from motif
+        # (121), mosaic (122), and xfig (123) so a future shared runner
+        # does not collide.
+        if: ${{ !cancelled() && steps.gimp.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 124
+        run: make check-smoke-gimp-motif
+
+      - name: Upload GIMP build log on failure
+        if: ${{ failure() && steps.gimp.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: gimp-build-log
+          path: build/gimp-motif/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload UI smoke artifacts on failure
+        # Distinct artifact name from the other jobs so concurrent uploads
+        # do not overwrite each other.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-gimp
           path: build/ui-smoke
           if-no-files-found: warn
           retention-days: 7

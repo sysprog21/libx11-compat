@@ -1,0 +1,15 @@
+# GIMP 0.54.1 (Motif) toolbox startup smoke against libx11-compat.
+#
+# Drives the cold-start path: XtVaAppInitialize("Gimp"), the Motif toolbox
+# shell realize/map, brush-pixmap load, and the first Expose. Asserts the
+# toolbox painted something (non-empty, not all black) rather than a
+# pixel-exact reference, so it stays robust to font-fallback differences
+# between hosts.
+delay 3000
+wait-window "[Gg]imp" 5000
+# Let the toolbox reflow and brush/pixmap Expose churn drain before the
+# snapshot (new replays use wait-converge from the start).
+wait-converge 200 2 50 200 15000
+screenshot toolbox
+assert-image toolbox common-visible.json
+assert-exit running

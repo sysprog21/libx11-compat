@@ -1,0 +1,401 @@
+diff --git a/plug-ins/png.c b/plug-ins/png.c
+index 2e898c1..e3f465a 100644
+--- a/plug-ins/png.c
++++ b/plug-ins/png.c
+@@ -22,6 +22,7 @@
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
+ #include <png.h>
+ #include "gimp.h"
+ 
+@@ -71,13 +72,17 @@ load_image (filename)
+      char *filename;
+ {
+   FILE *fp;
+-  png_struct *png_ptr;
+-  png_info *info_ptr;
++  png_structp png_ptr;
++  png_infop info_ptr;
+   png_color_16 my_background;
++  png_color_16p file_background;
++  double file_gamma;
++  png_uint_32 width, height;
++  int bit_depth, color_type, interlace_type, channels;
+   Image image;
+   unsigned char *temp;
+   long row_stride;
+-  short pass, number_passes, y;
++  int pass, number_passes, y;
+   int cur_progress;
+   int max_progress;
+ 
+@@ -88,7 +93,7 @@ load_image (filename)
+   sprintf (temp, "Loading %s:", filename);
+   gimp_init_progress (temp);
+   free (temp);
+-  
++
+   /* open the file */
+   fp = fopen (filename, "rb");
+   if (!fp)
+@@ -97,73 +102,59 @@ load_image (filename)
+       gimp_quit ();
+     }
+ 
+-  /* allocate the necessary structures */
+-  png_ptr = malloc (sizeof (png_struct));
++  png_ptr = png_create_read_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+   if (!png_ptr)
+     {
+       fclose (fp);
+       gimp_quit ();
+     }
+-  
+-  info_ptr = malloc(sizeof (png_info));
++
++  info_ptr = png_create_info_struct (png_ptr);
+   if (!info_ptr)
+     {
++      png_destroy_read_struct (&png_ptr, (png_infopp) NULL, (png_infopp) NULL);
+       fclose (fp);
+-      free (png_ptr);
+       gimp_quit ();
+     }
+ 
+   image = NULL;
+   /* set error handling */
+-  if (setjmp (png_ptr->jmpbuf))
++  if (setjmp (png_jmpbuf (png_ptr)))
+     {
+       /* If we get here, we had a problem reading the file */
+-      png_read_destroy (png_ptr, info_ptr, (png_info*) 0);
++      png_destroy_read_struct (&png_ptr, &info_ptr, (png_infopp) NULL);
+       fclose (fp);
+-      free (png_ptr);
+-      free (info_ptr);
+       if (image)
+ 	gimp_free_image (image);
+       gimp_quit ();
+     }
+-  
+-  /* initialize the structures, info first for error handling */
+-  png_info_init (info_ptr);
+-  png_read_init (png_ptr);
+-  
++
+   /* set up the input control */
+   png_init_io (png_ptr, fp);
+-  
++
+   /* read the file information */
+   png_read_info (png_ptr, info_ptr);
+-  
+-  /* allocate the memory to hold the image using the fields
+-     of png_info. */
+-  
++  png_get_IHDR (png_ptr, info_ptr, &width, &height, &bit_depth,
++		&color_type, &interlace_type, NULL, NULL);
++
+   /* set up the transformations you want.  Note that these are
+      all optional.  Only call them if you want them */
+-    
++
+   /* expand paletted colors into true rgb */
+-  if (info_ptr->color_type == PNG_COLOR_TYPE_PALETTE)
+-    {
+-      png_set_expand (png_ptr);
+-      info_ptr->channels = 3;
+-    }
+-  
++  if (color_type == PNG_COLOR_TYPE_PALETTE)
++    png_set_expand (png_ptr);
++
+   /* expand grayscale images to the full 8 bits */
+-  if (info_ptr->color_type == PNG_COLOR_TYPE_GRAY &&
+-      info_ptr->bit_depth < 8)
++  if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
+     png_set_expand (png_ptr);
+-  
++
+   /* expand images with transparency to full alpha channels */
+-  if (info_ptr->valid & PNG_INFO_tRNS)
++  if (png_get_valid (png_ptr, info_ptr, PNG_INFO_tRNS))
+     png_set_expand (png_ptr);
+ 
+-  /* Set the background color to draw transparent and alpha
+-     images over */
+ 
+-  if (info_ptr->valid & PNG_INFO_bKGD)
+-    png_set_background (png_ptr, &(info_ptr->background),
++  if (png_get_bKGD (png_ptr, info_ptr, &file_background))
++    png_set_background (png_ptr, file_background,
+ 			PNG_BACKGROUND_GAMMA_FILE, 1, 1.0);
+   else
+     {
+@@ -174,42 +165,35 @@ load_image (filename)
+       png_set_background (png_ptr, &my_background,
+ 			  PNG_BACKGROUND_GAMMA_SCREEN, 0, 1.0);
+     }
+-  
++
+   /* tell libpng to handle the gamma conversion for you */
+-  if (info_ptr->valid & PNG_INFO_gAMA)
+-    png_set_gamma (png_ptr, 2.22, info_ptr->gamma);
++  if (png_get_gAMA (png_ptr, info_ptr, &file_gamma))
++    png_set_gamma (png_ptr, 2.22, file_gamma);
+   else
+     png_set_gamma (png_ptr, 2.22, 0.45);
+ 
+   /* tell libpng to strip 16 bit depth files down to 8 bits */
+-  if (info_ptr->bit_depth == 16)
++  if (bit_depth == 16)
+     png_set_strip_16 (png_ptr);
+-  
+-  /* shift the pixels down to their true bit depth */
+-/*
+-  if (info_ptr->valid & PNG_INFO_sBIT &&
+-      info_ptr->bit_depth > info_ptr->sig_bit)
+-    png_set_shift (png_ptr, &(info_ptr->sig_bit));
+-*/
+-  
++
+   /* turn on interlace handling */
+-  if (info_ptr->interlace_type)
++  if (interlace_type != PNG_INTERLACE_NONE)
+     number_passes = png_set_interlace_handling (png_ptr);
+   else
+     number_passes = 1;
+ 
+-  /* optional call to update palette with transformations */
+-  png_start_read_image (png_ptr);
++  png_read_update_info (png_ptr, info_ptr);
++  channels = png_get_channels (png_ptr, info_ptr);
+ 
+   /* Create a new image of the proper size and associate the filename with it.
+    */
+   image = gimp_new_image (filename,
+-			  info_ptr->width,
+-			  info_ptr->height,
+-			  (info_ptr->channels >= 3) ? RGB_IMAGE : GRAY_IMAGE);
++			  width,
++			  height,
++			  (channels >= 3) ? RGB_IMAGE : GRAY_IMAGE);
+ 
+   cur_progress = 0;
+-  max_progress = info_ptr->height * number_passes;
++  max_progress = height * number_passes;
+ 
+   row_stride = gimp_image_width (image) * gimp_image_channels (image);
+   for (pass = 0; pass < number_passes; pass++)
+@@ -217,7 +201,7 @@ load_image (filename)
+       temp = gimp_image_data (image);
+ 
+       /* If you are only reading on row at a time, this works */
+-      for (y = 0; y < info_ptr->height; y++)
++      for (y = 0; y < height; y++)
+ 	{
+ 	  png_read_rows (png_ptr, &temp, NULL, 1);
+ 	  temp += row_stride;
+@@ -225,22 +209,17 @@ load_image (filename)
+ 	  if ((++cur_progress % 5) == 0)
+ 	    gimp_do_progress (cur_progress, max_progress);
+ 	}
+-      
++
+       /* if you want to display the image after every pass, do
+          so here */
+     }
+-  
++
+   /* read the rest of the file, getting any additional chunks
+      in info_ptr */
+   png_read_end (png_ptr, info_ptr);
+-  
+-  /* clean up after the read, and free any memory allocated */
+-  png_read_destroy (png_ptr, info_ptr, (png_info *)0);
+-  
+-  /* free the structures */
+-  free (png_ptr);
+-  free (info_ptr);
+-  
++
++  png_destroy_read_struct (&png_ptr, &info_ptr, (png_infopp) NULL);
++
+   /* close the file */
+   fclose (fp);
+ 
+@@ -269,12 +248,14 @@ save_image (filename)
+      char *filename;
+ {
+   FILE *fp;
+-  png_struct *png_ptr;
+-  png_info *info_ptr;
++  png_structp png_ptr;
++  png_infop info_ptr;
++  png_color *palette;
++  int color_type;
+   Image image;
+   unsigned char *temp;
+   long row_stride;
+-  short pass, number_passes, y;
++  int pass, number_passes, y;
+   unsigned char *cmap;
+   int interlace_ID;
+   long interlace;
+@@ -323,73 +304,70 @@ save_image (filename)
+       gimp_quit ();
+     }
+   
+-  /* allocate the necessary structures */
+-  png_ptr = malloc (sizeof (png_struct));
++  png_ptr = png_create_write_struct (PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+   if (!png_ptr)
+     {
+       fclose (fp);
+       gimp_quit ();
+     }
+-  
+-  info_ptr = malloc (sizeof (png_info));
++
++  info_ptr = png_create_info_struct (png_ptr);
+   if (!info_ptr)
+     {
++      png_destroy_write_struct (&png_ptr, (png_infopp) NULL);
+       fclose (fp);
+-      free (png_ptr);
+       gimp_quit ();
+     }
+-  
++
++  palette = NULL;
+   /* set error handling */
+-  if (setjmp (png_ptr->jmpbuf))
++  if (setjmp (png_jmpbuf (png_ptr)))
+     {
+-      /* If we get here, we had a problem reading the file */
+-      png_write_destroy (png_ptr);
++      png_destroy_write_struct (&png_ptr, &info_ptr);
+       fclose (fp);
+-      free (png_ptr);
+-      free (info_ptr);
++      if (palette)
++	free (palette);
+       gimp_free_image (image);
+       gimp_quit ();
+     }
+-  
+-  /* initialize the structures */
+-  png_info_init (info_ptr);
+-  png_write_init (png_ptr);
+-  
++
+   /* set up the output control */
+   png_init_io (png_ptr, fp);
+-  
++
+   /* set the file information here */
+-  info_ptr->width = gimp_image_width (image);
+-  info_ptr->height = gimp_image_height (image);
+-  info_ptr->bit_depth = 8;
+-  info_ptr->color_type = ((gimp_image_channels (image) == 3) ? 
+-			  PNG_COLOR_TYPE_RGB : 
+-			  PNG_COLOR_TYPE_GRAY);
+-  info_ptr->compression_type = 0;
+-  info_ptr->filter_type = 0;
+-  info_ptr->interlace_type = interlace;
+-  info_ptr->valid = 0;
++  color_type = ((gimp_image_channels (image) == 3) ?
++		PNG_COLOR_TYPE_RGB :
++		PNG_COLOR_TYPE_GRAY);
++  if (paletted)
++    color_type = PNG_COLOR_TYPE_PALETTE;
++
++  png_set_IHDR (png_ptr, info_ptr,
++		gimp_image_width (image),
++		gimp_image_height (image),
++		8,
++		color_type,
++		interlace ? PNG_INTERLACE_ADAM7 : PNG_INTERLACE_NONE,
++		PNG_COMPRESSION_TYPE_DEFAULT,
++		PNG_FILTER_TYPE_DEFAULT);
+ 
+   if (paletted)
+     {
+-      info_ptr->color_type = PNG_COLOR_TYPE_PALETTE;
+-      info_ptr->valid |= PNG_INFO_PLTE;
+-      
+-      info_ptr->palette = malloc (sizeof (png_color) * colors);
+-      if (!info_ptr->palette)
++      palette = malloc (sizeof (png_color) * colors);
++      if (!palette)
+ 	gimp_quit ();
+ 
+-      info_ptr->num_palette = colors;
+       for (i = 0; i < colors; i++)
+ 	{
+-	  info_ptr->palette[i].red = *cmap++;
+-	  info_ptr->palette[i].green = *cmap++;
+-	  info_ptr->palette[i].blue = *cmap++;
++	  palette[i].red = *cmap++;
++	  palette[i].green = *cmap++;
++	  palette[i].blue = *cmap++;
+ 	}
++
++      png_set_PLTE (png_ptr, info_ptr, palette, colors);
+     }
+-    
++
+   /* other optional chunks */
+-  
++
+   /* write the file information */
+   png_write_info (png_ptr, info_ptr);
+   
+@@ -408,14 +386,14 @@ save_image (filename)
+     number_passes = 1;
+ 
+   cur_progress = 0;
+-  max_progress = info_ptr->height * number_passes;
++  max_progress = gimp_image_height (image) * number_passes;
+ 
+   row_stride = gimp_image_width (image) * gimp_image_channels (image);
+   for (pass = 0; pass < number_passes; pass++)
+     {
+       temp = gimp_image_data (image);
+       /* If you are only writing one row at a time, this works */
+-      for (y = 0; y < info_ptr->height; y++)
++      for (y = 0; y < gimp_image_height (image); y++)
+ 	{
+ 	  png_write_rows (png_ptr, &temp, 1);
+ 	  temp += row_stride;
+@@ -424,21 +402,16 @@ save_image (filename)
+ 	    gimp_do_progress (cur_progress, max_progress);
+ 	}
+     }
+-  
++
+   /* write the rest of the file */
+   png_write_end (png_ptr, info_ptr);
+-  
+-  /* clean up after the write, and free any memory allocated */
+-  png_write_destroy (png_ptr);
+-  
++
++  png_destroy_write_struct (&png_ptr, &info_ptr);
++
+   /* if you malloced the palette, free it here */
+-  if (info_ptr->palette)
+-    free (info_ptr->palette);
+-  
+-  /* free the structures */
+-  free (png_ptr);
+-  free (info_ptr);
+-  
++  if (palette)
++    free (palette);
++
+   /* close the file */
+   fclose (fp);
+ 

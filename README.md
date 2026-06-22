@@ -46,7 +46,7 @@ The screenshot above is from the larger ViolaWWW port described in [Larger Workl
 
 ## Larger Workloads Under Investigation
 
-Five ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
+Six ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
 They are still compatibility workloads rather than daily-use application ports,
 but each exercises behavior that small examples do not reach.
 
@@ -108,6 +108,19 @@ but each exercises behavior that small examples do not reach.
   make xfig                              # build Xfig (depends on libXaw)
   build/xfig/source/src/xfig tests/data/mindmap.fig
   make check-smoke-xfig                  # replay-driven startup smoke check
+  ```
+
+- [GIMP 0.54](https://en.wikipedia.org/wiki/GIMP): the 1996 release, the last GIMP built on the Motif toolkit before the project moved to GTK, builds against the compat stack plus the bundled Motif.
+  It is the heaviest Motif client covered here, a full image editor that drives `XCreateImage` / `XPutImage` / `XGetImage`, the MIT-SHM canvas path (`src/xshm.c`), TrueColor 32bpp visual and colormap handling, large Motif dialog and menu trees, and forked image-format plug-ins (PNG / JPEG) that talk to the core over pipes and SysV shared-memory tiles.
+  A replay smoke check covers toolbox startup; the patch set under `compat/gimp-patches/` is the GNOME-hosted balooii rework that fixes the 1996 source for a modern LP64 toolchain.
+
+  <a href="assets/gimp.png"><img src="assets/gimp.png" alt="GIMP 0.54 running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make gimp-motif                        # build GIMP 0.54.1 (depends on motif)
+  build/gimp-motif/source/app/gimp       # launch the editor
+  make check-smoke-gimp-motif            # replay-driven startup smoke check
+  make check-differential-gimp-motif     # toolbox diff vs system OpenMotif (needs remote host)
   ```
 
 The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.

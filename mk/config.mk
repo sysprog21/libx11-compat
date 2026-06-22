@@ -1,13 +1,9 @@
 OUT ?= build
 TARGET ?= $(OUT)/libX11-compat.so
 # PYTHON is set in mk/toolchain.mk; do not redefine here.
+# SDL detection lives in mk/sdl.mk; this file consumes SDL_CPPFLAGS and
+# SDL_COMPAT_LIBS from it.
 
-SDL2_CFLAGS := $(shell $(SDL2_CONFIG) --cflags 2>/dev/null)
-SDL2_PREFIX := $(shell $(SDL2_CONFIG) --prefix 2>/dev/null)
-SDL2_LIBS := $(shell $(SDL2_CONFIG) --libs 2>/dev/null)
-SDL2_TTF_PREFIX := $(shell $(PKG_CONFIG) --variable=prefix SDL2_ttf 2>/dev/null || brew --prefix sdl2_ttf 2>/dev/null)
-SDL2_TTF_CFLAGS := $(shell $(PKG_CONFIG) --cflags SDL2_ttf 2>/dev/null)
-SDL2_TTF_LIBS := $(shell $(PKG_CONFIG) --libs SDL2_ttf 2>/dev/null)
 PIXMAN_CFLAGS := $(shell $(PKG_CONFIG) --cflags pixman-1 2>/dev/null)
 PIXMAN_LIBS := $(shell $(PKG_CONFIG) --libs pixman-1 2>/dev/null)
 
@@ -28,9 +24,7 @@ CPPFLAGS += -Iinclude -Isrc \
             -iquote include \
             -iquote $(OUT)/upstream/include/X11 \
             -iquote $(OUT)/upstream/src \
-            $(if $(SDL2_PREFIX),-I$(SDL2_PREFIX)/include) \
-            $(if $(SDL2_TTF_PREFIX),-I$(SDL2_TTF_PREFIX)/include) \
-            $(SDL2_CFLAGS) $(SDL2_TTF_CFLAGS) $(PIXMAN_CFLAGS) \
+            $(SDL_CPPFLAGS) $(PIXMAN_CFLAGS) \
             -DNARROWPROTO -DXTHREADS -D_GNU_SOURCE
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC
 # Opt-in strict mode: STRICT=1 turns warnings into errors so CI surfaces
@@ -42,8 +36,7 @@ STRICT_CFLAGS :=
 ifeq ($(STRICT),1)
   STRICT_CFLAGS += -Werror
 endif
-SDL_COMPAT_LIBS := -L$(abspath $(OUT)) -lSDL2-x11compat \
-                   -lSDL2_ttf-x11compat
+# SDL_COMPAT_LIBS comes from mk/sdl.mk.
 LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm -pthread \
           $(if $(filter Linux,$(UNAME_S)),-ldl)
 

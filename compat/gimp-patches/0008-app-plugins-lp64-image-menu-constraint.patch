@@ -1,0 +1,39 @@
+diff --git a/app/autodialog.c b/app/autodialog.c
+index 6dc8b03..eea4f60 100644
+--- a/app/autodialog.c
++++ b/app/autodialog.c
+@@ -615,7 +615,7 @@ dialog_create_image_menu (dlg, parent, title, image)
+   XmStringFree (str);
+
+   constraint = title[123];
+-  ID = ((long*) title)[31];
++  ID = ((int*) title)[31];
+   constrain = (ID == 0) ? image : gimage_get_ID (ID);
+
+   first_item = 0;
+diff --git a/app/callbacks.c b/app/callbacks.c
+index 94521ac..f55bd67 100644
+--- a/app/callbacks.c
++++ b/app/callbacks.c
+@@ -429,7 +429,7 @@ select_from_gdisp_callback  (w, client_data, call_data)
+      XtPointer call_data;
+ {
+   GDisplay * gdisp;
+-  long data[32];
++  int data[32];
+   char *p;
+
+   gdisp = gdisplay_active (w);
+diff --git a/plug-ins/gimp.c b/plug-ins/gimp.c
+index c8a61fd..02c458a 100644
+--- a/plug-ins/gimp.c
++++ b/plug-ins/gimp.c
+@@ -875,7 +875,7 @@ gimp_new_image_menu (dialog_ID, parent_ID, constraint, title)
+      char constraint;
+      char *title;
+ {
+-  long data[32];
++  int data[32];
+   char *p;
+   int length;
+

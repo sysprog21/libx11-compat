@@ -1,0 +1,28 @@
+diff --git a/app/gimprc.c b/app/gimprc.c
+index ab9b5ad..5e84cbd 100644
+--- a/app/gimprc.c
++++ b/app/gimprc.c
+@@ -49,12 +49,12 @@ parse_gimprc ()
+   {
+     char *path;
+     
+-    path = search_in_path (app_data.gimprc_search_path, ".gimprc");
++    path = search_in_path (app_data.gimprc_search_path, "gimprc");
+     if (path)
+       {
+ 	fp = fopen (path, "rt");
+ 	if (!fp)
+-	  fatal_error ("Unable to open \".gimprc\"");
++	  fatal_error ("Unable to open \"gimprc\"");
+       }
+     else
+       {
+@@ -66,7 +66,7 @@ parse_gimprc ()
+ 	      fatal_error ("Unable to open \"gimprc\"");
+ 	  }
+ 	else
+-	  fatal_error ("\".gimprc\" file not found");
++	  fatal_error ("\"gimprc\" file not found");
+       }
+   }
+ 

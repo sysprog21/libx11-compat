@@ -13,7 +13,7 @@ else
 endif
 
 PKG_CONFIG ?= pkg-config
-SDL2_CONFIG ?= sdl2-config
+# SDL2_CONFIG and all SDL detection live in mk/sdl.mk.
 PYTHON ?= python3
 SHFMT ?= shfmt
 

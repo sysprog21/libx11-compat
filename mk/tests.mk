@@ -18,6 +18,18 @@ ifeq ($(UNAME_S),Linux)
 endif
 BENCH_BINS := $(OUT)/tests/bench-paths
 
+# Every compat test goes through libX11-compat, which dlopens the host SDL.
+# SDL_RUNTIME_LIBDIR (mk/sdl.mk) is the prefix lib dir needed on the loader
+# path so an sdl2-compat libSDL2 can resolve its transitive libSDL3; build/
+# stays first so the compat sonames win. Empty when SDL is undetected.
+ifeq ($(strip $(SDL_RUNTIME_LIBDIR)),)
+  TEST_RUNTIME_ENV :=
+else
+  TEST_RUNTIME_ENV := \
+    DYLD_LIBRARY_PATH=$(abspath $(OUT)):$(SDL_RUNTIME_LIBDIR)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
+    LD_LIBRARY_PATH=$(abspath $(OUT)):$(SDL_RUNTIME_LIBDIR)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
+endif
+
 .PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths
 
 ## Run only the in-tree binary regression tests + api-symbol coverage.
@@ -30,7 +42,7 @@ BENCH_BINS := $(OUT)/tests/bench-paths
 check-unit: $(CHECK_BINS)
 	@set -e; for test_bin in $(CHECK_BINS); do \
 		printf "$(BLUE)RUN$(RESET) %s\n" "$$test_bin"; \
-		SDL_VIDEODRIVER=dummy $$test_bin; \
+		$(TEST_RUNTIME_ENV) SDL_VIDEODRIVER=dummy $$test_bin; \
 	done
 	@printf "$(BLUE)RUN$(RESET) tests/check-api-symbols.py\n"
 	$(Q)$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
@@ -58,7 +70,7 @@ check-link-xaw: $(OUT)/tests/test-libxaw-link
 
 ## Run exported-symbol coverage checks
 symbol-coverage: $(OUT)/tests/symbol-coverage api-symbol-coverage
-	SDL_VIDEODRIVER=dummy $(OUT)/tests/symbol-coverage
+	$(TEST_RUNTIME_ENV) SDL_VIDEODRIVER=dummy $(OUT)/tests/symbol-coverage
 
 api-symbol-coverage: $(TARGET) tests/api-symbols.txt tests/check-api-symbols.py
 	$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
