@@ -353,6 +353,94 @@ int main(void)
     XDestroyWindow(dpy, successor);
     XSync(dpy, False);
 
+    /* Nested sub-window routing. A synthetic event carries only a root
+     * coordinate, so xtest leans on getContainingWindow descending the child
+     * tree to the deepest window that contains the point. Every assertion above
+     * used a childless window, so that descent went untested, yet it is exactly
+     * the path a toolbox click drives under the differential replay: each xfig
+     * tool icon is its own X sub-window. Build a parent holding two spaced
+     * children with a bare gap between them and confirm a click lands on the
+     * geometrically correct child, with a gap click reaching neither. A descent
+     * that misroutes by an offset, the failure mode behind the xfig draw-line
+     * divergence, trips here under SDL_VIDEODRIVER=dummy.
+     */
+    Window form =
+        XCreateSimpleWindow(dpy, root, 0, 0, 200, 200, 0,
+                            BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+    CHECK(form != None, "nested-routing parent create");
+    /* The parent selects no input on purpose: a click that misses every child
+     * must drop, mirroring an xfig click on the inert "Drawing" label band that
+     * selects no tool on system X11.
+     */
+    XMapWindow(dpy, form);
+    Window toolTop =
+        XCreateSimpleWindow(dpy, form, 10, 10, 30, 30, 0,
+                            BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+    Window toolBottom =
+        XCreateSimpleWindow(dpy, form, 10, 110, 30, 30, 0,
+                            BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+    XSelectInput(dpy, toolTop, ButtonPressMask | PointerMotionMask);
+    XSelectInput(dpy, toolBottom, ButtonPressMask | PointerMotionMask);
+    XMapWindow(dpy, toolTop);
+    XMapWindow(dpy, toolBottom);
+    XSync(dpy, False);
+    while (XPending(dpy) > 0) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+    }
+    CHECK(replayTargetWindowId() != 0, "nested-routing parent became target");
+
+    /* Point inside the top tool routes to toolTop at its child-local origin. */
+    CHECK(XTestFakeMotionEvent(dpy, screen, 25, 25, 0) == 1,
+          "nested-routing top motion returned 1");
+    XSync(dpy, False);
+    XEvent topMotion =
+        next_event_of_type(dpy, MotionNotify, 32, "nested-routing top motion");
+    CHECK(topMotion.xmotion.window == toolTop,
+          "nested-routing motion routed to the top tool");
+    CHECK(topMotion.xmotion.x == 15 && topMotion.xmotion.y == 15,
+          "nested-routing top motion converted to child-local coords");
+
+    /* Point inside the bottom tool routes to toolBottom, proving the descent
+     * tracks each child's distinct offset rather than a single fixed origin.
+     */
+    CHECK(XTestFakeMotionEvent(dpy, screen, 25, 125, 0) == 1,
+          "nested-routing bottom motion returned 1");
+    XSync(dpy, False);
+    XEvent bottomMotion = next_event_of_type(dpy, MotionNotify, 32,
+                                             "nested-routing bottom motion");
+    CHECK(bottomMotion.xmotion.window == toolBottom,
+          "nested-routing motion routed to the bottom tool");
+    CHECK(bottomMotion.xmotion.x == 15 && bottomMotion.xmotion.y == 15,
+          "nested-routing bottom motion converted to child-local coords");
+
+    /* Point in the gap between the tools hits the inert parent and drops, never
+     * leaking onto a tool. This is the assertion the differential needs: a
+     * click off every tool must select no tool on both backends.
+     */
+    CHECK(XTestFakeMotionEvent(dpy, screen, 25, 70, 0) == 1,
+          "nested-routing gap motion returned 1");
+    XSync(dpy, False);
+    int gapToolMotions = 0;
+    for (int i = 0; i < 16 && XPending(dpy) > 0; i++) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+        if (ev.type == MotionNotify &&
+            (ev.xmotion.window == toolTop || ev.xmotion.window == toolBottom))
+            gapToolMotions++;
+    }
+    CHECK(gapToolMotions == 0,
+          "nested-routing gap motion reached neither tool");
+
+    XDestroyWindow(dpy, toolTop);
+    XDestroyWindow(dpy, toolBottom);
+    XDestroyWindow(dpy, form);
+    XSync(dpy, False);
+    while (XPending(dpy) > 0) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+    }
+
     /* Idempotence: a fake event after the target window is destroyed must not
      * fault, and XTestForgetTargetWindow inside libx11-compat
      * unrealizeTopLevelWindow should leave subsequent calls inert.
