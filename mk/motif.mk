@@ -20,6 +20,7 @@ MOTIF_BUILD_DIR := $(OUT)/motif
 MOTIF_CONFIG_STAMP := $(MOTIF_BUILD_DIR)/.configure-stamp
 MOTIF_CONFIG_LOG := $(abspath $(MOTIF_BUILD_DIR))/configure.log
 MOTIF_BUILD_STAMP := $(MOTIF_BUILD_DIR)/.build-stamp
+MOTIF_STAGE_STAMP := $(MOTIF_BUILD_DIR)/.stage-stamp
 MOTIF_DEMOS_BUILD_DIR := $(OUT)/motif-demos
 MOTIF_DEMOS_CONFIG_STAMP := $(MOTIF_DEMOS_BUILD_DIR)/.configure-stamp
 MOTIF_DEMOS_CONFIG_LOG := $(abspath $(MOTIF_DEMOS_BUILD_DIR))/configure.log
@@ -174,7 +175,7 @@ $(MOTIF_DEMOS_BUILD_STAMP): $(MOTIF_DEMOS_CONFIG_STAMP)
 	    $(call motif_log_redirect,$(abspath $(MOTIF_DEMOS_BUILD_DIR))/build.log)
 	$(Q)touch $@
 
-$(MOTIF_LIBXM) $(MOTIF_LIBMRM): $(MOTIF_BUILD_STAMP)
+$(MOTIF_STAGE_STAMP): $(MOTIF_BUILD_STAMP)
 	@echo "  STAGE   motif libraries"
 	$(Q)cp -f $(MOTIF_BUILD_DIR)/lib/Xm/.libs/libXm*.dylib $(OUT)/ 2>/dev/null || true
 	$(Q)cp -f $(MOTIF_BUILD_DIR)/lib/Xm/.libs/libXm.so* $(OUT)/ 2>/dev/null || true
@@ -203,6 +204,10 @@ endif
 	else \
 	    echo "  STAGE   no libMrm.5.dylib or libMrm.so.5 found" >&2; exit 1; \
 	fi
+	$(Q)touch $@
+
+$(MOTIF_LIBXM) $(MOTIF_LIBMRM): $(MOTIF_STAGE_STAMP)
+	$(Q)test -e $@
 
 $(OUT)/tests/test-motif-%: tests/test-motif-%.c $(MOTIF_LIBXM) \
     $(MOTIF_LIBMRM) $(LIBXT_TARGET) $(TARGET)

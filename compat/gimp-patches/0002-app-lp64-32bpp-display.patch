@@ -1,0 +1,73 @@
+diff --git a/app/gconvert.c b/app/gconvert.c
+index f2b2458..0a12463 100644
+--- a/app/gconvert.c
++++ b/app/gconvert.c
+@@ -193,7 +193,7 @@ greyscale_16 (src, dest, width)
+ void 
+ greyscale_24 (src, dest, width)
+      unsigned char * src;
+-     unsigned long * dest;
++     unsigned int * dest;
+      long width;
+ {
+   while (width--)
+diff --git a/app/gconvert.h b/app/gconvert.h
+index 2392a92..0aaba8f 100644
+--- a/app/gconvert.h
++++ b/app/gconvert.h
+@@ -29,7 +29,7 @@ void intensity_map_to_16 (GDisplay *, long, long, long, long);
+ /*  convenience routines...  */
+ void greyscale_8         (unsigned char *, unsigned char *, long);
+ void greyscale_16        (unsigned char *, unsigned short *, long);
+-void greyscale_24        (unsigned char *, unsigned long *, long);
++void greyscale_24        (unsigned char *, unsigned int *, long);
+ 
+ 
+ #endif
+diff --git a/app/image_buf.c b/app/image_buf.c
+index 31a146b..f98d054 100644
+--- a/app/image_buf.c
++++ b/app/image_buf.c
+@@ -372,9 +372,9 @@ image_buf_draw_row_24 (image, row, x, y, w)
+      int w;
+ {
+   unsigned char *src;
+-  unsigned long *dest;
++  unsigned int *dest;
+   int i, r, g, b;
+-  
++
+   src = row;
+   dest = image_buf_data (image);
+   dest += ((image_buf_row_bytes (image) * y) >> 2) + x;
+diff --git a/app/scale.c b/app/scale.c
+index 0d529c7..dd00676 100644
+--- a/app/scale.c
++++ b/app/scale.c
+@@ -213,7 +213,7 @@ scale_image (gdisp, x, y, w, h)
+   unsigned char *src, *s;
+   unsigned char *dest, *d;
+   unsigned short *d16_bit;
+-  unsigned long *d24_bit;
++  unsigned int *d24_bit;
+   short bpp;
+   long width, height;
+   long srcwidth, destwidth, destlength;
+@@ -414,7 +414,7 @@ scale_image (gdisp, x, y, w, h)
+ 	      for ( ; y < i; y++)
+ 		{
+ 		  s = src;
+-		  d24_bit = (unsigned long *) dest;
++		  d24_bit = (unsigned int *) dest;
+ 		  if ((y % scaledest) && !initial)
+ 		    memcpy (dest, dest - destwidth, destlength);
+ 		  else
+@@ -441,7 +441,7 @@ scale_image (gdisp, x, y, w, h)
+ 	      for ( ; y < i; y++)
+ 		{
+ 		  s = src;
+-		  d24_bit = (unsigned long *) dest;
++		  d24_bit = (unsigned int *) dest;
+ 		  if ((y % scaledest) && !initial)
+ 		    memcpy (dest, dest - destwidth, destlength);
+ 		  else

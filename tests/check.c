@@ -3057,7 +3057,42 @@ static int test_events(Display *display)
     SDL_zero(textEvent);
     textEvent.type = SDL_TEXTINPUT;
     strcpy(textEvent.text.text, "a");
+    int queuedBeforeText = XEventsQueued(display, QueuedAlready);
     SDL_PushEvent(&textEvent);
+    CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText + 1,
+          "side-queued SDL_TEXTINPUT was not reflected in X event accounting");
+    CHECK(SDL_HasEvent(SDL_TEXTINPUT),
+          "SDL_HasEvent did not see queued SDL_TEXTINPUT");
+    SDL_FlushEvent(SDL_TEXTINPUT);
+    CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText,
+          "flushed SDL_TEXTINPUT left stale X event accounting");
+    CHECK(!SDL_HasEvent(SDL_TEXTINPUT),
+          "SDL_FlushEvent did not remove queued SDL_TEXTINPUT");
+    SDL_PushEvent(&textEvent);
+    SDL_Event peepedTextEvent;
+    SDL_zero(peepedTextEvent);
+    CHECK(SDL_PeepEvents(&peepedTextEvent, 1, SDL_GETEVENT, SDL_TEXTINPUT,
+                         SDL_TEXTINPUT) == 1,
+          "SDL_PeepEvents did not return queued SDL_TEXTINPUT");
+    CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText,
+          "peeped SDL_TEXTINPUT left stale X event accounting");
+    CHECK(peepedTextEvent.type == SDL_TEXTINPUT,
+          "SDL_PeepEvents returned the wrong text event type");
+    CHECK(strcmp(peepedTextEvent.text.text, "a") == 0,
+          "SDL_PeepEvents returned the wrong text payload");
+    SDL_PushEvent(&textEvent);
+    CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText + 1,
+          "side-queued SDL_TEXTINPUT was not reflected before wait");
+    SDL_Event waitedTextEvent;
+    SDL_zero(waitedTextEvent);
+    CHECK(SDL_WaitEvent(&waitedTextEvent) == 1,
+          "SDL_WaitEvent did not return queued SDL_TEXTINPUT");
+    CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText,
+          "waited SDL_TEXTINPUT left stale X event accounting");
+    CHECK(waitedTextEvent.type == SDL_TEXTINPUT,
+          "SDL_WaitEvent returned the wrong text event type");
+    CHECK(strcmp(waitedTextEvent.text.text, "a") == 0,
+          "SDL_WaitEvent returned the wrong text payload");
     CHECK(!XCheckTypedEvent(display, KeyPress, &out),
           "SDL_TEXTINPUT was converted into a duplicate KeyPress");
 
@@ -3097,6 +3132,36 @@ static int test_events(Display *display)
           "wheel-down did not produce paired ButtonRelease");
     CHECK(out.xbutton.button == Button5,
           "wheel-down ButtonRelease did not match Button5");
+
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    SDL_zero(wheelEvent);
+    wheelEvent.type = SDL_MOUSEWHEEL;
+    wheelEvent.wheel.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    wheelEvent.wheel.preciseY = 0.25f;
+    wheelEvent.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+    CHECK(convertEvent(display, &wheelEvent, &out, True) == -1,
+          "fractional precise wheel delta converted directly");
+    CHECK(!XCheckTypedEvent(display, ButtonPress, &out),
+          "fractional precise wheel delta produced a full click");
+
+    SDL_zero(wheelEvent);
+    wheelEvent.type = SDL_MOUSEWHEEL;
+    wheelEvent.wheel.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    wheelEvent.wheel.preciseY = 0.75f;
+    wheelEvent.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+    CHECK(convertEvent(display, &wheelEvent, &out, True) == -1,
+          "accumulated precise wheel delta converted directly");
+    CHECK(XCheckTypedEvent(display, ButtonPress, &out),
+          "accumulated precise wheel delta did not produce ButtonPress");
+    CHECK(out.xbutton.button == Button4,
+          "accumulated precise wheel delta did not map to Button4");
+    CHECK(XCheckTypedEvent(display, ButtonRelease, &out),
+          "accumulated precise wheel delta did not produce ButtonRelease");
+    CHECK(out.xbutton.button == Button4,
+          "accumulated precise wheel ButtonRelease did not match Button4");
+#endif
 
     SDL_Event hintMotion;
     SDL_zero(hintMotion);
@@ -3763,7 +3828,8 @@ static int test_events(Display *display)
     XWindowAttributes movedWindowAttrs;
     CHECK(XGetWindowAttributes(display, window, &movedWindowAttrs),
           "XGetWindowAttributes after SDL move failed");
-    CHECK(movedWindowAttrs.x == 11 && movedWindowAttrs.y == 12,
+    CHECK(movedWindowAttrs.x == out.xconfigure.x &&
+              movedWindowAttrs.y == out.xconfigure.y,
           "SDL move did not update window attributes");
 
     windowEvent.window.event = SDL_WINDOWEVENT_HIDDEN;
@@ -7875,6 +7941,79 @@ static int test_state_snapshot(Display *display)
     return 1;
 }
 
+/* A pointer event must route to the top-level SDL reports it for, even when a
+ * later-created top-level overlaps the click point in the window model. This
+ * guards the GIMP regression where opening an image created a canvas window
+ * that overlapped the toolbox in the model, so toolbox menu clicks were
+ * misrouted to the canvas and menus stopped posting.
+ */
+static int test_overlap_pointer_routing(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+
+    Window lower = XCreateSimpleWindow(display, root, 0, 0, 60, 60, 0, 0, 0);
+    CHECK(lower != None, "overlap lower-window creation failed");
+    XSelectInput(display, lower, ButtonPressMask | ButtonReleaseMask);
+    CHECK(XMapWindow(display, lower), "overlap lower-window map failed");
+
+    /* Created after lower and covering the same point, so it sits above lower
+     * in the model and getContainingWindow alone would pick it. */
+    Window upper = XCreateSimpleWindow(display, root, 0, 0, 120, 120, 0, 0, 0);
+    CHECK(upper != None, "overlap upper-window creation failed");
+    XSelectInput(display, upper, ButtonPressMask | ButtonReleaseMask);
+    CHECK(XMapWindow(display, upper), "overlap upper-window map failed");
+    XSync(display, False);
+
+    XEvent out;
+    while (XPending(display))
+        XNextEvent(display, &out);
+
+    SDL_Window *lowerSdl = GET_WINDOW_STRUCT(lower)->sdlWindow;
+    CHECK(lowerSdl, "overlap lower-window has no SDL window");
+
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_MOUSEBUTTONDOWN;
+    ev.button.windowID = SDL_GetWindowID(lowerSdl);
+    ev.button.button = SDL_BUTTON_LEFT;
+    ev.button.x = 20;
+    ev.button.y = 20;
+    SDL_PushEvent(&ev);
+
+    CHECK(XCheckTypedEvent(display, ButtonPress, &out),
+          "overlap click produced no ButtonPress");
+    CHECK(out.xbutton.window == lower,
+          "click on SDL-reported window was misrouted to the overlapping "
+          "top-level");
+
+    ev.type = SDL_MOUSEBUTTONUP;
+    SDL_PushEvent(&ev);
+    CHECK(XCheckTypedEvent(display, ButtonRelease, &out),
+          "overlap button release produced no ButtonRelease");
+
+    CHECK(XGrabPointer(display, lower, True, ButtonPressMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "overlap owner-events pointer grab failed");
+    ev.type = SDL_MOUSEBUTTONDOWN;
+    SDL_PushEvent(&ev);
+
+    CHECK(XCheckTypedEvent(display, ButtonPress, &out),
+          "overlap owner-events grab click produced no ButtonPress");
+    CHECK(out.xbutton.window == lower,
+          "owner-events grab click on SDL-reported window was misrouted to the "
+          "overlapping top-level");
+    ev.type = SDL_MOUSEBUTTONUP;
+    SDL_PushEvent(&ev);
+    CHECK(XCheckTypedEvent(display, ButtonRelease, &out),
+          "overlap owner-events grab release produced no ButtonRelease");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "overlap owner-events pointer ungrab failed");
+
+    XDestroyWindow(display, upper);
+    XDestroyWindow(display, lower);
+    return 1;
+}
+
 int main(void)
 {
     run_test("smoke", test_smoke);
@@ -7926,5 +8065,6 @@ int main(void)
              test_sibling_occlusion_respects_shape);
     run_test("sibling_occlusion_shape_extends_outside_frame",
              test_sibling_occlusion_shape_extends_outside_frame);
+    run_test("overlap_pointer_routing", test_overlap_pointer_routing);
     return failures == 0 ? 0 : 1;
 }

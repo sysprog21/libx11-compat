@@ -1,0 +1,32 @@
+diff --git a/app/memutils.c b/app/memutils.c
+index 37e0abb..5c9b467 100644
+--- a/app/memutils.c
++++ b/app/memutils.c
+@@ -113,15 +113,15 @@ mem_chunk_create (atom_size, type)
+       mem_chunk->atom_size = atom_size;
+       break;
+     case ALLOC_AND_FREE:
+-      mem_chunk->atom_size = atom_size + 4;
++      mem_chunk->atom_size = atom_size + sizeof (long);
+       break;
+     default:
+       fatal_error ("unknown MemChunk type: %d", type);
+       break;
+     }
+   
+-  if (mem_chunk->atom_size % 4)
+-    mem_chunk->atom_size += 4 - (mem_chunk->atom_size % 4);
++  if (mem_chunk->atom_size % sizeof (long))
++    mem_chunk->atom_size += sizeof (long) - (mem_chunk->atom_size % sizeof (long));
+ 
+   mem_chunk->next = mem_chunks;
+   mem_chunk->prev = NULL;
+@@ -296,7 +296,7 @@ mem_chunk_alloc (mem_chunk)
+   mem_chunk->mem_area->free -= mem_chunk->atom_size;
+   mem_chunk->mem_area->allocated += 1;
+ 
+-  /* If this is an ALLOC_AND_FREE chunk we calculated the atom_size with 4 extra bytes
++  /* If this is an ALLOC_AND_FREE chunk we calculated the atom_size with sizeof(long) extra bytes
+    *  so that we can use that space to keep track of which mem area this piece 
+    *  of memory came from.
+    */

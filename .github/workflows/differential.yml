@@ -1,6 +1,6 @@
 # Differential gates for the SDL2-based libx11-compat stack.
 #
-# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig) is
+# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, GIMP) is
 # built twice on the same GitHub-hosted runner: once against the
 # system libX11 stack from apt and once against libx11-compat. The
 # resulting screenshots are compared under Xvfb. This is the local
@@ -10,7 +10,7 @@
 # Differential gates live in a separate workflow from ci.yml so the
 # fast PR feedback loop (lint / build / smoke) is not delayed by the
 # heavier double-build pipeline, and so each downstream target reports
-# its own status check independent of the others. The five jobs run
+# its own status check independent of the others. The six jobs run
 # in parallel; total wallclock is bounded by the slowest single job
 # rather than the sum of all jobs.
 #
@@ -91,6 +91,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -201,6 +203,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -283,6 +287,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -370,6 +376,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -465,6 +473,8 @@ jobs:
             !build/upstream/osiris
             !build/upstream/xfig-*
             !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
           key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
           restore-keys: |
             upstream-src-v2-${{ runner.os }}-
@@ -509,6 +519,110 @@ jobs:
             build/xfig-differential/diff
             build/xfig-differential/system
             build/xfig-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- GIMP 0.54 toolbox-startup differential ----
+  #
+  # GIMP 0.54.1 is the heaviest Motif client here. It is built twice on
+  # the runner: once against system libX11 + OpenMotif (libmotif-dev,
+  # the same 2.3.x toolkit the balooii patch set targets) and once
+  # against libx11-compat + the bundled thentenaar/motif. Both render
+  # the Motif toolbox under Xvfb and the startup screen is compared.
+  # Validated on node11 (OpenMotif 2.3.8): MAE 0.072, changed 0.194 for
+  # the toolbox screen, comfortably under the 0.16 / 0.42 thresholds.
+  # The compat side builds the bundled Motif, so this job carries the
+  # MOTIF_BUILD_PKGS autoreconf chain and the MOTIF_YACC override.
+  gimp-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        # libmotif-dev supplies the system OpenMotif baseline; libpng-dev
+        # / libjpeg-dev / zlib1g-dev back the GIMP image-format plug-ins
+        # (TIFF is dropped, see compat/gimp-patches/0012-plugins-drop-tiff.patch).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            libmotif-dev libpng-dev libjpeg-dev zlib1g-dev
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        # The compat side reuses the in-tree thentenaar/motif as libXm /
+        # libMrm, so share the motif job's clone+autoreconf cache key.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache GIMP source tree
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream/gimp-0.54.1
+            build/upstream/.cache/gimp-0.54.1.fixed.tar.gz
+          key: gimp-src-${{ runner.os }}-${{ hashFiles('mk/gimp-motif.mk', 'compat/gimp-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-gimp-diff-v3-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-gimp-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run GIMP differential
+        env:
+          GIMP_DIFF_LOCAL: "1"
+          GIMP_DIFF_COMPARE_LOCATION: local
+          GIMP_DIFF_JOBS: "2"
+        run: make check-differential-gimp-motif
+
+      - name: Upload GIMP differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gimp-differential
+          path: |
+            build/gimp-differential/report.tsv
+            build/gimp-differential/junit.xml
+            build/gimp-differential/logs
+            build/gimp-differential/diff
+            build/gimp-differential/system
+            build/gimp-differential/compat
           if-no-files-found: warn
           retention-days: 7
 

@@ -1,0 +1,13 @@
+diff --git a/plug-ins/netpbm.c b/plug-ins/netpbm.c
+index 8a39369..43d5967 100644
+--- a/plug-ins/netpbm.c
++++ b/plug-ins/netpbm.c
+@@ -99,7 +99,7 @@ main (argc, argv)
+   int image_menu1_ID;
+   int image_menu2_ID;
+   int image_menu3_ID;
+-  int src1_ID, src2_ID, src3_ID;
++  long src1_ID, src2_ID, src3_ID;
+   int netpbm_buf_ID;
+   int param_buf_ID;
+   

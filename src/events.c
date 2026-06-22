@@ -41,6 +41,9 @@ static SDL_mutex *activePointerWindowLock = NULL;
 static Uint32 xtWakeEventType = (Uint32) -1;
 static SDL_TimerID xtWakeTimer = 0;
 static Array trackedDisplays = {NULL, 0, 0};
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+static __thread float wheelPreciseX = 0.0f, wheelPreciseY = 0.0f;
+#endif
 
 /* Serializes the first-open / last-close blocks in {init,closeEventPipe}. The
  * named SDL_mutex slots they manage are created and destroyed there, so a
@@ -174,6 +177,25 @@ int convertEvent(Display *display,
                  XEvent *xEvent,
                  Bool freeInternalEvents);
 
+static __thread int sdlPeepEventsXlibDrainDepth;
+
+int libx11CompatSdlPeepEventsIsXlibDrain(void)
+{
+    return sdlPeepEventsXlibDrainDepth > 0;
+}
+
+static int sdlPeepEventsForXlibDrain(SDL_Event *events,
+                                     int numevents,
+                                     SDL_eventaction action,
+                                     Uint32 minType,
+                                     Uint32 maxType)
+{
+    sdlPeepEventsXlibDrainDepth++;
+    int result = SDL_PeepEvents(events, numevents, action, minType, maxType);
+    sdlPeepEventsXlibDrainDepth--;
+    return result;
+}
+
 /* Pipe write/read are best-effort wake-up signals; the authoritative "event
  * ready" tracker is GET_DISPLAY(display)->qlen plus the putBackEvents linked
  * list. Both file descriptors are non-blocking after initEventPipe so a full or
@@ -256,6 +278,22 @@ static void resetEventWakeups(Display *display, int qlen)
         (void) _r;                                                 \
         decrementDisplayEventQueueLength(display);                 \
     } while (0)
+
+void libx11CompatSideQueueEventRemoved(SDL_EventFilter filter, void *userdata)
+{
+    if (filter != onSdlEvent)
+        return;
+
+    Display *display = (Display *) userdata;
+    if (!display)
+        return;
+
+    lockTrackedDisplays();
+    Bool tracked = findInArray(&trackedDisplays, display) >= 0;
+    unlockTrackedDisplays();
+    if (tracked)
+        READ_EVENT_IN_PIPE(display);
+}
 
 void wakeEventPipeForExternalEvent(Display *display)
 {
@@ -482,8 +520,8 @@ static int drainSdlEventsToPutBack(Display *display)
         return countPutBackEvents(display);
     }
 
-    qlen = SDL_PeepEvents(events, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
-                          SDL_LASTEVENT);
+    qlen = sdlPeepEventsForXlibDrain(events, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
+                                     SDL_LASTEVENT);
     if (qlen < 0) {
         LOG("Unable to read event queue: %s\n", SDL_GetError());
         free(events);
@@ -628,8 +666,38 @@ static Bool windowSelectsAny(Window window, long mask)
            (GET_WINDOW_STRUCT(window)->eventMask & mask) != 0;
 }
 
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+/* Fold a sub-notch precise wheel delta into an integer notch. When the raw
+ * integer axis already carries a notch, just clear the accumulator. Otherwise
+ * accumulate the fraction and emit at most one notch per event, dropping any
+ * surplus beyond a notch so a large burst delta cannot grow without bound.
+ */
+static int accumulateWheelNotch(int raw, float precise, float *accum)
+{
+    if (raw != 0) {
+        *accum = 0.0f;
+        return raw;
+    }
+    if (precise == 0.0f)
+        return 0;
+    int notch = 0;
+    *accum += precise;
+    if (*accum >= 1.0f) {
+        notch = 1;
+        *accum -= 1.0f;
+    } else if (*accum <= -1.0f) {
+        notch = -1;
+        *accum += 1.0f;
+    }
+    if (*accum >= 1.0f || *accum <= -1.0f)
+        *accum = 0.0f;
+    return notch;
+}
+#endif
+
 static Window selectPointerEventWindow(Display *display,
                                        Window root,
+                                       Window clickTopLevel,
                                        int rootX,
                                        int rootY,
                                        long mask,
@@ -637,7 +705,33 @@ static Window selectPointerEventWindow(Display *display,
                                        int *eventXReturn,
                                        int *eventYReturn)
 {
-    Window deepest = getContainingWindow(root, rootX, rootY);
+    /* SDL tells us which top-level the pointer event belongs to (the window the
+     * user actually clicked on screen). Trust that over a global stacking
+     * search: a top-level's logical position in the window model can diverge
+     * from its real on-screen placement (e.g. an image window the toolkit
+     * created over the toolbox in the model but that the host placed elsewhere
+     * on screen), and a global getContainingWindow would then misroute a click
+     * on the visible window to whichever top-level overlaps it in the model.
+     * Descend from clickTopLevel using coordinates relative to it; rootX/rootY
+     * were derived from the same logical origin, so the offset cancels out.
+     */
+    Window deepest = None;
+    if (clickTopLevel != None && clickTopLevel != SCREEN_WINDOW &&
+        IS_TYPE(clickTopLevel, WINDOW) && GET_PARENT(clickTopLevel) == root) {
+        int tlx = 0, tly = 0, tlw = 0, tlh = 0;
+        GET_WINDOW_POS(clickTopLevel, tlx, tly);
+        GET_WINDOW_DIMS(clickTopLevel, tlw, tlh);
+        int localX = rootX - tlx, localY = rootY - tly;
+        /* Only constrain to the reported top-level when the point is actually
+         * inside it. A drag-release outside the captured window arrives with
+         * that window's id but out-of-bounds coordinates; fall through to the
+         * global search so it lands on the window really under the pointer.
+         */
+        if (localX >= 0 && localX < tlw && localY >= 0 && localY < tlh)
+            deepest = getContainingWindow(clickTopLevel, localX, localY);
+    }
+    if (deepest == None)
+        deepest = getContainingWindow(root, rootX, rootY);
     Window eventWindow = deepest;
     while (eventWindow != None && eventWindow != SCREEN_WINDOW &&
            !windowSelectsAny(eventWindow, mask)) {
@@ -656,6 +750,7 @@ static Window selectPointerEventWindow(Display *display,
 
 static Bool routePointerGrabEvent(Display *display,
                                   Window root,
+                                  Window clickTopLevel,
                                   int rootX,
                                   int rootY,
                                   long mask,
@@ -670,8 +765,8 @@ static Bool routePointerGrabEvent(Display *display,
 
     if (getPointerGrabOwnerEvents()) {
         Window ownerWindow = selectPointerEventWindow(
-            display, root, rootX, rootY, mask, subwindowReturn, eventXReturn,
-            eventYReturn);
+            display, root, clickTopLevel, rootX, rootY, mask, subwindowReturn,
+            eventXReturn, eventYReturn);
         if (ownerWindow != None) {
             *eventWindow = ownerWindow;
             return True;
@@ -955,8 +1050,8 @@ void discardQueuedEventsForWindow(Display *display, Window window)
         handleOutOfMemory(0, display, 0, 0);
         return;
     }
-    qlen = SDL_PeepEvents(events, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
-                          SDL_LASTEVENT);
+    qlen = sdlPeepEventsForXlibDrain(events, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
+                                     SDL_LASTEVENT);
     if (qlen < 0) {
         LOG("Unable to read event queue: %s\n", SDL_GetError());
         free(events);
@@ -1129,6 +1224,10 @@ void closeEventPipe(Display *display)
             SDL_SetEventFilter(NULL, NULL);
     }
     if (remainingDisplays == 0) {
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+        wheelPreciseX = 0.0f;
+        wheelPreciseY = 0.0f;
+#endif
         if (xtWakeTimer != 0) {
             SDL_RemoveTimer(xtWakeTimer);
             xtWakeTimer = 0;
@@ -1552,7 +1651,7 @@ int convertEvent(Display *display,
          * last button-press recipient).
          */
         if (!routePointerGrabEvent(display, xEvent->xbutton.root,
-                                   xEvent->xbutton.x_root,
+                                   sdlButtonWindow, xEvent->xbutton.x_root,
                                    xEvent->xbutton.y_root, buttonMask,
                                    &eventWindow, &xEvent->xbutton.subwindow,
                                    &xEvent->xbutton.x, &xEvent->xbutton.y)) {
@@ -1567,8 +1666,8 @@ int convertEvent(Display *display,
                     eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
             } else {
                 eventWindow = selectPointerEventWindow(
-                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                    xEvent->xbutton.y_root, buttonMask,
+                    display, xEvent->xbutton.root, sdlButtonWindow,
+                    xEvent->xbutton.x_root, xEvent->xbutton.y_root, buttonMask,
                     &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
                     &xEvent->xbutton.y);
             }
@@ -1625,7 +1724,7 @@ int convertEvent(Display *display,
          * pointer-window selection.
          */
         if (!routePointerGrabEvent(display, xEvent->xmotion.root,
-                                   xEvent->xmotion.x_root,
+                                   sdlMotionWindow, xEvent->xmotion.x_root,
                                    xEvent->xmotion.y_root, motionMask,
                                    &eventWindow, &xEvent->xmotion.subwindow,
                                    &xEvent->xmotion.x, &xEvent->xmotion.y)) {
@@ -1642,8 +1741,8 @@ int convertEvent(Display *display,
                     eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
             } else {
                 eventWindow = selectPointerEventWindow(
-                    display, xEvent->xmotion.root, xEvent->xmotion.x_root,
-                    xEvent->xmotion.y_root, motionMask,
+                    display, xEvent->xmotion.root, sdlMotionWindow,
+                    xEvent->xmotion.x_root, xEvent->xmotion.y_root, motionMask,
                     &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
                     &xEvent->xmotion.y);
             }
@@ -1947,6 +2046,16 @@ int convertEvent(Display *display,
         LOG("SDL_MOUSEWHEEL\n");
         {
             int wy = sdlEvent->wheel.y, wx = sdlEvent->wheel.x;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+            /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y while
+             * leaving x/y at 0. Accumulate those fractions so smooth wheels do
+             * not turn each partial delta into a full X11 wheel click.
+             */
+            wy = accumulateWheelNotch(wy, sdlEvent->wheel.preciseY,
+                                      &wheelPreciseY);
+            wx = accumulateWheelNotch(wx, sdlEvent->wheel.preciseX,
+                                      &wheelPreciseX);
+#endif
             if (sdlEvent->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
                 wy = -wy;
                 wx = -wx;
@@ -1987,15 +2096,15 @@ int convertEvent(Display *display,
                                     &xEvent->xbutton.x_root,
                                     &xEvent->xbutton.y_root);
             if (!routePointerGrabEvent(
-                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                    xEvent->xbutton.y_root, ButtonPressMask, &eventWindow,
-                    &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
-                    &xEvent->xbutton.y)) {
+                    display, xEvent->xbutton.root, sdlWheelWindow,
+                    xEvent->xbutton.x_root, xEvent->xbutton.y_root,
+                    ButtonPressMask, &eventWindow, &xEvent->xbutton.subwindow,
+                    &xEvent->xbutton.x, &xEvent->xbutton.y)) {
                 eventWindow = selectPointerEventWindow(
-                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                    xEvent->xbutton.y_root, ButtonPressMask,
-                    &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
-                    &xEvent->xbutton.y);
+                    display, xEvent->xbutton.root, sdlWheelWindow,
+                    xEvent->xbutton.x_root, xEvent->xbutton.y_root,
+                    ButtonPressMask, &xEvent->xbutton.subwindow,
+                    &xEvent->xbutton.x, &xEvent->xbutton.y);
             }
             if (eventWindow == None)
                 return -1;
@@ -2013,12 +2122,12 @@ int convertEvent(Display *display,
              * compat appears as a no-op while the same replay driven via
              * xdotool against system X11 scrolls correctly.
              *
-             * Queue both ends at the put-back queue head (last enqueue ends
-             * up on top, so push Release first and Press second) and bail
-             * out with -1 so all consumer paths -- XNextEvent's main pump
-             * and the drainSdlEventsToPutBack drains -- pull them in the
-             * right order without the caller redundantly appending the
-             * Press behind the Release we already queued.
+             * Queue both ends at the put-back queue head (last enqueue ends up
+             * on top, so push Release first and Press second) and bail out with
+             * -1 so all consumer paths -- XNextEvent's main pump and the
+             * drainSdlEventsToPutBack drains -- pull them in the right order
+             * without the caller redundantly appending the Press behind the
+             * Release we already queued.
              */
             XEvent pressEvent = *xEvent;
             pressEvent.xbutton.type = ButtonPress;
@@ -2433,11 +2542,11 @@ int XNextEvent(Display *display, XEvent *event_return)
         getEventQueueLength(&qlen);
         LOG("Events in queue = %d, qlen = %d\n", qlen,
             displayEventQueueLength(display));
-        if (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
-                           SDL_LASTEVENT) != 1) {
+        if (sdlPeepEventsForXlibDrain(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
+                                      SDL_LASTEVENT) != 1) {
             pumpEventsSafe();
-            if (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
-                               SDL_LASTEVENT) != 1) {
+            if (sdlPeepEventsForXlibDrain(&event, 1, SDL_GETEVENT,
+                                          SDL_FIRSTEVENT, SDL_LASTEVENT) != 1) {
                 /* Real X11 implicitly flushes the request queue when the client
                  * blocks on input. If input is already queued, handle it first
                  * so heavy readback/present work does not sit in front of mouse
@@ -2456,8 +2565,9 @@ int XNextEvent(Display *display, XEvent *event_return)
             if (SDL_PeepEvents(&next, 1, SDL_PEEKEVENT, SDL_FIRSTEVENT,
                                SDL_LASTEVENT) == 1 &&
                 isInteractiveSdlEvent(&next)) {
-                if (SDL_PeepEvents(&next, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
-                                   SDL_LASTEVENT) != 1)
+                if (sdlPeepEventsForXlibDrain(&next, 1, SDL_GETEVENT,
+                                              SDL_FIRSTEVENT,
+                                              SDL_LASTEVENT) != 1)
                     continue;
                 /* The present wake was already removed from SDL's queue above.
                  * Drain its old pipe byte before pushing it back to the tail,
@@ -3325,8 +3435,8 @@ static Bool checkTypedEvent(Display *display,
             handleOutOfMemory(0, display, 0, 0);
             return False;
         }
-        qlen = SDL_PeepEvents(tmp, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
-                              SDL_LASTEVENT);
+        qlen = sdlPeepEventsForXlibDrain(tmp, qlen, SDL_GETEVENT,
+                                         SDL_FIRSTEVENT, SDL_LASTEVENT);
         if (qlen < 0) {
             LOG("Unable to read event queue: %s\n", SDL_GetError());
             free(tmp);
@@ -3392,8 +3502,8 @@ static Bool checkIfEvent(Display *display,
             handleOutOfMemory(0, display, 0, 0);
             return False;
         }
-        qlen = SDL_PeepEvents(tmp, qlen, SDL_GETEVENT, SDL_FIRSTEVENT,
-                              SDL_LASTEVENT);
+        qlen = sdlPeepEventsForXlibDrain(tmp, qlen, SDL_GETEVENT,
+                                         SDL_FIRSTEVENT, SDL_LASTEVENT);
         if (qlen < 0) {
             LOG("Unable to read event queue: %s\n", SDL_GetError());
             free(tmp);

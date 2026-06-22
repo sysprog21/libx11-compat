@@ -15,6 +15,7 @@
 #   - deps.mk aggregates *_OBJS dep-file lists, so it must be last.
 include mk/toolchain.mk
 include mk/config.mk
+include mk/sdl.mk
 include mk/sources.mk
 include mk/common.mk
 include mk/sdl-wrapper.mk
@@ -30,6 +31,7 @@ include mk/mosaic.mk
 include mk/osiris.mk
 include mk/xclock.mk
 include mk/xfig.mk
+include mk/gimp-motif.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/upstream-headers.mk

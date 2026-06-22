@@ -17,10 +17,13 @@
  * correct thread and signals the waiter.
  */
 
+#include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <SDL2/SDL.h>
+
 #include "drawing.h"
 #include "events.h"
 #include "replay-target.h"
@@ -36,6 +39,7 @@ static pthread_mutex_t snapshotMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t snapshotCond = PTHREAD_COND_INITIALIZER;
 static int snapshotResult = 0;
 static int snapshotDone = 0;
+
 /* SDL requires user-event types to be registered via SDL_RegisterEvents to be
  * eligible for SDL_PushEvent + queue processing. Without registration the event
  * survives the push but never appears at the other end of the queue (verified
@@ -204,11 +208,41 @@ int snapshotHandleEvent(const SDL_Event *event)
         rc = -3;
         goto signal;
     }
-    if (SDL_SaveBMP(surface, path) != 0) {
-        LOG("snapshot: SDL_SaveBMP(%s) failed: %s\n", path, SDL_GetError());
+
+    /* SDL_SaveBMP writes incrementally to the open file, so a runner that polls
+     * for this path can observe a non-empty but truncated BMP and fail to
+     * decode it (PIL "image file is truncated"). Write to a temp file and
+     * rename into place; rename is atomic within one filesystem, so the reader
+     * sees either no file or the complete one.
+     */
+    size_t pathLen = strlen(path);
+    if (pathLen > SIZE_MAX - sizeof(".tmp")) {
+        LOG("snapshot: path too long for temp suffix\n");
         rc = -3;
         goto signal;
     }
+    char *tmpPath = malloc(pathLen + sizeof(".tmp"));
+    if (!tmpPath) {
+        LOG("snapshot: out of memory for temp path\n");
+        rc = -3;
+        goto signal;
+    }
+    memcpy(tmpPath, path, pathLen);
+    memcpy(tmpPath + pathLen, ".tmp", sizeof(".tmp"));
+    if (SDL_SaveBMP(surface, tmpPath) != 0) {
+        LOG("snapshot: SDL_SaveBMP(%s) failed: %s\n", tmpPath, SDL_GetError());
+        free(tmpPath);
+        rc = -3;
+        goto signal;
+    }
+    if (rename(tmpPath, path) != 0) {
+        LOG("snapshot: rename(%s -> %s) failed: %s\n", tmpPath, path,
+            strerror(errno));
+        free(tmpPath);
+        rc = -3;
+        goto signal;
+    }
+    free(tmpPath);
     LOG("snapshot: wrote %s (%dx%d)\n", path, surface->w, surface->h);
 signal:
     signalSnapshotResult(env->generation, rc);
@@ -302,8 +336,8 @@ int snapshotHandleFocusAtEvent(Display *display, const SDL_Event *event)
         free(env);
         return -5;
     }
-    int x = env->intA;
-    int y = env->intB;
+
+    int x = env->intA, y = env->intB;
     int rc = 0;
     int rootX = 0, rootY = 0;
     if (!replayTargetTranslateLocal(x, y, &rootX, &rootY)) {
@@ -311,6 +345,7 @@ int snapshotHandleFocusAtEvent(Display *display, const SDL_Event *event)
         rc = -1;
         goto signal;
     }
+
     Window target = getContainingWindow(SCREEN_WINDOW, rootX, rootY);
     /* Reject SCREEN_WINDOW because getContainingWindow falls back to the
      * starting window when no child contains the point, which would shift X
@@ -335,8 +370,8 @@ int snapshotRequestFocusAtAndWait(int x, int y)
     SnapshotEnvelope *env = calloc(1, sizeof(*env));
     if (!env)
         return -1;
-    env->intA = x;
-    env->intB = y;
+
+    env->intA = x, env->intB = y;
     Uint32 eventType = 0;
     uint64_t generation = 0;
     if (!prepareSnapshotRoundTrip("focus-at", &eventType, &generation)) {

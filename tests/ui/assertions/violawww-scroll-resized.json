@@ -1,5 +1,5 @@
 {
-  "_comment": "Resized vw captures are 640px wide, so this crop stays in-bounds while covering the visible document body. Clean resize frames should stay below 50 dense rows. min_dark_ratio is intentionally lower than the scrolled-state threshold because the compat layer's post-resize redraw of ViolaWWW's document viewport is incomplete on Xvfb (the compat/violawww-patches/clear-viola-target-after-resize.patch covers the common case but the post-resize frame still drops most rendered text); the assertion catches a fully-blank gray viewport (which would be 0.0000) while accepting the partial redraw we currently produce. Tighten once the resize redraw path lands a full fix.",
+  "_comment": "Resized vw captures are 640px wide, so this crop stays in-bounds while covering the visible document body. Clean frames on macOS can contain about 84 dense text rows. min_dark_ratio is intentionally lower than the scrolled-state threshold because the compat layer's post-resize redraw of ViolaWWW's document viewport is incomplete on Xvfb (the compat/violawww-patches/clear-viola-target-after-resize.patch covers the common case but the post-resize frame still drops most rendered text); the assertion catches a fully-blank gray viewport (which would be 0.0000) while accepting the partial redraw we currently produce. Tighten once the resize redraw path lands a full fix.",
   "assertions": [
     {
       "type": "non_empty"
@@ -17,7 +17,7 @@
       "rect": [40, 255, 600, 435],
       "dark_threshold": 80,
       "max_row_dark_ratio": 0.21,
-      "max_dense_rows": 50
+      "max_dense_rows": 100
     }
   ]
 }

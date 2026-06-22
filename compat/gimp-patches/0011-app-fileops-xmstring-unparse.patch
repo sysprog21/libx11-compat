@@ -1,0 +1,44 @@
+--- a/app/fileops.c
++++ b/app/fileops.c
+@@ -486,8 +486,18 @@
+ 
+   cbs = (XmFileSelectionBoxCallbackStruct *) call_data;
+ 
+-  if (!XmStringGetLtoR (cbs->value, XmFONTLIST_DEFAULT_TAG, &filename))
+-    return;
++  /* XmStringGetLtoR returns an empty string for XmStringCreateLocalized
++   * values under this Motif, so the selected file name came through empty.
++   * XmStringUnparse extracts it reliably.
++   */
++  filename = XmStringUnparse (cbs->value, NULL, XmCHARSET_TEXT,
++                              XmCHARSET_TEXT, NULL, 0, XmOUTPUT_ALL);
++  if (!filename || !filename[0])
++    {
++      if (filename)
++	XtFree (filename);
++      return;
++    }
+ 
+   XtVaGetValues (w, XmNuserData, &value, NULL);
+ 
+@@ -521,10 +531,16 @@
+       last_call_data = call_data;
+ 
+       cbs = (XmFileSelectionBoxCallbackStruct *) call_data;
+-      
+-      if (!XmStringGetLtoR (cbs->value, XmFONTLIST_DEFAULT_TAG, &filename))
+-	return;
+-      
++
++      filename = XmStringUnparse (cbs->value, NULL, XmCHARSET_TEXT,
++				 XmCHARSET_TEXT, NULL, 0, XmOUTPUT_ALL);
++      if (!filename || !filename[0])
++	{
++	  if (filename)
++	    XtFree (filename);
++	  return;
++	}
++
+       err = stat (filename, &buf);
+       if (!err)
+ 	{

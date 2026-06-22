@@ -1,0 +1,43 @@
+diff --git a/configure.in b/configure.in
+index cd6f08f..3d0bbd8 100644
+--- a/configure.in
++++ b/configure.in
+@@ -16,6 +16,8 @@ dnl Determine which C compiler is being used
+ AC_PROG_CC
+ AC_PROG_MAKE_SET
+ 
++CFLAGS="-g -Wall -std=gnu17 -fcommon -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=incompatible-pointer-types -Wno-error=int-conversion -Wno-error=return-mismatch"
++
+ dnl Find the X11 include and library directories
+ AC_PATH_XTRA
+ 
+@@ -28,7 +30,10 @@ if test "x$motif_includes" != x; then
+   X_CFLAGS="$X_CFLAGS -I$motif_includes"
+ fi
+ 
+-X_LDFLAGS="-L$x_libraries"
++X_LDFLAGS=""
++if test "x$x_libraries" != x; then
++  X_LDFLAGS="-L$x_libraries"
++fi
+ if test "x$motif_libraries" != x; then
+   X_LDFLAGS="$X_LIBS -L$motif_libraries"
+ fi
+@@ -48,7 +53,7 @@ AC_CHECK_HEADER(sys/shm.h, AC_DEFINE(HAVE_SHM_H), no_sys_shm=yes)
+ 
+ dnl Check for the X shared memory extension header file
+ AC_MSG_CHECKING(X11/extensions/XShm.h)
+-if eval "test -f $x_includes/X11/extensions/XShm.h"; then
++if eval "test -f $x_includes/X11/extensions/XShm.h" || test -f /usr/include/X11/extensions/XShm.h; then
+   AC_MSG_RESULT(yes)
+   AC_DEFINE(HAVE_XSHM_H)
+ else
+@@ -79,8 +84,6 @@ AC_CHECK_FUNCS(gettimeofday strdup)
+ dnl Add the "X" libraries back into the LIBS variable
+ LIBS="$SAVE_LIBS $LIBS"
+ 
+-CFLAGS="-g -Wall"
+-
+ dnl If we are using gcc then turn on strict ansi compilation
+ dnl if test "x$GCC" = xyes; then
+ dnl  CFLAGS="$CFLAGS -ansi -pedantic"

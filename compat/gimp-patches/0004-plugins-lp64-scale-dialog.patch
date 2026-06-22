@@ -1,0 +1,13 @@
+diff --git a/plug-ins/gimp.c b/plug-ins/gimp.c
+index 011b49b..c8a61fd 100644
+--- a/plug-ins/gimp.c
++++ b/plug-ins/gimp.c
+@@ -903,7 +903,7 @@ gimp_new_scale (dialog_ID, parent_ID, min, max, start, prec)
+   data[2] = start;
+   data[3] = prec;
+ 
+-  return gimp_new_item (dialog_ID, parent_ID, ITEM_SCALE, data, 16);
++  return gimp_new_item (dialog_ID, parent_ID, ITEM_SCALE, data, sizeof (data));
+ }
+ 
+ int

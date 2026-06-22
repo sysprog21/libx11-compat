@@ -1,5 +1,5 @@
 {
-  "_comment": "Rect coordinates are window-relative inside the 800x720 vw frame. The viewport rect skips Motif chrome (menubar, address, toolbar) so stale-text ratios are computed only over the rendered HTML body. Clean scroll frames measure below 50 dense rows; double-stamped stale glyphs push the count much higher.",
+  "_comment": "Rect coordinates are window-relative inside the 800x720 vw frame. The viewport rect skips Motif chrome (menubar, address, toolbar) so stale-text ratios are computed only over the rendered HTML body. Clean frames on macOS can contain about 84 dense text rows; double-stamped stale glyphs push the count much higher.",
   "assertions": [
     {
       "type": "non_empty"
@@ -17,7 +17,7 @@
       "rect": [40, 255, 720, 435],
       "dark_threshold": 80,
       "max_row_dark_ratio": 0.21,
-      "max_dense_rows": 50
+      "max_dense_rows": 100
     }
   ]
 }

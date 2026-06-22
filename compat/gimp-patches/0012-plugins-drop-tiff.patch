@@ -1,0 +1,22 @@
+diff --git a/plug-ins/Makefile b/plug-ins/Makefile
+--- a/plug-ins/Makefile
++++ b/plug-ins/Makefile
+@@ -45,7 +45,7 @@
+ 		duplicate.c offset.c blend.c composite.c		\
+ 		gamma.c scale.c rotate.c tile.c	gauss.c			\
+ 		compose.c decompose.c netpbm.c				\
+-		jpeg.c tiff.c gif.c png.c gbrush.c xpm.c tga.c
++		jpeg.c gif.c png.c gbrush.c xpm.c tga.c
+ 
+ FILTEROBJ = $(FILTERSRC:.c=.o)
+ FILTERS = $(FILTERSRC:.c=)
+@@ -84,9 +84,6 @@
+ png: png.c $(LIBGIMP)
+ 	-$(CC) $(CFLAGS) $(LINCLUDE) -o png png.c $(LIBGIMP) -lpng -lz -lc -lm
+ 
+-tiff: tiff.c $(LIBGIMP)
+-	-$(CC) $(CFLAGS) $(LINCLUDE) -o tiff tiff.c $(LIBGIMP) -ltiff -lc -lm
+-
+ xpm: xpm.c $(LIBGIMP)
+ 	-$(CC) $(CFLAGS) $(LINCLUDE) -o xpm xpm.c $(LIBGIMP) -lXpm -lX11 -lc
+ 

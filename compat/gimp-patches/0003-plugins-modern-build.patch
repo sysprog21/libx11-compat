@@ -1,0 +1,21 @@
+diff --git a/plug-ins/Makefile b/plug-ins/Makefile
+index 239f252..72528d5 100644
+--- a/plug-ins/Makefile
++++ b/plug-ins/Makefile
+@@ -21,8 +21,15 @@ CC        	=	gcc
+ RANLIB		=	ranlib
+ #RANLIB		=	echo
+ 
++STDFLAGS	=	-std=gnu17 -fcommon \
++			-Wno-error=implicit-function-declaration \
++			-Wno-error=implicit-int \
++			-Wno-error=incompatible-pointer-types \
++			-Wno-error=int-conversion \
++			-Wno-error=return-mismatch
++
+ # remember to add the includes
+-CFLAGS		=	-O -Wall $(INCLUDE)
++CFLAGS		=	-O -Wall $(STDFLAGS) $(INCLUDE)
+ 
+ # specify how depends are remade
+ MAKEDEPEND	=	gcc -MM
