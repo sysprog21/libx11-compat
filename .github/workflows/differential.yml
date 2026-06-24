@@ -1,7 +1,7 @@
 # Differential gates for the SDL2-based libx11-compat stack.
 #
-# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, GIMP) is
-# built twice on the same GitHub-hosted runner: once against the
+# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, GIMP,
+# XNEdit) is built twice on the same GitHub-hosted runner: once against the
 # system libX11 stack from apt and once against libx11-compat. The
 # resulting screenshots are compared under Xvfb. This is the local
 # counterpart to the SSH-driven path in scripts/run-*-differential-tests.py
@@ -10,7 +10,7 @@
 # Differential gates live in a separate workflow from ci.yml so the
 # fast PR feedback loop (lint / build / smoke) is not delayed by the
 # heavier double-build pipeline, and so each downstream target reports
-# its own status check independent of the others. The six jobs run
+# its own status check independent of the others. The seven jobs run
 # in parallel; total wallclock is bounded by the slowest single job
 # rather than the sum of all jobs.
 #
@@ -623,6 +623,118 @@ jobs:
             build/gimp-differential/diff
             build/gimp-differential/system
             build/gimp-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- XNEdit (Motif NEdit fork, Xft/fontconfig text) differential ----
+  #
+  # XNEdit renders editor text through Xft/fontconfig rather than core X
+  # fonts, so this is the differential gate for the libXft-compat path. It
+  # is built twice on the runner: once against system libX11 + OpenMotif
+  # (libmotif-dev) + libXft, and once against libx11-compat + the bundled
+  # thentenaar/motif + the SDL_ttf-backed libXft-compat. Both render the
+  # editor under Xvfb and the startup + opened-fixture screens are compared.
+  # Validated on node11 (OpenMotif 2.3.8 + system Xft); the GitHub-runner
+  # path is the local counterpart and shares the script with the SSH route.
+  # The compat side builds the bundled Motif, so this job carries the
+  # MOTIF_BUILD_PKGS autoreconf chain and the MOTIF_YACC override.
+  xnedit-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build + system X11 dependencies
+        # libmotif-dev supplies the system OpenMotif baseline; libxft-dev /
+        # libfontconfig1-dev / libxrender-dev back the system-side Xft text
+        # path. fonts-dejavu-core gives fontconfig a scalable family so the
+        # system side renders real glyphs rather than tofu under Xvfb.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            libmotif-dev libfontconfig1-dev libxft-dev libxrender-dev \
+            fonts-dejavu-core
+
+      - name: Cache upstream tarballs and extracted source/headers
+        # Exclude the XNEdit clone so its dedicated cache below owns it,
+        # matching how the other big source trees are split out.
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/xnedit
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        # The compat side reuses the in-tree thentenaar/motif as libXm /
+        # libMrm, so share the motif job's clone+autoreconf cache key.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache XNEdit source clone
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/xnedit
+          key: xnedit-src-${{ runner.os }}-${{ hashFiles('mk/xnedit.mk', 'compat/xnedit-patches/**') }}
+
+      - name: Cache ccache
+        # XNEdit builds the bundled Motif on the compat side, so it shares
+        # the ccache-motifstack-diff-v3-* restore-keys prefix with motif /
+        # violawww / mosaic to prime the Motif gcc object cache; the save
+        # key stays distinct so this job persists its own snapshot.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-xnedit
+          restore-keys: |
+            ccache-motifstack-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run XNEdit differential
+        env:
+          XNEDIT_DIFF_LOCAL: "1"
+          XNEDIT_DIFF_COMPARE_LOCATION: local
+          XNEDIT_DIFF_JOBS: "2"
+        run: make check-differential-xnedit
+
+      - name: Upload XNEdit differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xnedit-differential
+          path: |
+            build/xnedit-differential/report.tsv
+            build/xnedit-differential/junit.xml
+            build/xnedit-differential/logs
+            build/xnedit-differential/diff
+            build/xnedit-differential/system
+            build/xnedit-differential/compat
           if-no-files-found: warn
           retention-days: 7
 

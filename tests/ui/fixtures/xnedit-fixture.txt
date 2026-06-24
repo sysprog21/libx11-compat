@@ -1,0 +1,6 @@
+XNEdit Xft smoke fixture
+
+ASCII: quick brown text
+UTF-8: café naïve jalapeño
+Symbols: λ π Ω
+CJK: 台灣測試

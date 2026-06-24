@@ -551,6 +551,12 @@ int XUnmapWindow(Display *display, Window window)
         return 1;
 
     windowStruct->mapState = UnMapped;
+    flushTextStampsForWindow(window);
+    /* The window is now unviewable; drop any active grab it (or an ancestor)
+     * held so a Motif menu shell does not keep swallowing pointer input after
+     * it unmaps.
+     */
+    releaseActiveGrabsForUnviewableWindow(display, window);
     /* Unmapping clears this window's contribution to the sibling occlusion
      * graph; lower siblings may now have more visible area. Mark the top-level
      * subtree stale so the next draw recomputes.
@@ -715,6 +721,11 @@ int XReparentWindow(Display *display,
      * cannot fail under OOM.
      */
     int oldX = windowStruct->x, oldY = windowStruct->y;
+    /* Reparenting relocates the window's cells in (and possibly between) shared
+     * top-level backings, so drop its text stamps for both the old and the new
+     * top-level. Flush before detach to resolve the old top-level.
+     */
+    flushTextStampsForWindow(window);
     removeChildFromParent(window);
     if (!addChildToWindow(parent, window)) {
         LOG("Out of memory: Failed to reattach window in XReparentWindow!\n");
@@ -723,6 +734,7 @@ int XReparentWindow(Display *display,
     }
     windowStruct->x = x;
     windowStruct->y = y;
+    flushTextStampsForWindow(window);
     /* The new parent's siblings of "window" (and their descendants) and
      * "window"'s own descendants all need their cached visible regions
      * recomputed against the new parent chain. removeChildFromParent above
@@ -730,6 +742,11 @@ int XReparentWindow(Display *display,
      * one.
      */
     invalidateVisibleRegionForTopLevel(window);
+    /* Reparenting a mapped window under an unmapped parent makes it unviewable
+     * without an XUnmapWindow, so release any active grab it held here too.
+     */
+    if (mapState != UnMapped && !isWindowEffectivelyViewable(window))
+        releaseActiveGrabsForUnviewableWindow(display, window);
     if (mapState != UnMapped) {
         if (wasTopLevel && parent != SCREEN_WINDOW) {
             if (!mergeWindowDrawables(parent, window)) {

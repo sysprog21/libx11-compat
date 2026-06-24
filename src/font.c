@@ -79,7 +79,10 @@ static void finishTextDamage(Display *display,
 {
     if (damage && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, damage, 1);
-    presentDrawableRectIfVisible(drawable, damage);
+    /* Use the stamp-preserving present: renderText has just recorded a stamp
+     * for this cell, and the generic present path would evict it again.
+     */
+    presentDrawableRectIfVisibleNoStampInvalidate(drawable, damage);
 }
 
 /* Project-bundled "fonts" wins for self-contained checkouts; the remaining
@@ -365,6 +368,7 @@ void freeFontStorage()
      * any retained texture from the cache would dangle.
      */
     freeTextCache();
+    freeTextStamps();
     if (fontSearchPaths) {
         // Clear the array and free the data
         while (fontSearchPaths->length > 0)
@@ -1045,6 +1049,32 @@ static TTF_Font *openRenderableProbeFont(const char *const *paths,
     return NULL;
 }
 
+static Bool fontProvidesCodepoint(TTF_Font *font, Uint32 codepoint)
+{
+    if (!font)
+        return False;
+    return xc_TTF_GlyphIsProvidedUcs4(font, codepoint) ? True : False;
+}
+
+static TTF_Font *openRenderableProbeFontForChar(const char *const *paths,
+                                                size_t count,
+                                                int size,
+                                                const char *skipPath,
+                                                Uint32 codepoint)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (skipPath && !strcmp(paths[i], skipPath))
+            continue;
+        TTF_Font *font = TTF_OpenFont(paths[i], size);
+        if (!font)
+            continue;
+        if (fontCanRenderText(font) && fontProvidesCodepoint(font, codepoint))
+            return font;
+        TTF_CloseFont(font);
+    }
+    return NULL;
+}
+
 static TTF_Font *openRenderableFallbackFont(const char *name,
                                             int size,
                                             const char *skipPath)
@@ -1081,6 +1111,8 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
                                    skipPath);
     if (font)
         return font;
+    if (!fontCache)
+        return NULL;
     for (size_t i = 0; i < fontCache->length; i++) {
         FontCacheEntry *entry = fontCache->array[i];
         if (skipPath && !strcmp(entry->filePath, skipPath))
@@ -1097,16 +1129,81 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
     return NULL;
 }
 
+static TTF_Font *openRenderableFallbackFontForChar(const char *name,
+                                                   int size,
+                                                   const char *skipPath,
+                                                   Uint32 codepoint)
+{
+    TTF_Font *font = NULL;
+    if (containsIgnoreCase(name, "times") ||
+        containsIgnoreCase(name, "adobe-times") ||
+        containsIgnoreCase(name, "schoolbook")) {
+        font = openRenderableProbeFontForChar(SERIF_PROBE_PATHS,
+                                              ARRAY_LENGTH(SERIF_PROBE_PATHS),
+                                              size, skipPath, codepoint);
+        if (font)
+            return font;
+    }
+    if (containsIgnoreCase(name, "helvetica") ||
+        containsIgnoreCase(name, "helv") ||
+        containsIgnoreCase(name, "lucida") ||
+        containsIgnoreCase(name, "arial") ||
+        ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
+         strstr(name, "-p-"))) {
+        if (containsIgnoreCase(name, "bold")) {
+            font = openRenderableProbeFontForChar(
+                SANS_BOLD_PROBE_PATHS, ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS),
+                size, skipPath, codepoint);
+            if (font)
+                return font;
+        }
+        font = openRenderableProbeFontForChar(SANS_PROBE_PATHS,
+                                              ARRAY_LENGTH(SANS_PROBE_PATHS),
+                                              size, skipPath, codepoint);
+        if (font)
+            return font;
+    }
+    font = openRenderableProbeFontForChar(MONOSPACE_PROBE_PATHS,
+                                          ARRAY_LENGTH(MONOSPACE_PROBE_PATHS),
+                                          size, skipPath, codepoint);
+    if (font)
+        return font;
+    if (!fontCache)
+        return NULL;
+    for (size_t i = 0; i < fontCache->length; i++) {
+        FontCacheEntry *entry = fontCache->array[i];
+        if (skipPath && !strcmp(entry->filePath, skipPath))
+            continue;
+        if (!entry->asciiMetrics)
+            continue;
+        font = TTF_OpenFont(entry->filePath, size);
+        if (!font)
+            continue;
+        if (fontCanRenderText(font) && fontProvidesCodepoint(font, codepoint))
+            return font;
+        TTF_CloseFont(font);
+    }
+    return NULL;
+}
+
 /* Public entry point that mirrors the per-family probe chain used by
  * XLoadQueryFont fallbacks (sans / sans-bold / serif / monospace). The Xft shim
  * routes through this so anti-aliased text rendered by client code lands on the
  * same TTF file the core font path would have picked.
  */
-struct TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size)
+TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size)
 {
     const char *name = familyHint ? familyHint : "sans";
-    return (struct TTF_Font *) openRenderableFallbackFont(
-        name, clampFontSize(size), NULL);
+    return openRenderableFallbackFont(name, clampFontSize(size), NULL);
+}
+
+TTF_Font *compatFontOpenFamilyFallbackForChar(const char *familyHint,
+                                              int size,
+                                              Uint32 codepoint)
+{
+    const char *name = familyHint ? familyHint : "sans";
+    return openRenderableFallbackFontForChar(name, clampFontSize(size), NULL,
+                                             codepoint);
 }
 
 static FontCacheEntry *findFontCacheEntryByName(const char *name)
@@ -2249,6 +2346,24 @@ static Bool renderFixedBitmapText(Drawable drawable,
     return ok;
 }
 
+static Bool renderFixedBitmapTextAndInvalidate(Drawable drawable,
+                                               SDL_Renderer *renderer,
+                                               GC gc,
+                                               int x,
+                                               int y,
+                                               const char *string,
+                                               size_t length,
+                                               SDL_Rect *drawnBounds)
+{
+    SDL_Rect bounds;
+    SDL_Rect *boundsOut = drawnBounds ? drawnBounds : &bounds;
+    if (!renderFixedBitmapText(drawable, renderer, gc, x, y, string, length,
+                               boundsOut))
+        return False;
+    invalidateTextStampsForDrawableRect(drawable, boundsOut);
+    return True;
+}
+
 /* Returns True if the cache took ownership of "texture". False if the caller is
  * responsible for destroying it (e.g., string too long or out-of-memory key
  * allocation).
@@ -2282,6 +2397,51 @@ static Bool textCacheInsert(Font fontXid,
     e->lastUsed = ++textCacheClock;
     e->inUse = True;
     return True;
+}
+
+/* Stretch a blended glyph surface so its densest pixel is fully opaque while
+ * preserving the relative anti-aliasing gradient. FreeType/SDL_ttf builds
+ * differ in how much coverage a small glyph reaches: some never produce a fully
+ * covered pixel, so opaque text composites to gray instead of its intended
+ * color. Normalizing the peak to 255 keeps the core solid (opaque black stays
+ * black) without flattening the anti-aliased edges. A no-op when the peak is
+ * already 0 or 255.
+ */
+static void normalizeGlyphAlpha(SDL_Surface *surface)
+{
+    if (!surface || XC_SURFACE_BYTESPERPIXEL(surface) != 4)
+        return;
+    XcPixelFormat fmt = XC_SURFACE_FORMAT(surface);
+    if (SDL_MUSTLOCK(surface) && SDL_LockSurface(surface) != 0)
+        return;
+    Uint8 peak = 0;
+    for (int yy = 0; yy < surface->h; yy++) {
+        Uint32 *row =
+            (Uint32 *) ((Uint8 *) surface->pixels + yy * surface->pitch);
+        for (int xx = 0; xx < surface->w; xx++) {
+            Uint8 r, g, b, a;
+            SDL_GetRGBA(row[xx], fmt, &r, &g, &b, &a);
+            if (a > peak)
+                peak = a;
+        }
+    }
+    /* peak == 0 (blank) or 255 (already opaque somewhere) needs no rescale.
+     * Otherwise a <= peak guarantees a * 255 / peak stays within 255.
+     */
+    if (peak != 0 && peak != 255) {
+        for (int yy = 0; yy < surface->h; yy++) {
+            Uint32 *row =
+                (Uint32 *) ((Uint8 *) surface->pixels + yy * surface->pitch);
+            for (int xx = 0; xx < surface->w; xx++) {
+                Uint8 r, g, b, a;
+                SDL_GetRGBA(row[xx], fmt, &r, &g, &b, &a);
+                Uint8 scaled = (Uint8) ((unsigned) a * 255u / peak);
+                row[xx] = SDL_MapRGBA(fmt, r, g, b, scaled);
+            }
+        }
+    }
+    if (SDL_MUSTLOCK(surface))
+        SDL_UnlockSurface(surface);
 }
 
 Bool renderText(Display *display,
@@ -2321,8 +2481,8 @@ Bool renderText(Display *display,
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
     Bool stringHasEmbeddedNul = strlen(string) != length;
     if (stringHasEmbeddedNul && fontResource && fontResource->useFixedBitmap &&
-        renderFixedBitmapText(drawable, renderer, gc, x, y, string, length,
-                              drawnBounds)) {
+        renderFixedBitmapTextAndInvalidate(drawable, renderer, gc, x, y, string,
+                                           length, drawnBounds)) {
         return True;
     }
 
@@ -2358,12 +2518,14 @@ Bool renderText(Display *display,
         if (!fontSurface) {
             textCacheUnlock();
             if (fontResource && fontResource->useFixedBitmap &&
-                renderFixedBitmapText(drawable, renderer, gc, x, y, string,
-                                      length, drawnBounds)) {
+                renderFixedBitmapTextAndInvalidate(drawable, renderer, gc, x, y,
+                                                   string, length,
+                                                   drawnBounds)) {
                 return True;
             }
             return False;
         }
+        normalizeGlyphAlpha(fontSurface);
         textureWidth = fontSurface->w;
         textureHeight = fontSurface->h;
         fontTexture = SDL_CreateTextureFromSurface(renderer, fontSurface);
@@ -2371,8 +2533,9 @@ Bool renderText(Display *display,
         if (!fontTexture) {
             textCacheUnlock();
             if (fontResource && fontResource->useFixedBitmap &&
-                renderFixedBitmapText(drawable, renderer, gc, x, y, string,
-                                      length, drawnBounds)) {
+                renderFixedBitmapTextAndInvalidate(drawable, renderer, gc, x, y,
+                                                   string, length,
+                                                   drawnBounds)) {
                 return True;
             }
             return False;
@@ -2411,6 +2574,25 @@ Bool renderText(Display *display,
     }
     if (drawnBounds)
         *drawnBounds = destR;
+    /* Anti-aliased glyph edges are not idempotent under SDL alpha blending, so
+     * Motif's expose/arm redraws (an identical XDrawString to the same cell
+     * with no interior clear) would thicken the text on every pass. When the
+     * draw is an unclipped GXcopy of NUL-free text, skip the re-blit if the
+     * identical label is already stamped at this cell, and record a stamp once
+     * it is drawn. Clipped draws and other raster ops are left untouched, as
+     * they are not safely idempotent. Any other draw over the cell, or a
+     * structural change, drops the stamp (see drawing.c).
+     */
+    Bool idempotent = !stringHasEmbeddedNul && gContext->function == GXcopy &&
+                      gContext->clipMask == None &&
+                      !gContext->clipRectanglesSet;
+    if (idempotent && textStampLookup(drawable, &destR, gContext->font,
+                                      (Uint32) foreground, string)) {
+        textCacheUnlock();
+        if (textureOwned)
+            SDL_DestroyTexture(fontTexture);
+        return True;
+    }
     ShapeGuard sg;
     shapeGuardBegin(&sg, drawable, renderer, &destR);
     int clipCount = getGcClipIterationCount(gc, drawable);
@@ -2428,6 +2610,18 @@ Bool renderText(Display *display,
     textCacheUnlock();
     if (textureOwned)
         SDL_DestroyTexture(fontTexture);
+    if (ok) {
+        /* finishTextDamage marks this cell present without touching stamps, so
+         * keep the stamp set consistent here: record the freshly drawn label
+         * when it is safely idempotent, otherwise drop any stamp this draw
+         * overwrote.
+         */
+        if (idempotent)
+            textStampRecord(drawable, &destR, gContext->font,
+                            (Uint32) foreground, string);
+        else
+            invalidateTextStampsForDrawableRect(drawable, &destR);
+    }
     if (!ok && drawnBounds)
         drawnBounds->w = drawnBounds->h = 0;
     return ok;
@@ -2529,6 +2723,11 @@ static int drawImageString(Display *display,
          */
         SDL_Rect imageDamage;
         unionRect(&background, &damage, &imageDamage);
+        /* The opaque background fill plus text overwrote this region without
+         * recording a stamp, so drop any stamp it covered before the
+         * stamp-preserving present in finishTextDamage runs.
+         */
+        invalidateTextStampsForDrawableRect(drawable, &imageDamage);
         finishTextDamage(display, drawable, &imageDamage);
     }
     return result;

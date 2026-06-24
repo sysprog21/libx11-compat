@@ -2,9 +2,7 @@
 #define FONT_H
 
 #include <X11/Xlib.h>
-#include "sdl-compat.h"
-
-struct TTF_Font;
+#include "sdl-ttf-compat.h"
 
 extern void freeFontStorage(void);
 Bool initFontStorage(void);
@@ -17,7 +15,10 @@ Bool initFontStorage(void);
  * applies. Returns a TTF_Font * the caller must TTF_CloseFont, or
  * NULL when no probe path is openable on this host.
  */
-struct TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size);
+TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size);
+TTF_Font *compatFontOpenFamilyFallbackForChar(const char *familyHint,
+                                              int size,
+                                              Uint32 codepoint);
 
 Bool compatFontIsClientUsable(Font fontXid);
 Bool compatFontRetainForGC(Font fontXid);

@@ -1,0 +1,10 @@
+{
+  "assertions": [
+    {
+      "type": "changed_region",
+      "baseline": "initial",
+      "rect": [0, 50, 120, 40],
+      "min_changed_ratio": 0.002
+    }
+  ]
+}

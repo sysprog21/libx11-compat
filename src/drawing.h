@@ -104,6 +104,33 @@ void markWindowNeedsPresent(Window window);
 void markWindowNeedsPresentRect(Window window, const SDL_Rect *rect);
 void presentDrawableIfVisible(Drawable drawable);
 void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect);
+/* Same as presentDrawableRectIfVisible but leaves the text-stamp cache
+ * untouched. The core-text path calls this so marking its own freshly drawn
+ * cell present does not evict the stamp it is about to record.
+ */
+void presentDrawableRectIfVisibleNoStampInvalidate(Drawable drawable,
+                                                   const SDL_Rect *rect);
+
+/* Text-stamp cache: records that an exact anti-aliased label (font, color,
+ * string) is already painted at a cell so a Motif expose/arm redraw that
+ * re-issues the identical XDrawString can skip the non-idempotent re-blend.
+ * Cells are keyed in top-level backing coordinates; any other draw over the
+ * region, or a structural change, drops the stamp. See src/drawing.c.
+ */
+Bool textStampLookup(Drawable drawable,
+                     const SDL_Rect *cell,
+                     Font fontXid,
+                     Uint32 foreground,
+                     const char *string);
+void textStampRecord(Drawable drawable,
+                     const SDL_Rect *cell,
+                     Font fontXid,
+                     Uint32 foreground,
+                     const char *string);
+void invalidateTextStampsForDrawableRect(Drawable drawable,
+                                         const SDL_Rect *local);
+void flushTextStampsForWindow(Window window);
+void freeTextStamps(void);
 
 /* Single-slot (renderer, gc, generation) cache. The shim is single
  * threaded and tends to issue runs of draw calls against one renderer

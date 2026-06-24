@@ -155,6 +155,11 @@ void destroyScreenWindow(Display *display)
         WindowStruct *windowStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
         for (i = 0; i < windowStruct->children.length; i++)
             destroyWindow(display, children[i], False);
+        /* A grab taken directly on the root survives the child teardown above,
+         * so drop it before SCREEN_WINDOW goes away to avoid stale grab state
+         * across a display close/reopen.
+         */
+        releaseActiveGrabsForUnviewableWindow(display, SCREEN_WINDOW);
         invalidatePutImageStagingTexture(windowStruct->sdlRenderer);
         invalidateTextCacheForRenderer(windowStruct->sdlRenderer);
         SDL_DestroyRenderer(windowStruct->sdlRenderer);
@@ -465,8 +470,29 @@ void removeChildFromParent(Window child)
     }
 }
 
+/* X releases an active pointer or keyboard grab when its grab window becomes
+ * unviewable. Mirror that on unmap and destroy: a Motif menu grabs the pointer
+ * on its override-redirect shell, and when the shell is unmapped on selection
+ * the grab must drop, or every later pointer event routes to the now-invisible
+ * shell and the application appears frozen. The grab window is unviewable when
+ * the window losing viewability is the grab window itself or one of its
+ * ancestors.
+ */
+void releaseActiveGrabsForUnviewableWindow(Display *display, Window window)
+{
+    Window pointerGrabWindow = getGrabbedPointerWindow();
+    if (pointerGrabWindow != None &&
+        (pointerGrabWindow == window || isParent(window, pointerGrabWindow)))
+        XUngrabPointer(display, CurrentTime);
+    Window keyboardGrabWindow = getGrabbedKeyboardWindow();
+    if (keyboardGrabWindow != None &&
+        (keyboardGrabWindow == window || isParent(window, keyboardGrabWindow)))
+        XUngrabKeyboard(display, CurrentTime);
+}
+
 void destroyWindow(Display *display, Window window, Bool freeParentData)
 {
+    flushTextStampsForWindow(window);
     /* Drain pre-cascade stale events for this window FIRST, before any
      * recursion. A focused descendant whose revert lands on this window would
      * otherwise queue FocusIn(window) during the recursion, and a naive discard
@@ -492,6 +518,10 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      * route events through a stale grab entry.
      */
     releaseButtonGrabsForWindow(window);
+    /* A destroyed window is unviewable, so release any active pointer/keyboard
+     * grab it held for the same reason XUnmapWindow does.
+     */
+    releaseActiveGrabsForUnviewableWindow(display, window);
     /* Clear cached pointer-target XIDs so a queued SDL motion event does not
      * drive postPointerCrossingEvents -> buildWindowPathToRoot into this
      * window's freed WindowStruct. ASan caught this on the test-xtest path
@@ -1237,6 +1267,10 @@ void freeWindowProperty(WindowProperty *property)
 
 void resizeWindowTexture(Window window)
 {
+    /* The backing is about to be recreated and re-cleared, dropping every
+     * painted cell, so discard the stamps that tracked them.
+     */
+    flushTextStampsForWindow(window);
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (!windowStruct->sdlTexture)
         return;
@@ -1370,6 +1404,10 @@ Bool configureWindow(Display *display,
 {
     if (window == SCREEN_WINDOW)
         return True;
+    /* A move, resize, or restack relocates this window's cells in the shared
+     * top-level backing, so any text stamps recorded for them are now stale.
+     */
+    flushTextStampsForWindow(window);
     Bool hasChanged = False;
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
 

@@ -55,6 +55,7 @@ void topLevelWindowLogicalPosition(Window window,
                                    int *logicalX,
                                    int *logicalY);
 Bool isParent(Window window1, Window window2);
+void releaseActiveGrabsForUnviewableWindow(Display *display, Window window);
 Bool isWindowEffectivelyViewable(Window window);
 WindowProperty *findProperty(Array *properties, Atom property, size_t *index);
 void freeWindowProperty(WindowProperty *property);

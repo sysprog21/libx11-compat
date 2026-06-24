@@ -26,7 +26,13 @@ CPPFLAGS += -Iinclude -Isrc \
             -iquote $(OUT)/upstream/src \
             $(SDL_CPPFLAGS) $(PIXMAN_CFLAGS) \
             -DNARROWPROTO -DXTHREADS -D_GNU_SOURCE
-CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter -fPIC
+# SDL3's SDL_system.h forward-declares `typedef union _XEvent XEvent;` (for the
+# X11 event-hook API) with no opt-out, and Xlib.h defines the same typedef. The
+# two are identical, so it is harmless; -std=c99 just flags the C11-legal
+# repeat. Silence only that case (conflicting typedefs stay hard errors); gcc
+# does not warn here and accepts the unknown -Wno- option quietly.
+CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter \
+          -Wno-typedef-redefinition -fPIC
 # Opt-in strict mode: STRICT=1 turns warnings into errors so CI surfaces
 # new diagnostics at PR time. STRICT_CFLAGS is applied only to first-
 # party objects via mk/common.mk's compile rule; upstream-derived libXt

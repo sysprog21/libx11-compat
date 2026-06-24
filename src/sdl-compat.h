@@ -692,6 +692,7 @@ static inline int xc_GetDesktopDisplayMode(int displayIndex,
     case SDL_EVENT_WINDOW_FIRST ... SDL_EVENT_WINDOW_LAST
 #define XC_EVENT_KEYSYM(ev) ((ev)->key.key)
 #define XC_EVENT_KEYMOD(ev) ((ev)->key.mod)
+#define XC_EVENT_SET_KEYMOD(ev, v) ((ev)->key.mod = (v))
 #define XC_EVENT_SET_KEYSYM(ev, v) ((ev)->key.key = (v))
 #define XC_EVENT_SET_SCANCODE(ev, v) ((ev)->key.scancode = (v))
 #define XC_EVENT_SET_KEY_PRESSED(ev, p) ((ev)->key.down = (p))
@@ -740,6 +741,7 @@ typedef SDL_PixelFormat *XcPixelFormat;
 #define XC_CASE_WINDOWEVENT case SDL_WINDOWEVENT
 #define XC_EVENT_KEYSYM(ev) ((ev)->key.keysym.sym)
 #define XC_EVENT_KEYMOD(ev) ((ev)->key.keysym.mod)
+#define XC_EVENT_SET_KEYMOD(ev, v) ((ev)->key.keysym.mod = (v))
 #define XC_EVENT_SET_KEYSYM(ev, v) ((ev)->key.keysym.sym = (v))
 #define XC_EVENT_SET_SCANCODE(ev, v) ((ev)->key.keysym.scancode = (v))
 #define XC_EVENT_SET_KEY_PRESSED(ev, p) \

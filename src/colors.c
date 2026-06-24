@@ -1,6 +1,7 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <ctype.h>
+#include <string.h>
 #include "colors.h"
 #include "std-colors.h"
 #include "errors.h"
@@ -246,6 +247,49 @@ static Bool parseHexColor(const char *spec, XColor *color)
     return True;
 }
 
+static Bool parseRgbComponent(const char **cursor, unsigned short *value)
+{
+    const char *start = *cursor;
+    int digits = 0;
+    while (hexValue(start[digits]) >= 0)
+        digits++;
+    if (digits < 1 || digits > 4)
+        return False;
+    unsigned int raw = 0;
+    for (int i = 0; i < digits; i++)
+        raw = (raw << 4) | (unsigned int) hexValue(start[i]);
+    /* X11 rgb: components scale a k-digit value to 16 bits by bit replication,
+     * so rgb:f/f/f is full intensity (0xffff), not 0xf000.
+     */
+    unsigned int maxValue = (1u << (4 * digits)) - 1u;
+    *value = (unsigned short) ((raw * 0xFFFFu) / maxValue);
+    *cursor = start + digits;
+    return True;
+}
+
+static Bool parseRgbColor(const char *spec, XColor *color)
+{
+    if (strncmp(spec, "rgb:", 4))
+        return False;
+    const char *cursor = spec + 4;
+    unsigned short red;
+    unsigned short green;
+    unsigned short blue;
+    if (!parseRgbComponent(&cursor, &red) || *cursor++ != '/' ||
+        !parseRgbComponent(&cursor, &green) || *cursor++ != '/' ||
+        !parseRgbComponent(&cursor, &blue) || *cursor != '\0')
+        return False;
+    color->red = red;
+    color->green = green;
+    color->blue = blue;
+    color->pixel = ((unsigned long) (red >> 8) << RED_SHIFT) |
+                   ((unsigned long) (green >> 8) << GREEN_SHIFT) |
+                   ((unsigned long) (blue >> 8) << BLUE_SHIFT) |
+                   (0xFFul << ALPHA_SHIFT);
+    color->flags = DoRed | DoGreen | DoBlue;
+    return True;
+}
+
 Status XParseColor(Display *display,
                    Colormap colormap,
                    _Xconst char *spec,
@@ -258,6 +302,8 @@ Status XParseColor(Display *display,
     if (!spec || !exact_def_return)
         return 0;
     if (parseHexColor(spec, exact_def_return))
+        return 1;
+    if (parseRgbColor(spec, exact_def_return))
         return 1;
 
     for (size_t i = 0; i < NUM_STANDARD_COLORS; i++) {

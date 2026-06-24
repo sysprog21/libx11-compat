@@ -1566,6 +1566,20 @@ int convertEvent(Display *display,
         Window sdlKeyWindow = getWindowFromId(sdlEvent->key.windowID);
         xEvent->xkey.root = SCREEN_WINDOW;
         xEvent->xkey.state = convertModifierState(XC_EVENT_KEYMOD(sdlEvent));
+        /* X11 KeyCode is 8-bit, but SDL keycodes span ASCII (< 0x80) plus a
+         * separate 0x4000xxxx scancode range, so no collision-free mapping into
+         * 0..255 exists. Truncating to the low byte keeps every ASCII key on
+         * its natural keycode; the cost is that a scancode key whose low byte
+         * lands on a printable keycode aliases onto it (SDLK_EXECUTE 0x40000074
+         * -> 116
+         * == 't', SDLK_KP_0 0x40000062 -> 98 == 'b'). XkbKeycodeToKeysym uses
+         * the same truncation so decoding round-trips for the common (ASCII)
+         * keys. XKeysymToKeycode guards the reverse direction (it refuses a
+         * keycode that does not round-trip) so Motif cannot bind a special key
+         * onto a letter; pressing one of the rare aliasing scancode keys still
+         * types the colliding character, which is accepted given the 8-bit
+         * limit.
+         */
         xEvent->xkey.keycode = (unsigned int) XC_EVENT_KEYSYM(sdlEvent) & 0xFF;
         /* Route priority for key events:
          * 1. Active XGrabKeyboard (modal dialogs like Motif's Help popup)
@@ -1843,16 +1857,27 @@ int convertEvent(Display *display,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
                 }
             }
-            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED ||
-                XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            /* The X11 window and its backing are kept at the logical (point)
+             * size; presentation scales up to the physical surface. A RESIZED
+             * event carries the new logical size in data1/data2 on both SDL2
+             * and SDL3. SDL3 additionally fires SDL_WINDOWEVENT_SIZE_CHANGED as
+             * PIXEL_SIZE_CHANGED, whose data1/data2 are physical pixels (2x on
+             * a HiDPI display); stamping that onto the X11 geometry would
+             * disagree with everything measured in logical units and break
+             * client layout (Motif wraps every line after a couple of
+             * characters). So treat only the logical resize as authoritative
+             * for X11 dimensions.
+             */
+            Bool logicalResize =
+                XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED;
+#ifndef LIBX11_COMPAT_SDL3
+            /* SDL2 SIZE_CHANGED is also in logical units. */
+            logicalResize = logicalResize || XC_WINDOW_SUBEVENT(sdlEvent) ==
+                                                 SDL_WINDOWEVENT_SIZE_CHANGED;
+#endif
+            if (logicalResize) {
                 xEvent->xconfigure.width = sdlEvent->window.data1;
                 xEvent->xconfigure.height = sdlEvent->window.data2;
-                /* After unification, every mapped top-level window draws into a
-                 * per-window backing texture on the SCREEN renderer.
-                 * SDL_GetWindowSize now reports the new size, so resize the
-                 * backing texture to match before the next present reads at the
-                 * new dimensions.
-                 */
                 if (eventWindow != None) {
                     GET_WINDOW_STRUCT(eventWindow)->w =
                         (unsigned int) sdlEvent->window.data1;
