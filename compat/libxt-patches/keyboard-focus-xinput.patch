@@ -1,0 +1,14 @@
+diff --git a/Keyboard.c b/Keyboard.c
+index 6dcb8d4..73f10f5 100644
+--- a/Keyboard.c
++++ b/Keyboard.c
+@@ -782,6 +782,9 @@ XtSetKeyboardFocus(Widget widget, Widget descendant)
+                                   False, QueryEventMask, (XtPointer) widget);
+                 pwi->map_handler_added = TRUE;
+                 pwi->queryEventDescendant = descendant;
++            } else if (target) {
++                XSetInputFocus(XtDisplay(widget), XtWindow(target),
++                               RevertToParent, CurrentTime);
+             }
+         }
+     }

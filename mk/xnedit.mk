@@ -1,0 +1,245 @@
+XNEDIT_URL := https://github.com/unixwork/xnedit
+XNEDIT_REVISION := 7f775fce45a24cb2fa910063bd8c0efb727e1668
+XNEDIT_CLONE_FLAGS ?= --filter=blob:none --no-checkout
+XNEDIT_SRC_DIR := $(OUT)/upstream/xnedit
+XNEDIT_SOURCE_STAMP := $(XNEDIT_SRC_DIR)/.source-stamp
+XNEDIT_PATCHES := $(sort $(wildcard compat/xnedit-patches/*.patch))
+
+XNEDIT_BUILD_DIR := $(OUT)/xnedit
+XNEDIT_WORK_DIR := $(XNEDIT_BUILD_DIR)/source
+XNEDIT_BIN := $(XNEDIT_WORK_DIR)/source/xnedit
+XNEDIT_LOG := $(abspath $(XNEDIT_BUILD_DIR))/build.log
+XNEDIT_LIB_ALIASES := $(XNEDIT_BUILD_DIR)/lib-aliases
+XNEDIT_LIB_ALIASES_STAMP := $(XNEDIT_LIB_ALIASES)/.stamp
+XNEDIT_SYSROOT := $(XNEDIT_BUILD_DIR)/sysroot
+XNEDIT_SYSROOT_STAMP := $(XNEDIT_SYSROOT)/.stamp
+
+XNEDIT_RPATH_FLAGS :=
+ifeq ($(UNAME_S),Linux)
+  XNEDIT_RPATH_FLAGS += -Wl,-rpath,$(abspath $(OUT)) \
+      -Wl,-rpath,$(abspath $(XNEDIT_LIB_ALIASES)) \
+      -Wl,-rpath-link,$(abspath $(OUT))
+endif
+ifeq ($(UNAME_S),Darwin)
+  XNEDIT_RPATH_FLAGS += -Wl,-rpath,$(abspath $(OUT)) \
+      -Wl,-rpath,$(abspath $(XNEDIT_LIB_ALIASES)) -liconv \
+      -framework CoreFoundation
+endif
+
+XNEDIT_C_OPT_FLAGS := $(CFLAGS) $(CFLAGS_EXTRA) \
+    -include stdlib.h -include sys/stat.h -I$(abspath $(XNEDIT_SYSROOT))
+XNEDIT_LD_OPT_FLAGS := -L$(abspath $(XNEDIT_LIB_ALIASES)) \
+    -L$(abspath $(OUT)) $(XNEDIT_RPATH_FLAGS)
+
+$(XNEDIT_SOURCE_STAMP): mk/xnedit.mk $(XNEDIT_PATCHES)
+	@echo "  GIT     $(XNEDIT_URL)"
+	$(Q)mkdir -p $(dir $(XNEDIT_SRC_DIR))
+	$(Q)test -d $(XNEDIT_SRC_DIR)/.git || \
+	    git clone $(MOTIF_GIT_Q) $(XNEDIT_CLONE_FLAGS) $(XNEDIT_URL) $(XNEDIT_SRC_DIR)
+	$(Q)cd $(XNEDIT_SRC_DIR) && git fetch $(MOTIF_GIT_Q) origin $(XNEDIT_REVISION) || \
+	    (cd $(XNEDIT_SRC_DIR) && git fetch $(MOTIF_GIT_Q) origin)
+	$(Q)cd $(XNEDIT_SRC_DIR) && \
+	    git checkout $(MOTIF_GIT_Q) --detach $(XNEDIT_REVISION) && \
+	    git reset --hard $(MOTIF_GIT_Q) $(XNEDIT_REVISION) >/dev/null && \
+	    git clean $(MOTIF_GIT_Q) -fdx >/dev/null
+	$(Q)set -e; for patch in $(abspath $(XNEDIT_PATCHES)); do \
+	    cd $(abspath $(XNEDIT_SRC_DIR)); \
+	    if git apply --check "$$patch"; then \
+	        git apply "$$patch"; \
+	    elif git apply --reverse --check "$$patch"; then \
+	        :; \
+	    else \
+	        echo "  PATCH   failed $$patch" >&2; exit 1; \
+	    fi; \
+	done
+	$(Q)touch $@
+
+$(XNEDIT_SYSROOT_STAMP): $(LIBXT_TARGET) $(MOTIF_STAGE_STAMP) mk/xnedit.mk
+	@echo "  SYSROOT xnedit"
+	$(Q)rm -rf $(XNEDIT_SYSROOT)
+	$(Q)mkdir -p $(XNEDIT_SYSROOT)/X11/extensions $(XNEDIT_SYSROOT)/Xm
+	$(Q)for e in $(abspath $(OUT)/upstream/include)/X11/*; do \
+	    b=$$(basename "$$e"); \
+	    [ "$$b" = extensions ] && continue; \
+	    ln -sf "$$e" "$(XNEDIT_SYSROOT)/X11/$$b"; \
+	done
+	$(Q)for e in $(abspath $(OUT)/upstream/include)/X11/extensions/* \
+	             $(abspath include)/X11/extensions/*; do \
+	    ln -sf "$$e" "$(XNEDIT_SYSROOT)/X11/extensions/$$(basename "$$e")"; \
+	done
+	$(Q)for e in $(abspath include)/X11/*; do \
+	    b=$$(basename "$$e"); \
+	    [ -e "$(XNEDIT_SYSROOT)/X11/$$b" ] || \
+	        ln -sf "$$e" "$(XNEDIT_SYSROOT)/X11/$$b"; \
+	done
+	$(Q)for h in $(abspath $(MOTIF_SRC_DIR))/lib/Xm/*.h \
+	             $(abspath $(MOTIF_BUILD_DIR))/lib/Xm/*.h; do \
+	    ln -sf "$$h" "$(XNEDIT_SYSROOT)/Xm/$$(basename "$$h")"; \
+	done
+	$(Q)touch $@
+
+$(XNEDIT_LIB_ALIASES_STAMP): $(TARGET) $(LIBXT_TARGET) $(XEXT_COMPAT_TARGET) \
+    $(XFT_COMPAT_TARGET) $(MOTIF_STAGE_STAMP) mk/xnedit.mk
+	@mkdir -p $(XNEDIT_LIB_ALIASES)
+	$(Q)rm -f $(XNEDIT_LIB_ALIASES)/libX*.so $(XNEDIT_LIB_ALIASES)/libX*.dylib \
+	    $(XNEDIT_LIB_ALIASES)/libXm.so $(XNEDIT_LIB_ALIASES)/libXm.dylib
+	$(Q)set -e; for pair in \
+	    libX11.so:libX11-compat.so \
+	    libXt.so:libXt-compat.so \
+	    libXext.so:libXext-compat.so \
+	    libXft.so:libXft-compat.so \
+	    libXrender.so:libX11-compat.so \
+	    libXm.so:libXm.so; do \
+	    alias="$${pair%%:*}"; target="$${pair##*:}"; \
+	    ln -sf "$(abspath $(OUT))/$$target" "$(XNEDIT_LIB_ALIASES)/$$alias"; \
+	done
+ifeq ($(UNAME_S),Darwin)
+	$(Q)set -e; for pair in \
+	    libX11.dylib:libX11-compat.so \
+	    libXt.dylib:libXt-compat.so \
+	    libXext.dylib:libXext-compat.so \
+	    libXft.dylib:libXft-compat.so \
+	    libXrender.dylib:libX11-compat.so \
+	    libXm.dylib:libXm.so; do \
+	    alias="$${pair%%:*}"; target="$${pair##*:}"; \
+	    ln -sf "$(abspath $(OUT))/$$target" "$(XNEDIT_LIB_ALIASES)/$$alias"; \
+	done
+endif
+	$(Q)touch $@
+
+.PHONY: xnedit xnedit-clean check-smoke-xnedit check-differential-xnedit
+## Build unixwork/xnedit against the Motif + Xft compatibility stack
+xnedit: $(XNEDIT_BIN)
+
+$(XNEDIT_BIN): $(XNEDIT_SOURCE_STAMP) $(PKGCONFIG_FILES) \
+    $(XNEDIT_SYSROOT_STAMP) $(XNEDIT_LIB_ALIASES_STAMP)
+	@mkdir -p $(XNEDIT_BUILD_DIR)
+	$(Q)rm -rf $(XNEDIT_WORK_DIR)
+	$(Q)mkdir -p $(XNEDIT_WORK_DIR)
+	$(Q)tar -cf - -C $(XNEDIT_SRC_DIR) . | tar -xf - -C $(XNEDIT_WORK_DIR)
+	@echo "  MAKE    xnedit"
+	$(Q)env -u MAKEFLAGS -u MFLAGS \
+	    PKG_CONFIG_PATH=$(abspath $(PKGCONFIG_DIR)) \
+	    DYLD_LIBRARY_PATH=$(abspath $(OUT)):$(abspath $(XNEDIT_LIB_ALIASES))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
+	    LD_LIBRARY_PATH=$(abspath $(OUT)):$(abspath $(XNEDIT_LIB_ALIASES))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
+	    $(MAKE) -C $(XNEDIT_WORK_DIR) linux \
+	        CC='$(CC)' \
+	        C_OPT_FLAGS='$(XNEDIT_C_OPT_FLAGS)' \
+	        LD_OPT_FLAGS='$(XNEDIT_LD_OPT_FLAGS)' \
+	        >> $(XNEDIT_LOG) 2>&1 || { \
+	            echo "  FAIL    see $(XNEDIT_LOG)" >&2; \
+	            tail -60 $(XNEDIT_LOG) >&2; \
+	            exit 1; \
+	        }
+
+xnedit-clean:
+	@echo "  CLEAN   xnedit"
+	$(Q)rm -rf $(XNEDIT_BUILD_DIR)
+
+XNEDIT_UI_LIB_PATH = $(abspath $(OUT)):$(abspath $(XNEDIT_LIB_ALIASES))$(if $(SDL_RUNTIME_LIBDIR),:$(SDL_RUNTIME_LIBDIR))
+XNEDIT_SMOKE_GEOMETRY ?= 120x45+0+0
+XNEDIT_SMOKE_REGION ?= 0,0,900,650
+XNEDIT_FIXTURE := $(abspath tests/ui/fixtures/xnedit-fixture.txt)
+
+xnedit_ui_env = \
+    --env DYLD_LIBRARY_PATH=$(XNEDIT_UI_LIB_PATH)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
+    --env LD_LIBRARY_PATH=$(XNEDIT_UI_LIB_PATH)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
+    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts \
+    --env LIBX11_COMPAT_SCREEN_GEOMETRY=1280x1024 \
+    --env XNEDIT_HOME=$(abspath $(@D))/home
+
+## Run replay-based XNEdit smoke checks against libx11-compat
+check-smoke-xnedit: $(UI_SMOKE_OUT_ROOT)/xnedit-startup/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-fixture/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-typing/.stamp
+
+$(UI_SMOKE_OUT_ROOT)/xnedit-startup/.stamp: FORCE $(XNEDIT_BIN)
+	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-startup
+	$(Q)$(PYTHON) scripts/run-ui-replay.py \
+	    --name xnedit-startup \
+	    --app $(abspath $(XNEDIT_BIN)) \
+	    --app-arg=-svrname --app-arg=xnedit-startup \
+	    --app-arg=-geometry --app-arg=$(XNEDIT_SMOKE_GEOMETRY) \
+	    --workdir $(abspath $(XNEDIT_WORK_DIR))/source \
+	    --replay tests/ui/replays/xnedit-startup.replay \
+	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-startup \
+	    --display $(UI_REPLAY_DISPLAY) \
+	    --geometry $(UI_REPLAY_GEOMETRY) \
+	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --screenshot-region $(XNEDIT_SMOKE_REGION) \
+	    --in-process-snapshots \
+	    $(UI_REPLAY_XVFB) \
+	    $(xnedit_ui_env)
+	$(Q)touch $@
+
+$(UI_SMOKE_OUT_ROOT)/xnedit-fixture/.stamp: FORCE $(XNEDIT_BIN) $(XNEDIT_FIXTURE)
+	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-fixture
+	$(Q)$(PYTHON) scripts/run-ui-replay.py \
+	    --name xnedit-fixture \
+	    --app $(abspath $(XNEDIT_BIN)) \
+	    --app-arg=-svrname --app-arg=xnedit-fixture \
+	    --app-arg=-geometry --app-arg=$(XNEDIT_SMOKE_GEOMETRY) \
+	    --app-arg=$(XNEDIT_FIXTURE) \
+	    --workdir $(abspath $(XNEDIT_WORK_DIR))/source \
+	    --replay tests/ui/replays/xnedit-fixture.replay \
+	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-fixture \
+	    --display $(UI_REPLAY_DISPLAY) \
+	    --geometry $(UI_REPLAY_GEOMETRY) \
+	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --screenshot-region $(XNEDIT_SMOKE_REGION) \
+	    --in-process-snapshots \
+	    $(UI_REPLAY_XVFB) \
+	    $(xnedit_ui_env)
+	$(Q)touch $@
+
+$(UI_SMOKE_OUT_ROOT)/xnedit-typing/.stamp: FORCE $(XNEDIT_BIN)
+	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-typing
+	$(Q)$(PYTHON) scripts/run-ui-replay.py \
+	    --name xnedit-typing \
+	    --app $(abspath $(XNEDIT_BIN)) \
+	    --app-arg=-svrname --app-arg=xnedit-typing \
+	    --app-arg=-geometry --app-arg=$(XNEDIT_SMOKE_GEOMETRY) \
+	    --workdir $(abspath $(XNEDIT_WORK_DIR))/source \
+	    --replay tests/ui/replays/xnedit-typing.replay \
+	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-typing \
+	    --display $(UI_REPLAY_DISPLAY) \
+	    --geometry $(UI_REPLAY_GEOMETRY) \
+	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --screenshot-region $(XNEDIT_SMOKE_REGION) \
+	    --in-process-snapshots \
+	    $(UI_REPLAY_XVFB) \
+	    $(xnedit_ui_env)
+	$(Q)touch $@
+
+XNEDIT_DIFF_REMOTE ?= node11
+XNEDIT_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-xnedit-differential
+XNEDIT_DIFF_DISPLAY ?= 127
+XNEDIT_DIFF_JOBS ?= 1
+XNEDIT_DIFF_INSTALL_DEPS ?= 0
+XNEDIT_DIFF_LOCAL ?= 0
+XNEDIT_DIFF_MAE_THRESHOLD ?= 0.18
+XNEDIT_DIFF_CHANGED_THRESHOLD ?= 0.46
+XNEDIT_DIFF_GEOMETRY ?= 1280x1024x24
+XNEDIT_DIFF_TOP ?= 12
+XNEDIT_DIFF_COMPARE_LOCATION ?= $(if $(filter 1 yes true,$(XNEDIT_DIFF_LOCAL)),local,remote)
+XNEDIT_DIFF_OUT_ROOT ?= $(OUT)/xnedit-differential
+XNEDIT_DIFF_SCREENSHOT_REGION ?= $(XNEDIT_SMOKE_REGION)
+
+xnedit_diff_env = \
+    XNEDIT_DIFF_REMOTE='$(XNEDIT_DIFF_REMOTE)' \
+    XNEDIT_DIFF_REMOTE_ROOT='$(XNEDIT_DIFF_REMOTE_ROOT)' \
+    XNEDIT_DIFF_DISPLAY='$(XNEDIT_DIFF_DISPLAY)' \
+    XNEDIT_DIFF_JOBS='$(XNEDIT_DIFF_JOBS)' \
+    XNEDIT_DIFF_MAE_THRESHOLD='$(XNEDIT_DIFF_MAE_THRESHOLD)' \
+    XNEDIT_DIFF_CHANGED_THRESHOLD='$(XNEDIT_DIFF_CHANGED_THRESHOLD)' \
+    XNEDIT_DIFF_GEOMETRY='$(XNEDIT_DIFF_GEOMETRY)' \
+    XNEDIT_DIFF_TOP='$(XNEDIT_DIFF_TOP)' \
+    XNEDIT_DIFF_COMPARE_LOCATION='$(XNEDIT_DIFF_COMPARE_LOCATION)' \
+    XNEDIT_DIFF_OUT_ROOT='$(abspath $(XNEDIT_DIFF_OUT_ROOT))' \
+    XNEDIT_DIFF_SCREENSHOT_REGION='$(XNEDIT_DIFF_SCREENSHOT_REGION)'
+
+## Compare XNEdit screenshots for system libX11 vs libx11-compat.
+check-differential-xnedit:
+	$(Q)$(xnedit_diff_env) $(PYTHON) scripts/run-xnedit-differential-tests.py \
+	    $(if $(filter 1 yes true,$(XNEDIT_DIFF_INSTALL_DEPS)),--install-deps) \
+	    $(if $(filter 1 yes true,$(XNEDIT_DIFF_LOCAL)),--local)

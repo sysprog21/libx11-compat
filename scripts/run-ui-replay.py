@@ -115,6 +115,21 @@ class ReplayError(Exception):
     pass
 
 
+def replay_keysym(code):
+    """Map a replay key scancode to an xdotool keysym name.
+
+    Replays carry SDL keycodes (printable ASCII for letters, 225 for the
+    low byte of SDLK_LSHIFT). xdotool wants keysym names, so translate the
+    common cases the differential needs and reject anything unmapped rather
+    than silently passing a bogus argument to xdotool.
+    """
+    if code == 225:
+        return "shift"
+    if 0x20 <= code <= 0x7E:
+        return chr(code)
+    raise ReplayError(f"no xdotool keysym for replay code {code}")
+
+
 @dataclass
 class ArtifactPaths:
     out_root: Path
@@ -455,11 +470,18 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=No
                 lines.append(f"button {button} release")
                 lines.append("delay 50")
         elif command == "key":
-            if len(parts) != 2:
-                raise ReplayError(f"{source_path}:{lineno}: key expects scancode")
-            lines.append(f"key {int(parts[1])} press")
-            lines.append("delay 10")
-            lines.append(f"key {int(parts[1])} release")
+            if len(parts) == 2:
+                lines.append(f"key {int(parts[1])} press")
+                lines.append("delay 10")
+                lines.append(f"key {int(parts[1])} release")
+            elif len(parts) == 3 and parts[2] in ("down", "up"):
+                action = "press" if parts[2] == "down" else "release"
+                lines.append(f"key {int(parts[1])} {action}")
+                lines.append("delay 10")
+            else:
+                raise ReplayError(
+                    f"{source_path}:{lineno}: key expects scancode [down|up]"
+                )
         elif command == "screenshot":
             if snapshot_dir is None:
                 # Host screenshots are invisible to the in-process replay
@@ -1342,10 +1364,18 @@ def run_replay(args):
                             xdotool(env, "click", button)
                             time.sleep(0.05)
                 elif command == "key":
-                    if len(parts) != 2:
-                        raise ReplayError("key expects keysym")
+                    if len(parts) not in (2, 3):
+                        raise ReplayError("key expects scancode [down|up]")
+                    if len(parts) == 3 and parts[2] not in ("down", "up"):
+                        raise ReplayError("key direction must be down|up")
                     if args.input_backend == "xdotool":
-                        xdotool(env, "key", parts[1])
+                        keysym = replay_keysym(int(parts[1]))
+                        if len(parts) == 2:
+                            xdotool(env, "key", keysym)
+                        elif parts[2] == "down":
+                            xdotool(env, "keydown", keysym)
+                        else:
+                            xdotool(env, "keyup", keysym)
                 elif command == "focus-at":
                     if len(parts) != 3:
                         raise ReplayError("focus-at expects target-local x y")

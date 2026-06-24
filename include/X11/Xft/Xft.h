@@ -111,6 +111,11 @@ XftDraw *XftDrawCreate(Display *dpy,
                        Colormap colormap);
 void XftDrawDestroy(XftDraw *draw);
 void XftDrawChange(XftDraw *draw, Drawable drawable);
+Bool XftDrawSetClipRectangles(XftDraw *draw,
+                              int x_origin,
+                              int y_origin,
+                              const XRectangle *rects,
+                              int n);
 Display *XftDrawDisplay(XftDraw *draw);
 Drawable XftDrawDrawable(XftDraw *draw);
 Colormap XftDrawColormap(XftDraw *draw);

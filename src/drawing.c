@@ -554,34 +554,273 @@ void markWindowNeedsPresent(Window window)
     markWindowNeedsPresentRect(window, &full);
 }
 
-void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect)
+/* Walk drawable up to its mapped top-level window, translating an optional
+ * child-local rect into top-level backing coordinates along the way. Every
+ * window in a tree shares the top-level's backing texture, so the present and
+ * text-stamp bookkeeping all key off this single coordinate space.
+ */
+static Bool drawableTopLevelRect(Drawable drawable,
+                                 const SDL_Rect *local,
+                                 Window *topWindow,
+                                 SDL_Rect *topRect)
 {
     if (!IS_TYPE(drawable, WINDOW))
-        return;
-
-    Bool haveRect = rect && rect->w > 0 && rect->h > 0;
-    SDL_Rect topRect = haveRect ? *rect : (SDL_Rect) {0, 0, 0, 0};
+        return False;
+    SDL_Rect r = local ? *local : (SDL_Rect) {0, 0, 0, 0};
     Window window = (Window) drawable;
     while (window != None && window != SCREEN_WINDOW) {
         if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
-            WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-            Bool firstPresent = !windowStruct->hasPresented;
-            if (haveRect)
-                markWindowNeedsPresentRect(window, &topRect);
-            else
-                markWindowNeedsPresent(window);
-            if (firstPresent)
-                drawWindowDataToScreen();
-            return;
+            *topWindow = window;
+            *topRect = r;
+            return True;
         }
-        if (haveRect) {
-            int x = 0, y = 0;
-            GET_WINDOW_POS(window, x, y);
-            topRect.x += x;
-            topRect.y += y;
-        }
+        int x = 0, y = 0;
+        GET_WINDOW_POS(window, x, y);
+        r.x += x;
+        r.y += y;
         window = GET_PARENT(window);
     }
+    return False;
+}
+
+/* text-stamp cache (see drawing.h)
+ */
+#define TEXT_STAMP_CAPACITY 256
+
+typedef struct {
+    Window topWindow;
+    SDL_Rect topRect;
+    Font fontXid;
+    Uint32 foreground;
+    char *string;
+    Uint64 lastUsed;
+    Bool inUse;
+} TextStampEntry;
+
+static TextStampEntry textStamps[TEXT_STAMP_CAPACITY];
+static Uint64 textStampClock = 0;
+/* Live stamp count, so the invalidation hook on the hot present path can bail
+ * out before scanning when nothing uses core text (atomic read needs no lock).
+ */
+static SDL_atomic_t textStampActive = {0};
+static SDL_mutex *textStampMutex = NULL;
+static SDL_SpinLock textStampMutexInitLock = 0;
+
+static SDL_mutex *textStampEnsureMutex(void)
+{
+    if (!textStampMutex) {
+        SDL_AtomicLock(&textStampMutexInitLock);
+        if (!textStampMutex)
+            textStampMutex = SDL_CreateMutex();
+        SDL_AtomicUnlock(&textStampMutexInitLock);
+    }
+    return textStampMutex;
+}
+
+static void textStampLock(void)
+{
+    SDL_mutex *m = textStampEnsureMutex();
+    if (m)
+        SDL_LockMutex(m);
+}
+
+static void textStampUnlock(void)
+{
+    if (textStampMutex)
+        SDL_UnlockMutex(textStampMutex);
+}
+
+static void textStampEvict(TextStampEntry *entry)
+{
+    if (!entry->inUse)
+        return;
+    free(entry->string);
+    entry->string = NULL;
+    entry->inUse = False;
+    SDL_AtomicAdd(&textStampActive, -1);
+}
+
+/* Caller holds the stamp lock. Drop every stamp on topWindow whose cell
+ * intersects rect, since those backing pixels were just overwritten.
+ */
+static void textStampInvalidateLocked(Window topWindow, const SDL_Rect *rect)
+{
+    for (int i = 0; i < TEXT_STAMP_CAPACITY; i++) {
+        if (!textStamps[i].inUse || textStamps[i].topWindow != topWindow)
+            continue;
+        SDL_Rect overlap;
+        if (SDL_IntersectRect(&textStamps[i].topRect, rect, &overlap))
+            textStampEvict(&textStamps[i]);
+    }
+}
+
+static void invalidateTextStampsTopRect(Window topWindow, const SDL_Rect *rect)
+{
+    if (!rect || rect->w <= 0 || rect->h <= 0)
+        return;
+    if (!SDL_AtomicGet(&textStampActive))
+        return;
+    textStampLock();
+    textStampInvalidateLocked(topWindow, rect);
+    textStampUnlock();
+}
+
+/* Drop stamps overlapping a child-local rect. Used by XClearArea (which fills
+ * the backing without routing through the present choke point) and by the text
+ * paths that overwrite a cell without recording a stamp of their own.
+ */
+void invalidateTextStampsForDrawableRect(Drawable drawable,
+                                         const SDL_Rect *local)
+{
+    Window topWindow;
+    SDL_Rect topRect;
+    if (!drawableTopLevelRect(drawable, local, &topWindow, &topRect))
+        return;
+    invalidateTextStampsTopRect(topWindow, &topRect);
+}
+
+Bool textStampLookup(Drawable drawable,
+                     const SDL_Rect *cell,
+                     Font fontXid,
+                     Uint32 foreground,
+                     const char *string)
+{
+    Window topWindow;
+    SDL_Rect topRect;
+    if (!string || !drawableTopLevelRect(drawable, cell, &topWindow, &topRect))
+        return False;
+    Bool found = False;
+    textStampLock();
+    for (int i = 0; i < TEXT_STAMP_CAPACITY; i++) {
+        TextStampEntry *e = &textStamps[i];
+        if (!e->inUse || e->topWindow != topWindow || e->fontXid != fontXid ||
+            e->foreground != foreground)
+            continue;
+        if (e->topRect.x != topRect.x || e->topRect.y != topRect.y ||
+            e->topRect.w != topRect.w || e->topRect.h != topRect.h)
+            continue;
+        if (e->string && !strcmp(e->string, string)) {
+            e->lastUsed = ++textStampClock;
+            found = True;
+            break;
+        }
+    }
+    textStampUnlock();
+    return found;
+}
+
+void textStampRecord(Drawable drawable,
+                     const SDL_Rect *cell,
+                     Font fontXid,
+                     Uint32 foreground,
+                     const char *string)
+{
+    Window topWindow;
+    SDL_Rect topRect;
+    if (!string || !drawableTopLevelRect(drawable, cell, &topWindow, &topRect))
+        return;
+    if (topRect.w <= 0 || topRect.h <= 0)
+        return;
+    char *dup = strdup(string);
+    if (!dup)
+        return;
+    textStampLock();
+    /* This label now owns the cell; drop any stamp it overwrites, then take a
+     * free slot or evict the least-recently-used one.
+     */
+    textStampInvalidateLocked(topWindow, &topRect);
+    int slot = -1;
+    Uint64 oldest = 0;
+    for (int i = 0; i < TEXT_STAMP_CAPACITY; i++) {
+        if (!textStamps[i].inUse) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 || textStamps[i].lastUsed < oldest) {
+            oldest = textStamps[i].lastUsed;
+            slot = i;
+        }
+    }
+    if (textStamps[slot].inUse)
+        textStampEvict(&textStamps[slot]);
+    textStamps[slot].topWindow = topWindow;
+    textStamps[slot].topRect = topRect;
+    textStamps[slot].fontXid = fontXid;
+    textStamps[slot].foreground = foreground;
+    textStamps[slot].string = dup;
+    textStamps[slot].lastUsed = ++textStampClock;
+    /* Publish the count before marking the slot live so a concurrent lockless
+     * early-out that observes a non-zero count is guaranteed to then take the
+     * lock and scan this fully-populated entry.
+     */
+    SDL_AtomicAdd(&textStampActive, 1);
+    textStamps[slot].inUse = True;
+    textStampUnlock();
+}
+
+void flushTextStampsForWindow(Window window)
+{
+    if (!SDL_AtomicGet(&textStampActive))
+        return;
+    Window topWindow;
+    SDL_Rect topRect;
+    /* A geometry or stacking change to any window in the tree can move or
+     * destroy the cells we stamped, so flush the whole top-level wholesale.
+     */
+    if (!drawableTopLevelRect(window, NULL, &topWindow, &topRect))
+        topWindow = window;
+    textStampLock();
+    for (int i = 0; i < TEXT_STAMP_CAPACITY; i++) {
+        if (textStamps[i].inUse && textStamps[i].topWindow == topWindow)
+            textStampEvict(&textStamps[i]);
+    }
+    textStampUnlock();
+}
+
+void freeTextStamps(void)
+{
+    textStampLock();
+    for (int i = 0; i < TEXT_STAMP_CAPACITY; i++) {
+        if (textStamps[i].inUse)
+            textStampEvict(&textStamps[i]);
+    }
+    textStampUnlock();
+}
+
+static void presentDrawableRectIfVisibleEx(Drawable drawable,
+                                           const SDL_Rect *rect,
+                                           Bool invalidateStamps)
+{
+    Bool haveRect = rect && rect->w > 0 && rect->h > 0;
+    Window topWindow;
+    SDL_Rect topRect;
+    if (!drawableTopLevelRect(drawable, haveRect ? rect : NULL, &topWindow,
+                              &topRect))
+        return;
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(topWindow);
+    Bool firstPresent = !windowStruct->hasPresented;
+    if (haveRect) {
+        if (invalidateStamps)
+            invalidateTextStampsTopRect(topWindow, &topRect);
+        markWindowNeedsPresentRect(topWindow, &topRect);
+    } else {
+        if (invalidateStamps)
+            flushTextStampsForWindow(topWindow);
+        markWindowNeedsPresent(topWindow);
+    }
+    if (firstPresent)
+        drawWindowDataToScreen();
+}
+
+void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect)
+{
+    presentDrawableRectIfVisibleEx(drawable, rect, True);
+}
+
+void presentDrawableRectIfVisibleNoStampInvalidate(Drawable drawable,
+                                                   const SDL_Rect *rect)
+{
+    presentDrawableRectIfVisibleEx(drawable, rect, False);
 }
 
 void presentDrawableIfVisible(Drawable drawable)
@@ -2877,6 +3116,7 @@ int XDrawPoint(Display *display, Drawable d, GC gc, int x, int y)
     }
     clearRendererClip(renderer);
     shapeGuardEnd(&sg);
+    presentDrawableRectIfVisible(d, &pointRect);
     return 1;
 }
 
@@ -2981,6 +3221,8 @@ int XDrawPoints(Display *display,
     }
     clearRendererClip(renderer);
     shapeGuardEnd(&sg);
+    if (haveBbox)
+        presentDrawableRectIfVisible(d, &pointsBbox);
     return 1;
 }
 
@@ -3321,6 +3563,11 @@ int XClearArea(register Display *dpy,
         .w = clearWidth,
         .h = clearHeight,
     };
+    /* The fill below overwrites these pixels, so any text stamp covering the
+     * cleared cell is now stale. XClearArea fills the backing without routing
+     * through the present choke point, so invalidate explicitly here.
+     */
+    invalidateTextStampsForDrawableRect(w, &clearRect);
     Pixmap backgroundPixmap = None;
     unsigned long backgroundColor = 0;
     resolveWindowBackground(w, &backgroundPixmap, &backgroundColor);

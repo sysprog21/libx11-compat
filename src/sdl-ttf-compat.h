@@ -73,4 +73,25 @@ static inline SDL_Surface *xc_TTF_RenderUTF8_Blended(TTF_Font *font,
 
 #endif /* LIBX11_COMPAT_SDL3 */
 
+#ifndef SDL_TTF_VERSION_ATLEAST
+#define SDL_TTF_VERSION_ATLEAST(x, y, z)                              \
+    ((SDL_TTF_MAJOR_VERSION >= (x)) &&                                \
+     (SDL_TTF_MAJOR_VERSION > (x) || SDL_TTF_MINOR_VERSION >= (y)) && \
+     (SDL_TTF_MAJOR_VERSION > (x) || SDL_TTF_MINOR_VERSION > (y) ||   \
+      SDL_TTF_PATCHLEVEL >= (z)))
+#endif
+
+static inline int xc_TTF_GlyphIsProvidedUcs4(TTF_Font *font, Uint32 ch)
+{
+#ifdef LIBX11_COMPAT_SDL3
+    return TTF_FontHasGlyph(font, ch);
+#elif SDL_TTF_VERSION_ATLEAST(2, 0, 18)
+    return TTF_GlyphIsProvided32(font, ch);
+#else
+    if (ch > 0xffff)
+        return 0;
+    return TTF_GlyphIsProvided(font, (Uint16) ch);
+#endif
+}
+
 #endif

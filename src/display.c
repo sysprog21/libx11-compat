@@ -20,6 +20,7 @@
 #include <X11/X.h>
 #include <X11/Xutil.h>
 #include <limits.h>
+#include <stdlib.h>
 
 #ifndef SDL_HINT_VIDEO_X11_XKB
 #define SDL_HINT_VIDEO_X11_XKB "SDL_VIDEO_X11_XKB"
@@ -55,6 +56,22 @@ static char *vendor = "SDL " TO_STRING(SDL_MAJOR_VERSION) "." TO_STRING(
 static const int releaseVersion = 1;
 static const int supportedDepths[] = {1, 16, 24, 32};
 #define COMPAT_LOGICAL_DPI 96.0f
+
+static void applyScreenGeometryOverride(int *width, int *height)
+{
+    const char *value = getenv("LIBX11_COMPAT_SCREEN_GEOMETRY");
+    if (!value || !*value)
+        return;
+
+    int parsedWidth = 0;
+    int parsedHeight = 0;
+    char tail = '\0';
+    if (sscanf(value, "%dx%d%c", &parsedWidth, &parsedHeight, &tail) == 2 &&
+        parsedWidth > 0 && parsedHeight > 0) {
+        *width = parsedWidth;
+        *height = parsedHeight;
+    }
+}
 
 int XCloseDisplay(Display *display)
 {
@@ -277,6 +294,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
             return NULL;
         }
         screen->display = display;
+        applyScreenGeometryOverride(&displayMode.w, &displayMode.h);
         screen->width = displayMode.w;
         screen->height = displayMode.h;
         /* Motif converts resolution-independent dimensions from the screen's

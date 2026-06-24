@@ -25,8 +25,49 @@ typedef struct {
         int i;
         double d;
         FcBool b;
+        FcCharSet *c;
     } value;
 } FcPatternEntry;
+
+struct _FcCharSet {
+    FcChar32 *chars;
+    int length;
+    int capacity;
+    FcBool universal;
+};
+
+struct _FcObjectSet {
+    char **objects;
+    int length;
+    int capacity;
+};
+
+static FcCharSet *copyCharSet(const FcCharSet *src)
+{
+    FcCharSet *dst = calloc(1, sizeof(FcCharSet));
+    if (!dst)
+        return NULL;
+    if (!src) {
+        dst->universal = FcTrue;
+        return dst;
+    }
+    dst->universal = src->universal;
+    if (src->length == 0)
+        return dst;
+    if (src->length < 0 || (size_t) src->length > SIZE_MAX / sizeof(FcChar32)) {
+        free(dst);
+        return NULL;
+    }
+    dst->chars = malloc(sizeof(FcChar32) * (size_t) src->length);
+    if (!dst->chars) {
+        free(dst);
+        return NULL;
+    }
+    memcpy(dst->chars, src->chars, sizeof(FcChar32) * (size_t) src->length);
+    dst->length = src->length;
+    dst->capacity = src->length;
+    return dst;
+}
 
 struct _FcPattern {
     FcPatternEntry *entries;
@@ -41,11 +82,39 @@ struct _FcPattern {
     int refcount;
 };
 
+static FcPattern *makeFontPattern(const char *family,
+                                  const char *style,
+                                  FcBool monospace)
+{
+    FcPattern *pattern = FcPatternCreate();
+    if (!pattern)
+        return NULL;
+    if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) family) ||
+        !FcPatternAddString(pattern, FC_STYLE, (const FcChar8 *) style) ||
+        !FcPatternAddString(pattern, FC_FULLNAME, (const FcChar8 *) family) ||
+        !FcPatternAddBool(pattern, FC_SCALABLE, FcTrue) ||
+        !FcPatternAddInteger(pattern, FC_SPACING,
+                             monospace ? FC_MONO : FC_PROPORTIONAL)) {
+        FcPatternDestroy(pattern);
+        return NULL;
+    }
+    return pattern;
+}
+
+typedef struct {
+    int x;
+    int y;
+    int width;
+    int height;
+} XftClipRect;
+
 struct _XftDraw {
     Display *display;
     Drawable drawable;
     Visual *visual;
     Colormap colormap;
+    XftClipRect *clipRects;
+    int clipRectCount;
 };
 
 typedef struct {
@@ -107,37 +176,57 @@ static FcBool reservePatternEntry(FcPattern *pattern)
 static FcBool addPatternEntry(FcPattern *pattern,
                               const char *object,
                               FcType type,
-                              const void *value)
+                              const void *value,
+                              FcBool append)
 {
     if (!pattern || !object || !reservePatternEntry(pattern))
         return FcFalse;
-    FcPatternEntry *entry = &pattern->entries[pattern->length];
-    memset(entry, 0, sizeof(*entry));
-    entry->object = xftStrdup(object);
-    if (!entry->object)
+    int index = pattern->length;
+    if (!append) {
+        for (int i = 0; i < pattern->length; i++) {
+            if (!strcmp(pattern->entries[i].object, object)) {
+                index = i;
+                break;
+            }
+        }
+    }
+    FcPatternEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.object = xftStrdup(object);
+    if (!entry.object)
         return FcFalse;
-    entry->type = type;
+    entry.type = type;
     switch (type) {
     case FcTypeString:
-        entry->value.s = xftStrdup((const char *) value);
-        if (!entry->value.s) {
-            free(entry->object);
+        entry.value.s = xftStrdup((const char *) value);
+        if (!entry.value.s) {
+            free(entry.object);
             return FcFalse;
         }
         break;
     case FcTypeInteger:
-        entry->value.i = *(const int *) value;
+        entry.value.i = *(const int *) value;
         break;
     case FcTypeDouble:
-        entry->value.d = *(const double *) value;
+        entry.value.d = *(const double *) value;
         break;
     case FcTypeBool:
-        entry->value.b = *(const FcBool *) value;
+        entry.value.b = *(const FcBool *) value;
+        break;
+    case FcTypeCharSet:
+        entry.value.c = copyCharSet((const FcCharSet *) value);
+        if (!entry.value.c) {
+            free(entry.object);
+            return FcFalse;
+        }
         break;
     default:
-        free(entry->object);
+        free(entry.object);
         return FcFalse;
     }
+    for (int i = pattern->length; i > index; i--)
+        pattern->entries[i] = pattern->entries[i - 1];
+    pattern->entries[index] = entry;
     pattern->length++;
     return FcTrue;
 }
@@ -168,6 +257,8 @@ void FcPatternDestroy(FcPattern *pattern)
         free(pattern->entries[i].object);
         if (pattern->entries[i].type == FcTypeString)
             free(pattern->entries[i].value.s);
+        if (pattern->entries[i].type == FcTypeCharSet)
+            FcCharSetDestroy(pattern->entries[i].value.c);
     }
     free(pattern->entries);
     free(pattern);
@@ -184,6 +275,8 @@ FcBool FcPatternDel(FcPattern *pattern, const char *object)
             free(pattern->entries[src].object);
             if (pattern->entries[src].type == FcTypeString)
                 free(pattern->entries[src].value.s);
+            if (pattern->entries[src].type == FcTypeCharSet)
+                FcCharSetDestroy(pattern->entries[src].value.c);
             found = FcTrue;
             continue;
         }
@@ -247,6 +340,8 @@ FcBool FcPatternRemove(FcPattern *pattern, const char *object, int n)
             free(pattern->entries[i].object);
             if (pattern->entries[i].type == FcTypeString)
                 free(pattern->entries[i].value.s);
+            if (pattern->entries[i].type == FcTypeCharSet)
+                FcCharSetDestroy(pattern->entries[i].value.c);
             for (int j = i; j + 1 < pattern->length; j++)
                 pattern->entries[j] = pattern->entries[j + 1];
             pattern->length--;
@@ -281,6 +376,9 @@ FcResult FcPatternGet(const FcPattern *pattern,
     case FcTypeBool:
         value->u.b = entry->value.b;
         break;
+    case FcTypeCharSet:
+        value->u.c = entry->value.c;
+        break;
     default:
         return FcResultTypeMismatch;
     }
@@ -292,22 +390,41 @@ FcBool FcPatternAddString(FcPattern *pattern,
                           const FcChar8 *s)
 {
     return addPatternEntry(pattern, object, FcTypeString,
-                           s ? s : (FcChar8 *) "");
+                           s ? s : (FcChar8 *) "", FcTrue);
 }
 
 FcBool FcPatternAddInteger(FcPattern *pattern, const char *object, int i)
 {
-    return addPatternEntry(pattern, object, FcTypeInteger, &i);
+    return addPatternEntry(pattern, object, FcTypeInteger, &i, FcTrue);
 }
 
 FcBool FcPatternAddDouble(FcPattern *pattern, const char *object, double d)
 {
-    return addPatternEntry(pattern, object, FcTypeDouble, &d);
+    return addPatternEntry(pattern, object, FcTypeDouble, &d, FcTrue);
 }
 
 FcBool FcPatternAddBool(FcPattern *pattern, const char *object, FcBool b)
 {
-    return addPatternEntry(pattern, object, FcTypeBool, &b);
+    return addPatternEntry(pattern, object, FcTypeBool, &b, FcTrue);
+}
+
+static FcBool addMatrixPatternEntry(FcPattern *pattern,
+                                    const char *object,
+                                    const FcMatrix *matrix,
+                                    FcBool append)
+{
+    if (!pattern || !object || !matrix)
+        return FcFalse;
+
+    char buf[sizeof(FcMatrix) * 2 + 1];
+    static const char hex[] = "0123456789abcdef";
+    const unsigned char *src = (const unsigned char *) matrix;
+    for (size_t i = 0; i < sizeof(FcMatrix); i++) {
+        buf[i * 2] = hex[(src[i] >> 4) & 0x0f];
+        buf[i * 2 + 1] = hex[src[i] & 0x0f];
+    }
+    buf[sizeof(FcMatrix) * 2] = '\0';
+    return addPatternEntry(pattern, object, FcTypeString, buf, append);
 }
 
 FcBool FcPatternAddMatrix(FcPattern *pattern,
@@ -321,18 +438,34 @@ FcBool FcPatternAddMatrix(FcPattern *pattern,
      * cleanly through FcPatternGet. Reject NULL matrices loudly so a miswired
      * caller does not stash an uninitialized scratch entry.
      */
-    if (!pattern || !object || !matrix)
-        return FcFalse;
+    return addMatrixPatternEntry(pattern, object, matrix, FcTrue);
+}
 
-    char buf[sizeof(FcMatrix) * 2 + 1];
-    static const char hex[] = "0123456789abcdef";
-    const unsigned char *src = (const unsigned char *) matrix;
-    for (size_t i = 0; i < sizeof(FcMatrix); i++) {
-        buf[i * 2] = hex[(src[i] >> 4) & 0x0f];
-        buf[i * 2 + 1] = hex[src[i] & 0x0f];
+FcBool FcPatternAdd(FcPattern *pattern,
+                    const char *object,
+                    FcValue value,
+                    FcBool append)
+{
+    switch (value.type) {
+    case FcTypeString:
+        return addPatternEntry(pattern, object, FcTypeString,
+                               value.u.s ? value.u.s : (FcChar8 *) "", append);
+    case FcTypeInteger:
+        return addPatternEntry(pattern, object, FcTypeInteger, &value.u.i,
+                               append);
+    case FcTypeDouble:
+        return addPatternEntry(pattern, object, FcTypeDouble, &value.u.d,
+                               append);
+    case FcTypeBool:
+        return addPatternEntry(pattern, object, FcTypeBool, &value.u.b, append);
+    case FcTypeMatrix:
+        return addMatrixPatternEntry(pattern, object, value.u.m, append);
+    case FcTypeCharSet:
+        return addPatternEntry(pattern, object, FcTypeCharSet, value.u.c,
+                               append);
+    default:
+        return FcFalse;
     }
-    buf[sizeof(FcMatrix) * 2] = '\0';
-    return addPatternEntry(pattern, object, FcTypeString, buf);
 }
 
 /* Deep copy a pattern. Each entry's heap-owned string is duplicated so
@@ -364,6 +497,10 @@ FcPattern *FcPatternDuplicate(const FcPattern *src)
         case FcTypeBool:
             ok = FcPatternAddBool(dst, e->object, e->value.b);
             break;
+        case FcTypeCharSet:
+            ok = addPatternEntry(dst, e->object, FcTypeCharSet, e->value.c,
+                                 FcTrue);
+            break;
         default:
             ok = FcFalse;
             break;
@@ -374,6 +511,55 @@ FcPattern *FcPatternDuplicate(const FcPattern *src)
         }
     }
     return dst;
+}
+
+FcCharSet *FcCharSetCreate(void)
+{
+    return calloc(1, sizeof(FcCharSet));
+}
+
+FcBool FcCharSetHasChar(const FcCharSet *charset, FcChar32 ucs4)
+{
+    if (!charset)
+        return FcFalse;
+    if (charset->universal)
+        return FcTrue;
+    for (int i = 0; i < charset->length; i++) {
+        if (charset->chars[i] == ucs4)
+            return FcTrue;
+    }
+    return FcFalse;
+}
+
+FcBool FcCharSetAddChar(FcCharSet *charset, FcChar32 ucs4)
+{
+    if (!charset)
+        return FcFalse;
+    if (FcCharSetHasChar(charset, ucs4))
+        return FcTrue;
+    if (charset->length == charset->capacity) {
+        if (charset->capacity > INT_MAX / 2)
+            return FcFalse;
+        int capacity = charset->capacity ? charset->capacity * 2 : 8;
+        if ((size_t) capacity > SIZE_MAX / sizeof(FcChar32))
+            return FcFalse;
+        FcChar32 *chars =
+            realloc(charset->chars, sizeof(FcChar32) * (size_t) capacity);
+        if (!chars)
+            return FcFalse;
+        charset->chars = chars;
+        charset->capacity = capacity;
+    }
+    charset->chars[charset->length++] = ucs4;
+    return FcTrue;
+}
+
+void FcCharSetDestroy(FcCharSet *charset)
+{
+    if (!charset)
+        return;
+    free(charset->chars);
+    free(charset);
 }
 
 FcResult FcPatternGetString(const FcPattern *pattern,
@@ -482,6 +668,115 @@ void FcDefaultSubstitute(FcPattern *pattern)
         return;
     if (FcPatternGetInteger(pattern, FC_SIZE, 0, NULL) == FcResultNoMatch)
         FcPatternAddInteger(pattern, FC_SIZE, 12);
+    if (FcPatternGetString(pattern, FC_STYLE, 0, NULL) == FcResultNoMatch)
+        FcPatternAddString(pattern, FC_STYLE, (const FcChar8 *) "Regular");
+}
+
+FcPattern *FcFontMatch(FcConfig *config, FcPattern *pattern, FcResult *result)
+{
+    (void) config;
+    if (!pattern) {
+        if (result)
+            *result = FcResultNoMatch;
+        return NULL;
+    }
+    FcPattern *match = FcPatternDuplicate(pattern);
+    if (!match) {
+        if (result)
+            *result = FcResultOutOfMemory;
+        return NULL;
+    }
+    FcDefaultSubstitute(match);
+    if (FcPatternGetString(match, FC_FULLNAME, 0, NULL) == FcResultNoMatch) {
+        FcChar8 *family = NULL;
+        if (FcPatternGetString(match, FC_FAMILY, 0, &family) != FcResultMatch)
+            family = (FcChar8 *) "Sans";
+        FcPatternAddString(match, FC_FULLNAME, family);
+    }
+    if (result)
+        *result = FcResultMatch;
+    return match;
+}
+
+FcObjectSet *FcObjectSetCreate(void)
+{
+    return calloc(1, sizeof(FcObjectSet));
+}
+
+FcBool FcObjectSetAdd(FcObjectSet *os, const char *object)
+{
+    if (!os || !object)
+        return FcFalse;
+    if (os->length == os->capacity) {
+        if (os->capacity > INT_MAX / 2)
+            return FcFalse;
+        int capacity = os->capacity ? os->capacity * 2 : 8;
+        if ((size_t) capacity > SIZE_MAX / sizeof(char *))
+            return FcFalse;
+        char **objects =
+            realloc(os->objects, sizeof(char *) * (size_t) capacity);
+        if (!objects)
+            return FcFalse;
+        os->objects = objects;
+        os->capacity = capacity;
+    }
+    os->objects[os->length] = xftStrdup(object);
+    if (!os->objects[os->length])
+        return FcFalse;
+    os->length++;
+    return FcTrue;
+}
+
+void FcObjectSetDestroy(FcObjectSet *os)
+{
+    if (!os)
+        return;
+    for (int i = 0; i < os->length; i++)
+        free(os->objects[i]);
+    free(os->objects);
+    free(os);
+}
+
+FcFontSet *FcFontList(FcConfig *config, FcPattern *pattern, FcObjectSet *os)
+{
+    (void) config;
+    (void) os;
+    int spacing = FC_PROPORTIONAL;
+    Bool monoOnly = pattern &&
+                    FcPatternGetInteger(pattern, FC_SPACING, 0, &spacing) ==
+                        FcResultMatch &&
+                    spacing >= FC_MONO;
+    FcFontSet *set = calloc(1, sizeof(FcFontSet));
+    if (!set)
+        return NULL;
+    set->sfont = monoOnly ? 1 : 3;
+    set->fonts = calloc((size_t) set->sfont, sizeof(FcPattern *));
+    if (!set->fonts) {
+        free(set);
+        return NULL;
+    }
+    set->fonts[set->nfont++] = makeFontPattern("Monospace", "Regular", FcTrue);
+    if (!monoOnly) {
+        set->fonts[set->nfont++] = makeFontPattern("Sans", "Regular", FcFalse);
+        set->fonts[set->nfont++] = makeFontPattern("Serif", "Regular", FcFalse);
+    }
+    for (int i = 0; i < set->nfont; i++) {
+        if (!set->fonts[i]) {
+            FcFontSetDestroy(set);
+            return NULL;
+        }
+    }
+    return set;
+}
+
+void FcFontSetDestroy(FcFontSet *set)
+{
+    if (!set)
+        return;
+    for (int i = 0; i < set->nfont; i++)
+        FcPatternDestroy(set->fonts[i]);
+    free(set->fonts);
+    free(set);
 }
 
 static int patternSize(FcPattern *pattern)
@@ -500,6 +795,15 @@ static int patternSize(FcPattern *pattern)
     return 12;
 }
 
+static const FcCharSet *patternCharSet(FcPattern *pattern)
+{
+    FcValue value;
+    if (FcPatternGet(pattern, FC_CHARSET, 0, &value) != FcResultMatch ||
+        value.type != FcTypeCharSet)
+        return NULL;
+    return value.u.c;
+}
+
 static const char *patternFile(FcPattern *pattern)
 {
     FcChar8 *file = NULL;
@@ -516,9 +820,51 @@ static const char *patternFamily(FcPattern *pattern)
     return NULL;
 }
 
+static FcBool ttfProvidesCodepoint(TTF_Font *font, FcChar32 codepoint)
+{
+    if (!font)
+        return FcFalse;
+    return xc_TTF_GlyphIsProvidedUcs4(font, codepoint) ? FcTrue : FcFalse;
+}
+
+static FcBool ttfProvidesCharSet(TTF_Font *font, const FcCharSet *charset)
+{
+    if (!charset || charset->universal || charset->length <= 0)
+        return FcTrue;
+    for (int i = 0; i < charset->length; i++) {
+        if (!ttfProvidesCodepoint(font, charset->chars[i]))
+            return FcFalse;
+    }
+    return FcTrue;
+}
+
+static TTF_Font *openFallbackForCharSet(const char *family,
+                                        int size,
+                                        const FcCharSet *charset)
+{
+    if (!charset || charset->universal || charset->length <= 0)
+        return compatFontOpenFamilyFallback(family, size);
+    for (int i = 0; i < charset->length; i++) {
+        TTF_Font *font = compatFontOpenFamilyFallbackForChar(family, size,
+                                                             charset->chars[i]);
+        if (ttfProvidesCharSet(font, charset))
+            return font;
+        if (font)
+            TTF_CloseFont(font);
+    }
+    /* No single host font covers the whole requested charset (for example a
+     * Latin + CJK mix on a box without a CJK font). Real Xft never refuses
+     * the pattern here; it returns a base font and resolves the rest per
+     * glyph at draw time. Mirror that and hand back the best-effort family
+     * fallback instead of NULL so XftFontOpenPattern stays non-NULL.
+     */
+    return compatFontOpenFamilyFallback(family, size);
+}
+
 static TTF_Font *openFontFromPattern(FcPattern *pattern)
 {
     int size = patternSize(pattern);
+    const FcCharSet *requestedCharset = patternCharSet(pattern);
     /* FC_FILE wins because the caller named an exact file. Anything else routes
      * through the shared font-family fallback chain in src/font.c so xft and
      * the core XLoadQueryFont path agree on which TTF backs "helvetica" /
@@ -527,10 +873,49 @@ static TTF_Font *openFontFromPattern(FcPattern *pattern)
     const char *file = patternFile(pattern);
     if (file) {
         TTF_Font *font = TTF_OpenFont(file, size);
-        if (font)
+        if (font && ttfProvidesCharSet(font, requestedCharset))
             return font;
+        if (font)
+            TTF_CloseFont(font);
     }
-    return compatFontOpenFamilyFallback(patternFamily(pattern), size);
+    return openFallbackForCharSet(patternFamily(pattern), size,
+                                  requestedCharset);
+}
+
+static FcCharSet *charSetForTtf(TTF_Font *ttf, const FcCharSet *requested)
+{
+    FcCharSet *charset = FcCharSetCreate();
+    if (!charset)
+        return NULL;
+    if (requested && !requested->universal) {
+        for (int i = 0; i < requested->length; i++) {
+            if (!ttfProvidesCodepoint(ttf, requested->chars[i]))
+                continue;
+            if (!FcCharSetAddChar(charset, requested->chars[i])) {
+                FcCharSetDestroy(charset);
+                return NULL;
+            }
+        }
+        return charset;
+    }
+
+    for (FcChar32 c = 0x20; c <= 0x2ff; c++) {
+        if (!ttfProvidesCodepoint(ttf, c))
+            continue;
+        if (!FcCharSetAddChar(charset, c)) {
+            FcCharSetDestroy(charset);
+            return NULL;
+        }
+    }
+    for (FcChar32 c = 0x370; c <= 0x3ff; c++) {
+        if (!ttfProvidesCodepoint(ttf, c))
+            continue;
+        if (!FcCharSetAddChar(charset, c)) {
+            FcCharSetDestroy(charset);
+            return NULL;
+        }
+    }
+    return charset;
 }
 
 Bool XftInit(const char *config)
@@ -608,6 +993,17 @@ XftFont *XftFontOpenPattern(Display *dpy, FcPattern *pattern)
     font->public.max_advance_width = 0;
     TTF_GlyphMetrics(ttf, 'W', NULL, NULL, NULL, NULL,
                      &font->public.max_advance_width);
+    FcValue charsetValue;
+    const FcCharSet *requestedCharset = NULL;
+    if (FcPatternGet(pattern, FC_CHARSET, 0, &charsetValue) == FcResultMatch &&
+        charsetValue.type == FcTypeCharSet)
+        requestedCharset = charsetValue.u.c;
+    font->public.charset = charSetForTtf(ttf, requestedCharset);
+    if (!font->public.charset) {
+        TTF_CloseFont(ttf);
+        free(font);
+        return NULL;
+    }
     /* Take a protective reference for clients that destroy the pattern after
      * this call. XftFontClose releases this extra reference as well as the
      * ownership reference transferred to XftFontOpenPattern.
@@ -677,6 +1073,7 @@ void XftFontClose(Display *dpy, XftFont *font)
         font->pattern->refcount > 1)
         FcPatternDestroy(font->pattern);
     FcPatternDestroy(font->pattern);
+    FcCharSetDestroy(font->charset);
     free(compat);
 }
 
@@ -697,6 +1094,8 @@ XftDraw *XftDrawCreate(Display *dpy,
 
 void XftDrawDestroy(XftDraw *draw)
 {
+    if (draw)
+        free(draw->clipRects);
     free(draw);
 }
 
@@ -704,6 +1103,50 @@ void XftDrawChange(XftDraw *draw, Drawable drawable)
 {
     if (draw)
         draw->drawable = drawable;
+}
+
+static int clampToInt(long long value)
+{
+    if (value < INT_MIN)
+        return INT_MIN;
+    if (value > INT_MAX)
+        return INT_MAX;
+    return (int) value;
+}
+
+Bool XftDrawSetClipRectangles(XftDraw *draw,
+                              int x_origin,
+                              int y_origin,
+                              const XRectangle *rects,
+                              int n)
+{
+    if (!draw || n < 0)
+        return False;
+    if (n == 0) {
+        free(draw->clipRects);
+        draw->clipRects = NULL;
+        draw->clipRectCount = 0;
+        return True;
+    }
+    if (!rects || (size_t) n > SIZE_MAX / sizeof(XftClipRect))
+        return False;
+    /* Build the replacement before touching the live clip so a failed
+     * allocation or invalid input leaves the existing clip intact instead of
+     * silently dropping it (the API has no way to report a partial failure).
+     */
+    XftClipRect *newRects = malloc(sizeof(XftClipRect) * (size_t) n);
+    if (!newRects)
+        return False;
+    for (int i = 0; i < n; i++) {
+        newRects[i].x = clampToInt((long long) rects[i].x + x_origin);
+        newRects[i].y = clampToInt((long long) rects[i].y + y_origin);
+        newRects[i].width = rects[i].width;
+        newRects[i].height = rects[i].height;
+    }
+    free(draw->clipRects);
+    draw->clipRects = newRects;
+    draw->clipRectCount = n;
+    return True;
 }
 
 Display *XftDrawDisplay(XftDraw *draw)
@@ -856,6 +1299,8 @@ static char *utf16BytesToUtf8(const FcChar8 *string, FcEndian endian, int len)
     if (!string || len < 0)
         return NULL;
     int chars = len / 2;
+    if ((size_t) chars > SIZE_MAX / sizeof(FcChar16))
+        return NULL;
     FcChar16 *tmp = malloc(sizeof(FcChar16) * (size_t) chars);
     if (!tmp)
         return NULL;
@@ -879,6 +1324,22 @@ static SDL_Color sdlColorFromXft(const XftColor *color)
         .a = color ? (Uint8) (color->color.alpha >> 8) : 255,
     };
     return sdl;
+}
+
+static Bool xftClipContains(const XftDraw *draw, int x, int y)
+{
+    if (!draw || draw->clipRectCount == 0)
+        return True;
+    for (int i = 0; i < draw->clipRectCount; i++) {
+        const XftClipRect *rect = &draw->clipRects[i];
+        long long left = rect->x;
+        long long top = rect->y;
+        long long right = left + rect->width;
+        long long bottom = top + rect->height;
+        if (x >= left && x < right && y >= top && y < bottom)
+            return True;
+    }
+    return False;
 }
 
 static unsigned long blendPixel(unsigned long dst,
@@ -987,6 +1448,8 @@ static void drawUtf8String(XftDraw *draw,
     }
     for (int yy = 0; yy < rectH; yy++) {
         for (int xx = 0; xx < rectW; xx++) {
+            if (!xftClipContains(draw, destX + xx, destY + yy))
+                continue;
             Uint32 *row = (Uint32 *) ((char *) glyphs->pixels +
                                       (yy + srcY) * glyphs->pitch);
             unsigned long dst = XGetPixel(image, xx, yy);
@@ -1195,17 +1658,17 @@ FcBool XftCharExists(Display *dpy, XftFont *font, FcChar32 ucs4)
     (void) dpy;
     if (!font)
         return FcFalse;
+    /* The synthesized charset only seeds a few default ranges, so it is not a
+     * reliable authority on what the rasterizer can draw. A universal charset
+     * still short-circuits to FcTrue; otherwise defer to TTF_GlyphIsProvided,
+     * which reflects the actual font.
+     */
+    if (font->charset && font->charset->universal)
+        return FcTrue;
     CompatXftFont *compat = (CompatXftFont *) font;
     if (!compat->ttf)
         return FcFalse;
-    /* SDL_ttf only ships a 16-bit glyph probe in the version pinned by this
-     * repo, so any codepoint beyond the BMP gets a best-effort answer.
-     * Returning FcTrue keeps the AA path active; the actual glyph render uses
-     * UTF-8 round-trip which the rasterizer can still handle.
-     */
-    if (ucs4 > 0xffff)
-        return FcTrue;
-    return TTF_GlyphIsProvided(compat->ttf, (Uint16) ucs4) ? FcTrue : FcFalse;
+    return xc_TTF_GlyphIsProvidedUcs4(compat->ttf, ucs4) ? FcTrue : FcFalse;
 }
 
 void XftGlyphExtents(Display *dpy,
@@ -1251,7 +1714,34 @@ void XftDrawRect(XftDraw *draw,
     if (!gc)
         return;
     XSetForeground(draw->display, gc, color->pixel);
-    XFillRectangle(draw->display, draw->drawable, gc, x, y, width, height);
+    if (draw->clipRectCount == 0) {
+        XFillRectangle(draw->display, draw->drawable, gc, x, y, width, height);
+        XFreeGC(draw->display, gc);
+        return;
+    }
+    /* Clip the fill against each clip rectangle. Opaque fills tolerate the
+     * overlap that intersecting regions would produce. Edges are computed in
+     * long long so caller-controlled dimensions cannot signed-overflow.
+     */
+    long long rectLeft = x;
+    long long rectTop = y;
+    long long rectRight = (long long) x + width;
+    long long rectBottom = (long long) y + height;
+    for (int i = 0; i < draw->clipRectCount; i++) {
+        const XftClipRect *clip = &draw->clipRects[i];
+        long long left = clip->x > rectLeft ? clip->x : rectLeft;
+        long long top = clip->y > rectTop ? clip->y : rectTop;
+        long long right = (long long) clip->x + clip->width;
+        if (right > rectRight)
+            right = rectRight;
+        long long bottom = (long long) clip->y + clip->height;
+        if (bottom > rectBottom)
+            bottom = rectBottom;
+        if (right > left && bottom > top)
+            XFillRectangle(draw->display, draw->drawable, gc, (int) left,
+                           (int) top, (unsigned int) (right - left),
+                           (unsigned int) (bottom - top));
+    }
     XFreeGC(draw->display, gc);
 }
 
@@ -1300,6 +1790,11 @@ int XftUtf8ToUcs4(const FcChar8 *src, FcChar32 *dst, int len)
         return 0;
     *dst = cp;
     return 1 + extra;
+}
+
+int FcUtf8ToUcs4(const FcChar8 *src, FcChar32 *dst, int len)
+{
+    return XftUtf8ToUcs4(src, dst, len);
 }
 
 /* Walk `string` counting UTF-8 codepoints; record the count in *nchar and the

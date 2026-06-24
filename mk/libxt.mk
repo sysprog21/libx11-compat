@@ -18,6 +18,15 @@ LIBXT_GEN_DIR     := $(OUT)/libxt-gen
 LIBXT_OBJ_DIR     := $(OUT)/libxt
 LIBXT_HOST_DIR    := $(OUT)/host
 LIBXT_TARGET      := $(OUT)/libXt-compat.so
+LIBXT_PATCHES     := $(sort $(wildcard compat/libxt-patches/*.patch))
+LIBXT_PATCH_LIST_FILE := $(OUT)/upstream/.libxt-patch-list
+$(shell mkdir -p $(dir $(LIBXT_PATCH_LIST_FILE)); \
+        new='$(sort $(notdir $(wildcard compat/libxt-patches/*.patch)))'; \
+        old=$$(cat $(LIBXT_PATCH_LIST_FILE) 2>/dev/null || true); \
+        if [ "$$new" != "$$old" ]; then \
+            printf '%s\n' "$$new" > $(LIBXT_PATCH_LIST_FILE); \
+        fi)
+LIBXT_PATCH_STAMP := $(LIBXT_SRC_DIR)/.compat-patches-stamp
 
 # mk/libxt.mk is included before mk/upstream-headers.mk, but its rules need
 # this stamp while make parses prerequisites. Keep the value aligned with the
@@ -98,15 +107,32 @@ $(LIBXT_HOST_DIR) $(LIBXT_GEN_DIR) $(LIBXT_OBJ_DIR):
 
 # Compile makestrs as a host-side tool. It is a single-file standalone
 # generator that depends only on libc; no need for any libx11-compat
-# include paths.
-$(LIBXT_HOST_MAKESTRS): $(UPSTREAM_HEADERS_STAMP) | $(LIBXT_HOST_DIR)
+# include paths. Depend on the staged makestrs.c (not just the headers
+# stamp) so the LIBXT_PATCH_STAMP recipe, which runs `fetch --force` and
+# briefly removes and re-stages util/makestrs.c, cannot race this compile
+# under parallel make and leave it reading a half-removed file.
+$(LIBXT_HOST_MAKESTRS): $(LIBXT_UTIL_DIR)/makestrs.c | $(LIBXT_HOST_DIR)
 	@echo "  HOSTCC  $(LIBXT_UTIL_DIR)/makestrs.c"
 	$(Q)$(HOST_CC) -O2 -o $@ $(LIBXT_UTIL_DIR)/makestrs.c
 
 # The upstream sync stages libXt sources and util files as side effects.
 # Declare them so a clean build knows how to fetch these normal
 # prerequisites before trying to build libXt objects or the host generator.
-$(LIBXT_SRCS) $(LIBXT_UTIL_DIR)/makestrs.c $(LIBXT_STRING_LIST) $(LIBXT_TEMPLATES): $(UPSTREAM_HEADERS_STAMP)
+$(LIBXT_PATCH_STAMP): $(UPSTREAM_HEADERS_STAMP) $(LIBXT_PATCHES) $(LIBXT_PATCH_LIST_FILE) mk/libxt.mk
+	@echo "  PATCH   libXt"
+	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch --force $(UPSTREAM_HEADERS_DIR)
+	$(Q)set -e; for patch in $(abspath $(LIBXT_PATCHES)); do \
+	    if patch -d $(abspath $(LIBXT_SRC_DIR)) -p1 --dry-run < "$$patch" >/dev/null; then \
+	        patch -d $(abspath $(LIBXT_SRC_DIR)) -p1 < "$$patch" >/dev/null; \
+	    elif patch -d $(abspath $(LIBXT_SRC_DIR)) -p1 -R --dry-run < "$$patch" >/dev/null; then \
+	        :; \
+	    else \
+	        echo "  PATCH   failed $$patch" >&2; exit 1; \
+	    fi; \
+	done
+	$(Q)touch $@
+
+$(LIBXT_SRCS) $(LIBXT_UTIL_DIR)/makestrs.c $(LIBXT_STRING_LIST) $(LIBXT_TEMPLATES): $(UPSTREAM_HEADERS_STAMP) $(LIBXT_PATCH_STAMP)
 
 # Run makestrs from the topdir so the "util/StrDefs.ct" / "util/StrDefs.ht"
 # paths embedded in string.list resolve against cwd. The generated headers
@@ -142,7 +168,7 @@ $(OUT)/upstream/include/X11/Shell.h: $(LIBXT_GEN_DIR)/Shell.h
 # files have been staged before the recipe reads them; the explicit
 # dependency on LIBXT_GEN_HEADERS ensures StringDefs.h is available before
 # any unit that quotes it compiles.
-$(LIBXT_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_GEN_HEADERS) \
+$(LIBXT_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_PATCH_STAMP) $(LIBXT_GEN_HEADERS) \
     $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(LIBXT_OBJ_DIR)
 	@echo "  CC      $(LIBXT_SRC_DIR)/$*.c"
 	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \

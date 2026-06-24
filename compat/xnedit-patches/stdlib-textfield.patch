@@ -1,0 +1,60 @@
+diff --git a/util/textfield.c b/util/textfield.c
+index 7ab1422..e42b0e2 100644
+--- a/util/textfield.c
++++ b/util/textfield.c
+@@ -23,6 +23,7 @@
+ 
+ #include <stdio.h>
+ #include <ctype.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #include "../source/textBuf.h" /* Utf8CharLen */
+diff --git a/util/colorchooser.c b/util/colorchooser.c
+index 73c0926..cd4f2e0 100644
+--- a/util/colorchooser.c
++++ b/util/colorchooser.c
+@@ -27,6 +27,7 @@
+ 
+ #include <inttypes.h>
+ #include <limits.h>
++#include <stdlib.h>
+ 
+ #define XNE_COLOR_DIALOG_TITLE "Select Color"
+ 
+diff --git a/source/file.h b/source/file.h
+index aab06a0..ef00b86 100644
+--- a/source/file.h
++++ b/source/file.h
+@@ -30,6 +30,7 @@
+ #include "../util/getfiles.h"
+ 
+ #include <X11/Intrinsic.h>
++#include <sys/stat.h>
+ 
+ /* flags for EditExistingFile */
+ #define CREATE 1
+diff --git a/source/shift.c b/source/shift.c
+index 17dbdcf..7f381a6 100644
+--- a/source/shift.c
++++ b/source/shift.c
+@@ -42,6 +42,7 @@
+ 
+ #include <string.h>
+ #include <limits.h>
++#include <stdlib.h>
+ #include <ctype.h>
+ #include <locale.h>
+ #include <wctype.h>
+diff --git a/source/highlightData.c b/source/highlightData.c
+index 4d14022..02d1a31 100644
+--- a/source/highlightData.c
++++ b/source/highlightData.c
+@@ -48,6 +48,7 @@
+ 
+ #include <stdio.h>
+ #include <string.h>
++#include <stdlib.h>
+ #include <limits.h>
+ #ifndef __MVS__
+ #include <sys/param.h>

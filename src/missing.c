@@ -314,7 +314,9 @@ static int do_locale_lookup(XKeyEvent *ev,
     KeySym keysym = NoSymbol;
     int produced = 0;
     if (ev && ev->type == KeyPress) {
-        keysym = XkbKeycodeToKeysym(ev->display, ev->keycode, 0, 0);
+        unsigned int consumedModifiers = 0;
+        XkbLookupKeySym(ev->display, ev->keycode, ev->state, &consumedModifiers,
+                        &keysym);
         if (buffer && nbytes > 0)
             produced = keysym_to_utf8(keysym, buffer, nbytes);
     }

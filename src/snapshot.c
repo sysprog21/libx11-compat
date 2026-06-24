@@ -194,6 +194,7 @@ int snapshotHandleEvent(const SDL_Event *event)
     }
     char *path = env->path;
     int rc = 0;
+    SDL_Surface *ownedSurface = NULL;
     Uint32 winId = replayTargetWindowId();
     SDL_Window *win = (winId != 0) ? SDL_GetWindowFromID(winId) : NULL;
     if (!win) {
@@ -205,8 +206,26 @@ int snapshotHandleEvent(const SDL_Event *event)
     SDL_Surface *surface = SDL_GetWindowSurface(win);
     if (!surface) {
         LOG("snapshot: SDL_GetWindowSurface failed: %s\n", SDL_GetError());
-        rc = -3;
-        goto signal;
+        Window xwin = getWindowFromId(winId);
+        if (xwin != None) {
+            SDL_Renderer *renderer = getWindowRenderer(xwin);
+            WindowStruct *windowStruct = GET_WINDOW_STRUCT(xwin);
+            if (windowStruct) {
+                SDL_Rect rect = {
+                    .x = 0,
+                    .y = 0,
+                    .w = (int) windowStruct->w,
+                    .h = (int) windowStruct->h,
+                };
+                surface = getRenderSurfaceRect(renderer, &rect);
+            }
+            ownedSurface = surface;
+        }
+        if (!surface) {
+            LOG("snapshot: render-surface fallback failed\n");
+            rc = -3;
+            goto signal;
+        }
     }
 
     /* SDL_SaveBMP writes incrementally to the open file, so a runner that polls
@@ -245,6 +264,8 @@ int snapshotHandleEvent(const SDL_Event *event)
     free(tmpPath);
     LOG("snapshot: wrote %s (%dx%d)\n", path, surface->w, surface->h);
 signal:
+    if (ownedSurface)
+        SDL_FreeSurface(ownedSurface);
     signalSnapshotResult(env->generation, rc);
     free(path);
     free(env);

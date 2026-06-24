@@ -194,6 +194,52 @@ KeySym *XGetKeyboardMapping(Display *display,
     return mapping;
 }
 
+/* Single source of truth for the US-layout Shift pairs on the number /
+ * punctuation rows. The forward (shiftedKeysym) and reverse
+ * (unshiftedPunctuation) lookups both scan this table, so the two directions
+ * cannot drift. Letters (a-z <-> A-Z) are handled by range arithmetic at the
+ * call sites, not here.
+ */
+static const struct {
+    KeySym base;
+    KeySym shifted;
+} usShiftPairs[] = {
+    {XK_1, XK_exclam},
+    {XK_2, XK_at},
+    {XK_3, XK_numbersign},
+    {XK_4, XK_dollar},
+    {XK_5, XK_percent},
+    {XK_6, XK_asciicircum},
+    {XK_7, XK_ampersand},
+    {XK_8, XK_asterisk},
+    {XK_9, XK_parenleft},
+    {XK_0, XK_parenright},
+    {XK_grave, XK_asciitilde},
+    {XK_minus, XK_underscore},
+    {XK_equal, XK_plus},
+    {XK_bracketleft, XK_braceleft},
+    {XK_bracketright, XK_braceright},
+    {XK_backslash, XK_bar},
+    {XK_semicolon, XK_colon},
+    {XK_apostrophe, XK_quotedbl},
+    {XK_comma, XK_less},
+    {XK_period, XK_greater},
+    {XK_slash, XK_question},
+};
+
+/* The unshifted base keysym a shifted symbol is produced from, or NoSymbol.
+ * Keeps the reverse lookups (keycode + modifiers) in agreement with
+ * shiftedKeysym(); without it, accelerators bound on a shifted-symbol keysym
+ * would register the wrong key.
+ */
+static KeySym unshiftedPunctuation(KeySym keysym)
+{
+    for (size_t i = 0; i < sizeof(usShiftPairs) / sizeof(usShiftPairs[0]); i++)
+        if (usShiftPairs[i].shifted == keysym)
+            return usShiftPairs[i].base;
+    return NoSymbol;
+}
+
 KeyCode XKeysymToKeycode(Display *display, KeySym keysym)
 {
     // https://tronche.com/gui/x/xlib/utilities/keyboard/XKeysymToKeycode.html
@@ -203,9 +249,29 @@ KeyCode XKeysymToKeycode(Display *display, KeySym keysym)
         return SDLK_a + (keysym - XK_a);
     if (keysym >= XK_A && keysym <= XK_Z)
         return SDLK_a + (keysym - XK_A);
+    KeySym base = unshiftedPunctuation(keysym);
+    if (base != NoSymbol)
+        return XKeysymToKeycode(display, base);
+    /* Reverse scan: when several SDL keys carry the same keysym (e.g.
+     * SDLK_RETURN and SDLK_RETURN2 both map to XK_Return) the highest-index
+     * entry wins, so the returned keycode is stable but not necessarily the
+     * primary key's. That is fine here because only round-tripping and
+     * collision-freedom matter, not which physical key the keycode names; do
+     * not "simplify" the iteration order without preserving that property.
+     */
     for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
-        if (SDLKeycodeToKeySym[i].keysym == keysym)
-            return SDLKeycodeToKeySym[i].keycode & 0xFF;
+        if (SDLKeycodeToKeySym[i].keysym != keysym)
+            continue;
+        KeyCode kc = SDLKeycodeToKeySym[i].keycode & 0xFF;
+        /* X keycodes are the low byte of the SDL keycode, so a 0x4000xxxx
+         * scancode key can alias onto an ASCII key: SDLK_EXECUTE (0x40000074)
+         * truncates to 116, exactly SDLK_t. Returning that keycode would make
+         * Motif bind the special key (e.g. osfActivate/Execute) onto the 't'
+         * key, so typing 't' fires a newline. Only accept a keycode that maps
+         * back to this keysym; otherwise it belongs to the ASCII key.
+         */
+        if (XkbKeycodeToKeysym(display, kc, 0, 0) == keysym)
+            return kc;
     }
     LOG("%s: Got unimplemented keysym %lu\n", __func__, keysym);
     return 0;
@@ -287,6 +353,8 @@ unsigned int XkbKeysymToModifiers(Display *display, KeySym keysym)
     (void) display;
     if (keysym >= XK_A && keysym <= XK_Z)
         return ShiftMask;
+    if (unshiftedPunctuation(keysym) != NoSymbol)
+        return ShiftMask;
     switch (keysym) {
     case XK_Shift_L:
     case XK_Shift_R:
@@ -313,6 +381,21 @@ unsigned int XkbKeysymToModifiers(Display *display, KeySym keysym)
     return 0;
 }
 
+/* Map an unshifted keysym to its Shift counterpart on a US layout. SDL reports
+ * the modifier and the base key separately, so the shifted symbol (1 -> !,
+ * - -> _, etc.) has to be synthesized here; without it Shift only upper-cased
+ * letters and digits/punctuation came through unshifted.
+ */
+static KeySym shiftedKeysym(KeySym keysym)
+{
+    if (keysym >= XK_a && keysym <= XK_z)
+        return XK_A + (keysym - XK_a);
+    for (size_t i = 0; i < sizeof(usShiftPairs) / sizeof(usShiftPairs[0]); i++)
+        if (usShiftPairs[i].base == keysym)
+            return usShiftPairs[i].shifted;
+    return keysym;
+}
+
 Bool XkbLookupKeySym(Display *display,
                      KeyCode keycode,
                      unsigned int modifiers,
@@ -321,15 +404,39 @@ Bool XkbLookupKeySym(Display *display,
 {
     KeySym keysym = XkbKeycodeToKeysym(display, keycode, 0, 0);
     unsigned int consumedModifiers = 0;
-    if ((modifiers & ShiftMask) && keysym >= XK_a && keysym <= XK_z) {
-        keysym = XK_A + (keysym - XK_a);
-        consumedModifiers |= ShiftMask;
+    if (modifiers & ShiftMask) {
+        KeySym shifted = shiftedKeysym(keysym);
+        if (shifted != keysym) {
+            keysym = shifted;
+            consumedModifiers |= ShiftMask;
+        }
     }
     if (modifiers_return)
         *modifiers_return = consumedModifiers;
     if (keysym_return)
         *keysym_return = keysym;
     return keysym != NoSymbol;
+}
+
+static int controlByteForKeysym(KeySym keysym)
+{
+    switch (keysym) {
+    case XK_BackSpace:
+        return '\b';
+    case XK_Tab:
+        return '\t';
+    case XK_Linefeed:
+        return '\n';
+    case XK_Return:
+    case XK_KP_Enter:
+        return '\r';
+    case XK_Escape:
+        return 0x1b;
+    case XK_Delete:
+        return 0x7f;
+    default:
+        return -1;
+    }
 }
 
 int XLookupString(XKeyEvent *event_struct,
@@ -339,12 +446,35 @@ int XLookupString(XKeyEvent *event_struct,
                   XComposeStatus *status_in_out)
 {
     // https://tronche.com/gui/x/xlib/utilities/XLookupString.html
-    if (buffer_return)
-        *buffer_return = event_struct->keycode;
+    (void) status_in_out;
+    if (!event_struct)
+        return 0;
+    unsigned int consumedModifiers = 0;
+    KeySym keysym = NoSymbol;
+    if (!XkbLookupKeySym(event_struct->display, event_struct->keycode,
+                         event_struct->state, &consumedModifiers, &keysym)) {
+        if (keysym_return)
+            *keysym_return = NoSymbol;
+        return 0;
+    }
     if (keysym_return)
-        *keysym_return = XkbKeycodeToKeysym(event_struct->display,
-                                            event_struct->keycode, 0, 0);
-    return 1;
+        *keysym_return = keysym;
+    if (!buffer_return || bytes_buffer <= 0)
+        return 0;
+    int controlByte = controlByteForKeysym(keysym);
+    if (controlByte >= 0) {
+        buffer_return[0] = (char) controlByte;
+        return 1;
+    }
+    if (keysym >= XK_space && keysym <= XK_asciitilde) {
+        buffer_return[0] = (char) keysym;
+        return 1;
+    }
+    if (keysym >= XK_nobreakspace && keysym <= XK_ydiaeresis) {
+        buffer_return[0] = (char) (keysym & 0xff);
+        return 1;
+    }
+    return 0;
 }
 
 XModifierKeymap *XGetModifierMapping(Display *display)

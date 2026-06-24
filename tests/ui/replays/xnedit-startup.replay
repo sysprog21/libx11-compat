@@ -1,0 +1,7 @@
+# XNEdit Motif + Xft startup smoke.
+delay 3000
+wait-window "XNEdit|xnedit|Untitled" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+assert-exit running

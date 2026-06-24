@@ -1,4 +1,5 @@
 #include "input-method.h"
+#include <limits.h>
 #include <locale.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -15,6 +16,86 @@
 static char *currLocaleModifierList = defaultLocaleModifierList;
 char *pendingText = NULL;
 
+/* Encode a Latin-1/ASCII keysym as UTF-8.
+ *
+ * Returns the number of bytes the encoding needs (0 if the keysym is not
+ * encodable). Writes into buffer only when it fits, so a return value greater
+ * than nbytes means the caller must report XBufferOverflow rather than treating
+ * the keysym as undecodable.
+ */
+static int appendKeysymUtf8(KeySym keysym, char *buffer, int nbytes)
+{
+    unsigned int codepoint;
+    switch (keysym) {
+    case XK_BackSpace:
+        codepoint = '\b';
+        break;
+    case XK_Tab:
+        codepoint = '\t';
+        break;
+    case XK_Linefeed:
+        codepoint = '\n';
+        break;
+    case XK_Return:
+    case XK_KP_Enter:
+        codepoint = '\r';
+        break;
+    case XK_Escape:
+        codepoint = 0x1b;
+        break;
+    case XK_Delete:
+        codepoint = 0x7f;
+        break;
+    default:
+        if (keysym >= XK_space && keysym <= XK_asciitilde)
+            codepoint = (unsigned int) keysym;
+        else if (keysym >= XK_nobreakspace && keysym <= XK_ydiaeresis)
+            codepoint = (unsigned int) (keysym & 0xff);
+        else if (((unsigned long) keysym & 0xff000000UL) == 0x01000000UL)
+            /* X11 Unicode keysyms: 0x01000000 | codepoint. */
+            codepoint = (unsigned int) ((unsigned long) keysym & 0x00ffffffUL);
+        else
+            return 0;
+        break;
+    }
+
+    int needed;
+    if (codepoint < 0x80)
+        needed = 1;
+    else if (codepoint < 0x800)
+        needed = 2;
+    else if (codepoint < 0x10000)
+        needed = 3;
+    else if (codepoint <= 0x10ffff)
+        needed = 4;
+    else
+        return 0;
+
+    if (!buffer || nbytes < needed)
+        return needed;
+    switch (needed) {
+    case 1:
+        buffer[0] = (char) codepoint;
+        break;
+    case 2:
+        buffer[0] = (char) (0xc0 | (codepoint >> 6));
+        buffer[1] = (char) (0x80 | (codepoint & 0x3f));
+        break;
+    case 3:
+        buffer[0] = (char) (0xe0 | (codepoint >> 12));
+        buffer[1] = (char) (0x80 | ((codepoint >> 6) & 0x3f));
+        buffer[2] = (char) (0x80 | (codepoint & 0x3f));
+        break;
+    default:
+        buffer[0] = (char) (0xf0 | (codepoint >> 18));
+        buffer[1] = (char) (0x80 | ((codepoint >> 12) & 0x3f));
+        buffer[2] = (char) (0x80 | ((codepoint >> 6) & 0x3f));
+        buffer[3] = (char) (0x80 | (codepoint & 0x3f));
+        break;
+    }
+    return needed;
+}
+
 void inputMethodSetCurrentText(char *text)
 {
     pendingText = text;
@@ -26,9 +107,9 @@ KeySym getKeySymForChar(char c)
         char character;
         KeySym keySym;
     } charMapping[] = {
-        {' ', XK_space},        {'\n', XK_Return},     {'\r', XK_Linefeed},
+        {' ', XK_space},        {'\n', XK_Linefeed},   {'\r', XK_Return},
         {'\t', XK_Tab},         {'\b', XK_BackSpace},  {'-', XK_minus},
-        {'+', XK_plus},         {'#', XK_numbersign},  {'*', XK_multiply},
+        {'+', XK_plus},         {'#', XK_numbersign},  {'*', XK_asterisk},
         {'~', XK_asciitilde},   {'\'', XK_quoteright}, {'"', XK_quotedbl},
         {'!', XK_exclam},       {'@', XK_at},          {'%', XK_percent},
         {'&', XK_ampersand},    {'$', XK_dollar},      {'/', XK_slash},
@@ -709,39 +790,77 @@ int Xutf8LookupString(XIC inputConnection,
                       Status *status_return)
 {
     // http://www.x.org/archive/X11R7.6/doc/man/man3/Xutf8LookupString.3.xhtml
+    if (!event) {
+        if (status_return)
+            *status_return = XLookupNone;
+        return 0;
+    }
     if (event->keycode == 0) {
         if (!pendingText) {
-            *status_return = XLookupNone;
+            if (status_return)
+                *status_return = XLookupNone;
             return 0;
         }
         LOG("InputMethod Event! text = '%s'.\n", pendingText);
-        int textLen = strlen(pendingText) + 1;
-        if (textLen > bytes_buffer) {
-            *status_return = XBufferOverflow;
-            return textLen;
+        /* Xutf8LookupString returns a byte count and an unterminated string, so
+         * the NUL is excluded from the length, the buffer check, and the copy.
+         * size_t throughout: narrowing strlen to int first would let a >INT_MAX
+         * commit wrap negative, slip past the bounds check, and turn the copy
+         * into a huge memcpy.
+         */
+        size_t textLen = strlen(pendingText);
+        if (!buffer_return || bytes_buffer < 0 ||
+            textLen > (size_t) bytes_buffer) {
+            if (status_return)
+                *status_return = XBufferOverflow;
+            return textLen > (size_t) INT_MAX ? INT_MAX : (int) textLen;
         }
-        if (textLen > 0) {
-            *status_return = XLookupBoth;
-            *keysym_return = getKeySymForChar(pendingText[textLen - 2]);
+        /* A single ASCII byte maps to a keysym (XLookupBoth); a multi-byte or
+         * multi-character commit is text only, so report XLookupChars with no
+         * keysym rather than deriving one from a UTF-8 continuation byte.
+         */
+        if (textLen == 1) {
+            if (status_return)
+                *status_return = XLookupBoth;
+            if (keysym_return)
+                *keysym_return = getKeySymForChar(pendingText[0]);
         } else {
-            *status_return = XLookupChars;
+            if (status_return)
+                *status_return = XLookupChars;
+            if (keysym_return)
+                *keysym_return = NoSymbol;
         }
         memcpy(buffer_return, pendingText, textLen);
         pendingText = NULL;
-        return textLen;
-    } else {
-        LOG("Normal Event, Keycode = %d, '%c'\n", event->keycode,
-            event->keycode);
-        if (event->keycode <= 127) {
-            *status_return = XLookupBoth;
-            *buffer_return = event->keycode;
-        } else {
-            *status_return = XLookupKeySym;
-        }
-        *keysym_return =
-            XkbKeycodeToKeysym(event->display, event->keycode, 0, 0);
-        return 1;
+        return (int) textLen;
     }
+
+    LOG("Normal Event, Keycode = %d, '%c'\n", event->keycode, event->keycode);
+    unsigned int consumedModifiers = 0;
+    KeySym keysym = NoSymbol;
+    XkbLookupKeySym(event->display, event->keycode, event->state,
+                    &consumedModifiers, &keysym);
+    int needed = appendKeysymUtf8(keysym, buffer_return, bytes_buffer);
+    if (keysym_return)
+        *keysym_return = keysym;
+    if (needed > 0 && (!buffer_return || needed > bytes_buffer)) {
+        /* Encodable keysym but there is nowhere to put it (no buffer or it is
+         * too small): report the required size instead of claiming a write that
+         * did not happen.
+         */
+        if (status_return)
+            *status_return = XBufferOverflow;
+        return needed;
+    }
+    if (status_return) {
+        if (keysym == NoSymbol && needed == 0)
+            *status_return = XLookupNone;
+        else if (needed == 0)
+            *status_return = XLookupKeySym;
+        else
+            *status_return = XLookupBoth;
+    }
+    return needed;
 }
 
 Bool XRegisterIMInstantiateCallback(Display *display,

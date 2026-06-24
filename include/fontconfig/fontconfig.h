@@ -11,7 +11,11 @@ typedef int FcResult;
 typedef int FcType;
 typedef struct _FcPattern FcPattern;
 typedef struct _FcObjectSet FcObjectSet;
-typedef struct _FcFontSet FcFontSet;
+typedef struct _FcFontSet {
+    int nfont;
+    int sfont;
+    FcPattern **fonts;
+} FcFontSet;
 typedef struct _FcCharSet FcCharSet;
 typedef struct _FcMatrix {
     double xx;
@@ -44,6 +48,8 @@ typedef struct _FcValue {
 #define FcResultTypeMismatch 2
 #define FcResultNoId 3
 #define FcResultOutOfMemory 4
+
+#define FcMatchPattern 0
 
 #define FcTypeVoid 0
 #define FcTypeInteger 1
@@ -121,9 +127,24 @@ void FcPatternReference(FcPattern *pattern);
 FcBool FcPatternDel(FcPattern *pattern, const char *object);
 FcBool FcPatternRemove(FcPattern *pattern, const char *object, int n);
 int FcUcs4ToUtf8(FcChar32 ucs4, FcChar8 dest[FC_UTF8_MAX_LEN]);
+int FcUtf8ToUcs4(const FcChar8 *src, FcChar32 *dst, int len);
 FcPattern *FcNameParse(const FcChar8 *name);
 FcBool FcConfigSubstitute(FcConfig *config, FcPattern *pattern, int kind);
 void FcDefaultSubstitute(FcPattern *pattern);
+FcPattern *FcFontMatch(FcConfig *config, FcPattern *pattern, FcResult *result);
+FcFontSet *FcFontList(FcConfig *config, FcPattern *pattern, FcObjectSet *os);
+void FcFontSetDestroy(FcFontSet *set);
+FcCharSet *FcCharSetCreate(void);
+FcBool FcCharSetAddChar(FcCharSet *charset, FcChar32 ucs4);
+FcBool FcCharSetHasChar(const FcCharSet *charset, FcChar32 ucs4);
+void FcCharSetDestroy(FcCharSet *charset);
+FcObjectSet *FcObjectSetCreate(void);
+FcBool FcObjectSetAdd(FcObjectSet *os, const char *object);
+void FcObjectSetDestroy(FcObjectSet *os);
+FcBool FcPatternAdd(FcPattern *pattern,
+                    const char *object,
+                    FcValue value,
+                    FcBool append);
 FcBool FcPatternAddString(FcPattern *pattern,
                           const char *object,
                           const FcChar8 *s);

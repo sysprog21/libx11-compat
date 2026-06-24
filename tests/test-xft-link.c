@@ -46,6 +46,23 @@ static int has_neutral_dark_pixel(XImage *image)
     return 0;
 }
 
+static int has_dark_pixel_in_rect(XImage *image, int x0, int y0, int w, int h)
+{
+    if (!image)
+        return 0;
+    for (int y = y0; y < y0 + h && y < image->height; y++) {
+        for (int x = x0; x < x0 + w && x < image->width; x++) {
+            unsigned long pixel = XGetPixel(image, x, y);
+            unsigned r = (unsigned) ((pixel >> 24) & 0xffu);
+            unsigned g = (unsigned) ((pixel >> 16) & 0xffu);
+            unsigned b = (unsigned) ((pixel >> 8) & 0xffu);
+            if (r < 0x80 && g < 0x80 && b < 0x80)
+                return 1;
+        }
+    }
+    return 0;
+}
+
 /* Drive the XftFontMatch -> caller-destroys-match -> XftFontClose sequence
  * Motif uses, and verify the match stays independent from later edits to the
  * source pattern.
@@ -148,6 +165,142 @@ static int exercise_font_copy_refcount(Display *display, int screen)
     return 1;
 }
 
+static int exercise_pattern_prepend(void)
+{
+    FcPattern *pattern = FcPatternCreate();
+    FcValue value;
+    FcChar8 *family = NULL;
+    int result = 0;
+
+    if (!pattern) {
+        fprintf(stderr, "FcPatternCreate failed\n");
+        return 0;
+    }
+    value.type = FcTypeString;
+    value.u.s = (const FcChar8 *) "first";
+    if (!FcPatternAdd(pattern, FC_FAMILY, value, FcTrue)) {
+        fprintf(stderr, "FcPatternAdd append failed\n");
+        goto cleanup;
+    }
+    value.u.s = (const FcChar8 *) "override";
+    if (!FcPatternAdd(pattern, FC_FAMILY, value, FcFalse)) {
+        fprintf(stderr, "FcPatternAdd prepend failed\n");
+        goto cleanup;
+    }
+    if (FcPatternGetString(pattern, FC_FAMILY, 0, &family) != FcResultMatch ||
+        strcmp((const char *) family, "override")) {
+        fprintf(stderr, "FcPatternAdd prepend did not become value 0\n");
+        goto cleanup;
+    }
+    if (FcPatternGetString(pattern, FC_FAMILY, 1, &family) != FcResultMatch ||
+        strcmp((const char *) family, "first")) {
+        fprintf(stderr, "FcPatternAdd prepend displaced old value\n");
+        goto cleanup;
+    }
+    result = 1;
+
+cleanup:
+    FcPatternDestroy(pattern);
+    return result;
+}
+
+/* Detect whether the host can render a CJK glyph at all, by asking the
+ * charset-aware fallback for a font that covers just 0x4e00. Minimal CI
+ * images and the bundled font set carry no CJK font, so the mixed-charset
+ * test below only enforces CJK coverage where it is actually achievable.
+ */
+static int host_provides_cjk(Display *display)
+{
+    FcPattern *pattern = FcPatternCreate();
+    FcCharSet *charset = FcCharSetCreate();
+    XftFont *font = NULL;
+    int provides = 0;
+
+    if (!pattern || !charset)
+        goto cleanup;
+    if (!FcCharSetAddChar(charset, 0x4e00))
+        goto cleanup;
+    FcValue value;
+    value.type = FcTypeCharSet;
+    value.u.c = charset;
+    if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) "Sans") ||
+        !FcPatternAddInteger(pattern, FC_SIZE, 12) ||
+        !FcPatternAdd(pattern, FC_CHARSET, value, FcTrue))
+        goto cleanup;
+    font = XftFontOpenPattern(display, pattern);
+    /* XftFontOpenPattern only takes ownership of the pattern on success; on
+     * failure the caller still owns it, so clear the local handle only once
+     * the font opened to avoid leaking the pattern down the cleanup path.
+     */
+    if (font)
+        pattern = NULL;
+    provides = font && XftCharExists(display, font, 0x4e00);
+
+cleanup:
+    if (font)
+        XftFontClose(display, font);
+    if (pattern)
+        FcPatternDestroy(pattern);
+    FcCharSetDestroy(charset);
+    return provides;
+}
+
+static int exercise_mixed_charset(Display *display)
+{
+    FcPattern *pattern = FcPatternCreate();
+    FcCharSet *charset = FcCharSetCreate();
+    XftFont *font = NULL;
+    int result = 0;
+
+    if (!pattern || !charset) {
+        fprintf(stderr, "mixed charset setup failed\n");
+        goto cleanup;
+    }
+    if (!FcCharSetAddChar(charset, 'A') || !FcCharSetAddChar(charset, 0x4e00)) {
+        fprintf(stderr, "mixed charset add failed\n");
+        goto cleanup;
+    }
+    FcValue value;
+    value.type = FcTypeCharSet;
+    value.u.c = charset;
+    if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) "Sans") ||
+        !FcPatternAddInteger(pattern, FC_SIZE, 12) ||
+        !FcPatternAdd(pattern, FC_CHARSET, value, FcTrue)) {
+        fprintf(stderr, "mixed charset pattern failed\n");
+        goto cleanup;
+    }
+    font = XftFontOpenPattern(display, pattern);
+    if (!font) {
+        fprintf(stderr, "mixed charset font open failed\n");
+        goto cleanup;
+    }
+    /* Pattern ownership transferred to the font only now that it opened. */
+    pattern = NULL;
+    if (!XftCharExists(display, font, 'A')) {
+        fprintf(stderr, "mixed charset font missed ASCII glyph\n");
+        goto cleanup;
+    }
+    /* When the host actually has a CJK font, the charset-aware fallback must
+     * have selected one that covers the requested Han glyph. Where no CJK
+     * font exists, XftFontOpenPattern still returns a usable base font and
+     * the glyph resolves per draw call, so do not fail the link smoke test.
+     */
+    if (host_provides_cjk(display) && !XftCharExists(display, font, 0x4e00)) {
+        fprintf(stderr,
+                "mixed charset fallback dropped a renderable CJK glyph\n");
+        goto cleanup;
+    }
+    result = 1;
+
+cleanup:
+    if (font)
+        XftFontClose(display, font);
+    if (pattern)
+        FcPatternDestroy(pattern);
+    FcCharSetDestroy(charset);
+    return result;
+}
+
 int main(void)
 {
     Display *display = XOpenDisplay(NULL);
@@ -156,6 +309,14 @@ int main(void)
         return 1;
     }
     int screen = DefaultScreen(display);
+    if (!exercise_pattern_prepend()) {
+        XCloseDisplay(display);
+        return 1;
+    }
+    if (!exercise_mixed_charset(display)) {
+        XCloseDisplay(display);
+        return 1;
+    }
     if (!exercise_match_refcount(display, screen)) {
         XCloseDisplay(display);
         return 1;
@@ -180,6 +341,13 @@ int main(void)
     XftFont *font = XftFontOpenName(display, screen, "Sans-12");
     if (!font) {
         fprintf(stderr, "XftFontOpenName failed\n");
+        XFreePixmap(display, pixmap);
+        XCloseDisplay(display);
+        return 1;
+    }
+    if (XftCharExists(display, font, 0x10ffff)) {
+        fprintf(stderr, "XftCharExists accepted unsupported non-BMP glyph\n");
+        XftFontClose(display, font);
         XFreePixmap(display, pixmap);
         XCloseDisplay(display);
         return 1;
@@ -235,9 +403,24 @@ int main(void)
     const FcChar8 text[] = "Hello";
     XftDrawStringUtf8(draw, &color, font, 4, 20, text,
                       (int) strlen((const char *) text));
+    XRectangle clip = {4, 0, 24, 32};
+    if (!XftDrawSetClipRectangles(draw, 0, 0, &clip, 1)) {
+        fprintf(stderr, "XftDrawSetClipRectangles failed\n");
+        XftDrawDestroy(draw);
+        XftColorFree(display, DefaultVisual(display, screen),
+                     DefaultColormap(display, screen), &color);
+        XftFontClose(display, varargFont);
+        XftFontClose(display, font);
+        XFreePixmap(display, pixmap);
+        XCloseDisplay(display);
+        return 1;
+    }
+    XftDrawStringUtf8(draw, &color, font, 80, 20, text,
+                      (int) strlen((const char *) text));
     XImage *image =
         XGetImage(display, pixmap, 0, 0, 256, 32, AllPlanes, ZPixmap);
-    int ok = has_neutral_dark_pixel(image);
+    int ok = has_neutral_dark_pixel(image) &&
+             !has_dark_pixel_in_rect(image, 80, 0, 80, 32);
     if (image)
         XDestroyImage(image);
     XftDrawDestroy(draw);

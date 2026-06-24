@@ -1,6 +1,7 @@
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/extensions/XKB.h>
+#include <X11/extensions/XTest.h>
 #include <X11/extensions/sync.h>
 #include <X11/extensions/shape.h>
 #include <X11/extensions/XShm.h>
@@ -26,6 +27,7 @@
 #include "path/compose.h"
 #include "path/edges.h"
 #include "path/path.h"
+#include "replay-target.h"
 #include "state-snapshot.h"
 #include "timeline.h"
 #include "util.h"
@@ -286,6 +288,45 @@ static int test_keyboard(Display *display)
     CHECK(lookupSym == XK_A, "XkbLookupKeySym did not return XK_A for Shift+a");
     CHECK(consumedModifiers == ShiftMask,
           "XkbLookupKeySym did not consume ShiftMask");
+
+    /* Shift maps the whole US top row / punctuation, not just letters. */
+    KeySym shiftSym = NoSymbol;
+    CHECK(XkbLookupKeySym(display, XKeysymToKeycode(display, XK_1), ShiftMask,
+                          NULL, &shiftSym) &&
+              shiftSym == XK_exclam,
+          "Shift+1 did not produce '!'");
+    CHECK(XkbLookupKeySym(display, XKeysymToKeycode(display, XK_slash),
+                          ShiftMask, NULL, &shiftSym) &&
+              shiftSym == XK_question,
+          "Shift+/ did not produce '?'");
+    CHECK(XkbLookupKeySym(display, XKeysymToKeycode(display, XK_minus),
+                          ShiftMask, NULL, &shiftSym) &&
+              shiftSym == XK_underscore,
+          "Shift+- did not produce '_'");
+
+    /* Reverse direction must agree: a shifted symbol resolves to its base key
+     * plus ShiftMask, so accelerators bound on the keysym match Shift+key.
+     */
+    CHECK(
+        XKeysymToKeycode(display, XK_exclam) == XKeysymToKeycode(display, XK_1),
+        "XKeysymToKeycode(!) did not resolve to the '1' key");
+    CHECK(XkbKeysymToModifiers(display, XK_exclam) == ShiftMask,
+          "XkbKeysymToModifiers(!) did not report ShiftMask");
+    CHECK(XKeysymToKeycode(display, XK_question) ==
+              XKeysymToKeycode(display, XK_slash),
+          "XKeysymToKeycode(?) did not resolve to the '/' key");
+
+    /* XKeysymToKeycode must not alias a scancode key (XK_Execute is
+     * SDLK_EXECUTE 0x40000074, whose low byte is the 't' keycode) onto an
+     * ASCII letter; otherwise Motif binds osfActivate onto 't'. Every keycode
+     * it returns must round-trip back to the requested keysym.
+     */
+    KeyCode tCode = XKeysymToKeycode(display, XK_t);
+    KeyCode execCode = XKeysymToKeycode(display, XK_Execute);
+    CHECK(tCode != 0 && XkbKeycodeToKeysym(display, tCode, 0, 0) == XK_t,
+          "XKeysymToKeycode(XK_t) does not round-trip");
+    CHECK(execCode == 0 || execCode != tCode,
+          "XKeysymToKeycode(XK_Execute) aliases onto the 't' keycode");
     CHECK(XkbKeysymToModifiers(display, XK_A) == ShiftMask,
           "XkbKeysymToModifiers did not report ShiftMask for XK_A");
     CHECK(XkbKeysymToModifiers(display, XK_Control_L) == ControlMask,
@@ -504,20 +545,170 @@ static int test_keyboard(Display *display)
         "XGrabKeyboard did not report GrabSuccess");
     CHECK(XUngrabKeyboard(display, CurrentTime) == 1, "XUngrabKeyboard failed");
 
-    /* XmbLookupString decodes ASCII keysyms to UTF-8 with XLookupBoth. */
+    /* Lookup APIs decode physical keycodes through modifiers. */
     XKeyEvent ev = {0};
     ev.type = KeyPress;
     ev.display = display;
-    ev.keycode = (KeyCode) (XK_a & 0xFF);
+    ev.keycode = XKeysymToKeycode(display, XK_a);
     char buf[8] = {0};
     KeySym lookedUp = NoSymbol;
     Status lookupStatus = 0;
-    int n =
-        XmbLookupString(NULL, &ev, buf, sizeof(buf), &lookedUp, &lookupStatus);
-    CHECK(n == 1 && buf[0] == 'a', "XmbLookupString did not return 'a'");
-    CHECK(lookedUp == XK_a, "XmbLookupString returned wrong keysym");
+
+    int n = XLookupString(&ev, buf, sizeof(buf), &lookedUp, NULL);
+    CHECK(n == 1 && buf[0] == 'a', "XLookupString did not return 'a'");
+    CHECK(lookedUp == XK_a, "XLookupString returned wrong keysym");
+
+    memset(buf, 0, sizeof(buf));
+    lookedUp = NoSymbol;
+    ev.state = ShiftMask;
+    n = XLookupString(&ev, buf, sizeof(buf), &lookedUp, NULL);
+    CHECK(n == 1 && buf[0] == 'A', "XLookupString did not return shifted 'A'");
+    CHECK(lookedUp == XK_A, "XLookupString returned wrong shifted keysym");
+
+    memset(buf, 0, sizeof(buf));
+    lookedUp = NoSymbol;
+    lookupStatus = 0;
+    n = XmbLookupString(NULL, &ev, buf, sizeof(buf), &lookedUp, &lookupStatus);
+    CHECK(n == 1 && buf[0] == 'A',
+          "XmbLookupString did not return shifted 'A'");
+    CHECK(lookedUp == XK_A, "XmbLookupString returned wrong shifted keysym");
     CHECK(lookupStatus == XLookupBoth,
           "XmbLookupString status should be XLookupBoth for ASCII");
+
+    memset(buf, 0, sizeof(buf));
+    lookedUp = NoSymbol;
+    lookupStatus = 0;
+    n = Xutf8LookupString(NULL, &ev, buf, sizeof(buf), &lookedUp,
+                          &lookupStatus);
+    CHECK(n == 1 && buf[0] == 'A',
+          "Xutf8LookupString did not return shifted 'A'");
+    CHECK(lookedUp == XK_A, "Xutf8LookupString returned wrong shifted keysym");
+    CHECK(lookupStatus == XLookupBoth,
+          "Xutf8LookupString status should be XLookupBoth for ASCII");
+
+    struct {
+        KeySym keysym;
+        char byte;
+        const char *name;
+    } controls[] = {
+        {XK_Return, '\r', "Return"},       {XK_Tab, '\t', "Tab"},
+        {XK_BackSpace, '\b', "BackSpace"}, {XK_Escape, 0x1b, "Escape"},
+        {XK_Delete, 0x7f, "Delete"},
+    };
+    for (size_t i = 0; i < ARRAY_LENGTH(controls); i++) {
+        ev.keycode = XKeysymToKeycode(display, controls[i].keysym);
+        ev.state = 0;
+        memset(buf, 0, sizeof(buf));
+        lookedUp = NoSymbol;
+        n = XLookupString(&ev, buf, sizeof(buf), &lookedUp, NULL);
+        CHECK(n == 1 && buf[0] == controls[i].byte,
+              "XLookupString did not return control byte");
+        CHECK(lookedUp == controls[i].keysym,
+              "XLookupString returned wrong control keysym");
+
+        memset(buf, 0, sizeof(buf));
+        lookedUp = NoSymbol;
+        lookupStatus = 0;
+        n = Xutf8LookupString(NULL, &ev, buf, sizeof(buf), &lookedUp,
+                              &lookupStatus);
+        CHECK(n == 1 && buf[0] == controls[i].byte,
+              "Xutf8LookupString did not return control byte");
+        CHECK(lookedUp == controls[i].keysym,
+              "Xutf8LookupString returned wrong control keysym");
+        CHECK(lookupStatus == XLookupBoth,
+              "Xutf8LookupString status should be XLookupBoth for controls");
+    }
+    return 1;
+}
+
+/* Drain key events until one for keycode and type arrives, decode it, and
+ * report whether ShiftMask was set and which UTF-8 byte the lookup produced.
+ * Returns False if no matching event is delivered within the guard budget.
+ */
+static Bool awaitFakeKeyEvent(Display *display,
+                              int type,
+                              unsigned int keycode,
+                              Bool *shiftOut,
+                              char *charOut)
+{
+    for (int guard = 0; guard < 400; guard++) {
+        if (XPending(display) <= 0) {
+            XSync(display, False);
+            continue;
+        }
+        XEvent ev;
+        XNextEvent(display, &ev);
+        if (ev.type != type || ev.xkey.keycode != (keycode & 0xFF))
+            continue;
+        char buf[8] = {0};
+        KeySym keysym = NoSymbol;
+        Status status = 0;
+        int n = Xutf8LookupString(NULL, &ev.xkey, buf, sizeof(buf), &keysym,
+                                  &status);
+        *shiftOut = (ev.xkey.state & ShiftMask) ? True : False;
+        *charOut = (n == 1) ? buf[0] : '\0';
+        return True;
+    }
+    return False;
+}
+
+/* Regression guard for XTestFakeKeyEvent modifier threading: synthetic key
+ * events carry no modifier state of their own, so a held fake Shift must be
+ * stamped onto later fake key events. Without it, replays cannot type
+ * uppercase. Mapping a large top-level window registers it as the XTest replay
+ * target so the injected events have somewhere to land.
+ */
+static int test_xtest_modifiers(Display *display)
+{
+    Window root = DefaultRootWindow(display);
+    int sw = DisplayWidth(display, DefaultScreen(display));
+    int sh = DisplayHeight(display, DefaultScreen(display));
+    Window win = XCreateSimpleWindow(display, root, 0, 0, (unsigned) sw,
+                                     (unsigned) sh, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+    XSelectInput(display, win, KeyPressMask | KeyReleaseMask);
+    XMapWindow(display, win);
+    XSync(display, False);
+    XSetInputFocus(display, win, RevertToParent, CurrentTime);
+    CHECK(replayTargetWindowId() != 0,
+          "mapped window was not registered as the XTest target");
+
+    KeyCode shiftCode = XKeysymToKeycode(display, XK_Shift_L);
+    KeyCode hCode = XKeysymToKeycode(display, XK_h);
+    CHECK(shiftCode != 0 && hCode != 0,
+          "modifier/letter keycode lookup failed");
+
+    while (XPending(display) > 0) {
+        XEvent drain;
+        XNextEvent(display, &drain);
+    }
+
+    Bool shifted = False;
+    char produced = '\0';
+    XTestFakeKeyEvent(display, shiftCode, True, 0);
+    CHECK(awaitFakeKeyEvent(display, KeyPress, shiftCode, &shifted, &produced),
+          "no KeyPress delivered for fake Shift press");
+    CHECK(!shifted, "fake Shift press carried post-press ShiftMask");
+
+    XTestFakeKeyEvent(display, hCode, True, 0);
+    CHECK(awaitFakeKeyEvent(display, KeyPress, hCode, &shifted, &produced),
+          "no KeyPress delivered for fake Shift+h");
+    CHECK(shifted, "held fake Shift was not threaded onto the key event");
+    CHECK(produced == 'H', "fake Shift+h did not decode to uppercase 'H'");
+
+    XTestFakeKeyEvent(display, shiftCode, False, 0);
+    CHECK(
+        awaitFakeKeyEvent(display, KeyRelease, shiftCode, &shifted, &produced),
+        "no KeyRelease delivered for fake Shift release");
+    CHECK(shifted, "fake Shift release did not carry pre-release ShiftMask");
+
+    XTestFakeKeyEvent(display, hCode, True, 0);
+    CHECK(awaitFakeKeyEvent(display, KeyPress, hCode, &shifted, &produced),
+          "no KeyPress delivered after Shift release");
+    CHECK(!shifted, "Shift state persisted after the fake release");
+    CHECK(produced == 'h', "post-release key did not decode to lowercase 'h'");
+
+    XDestroyWindow(display, win);
     return 1;
 }
 
@@ -922,6 +1113,18 @@ static int test_colors(Display *display)
     CHECK(exact.red == 0xa000 && exact.green == 0xb000 && exact.blue == 0xc000,
           "XParseColor #rgb returned wrong components");
 
+    memset(&exact, 0, sizeof(exact));
+    CHECK(XParseColor(display, colormap, "rgb:e5/e5/e5", &exact),
+          "XParseColor rgb:r/g/b failed");
+    CHECK(exact.red == 0xe5e5 && exact.green == 0xe5e5 &&
+              exact.blue == 0xe5e5 && exact.pixel == 0xFFE5E5E5,
+          "XParseColor rgb:r/g/b returned wrong components");
+    memset(&exact, 0, sizeof(exact));
+    CHECK(XParseColor(display, colormap, "rgb:f/f/f", &exact),
+          "XParseColor rgb:f/f/f failed");
+    CHECK(exact.red == 0xffff && exact.green == 0xffff && exact.blue == 0xffff,
+          "XParseColor rgb: single-digit not bit-replicated to full intensity");
+
     XColor screen;
     memset(&exact, 0, sizeof(exact));
     memset(&screen, 0, sizeof(screen));
@@ -968,6 +1171,8 @@ static int test_colors(Display *display)
     screen.pixel = 0x87654321;
     CHECK(!XParseColor(display, colormap, "#12xx56", &exact),
           "XParseColor accepted invalid hex");
+    CHECK(!XParseColor(display, colormap, "rgb:e5/e5", &exact),
+          "XParseColor accepted invalid rgb spec");
     CHECK(!XLookupColor(display, colormap, "not-a-real-color", &exact, &screen),
           "XLookupColor accepted invalid color");
     CHECK(!XAllocNamedColor(display, colormap, "not-a-real-color", &screen,
@@ -1054,6 +1259,21 @@ static int pixel_is_between_black_and_white(SDL_Surface *surface, int x, int y)
                 XC_SURFACE_FORMAT(surface), &red, &green, &blue, &alpha);
     return alpha == 255 && red == green && green == blue && red > 0 &&
            red < 255;
+}
+
+static int count_rgb_pixels(SDL_Surface *surface,
+                            Uint8 red,
+                            Uint8 green,
+                            Uint8 blue)
+{
+    int count = 0;
+    for (int y = 0; y < surface->h; y++) {
+        for (int x = 0; x < surface->w; x++) {
+            if (pixel_is_rgb(surface, x, y, red, green, blue))
+                count++;
+        }
+    }
+    return count;
 }
 
 static int test_pixmaps(Display *display)
@@ -6098,6 +6318,92 @@ static int test_fonts(Display *display)
         CHECK(sawBlackTextPixel,
               "XDrawString treated X11 black pixel as transparent");
 
+        /* Text-stamp invalidation regression. The stamp cache only tracks
+         * window drawables, and only a TTF (non-fixed) font records a stamp,
+         * so draw with a helvetica GC on a mapped window. An identical redraw
+         * of a stamped cell is skipped to keep anti-aliased text from
+         * accumulating; overwriting the cell must drop the stamp so the redraw
+         * actually repaints. A stale stamp would skip the redraw and leave the
+         * overwrite showing, which is the missing-text failure mode of the
+         * cache.
+         */
+        Window stampDrawWindow =
+            XCreateSimpleWindow(display, root, 0, 0, 96, 32, 0, 0, 0x00FFFFFF);
+        CHECK(stampDrawWindow != None,
+              "text stamp draw window creation failed");
+        XMapWindow(display, stampDrawWindow);
+        GC stampDrawGc = XCreateGC(display, stampDrawWindow, 0, NULL);
+        CHECK(stampDrawGc != NULL, "text stamp draw GC creation failed");
+        XFontStruct *stampDrawFont =
+            XLoadQueryFont(display, "*-helvetica-medium-r-normal--14-*");
+        CHECK(stampDrawFont && stampDrawFont->fid != None,
+              "text stamp draw font load failed");
+        CHECK(XSetFont(display, stampDrawGc, stampDrawFont->fid),
+              "text stamp draw set font failed");
+        CHECK(XSetForeground(display, stampDrawGc, 0),
+              "text stamp draw black setup failed");
+        CHECK(
+            XDrawString(display, stampDrawWindow, stampDrawGc, 2, 18, "MM", 2),
+            "text stamp draw first draw failed");
+        GET_RENDERER(stampDrawWindow, renderer);
+        textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "text stamp draw first readback failed");
+        int stampBlackFirst = count_rgb_pixels(textSurface, 0, 0, 0);
+        SDL_FreeSurface(textSurface);
+        CHECK(stampBlackFirst > 0, "text stamp first draw produced no black");
+        /* Overwrite the stamped cell with the background; this must invalidate
+         * the stamp recorded by the first draw.
+         */
+        CHECK(XSetForeground(display, stampDrawGc, 0x00FFFFFF),
+              "text stamp draw white setup failed");
+        CHECK(
+            XFillRectangle(display, stampDrawWindow, stampDrawGc, 0, 0, 96, 32),
+            "text stamp draw overwrite failed");
+        textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "text stamp draw overwrite readback failed");
+        int stampBlackCleared = count_rgb_pixels(textSurface, 0, 0, 0);
+        SDL_FreeSurface(textSurface);
+        CHECK(stampBlackCleared < stampBlackFirst,
+              "text stamp overwrite did not clear the cell");
+        /* Redraw the identical label. If the overwrite failed to drop the
+         * stamp, the skip leaves the cell cleared and the black never returns.
+         */
+        CHECK(XSetForeground(display, stampDrawGc, 0),
+              "text stamp draw redraw black setup failed");
+        CHECK(
+            XDrawString(display, stampDrawWindow, stampDrawGc, 2, 18, "MM", 2),
+            "text stamp draw redraw failed");
+        textSurface = getRenderSurface(renderer);
+        CHECK(textSurface, "text stamp draw redraw readback failed");
+        int stampBlackRedraw = count_rgb_pixels(textSurface, 0, 0, 0);
+        SDL_FreeSurface(textSurface);
+        CHECK(stampBlackRedraw > stampBlackCleared,
+              "overwriting a stamped cell left a stale skip that dropped the "
+              "redraw");
+        XFreeFont(display, stampDrawFont);
+        XFreeGC(display, stampDrawGc);
+        XDestroyWindow(display, stampDrawWindow);
+
+        Window stampWindow =
+            XCreateSimpleWindow(display, root, 0, 0, 96, 32, 0, 0, 0x00FFFFFF);
+        CHECK(stampWindow != None, "text stamp unmap window creation failed");
+        XMapWindow(display, stampWindow);
+        Window stampCover = XCreateSimpleWindow(display, stampWindow, 0, 0, 48,
+                                                32, 0, 0, 0x00FFFFFF);
+        CHECK(stampCover != None, "text stamp unmap cover creation failed");
+        XMapWindow(display, stampCover);
+        SDL_Rect stampCell = {2, 4, 24, 16};
+        textStampRecord(stampWindow, &stampCell, GET_GC(gc)->font, 0, "MM");
+        CHECK(
+            textStampLookup(stampWindow, &stampCell, GET_GC(gc)->font, 0, "MM"),
+            "text stamp unmap setup did not record a stamp");
+        CHECK(XUnmapWindow(display, stampCover),
+              "text stamp unmap cover unmap failed");
+        CHECK(!textStampLookup(stampWindow, &stampCell, GET_GC(gc)->font, 0,
+                               "MM"),
+              "unmapping an overlapping child left a stale XDrawString stamp");
+        XDestroyWindow(display, stampWindow);
+
         Window textWindow =
             XCreateSimpleWindow(display, root, 0, 0, 96, 32, 0, 0, 0x00FFFFFF);
         CHECK(textWindow != None, "XDrawText window creation failed");
@@ -7220,6 +7526,96 @@ static int test_icccm_wm_hints(Display *display)
     return 1;
 }
 
+/* An active grab is released when its grab window becomes unviewable. Without
+ * this a Motif menu's pointer grab outlives the unmapped menu shell and
+ * swallows all later input (the Help-menu freeze). Exercise unmap, destroy,
+ * the ancestor-unmap path, and reparent-under-an-unmapped-parent.
+ */
+static int test_grab_release_on_unviewable(Display *display)
+{
+    Window root = DefaultRootWindow(display);
+
+    /* Pointer grab dropped when the grab window itself unmaps. */
+    Window win = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(win != None, "grab-release: window creation failed");
+    XMapWindow(display, win);
+    CHECK(XGrabPointer(display, win, False, ButtonPressMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "grab-release: XGrabPointer failed");
+    CHECK(getGrabbedPointerWindow() == win,
+          "grab-release: pointer grab not active on the window");
+    CHECK(XUnmapWindow(display, win), "grab-release: unmap failed");
+    CHECK(getGrabbedPointerWindow() == None,
+          "unmapping the grab window left the pointer grab active");
+    XDestroyWindow(display, win);
+
+    /* Keyboard grab dropped on unmap as well. */
+    win = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(win != None, "grab-release: keyboard window creation failed");
+    XMapWindow(display, win);
+    CHECK(XGrabKeyboard(display, win, False, GrabModeAsync, GrabModeAsync,
+                        CurrentTime) == GrabSuccess,
+          "grab-release: XGrabKeyboard failed");
+    CHECK(getGrabbedKeyboardWindow() == win,
+          "grab-release: keyboard grab not active on the window");
+    CHECK(XUnmapWindow(display, win), "grab-release: keyboard unmap failed");
+    CHECK(getGrabbedKeyboardWindow() == None,
+          "unmapping the grab window left the keyboard grab active");
+    XDestroyWindow(display, win);
+
+    /* Pointer grab dropped when the grab window is destroyed. */
+    win = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(win != None, "grab-release: destroy window creation failed");
+    XMapWindow(display, win);
+    CHECK(XGrabPointer(display, win, False, ButtonPressMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "grab-release: XGrabPointer (destroy) failed");
+    CHECK(getGrabbedPointerWindow() == win,
+          "grab-release: pointer grab not active before destroy");
+    XDestroyWindow(display, win);
+    CHECK(getGrabbedPointerWindow() == None,
+          "destroying the grab window left the pointer grab active");
+
+    /* Grab on a child dropped when an ancestor unmaps (isParent path). */
+    Window parent = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(parent != None, "grab-release: ancestor parent creation failed");
+    XMapWindow(display, parent);
+    Window child = XCreateSimpleWindow(display, parent, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(child != None, "grab-release: ancestor child creation failed");
+    XMapWindow(display, child);
+    CHECK(XGrabPointer(display, child, False, ButtonPressMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "grab-release: XGrabPointer on child failed");
+    CHECK(getGrabbedPointerWindow() == child,
+          "grab-release: child grab not active");
+    CHECK(XUnmapWindow(display, parent), "grab-release: ancestor unmap failed");
+    CHECK(getGrabbedPointerWindow() == None,
+          "unmapping an ancestor of the grab window left the grab active");
+    XDestroyWindow(display, parent);
+
+    /* Grab dropped when a mapped grab window is reparented under an unmapped
+     * parent, which makes it unviewable without an XUnmapWindow.
+     */
+    Window hiddenParent =
+        XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(hiddenParent != None, "grab-release: hidden parent creation failed");
+    win = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(win != None, "grab-release: reparent window creation failed");
+    XMapWindow(display, win);
+    CHECK(XGrabPointer(display, win, False, ButtonPressMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "grab-release: XGrabPointer (reparent) failed");
+    CHECK(getGrabbedPointerWindow() == win,
+          "grab-release: grab not active before reparent");
+    XReparentWindow(display, win, hiddenParent, 0, 0);
+    CHECK(getGrabbedPointerWindow() == None,
+          "reparenting the grab window under an unmapped parent left the grab "
+          "active");
+    XDestroyWindow(display, hiddenParent);
+
+    return 1;
+}
+
 static int run_test(const char *name, int (*test)(Display *))
 {
     Display *display = XOpenDisplay(NULL);
@@ -8033,6 +8429,7 @@ int main(void)
     run_test("state_snapshot", test_state_snapshot);
     run_test("atoms", test_atoms);
     run_test("keyboard", test_keyboard);
+    run_test("xtest_modifiers", test_xtest_modifiers);
     run_test("gc", test_gc);
     run_test("compat_stubs", test_compat_stubs);
     run_test("colors", test_colors);
@@ -8044,6 +8441,7 @@ int main(void)
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);
     run_test("events", test_events);
+    run_test("grab_release_on_unviewable", test_grab_release_on_unviewable);
     run_test("windows", test_windows);
     run_test("fonts", test_fonts);
     run_test("contexts", test_contexts);

@@ -195,21 +195,69 @@ int XTestFakeButtonEvent(Display *display,
     return pushFakeEvent(display, &ev);
 }
 
+/* Map a modifier key's keycode (low byte of the SDL keycode) to its KMOD mask.
+ * Returns 0 for non-modifier keys.
+ */
+static Uint16 kmodForModifierKeycode(unsigned int keycode)
+{
+    switch (keycode & 0xFF) {
+    case 0xE0: /* SDLK_LCTRL */
+    case 0xE4: /* SDLK_RCTRL */
+        return KMOD_CTRL;
+    case 0xE1: /* SDLK_LSHIFT */
+    case 0xE5: /* SDLK_RSHIFT */
+        return KMOD_SHIFT;
+    case 0xE2: /* SDLK_LALT */
+    case 0xE6: /* SDLK_RALT */
+        return KMOD_ALT;
+    default:
+        return 0;
+    }
+}
+
+/* Modifier keys held by prior fake presses. Synthetic XTest key events carry no
+ * modifier state on their own, so track held modifier keycodes here and stamp
+ * the running mask onto every fake key event. This lets replays hold Shift and
+ * type uppercase, matching how a real keyboard reports modifiers.
+ *
+ * ponytail: single static for the serial replay-input path, no locking.
+ */
+static Uint16 fakeHeldMods = 0;
+
 int XTestFakeKeyEvent(Display *display,
                       unsigned int keycode,
                       Bool is_press,
                       unsigned long delay)
 {
     honorDelay(delay);
+    /* Compute the held-modifier set after this key without committing it yet.
+     * The event itself carries the pre-press mask (a Shift-down event does not
+     * report Shift; a Shift-up still does), matching how a real keyboard
+     * reports modifier state.
+     */
+    Uint16 modBit = kmodForModifierKeycode(keycode);
+    Uint16 nextMods = fakeHeldMods;
+    if (modBit) {
+        if (is_press)
+            nextMods |= modBit;
+        else
+            nextMods &= (Uint16) ~modBit;
+    }
     Uint32 winId = replayTargetWindowId();
-    if (winId == 0)
+    if (winId == 0) {
+        /* No delivery target right now, but keep tracking modifier state so a
+         * later targeted key still sees the correct held set.
+         */
+        fakeHeldMods = nextMods;
         return 0;
+    }
     SDL_Event ev;
     SDL_zero(ev);
     ev.type = is_press ? SDL_KEYDOWN : SDL_KEYUP;
     ev.key.timestamp = XC_NOW_EVENT_TS();
     ev.key.windowID = winId;
     XC_EVENT_SET_KEY_PRESSED(&ev, is_press);
+    XC_EVENT_SET_KEYMOD(&ev, fakeHeldMods);
     /* X keycodes are server-defined; SDL scancodes are SDL's own enum and the
      * convertEvent path derives the X keycode back from keysym.sym (low byte).
      * Pass the requested code through as the SDL_Keycode so the round-trip
@@ -219,7 +267,10 @@ int XTestFakeKeyEvent(Display *display,
      */
     XC_EVENT_SET_KEYSYM(&ev, (SDL_Keycode) keycode);
     XC_EVENT_SET_SCANCODE(&ev, SDL_GetScancodeFromKey((SDL_Keycode) keycode));
-    return pushFakeEvent(display, &ev);
+    int rc = pushFakeEvent(display, &ev);
+    if (rc)
+        fakeHeldMods = nextMods;
+    return rc;
 }
 
 /* Stubs: device-extension variants need XInput plumbing libx11-compat doesn't
