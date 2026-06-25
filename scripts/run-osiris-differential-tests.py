@@ -216,7 +216,13 @@ capture_osiris() {{
     input_backend=$9
     replay_out="$remote_root/replay-$name"
     rm -rf "$replay_out" "$remote_root/home-$name"
-    mkdir -p "$log_dir" "$screen_dir" "$remote_root/home-$name"
+    mkdir -p "$replay_out" "$log_dir" "$screen_dir" "$remote_root/home-$name"
+    replay_path="$repo/tests/ui/replays/$replay"
+    if [ "$input_backend" = xdotool ]; then
+        replay_path="$replay_out/$replay"
+        awk '/^wait-window / {{ sub(/[0-9]+[ \t]*$/, "15000") }} {{ print }}' \
+            "$repo/tests/ui/replays/$replay" > "$replay_path"
+    fi
     # Read display from the current env so the parallel capture
     # subshells can each target their own Xvfb. Strip the leading
     # colon and any trailing .screen suffix to recover the numeric
@@ -228,12 +234,13 @@ capture_osiris() {{
         --app "$app" \\
         --app-arg=-geometry --app-arg="$geometry_arg" \\
         --workdir "$workdir" \\
-        --replay "$repo/tests/ui/replays/$replay" \\
+        --replay "$replay_path" \\
         --out-root "$replay_out" \\
         --display "$display_num" \\
         --geometry {q(args.geometry)} \\
         --input-backend "$input_backend" \\
         --screenshot-command import \\
+        $([ "$input_backend" = internal ] && printf %s --in-process-snapshots) \\
         --screenshot-region {q(args.screenshot_region)} \\
         --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
@@ -362,10 +369,34 @@ Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-system.log" 2>&
 xvfb_pid=$!
 Xvfb "$compat_display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-compat.log" 2>&1 &
 compat_xvfb_pid=$!
+trap 'exit' INT TERM HUP
 trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
-sleep 1
 
-# Osiris has 4 demos per side and each capture runs a replay so the
+wait_for_display() {{
+    target=$1
+    server_pid=$2
+    waited=0
+    while [ "$waited" -lt 100 ]; do
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            echo "Xvfb for $target exited before accepting connections" >&2
+            return 1
+        fi
+        if DISPLAY="$target" xdotool getdisplaygeometry >/dev/null 2>&1; then
+            return 0
+        fi
+        # ponytail: sub-second poll assumes GNU coreutils sleep (the CI
+        # runner); switch to integer sleep if a POSIX-only sleep is ever
+        # targeted.
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    echo "Xvfb for $target did not become ready within 10s" >&2
+    return 1
+}}
+wait_for_display "$display" "$xvfb_pid"
+wait_for_display "$compat_display" "$compat_xvfb_pid"
+
+# Osiris has 5 demos per side and each capture runs a replay so the
 # capture phase dominates the job. Run system-side and compat-side
 # captures concurrently on separate Xvfb instances.
 system_cap_log="$remote_root/logs/system-capture.log"
@@ -412,6 +443,15 @@ compat_cap_log="$remote_root/logs/compat-capture.log"
         "$system_logs" \\
         "$system_screens" \\
         xdotool
+    capture_osiris system-designer-menu \\
+        "$system_designer" \\
+        "$osiris_src/tools/designer/designer" \\
+        osiris-designer-menu.replay \\
+        940x740+0+0 \\
+        "$system_build" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool
 ) >"$system_cap_log" 2>&1 &
 system_cap_pid=$!
 
@@ -449,6 +489,15 @@ system_cap_pid=$!
         "$compat_designer" \\
         "$osiris_src/tools/designer/designer" \\
         osiris-designer.replay \\
+        940x740+0+0 \\
+        "$repo/build/osiris/build:$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal
+    capture_osiris compat-designer-menu \\
+        "$compat_designer" \\
+        "$osiris_src/tools/designer/designer" \\
+        osiris-designer-menu.replay \\
         940x740+0+0 \\
         "$repo/build/osiris/build:$repo/build" \\
         "$compat_logs" \\
