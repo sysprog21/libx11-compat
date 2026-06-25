@@ -28,6 +28,7 @@
 #include "events.h"
 #include "replay-target.h"
 #include "snapshot.h"
+#include "window.h"
 #include "window-internal.h"
 #include "util.h"
 
@@ -181,6 +182,68 @@ static int waitSnapshotResult(int *waitRcOut)
     return rc;
 }
 
+/* In-process snapshots read a single SDL window surface (the replay
+ * target). Qt popup menus and other override-redirect shells live in
+ * their own borderless SDL windows, so they are absent from that read
+ * even though they render correctly. Composite every mapped
+ * override-redirect top-level onto a copy of the target surface, in
+ * stacking order, so the snapshot matches what a whole-screen capture
+ * (the system side's import) would see.
+ *
+ * Returns a newly allocated surface the caller must free, or NULL when
+ * no popup is present, in which case the caller saves the target
+ * surface unchanged.
+ */
+static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
+{
+    if (SCREEN_WINDOW == None || targetWin == None)
+        return NULL;
+    WindowStruct *targetStruct = GET_WINDOW_STRUCT(targetWin);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    size_t count = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+    SDL_Surface *composed = NULL;
+    for (size_t i = 0; i < count; i++) {
+        Window child = children[i];
+        if (child == targetWin)
+            continue;
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+        if (!childStruct->overrideRedirect || childStruct->mapState != Mapped ||
+            !childStruct->sdlWindow)
+            continue;
+        SDL_Surface *childSurface =
+            SDL_GetWindowSurface(childStruct->sdlWindow);
+        if (!childSurface)
+            continue;
+        if (!composed) {
+            /* SDL_DuplicateSurface is absent from the older SDL2 on the
+             * differential runners, so build the copy the way drawing.c
+             * does: a matching-format surface plus a base blit.
+             */
+            composed = SDL_CreateRGBSurfaceWithFormat(
+                0, target->w, target->h, 32, XC_SURFACE_FMT_ENUM(target));
+            if (!composed)
+                return NULL;
+            if (SDL_BlitSurface(target, NULL, composed, NULL) != 0) {
+                SDL_FreeSurface(composed);
+                return NULL;
+            }
+        }
+        /* ponytail: 1:1 X-logical to surface pixel mapping, correct on the
+         * Xvfb CI path. A HiDPI host would need the surface-to-logical
+         * scale folded into the offset; blit clipping handles popups that
+         * fall partly or wholly outside the target rect.
+         */
+        SDL_Rect dst = {
+            .x = childStruct->x - targetStruct->x,
+            .y = childStruct->y - targetStruct->y,
+            .w = childSurface->w,
+            .h = childSurface->h,
+        };
+        SDL_BlitSurface(childSurface, NULL, composed, &dst);
+    }
+    return composed;
+}
+
 int snapshotHandleEvent(const SDL_Event *event)
 {
     SnapshotEnvelope *env = (SnapshotEnvelope *) event->user.data1;
@@ -195,6 +258,7 @@ int snapshotHandleEvent(const SDL_Event *event)
     char *path = env->path;
     int rc = 0;
     SDL_Surface *ownedSurface = NULL;
+    SDL_Surface *composed = NULL;
     Uint32 winId = replayTargetWindowId();
     SDL_Window *win = (winId != 0) ? SDL_GetWindowFromID(winId) : NULL;
     if (!win) {
@@ -228,6 +292,12 @@ int snapshotHandleEvent(const SDL_Event *event)
         }
     }
 
+    /* Fold any mapped popup windows (Qt menus etc.) into the saved image so
+     * the single-window read matches the system side's whole-screen capture.
+     */
+    composed = composeOverlayPopups(surface, getWindowFromId(winId));
+    SDL_Surface *saveSurface = composed ? composed : surface;
+
     /* SDL_SaveBMP writes incrementally to the open file, so a runner that polls
      * for this path can observe a non-empty but truncated BMP and fail to
      * decode it (PIL "image file is truncated"). Write to a temp file and
@@ -248,7 +318,7 @@ int snapshotHandleEvent(const SDL_Event *event)
     }
     memcpy(tmpPath, path, pathLen);
     memcpy(tmpPath + pathLen, ".tmp", sizeof(".tmp"));
-    if (SDL_SaveBMP(surface, tmpPath) != 0) {
+    if (SDL_SaveBMP(saveSurface, tmpPath) != 0) {
         LOG("snapshot: SDL_SaveBMP(%s) failed: %s\n", tmpPath, SDL_GetError());
         free(tmpPath);
         rc = -3;
@@ -262,8 +332,10 @@ int snapshotHandleEvent(const SDL_Event *event)
         goto signal;
     }
     free(tmpPath);
-    LOG("snapshot: wrote %s (%dx%d)\n", path, surface->w, surface->h);
+    LOG("snapshot: wrote %s (%dx%d)\n", path, saveSurface->w, saveSurface->h);
 signal:
+    if (composed)
+        SDL_FreeSurface(composed);
     if (ownedSurface)
         SDL_FreeSurface(ownedSurface);
     signalSnapshotResult(env->generation, rc);
