@@ -408,6 +408,13 @@ FcBool FcPatternAddBool(FcPattern *pattern, const char *object, FcBool b)
     return addPatternEntry(pattern, object, FcTypeBool, &b, FcTrue);
 }
 
+FcBool FcPatternAddCharSet(FcPattern *pattern,
+                           const char *object,
+                           const FcCharSet *c)
+{
+    return addPatternEntry(pattern, object, FcTypeCharSet, c, FcTrue);
+}
+
 static FcBool addMatrixPatternEntry(FcPattern *pattern,
                                     const char *object,
                                     const FcMatrix *matrix,
@@ -765,6 +772,27 @@ FcFontSet *FcFontList(FcConfig *config, FcPattern *pattern, FcObjectSet *os)
             FcFontSetDestroy(set);
             return NULL;
         }
+    }
+    return set;
+}
+
+FcFontSet *FcFontSort(FcConfig *config,
+                      FcPattern *pattern,
+                      FcBool trim,
+                      FcCharSet **csp,
+                      FcResult *result)
+{
+    (void) trim;
+    if (csp)
+        *csp = NULL;
+    FcFontSet *set = FcFontList(config, pattern, NULL);
+    if (result) {
+        if (!set)
+            *result = FcResultOutOfMemory;
+        else if (set->nfont == 0)
+            *result = FcResultNoMatch;
+        else
+            *result = FcResultMatch;
     }
     return set;
 }

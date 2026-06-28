@@ -220,12 +220,9 @@ static int host_provides_cjk(Display *display)
         goto cleanup;
     if (!FcCharSetAddChar(charset, 0x4e00))
         goto cleanup;
-    FcValue value;
-    value.type = FcTypeCharSet;
-    value.u.c = charset;
     if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) "Sans") ||
         !FcPatternAddInteger(pattern, FC_SIZE, 12) ||
-        !FcPatternAdd(pattern, FC_CHARSET, value, FcTrue))
+        !FcPatternAddCharSet(pattern, FC_CHARSET, charset))
         goto cleanup;
     font = XftFontOpenPattern(display, pattern);
     /* XftFontOpenPattern only takes ownership of the pattern on success; on
@@ -260,12 +257,9 @@ static int exercise_mixed_charset(Display *display)
         fprintf(stderr, "mixed charset add failed\n");
         goto cleanup;
     }
-    FcValue value;
-    value.type = FcTypeCharSet;
-    value.u.c = charset;
     if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) "Sans") ||
         !FcPatternAddInteger(pattern, FC_SIZE, 12) ||
-        !FcPatternAdd(pattern, FC_CHARSET, value, FcTrue)) {
+        !FcPatternAddCharSet(pattern, FC_CHARSET, charset)) {
         fprintf(stderr, "mixed charset pattern failed\n");
         goto cleanup;
     }
@@ -301,6 +295,34 @@ cleanup:
     return result;
 }
 
+static int exercise_font_sort(void)
+{
+    FcPattern *pattern = FcPatternCreate();
+    FcFontSet *set = NULL;
+    FcResult sortResult = FcResultNoMatch;
+    int result = 0;
+
+    if (!pattern)
+        return 0;
+    if (!FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) "Monospace"))
+        goto cleanup;
+    set = FcFontSort(NULL, pattern, FcTrue, NULL, &sortResult);
+    if (!set || sortResult != FcResultMatch || set->nfont < 1) {
+        fprintf(stderr, "FcFontSort failed\n");
+        goto cleanup;
+    }
+    result = 1;
+
+cleanup:
+    /* Real fontconfig's FcFontSetDestroy dereferences its argument, so guard
+     * the NULL the FcPatternAddString / FcFontSort failure paths leave behind.
+     */
+    if (set)
+        FcFontSetDestroy(set);
+    FcPatternDestroy(pattern);
+    return result;
+}
+
 int main(void)
 {
     Display *display = XOpenDisplay(NULL);
@@ -314,6 +336,10 @@ int main(void)
         return 1;
     }
     if (!exercise_mixed_charset(display)) {
+        XCloseDisplay(display);
+        return 1;
+    }
+    if (!exercise_font_sort()) {
         XCloseDisplay(display);
         return 1;
     }

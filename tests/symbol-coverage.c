@@ -252,6 +252,7 @@ int main(void)
     REF(FcDefaultSubstitute);
     REF(FcFontMatch);
     REF(FcFontList);
+    REF(FcFontSort);
     REF(FcFontSetDestroy);
     REF(FcCharSetCreate);
     REF(FcCharSetAddChar);
@@ -263,6 +264,7 @@ int main(void)
     REF(FcPatternAdd);
     REF(FcPatternAddString);
     REF(FcPatternAddInteger);
+    REF(FcPatternAddCharSet);
     REF(FcPatternAddDouble);
     REF(FcPatternAddBool);
     REF(FcPatternGet);
