@@ -3818,6 +3818,46 @@ static int test_events(Display *display)
     CHECK((out.xmotion.state & Button1Mask) == 0,
           "SDL motion kept Button1 state after release");
 
+    Window stalePressWindow =
+        XCreateSimpleWindow(display, root, 180, 0, 30, 30, 0, 0, 0);
+    CHECK(stalePressWindow != None, "stale press window creation failed");
+    XSelectInput(display, stalePressWindow,
+                 ButtonPressMask | ButtonReleaseMask);
+    CHECK(XMapWindow(display, stalePressWindow),
+          "stale press window map failed");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(stalePressWindow)->sdlWindow);
+    buttonEvent.button.x = 5;
+    buttonEvent.button.y = 5;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "stale press setup did not convert");
+    CHECK(XDestroyWindow(display, stalePressWindow),
+          "stale press window destroy failed");
+    Window freshPressWindow =
+        XCreateSimpleWindow(display, root, 220, 0, 30, 30, 0, 0, 0);
+    CHECK(freshPressWindow != None, "fresh press window creation failed");
+    XSelectInput(display, freshPressWindow,
+                 ButtonPressMask | ButtonReleaseMask);
+    CHECK(XMapWindow(display, freshPressWindow),
+          "fresh press window map failed");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(freshPressWindow)->sdlWindow);
+    buttonEvent.button.x = 5;
+    buttonEvent.button.y = 5;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "fresh press after destroyed active window did not convert");
+    CHECK((out.xbutton.state & Button1Mask) == 0,
+          "destroyed active window left Button1 stuck down");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "fresh cleanup release did not convert");
+
     XSelectInput(display, window, EnterWindowMask | LeaveWindowMask);
     SDL_Event crossingEvent;
     SDL_zero(crossingEvent);

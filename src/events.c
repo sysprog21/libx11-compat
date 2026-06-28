@@ -1351,9 +1351,14 @@ void clearPointerStateForWindow(Window window)
     if (window == None)
         return;
     lockActivePointerWindow();
-    if (activePointerWindow == window)
+    if (activePointerWindow == window ||
+        (IS_TYPE(activePointerWindow, WINDOW) &&
+         isParent(window, activePointerWindow))) {
         activePointerWindow = None;
-    if (pointerHoverWindow == window)
+        pointerButtonState = 0;
+    }
+    if (pointerHoverWindow == window || (IS_TYPE(pointerHoverWindow, WINDOW) &&
+                                         isParent(window, pointerHoverWindow)))
         pointerHoverWindow = None;
     unlockActivePointerWindow();
 }
