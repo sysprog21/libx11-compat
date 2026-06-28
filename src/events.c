@@ -109,7 +109,7 @@ void releaseMainEventThread(void)
     mainEventThreadId = 0;
 }
 
-static void pumpEventsSafe(void)
+void pumpEventsSafe(void)
 {
     if (!mainEventThreadCaptured) {
         /* Pre-initialization callers are still single-threaded. */

@@ -40,6 +40,12 @@ int initEventPipe(Display *display);
 void closeEventPipe(Display *display);
 void captureMainEventThreadIfUnset(void);
 void releaseMainEventThread(void);
+/* Refresh SDL's cached input state (mouse buttons, position, modifiers) when
+ * the caller is on the main event thread. XQueryPointer relies on this so a
+ * client busy-polling pointer state, like xwpe's button-release wait, observes
+ * a real release instead of spinning forever on a stale pressed bitmask.
+ */
+void pumpEventsSafe(void);
 void wakeEventPipeForExternalEvent(Display *display);
 unsigned int convertModifierState(Uint16 mod);
 Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...);

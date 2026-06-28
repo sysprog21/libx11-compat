@@ -358,6 +358,13 @@ Bool XQueryPointer(Display *display,
     // https://tronche.com/gui/x/xlib/window-information/XQueryPointer.html
     SET_X_SERVER_REQUEST(display, X_QueryPointer);
     TYPE_CHECK(window, WINDOW, display, False);
+    /* Real XQueryPointer round-trips to the server and always reports the live
+     * pointer state. SDL only refreshes its cached button/position state on a
+     * pump, so without this a client that polls XQueryPointer without draining
+     * the event queue (xwpe's close-box release wait) would spin on a stale
+     * pressed bitmask and hang.
+     */
+    pumpEventsSafe();
     if (root_return)
         *root_return = SCREEN_WINDOW;
     int root_x = 0, root_y = 0;
