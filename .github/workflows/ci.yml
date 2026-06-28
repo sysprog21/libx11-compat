@@ -58,6 +58,12 @@ env:
   # GIMP autoconf step also needs the MOTIF_BUILD_PKGS chain (autoconf + the
   # bundled Motif build).
   GIMP_BUILD_PKGS: "libpng-dev libjpeg-dev zlib1g-dev"
+  # xwpe builds its DAP debug client against json-c and its terminal backend
+  # against ncursesw, neither pulled in by COMMON_BUILD_PKGS, and runs
+  # autoreconf (so it also needs the MOTIF_BUILD_PKGS autotools chain).
+  # python3-pil backs the replay smoke's image assertions; the smoke runs fully
+  # offscreen, so no Xvfb or screenshot tool from DIFFERENTIAL_PKGS is needed.
+  XWPE_BUILD_PKGS: "libjson-c-dev libncurses-dev python3-pil"
   DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
 
 jobs:
@@ -826,6 +832,121 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ui-smoke-xfig
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- xwpe (terminal-style Xft editor) integration and smoke ----
+  #
+  # The X Window Programming Environment builds against libX11-compat and the
+  # SDL_ttf-backed libXft-compat. It runs autoreconf at configure time, links
+  # json-c (DAP client) and ncursesw (terminal backend), and exercises Xrm
+  # parsing, window/event paths, XIM lookup, selections, and Xft/fontconfig
+  # fallback. The replay smoke runs offscreen with in-process snapshots, so no
+  # Xvfb is needed; it has no differential gate yet, so it stays out of
+  # differential.yml.
+  xwpe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} \
+            ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.XWPE_BUILD_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v5
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/xwpe
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache xwpe source clone
+        # mk/xwpe.mk pins XWPE_REVISION and applies compat/xwpe-patches/ to the
+        # clone, so key on both. Exact-match only: a fallback restore on stale
+        # inputs could land newer patches on an older revision.
+        uses: actions/cache@v5
+        with:
+          path: build/upstream/xwpe
+          key: xwpe-src-${{ runner.os }}-${{ hashFiles('mk/xwpe.mk', 'compat/xwpe-patches/**') }}
+
+      - name: Cache ccache
+        # Distinct key from the other workload jobs so the xwpe .o set does not
+        # collide with objects compiled against a different include path.
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xwpe-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xwpe-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=400M
+          ccache --zero-stats
+          echo "CC=ccache clang" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for xwpe)
+        # Stage the upstream Xorg sources serially first. On a cold cache a
+        # parallel `make -j` can start compiling build/upstream/src/*.o (and the
+        # libXpm objects) before the upstream sync recipe has written those .c
+        # files, so prime the stamp once before fanning out.
+        run: |
+          make build/upstream/include/.upstream-stamp
+          make -j"$(nproc)"
+
+      - name: Build xwpe against compat stack
+        id: xwpe
+        # mk/xwpe.mk clones xwpe at XWPE_REVISION, applies compat/xwpe-patches/,
+        # points the linker at build/xwpe/lib-aliases/ so -lX11 / -lXft / -lXext
+        # resolve to the compat shims, and runs configure --without-gpm. The
+        # build log lives at build/xwpe/build.log and is uploaded on failure.
+        run: make xwpe -j"$(nproc)"
+
+      - name: Run xwpe replay smoke checks
+        id: xwpe-smoke
+        # Offscreen in-process snapshots: xwe/xwpe startup, mouse dialog, popup
+        # close, and keyboard-edit replays assert on the rendered region without
+        # a display server.
+        if: ${{ !cancelled() && steps.xwpe.outcome == 'success' }}
+        run: make check-smoke-xwpe
+
+      - name: Upload xwpe build log on failure
+        if: ${{ failure() && steps.xwpe.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: xwpe-build-log
+          path: build/xwpe/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload UI smoke artifacts on failure
+        # Distinct artifact name so concurrent workload uploads do not overwrite.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-xwpe
           path: build/ui-smoke
           if-no-files-found: warn
           retention-days: 7
