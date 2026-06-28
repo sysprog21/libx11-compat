@@ -3,6 +3,7 @@
 
 #include <X11/Xlib.h>
 #include "sdl-compat.h"
+#include "input.h"
 
 #define SEND_EVENT_CODE 1
 #define INTERNAL_EVENT_CODE 2
@@ -54,16 +55,6 @@ Bool postCrossingEvent(Display *display,
                        int detail,
                        unsigned int state);
 Bool postFocusEvent(Display *display, Window window, int type, int detail);
-
-/* Focus-target classification. The window leaf stays collapsed to None
- * for routing, but postFocusChange needs the distinction to pick
- * NotifyDetailNone vs NotifyPointerRoot on the root events per Xlib 10.7.
- */
-typedef enum {
-    FocusKindNone,
-    FocusKindPointerRoot,
-    FocusKindWindow,
-} FocusKind;
 
 void postFocusChange(Display *display,
                      FocusKind oldKind,

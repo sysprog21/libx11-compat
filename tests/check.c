@@ -383,6 +383,24 @@ static int test_keyboard(Display *display)
         display, DefaultRootWindow(display), 0, 0, 10, 10, 0, 0, 0);
     CHECK(probeWindow != None, "XCreateSimpleWindow for focus probe failed");
     XSelectInput(display, probeWindow, FocusChangeMask);
+    XEvent keyEvent;
+    memset(&keyEvent, 0, sizeof(keyEvent));
+    keyEvent.xkey.type = KeyPress;
+    keyEvent.xkey.display = display;
+    keyEvent.xkey.window = probeWindow;
+    keyEvent.xkey.keycode = XKeysymToKeycode(display, XK_a);
+    syncKeyboardFocusFromHost(None);
+    CHECK(XFilterEvent(&keyEvent, probeWindow),
+          "XFilterEvent should drop keys with no host focus");
+    syncKeyboardFocusFromHost(probeWindow);
+    CHECK(!XFilterEvent(&keyEvent, probeWindow),
+          "host focus sync did not unblock key filtering");
+    syncKeyboardFocusFromHost((Window) 0x7ffffffeUL);
+    CHECK(XFilterEvent(&keyEvent, probeWindow),
+          "invalid host focus target should restore key filtering");
+    syncKeyboardFocusFromHost(None);
+    CHECK(XFilterEvent(&keyEvent, probeWindow),
+          "host focus loss did not restore key filtering");
     XSetInputFocus(display, probeWindow, RevertToParent, CurrentTime);
     Window focused = None;
     int revert = 0;
@@ -4087,6 +4105,72 @@ static int test_events(Display *display)
           "SDL restored did not request repaint of the existing backing store");
     while (XCheckTypedWindowEvent(display, window, Expose, &out)) {
     }
+
+    /* A host focus-out/in cycle must not clobber a client XSetInputFocus that
+     * targets a child widget. The SDL focus events name the top-level window;
+     * adopting it would mis-route later keys to the parent. Regression for the
+     * asymmetric FOCUS_GAINED path that used to overwrite the child focus.
+     */
+    Window focusKeepChild =
+        XCreateSimpleWindow(display, window, 1, 1, 6, 6, 0, 0, 0);
+    CHECK(focusKeepChild != None, "focus-keep child creation failed");
+    XSetInputFocus(display, focusKeepChild, RevertToParent, CurrentTime);
+    Window focusKeepResult = None;
+    int focusKeepRevert = 0;
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == focusKeepChild,
+          "XSetInputFocus did not target child before host focus cycle");
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_FOCUS_LOST);
+    CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
+          "SDL focus lost did not convert to FocusOut");
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == focusKeepChild,
+          "host focus loss on top-level cleared client child focus");
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_FOCUS_GAINED);
+    CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
+          "SDL focus gained did not convert to FocusIn");
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == focusKeepChild,
+          "host focus gain on top-level clobbered client child focus");
+    CHECK(XDestroyWindow(display, focusKeepChild),
+          "focus-keep child destroy failed");
+
+    XSetInputFocus(display, window, RevertToParent, CurrentTime);
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_FOCUS_LOST);
+    CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
+          "SDL focus lost on explicit top-level did not convert to FocusOut");
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == window,
+          "host focus loss on top-level cleared explicit top-level focus");
+
+    SDL_RaiseWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
+    XSetInputFocus(display, None, RevertToParent, CurrentTime);
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_FOCUS_GAINED);
+    CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
+          "SDL focus gain after explicit None did not convert to FocusIn");
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == None,
+          "host focus gain on top-level clobbered explicit None focus");
+    SDL_Event focusNoneKey;
+    SDL_zero(focusNoneKey);
+    focusNoneKey.type = SDL_KEYDOWN;
+    focusNoneKey.key.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    XC_EVENT_SET_KEYSYM(&focusNoneKey, SDLK_a);
+    XC_EVENT_SET_KEYMOD(&focusNoneKey, 0);
+    XC_EVENT_SET_KEY_PRESSED(&focusNoneKey, True);
+    CHECK(convertEvent(display, &focusNoneKey, &out, True) == 0,
+          "SDL key after explicit None did not convert");
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == None, "SDL key clobbered explicit None focus");
+
+    XSetInputFocus(display, (Window) PointerRoot, RevertToParent, CurrentTime);
+    XC_SET_WINDOW_SUBEVENT(&windowEvent, SDL_WINDOWEVENT_FOCUS_GAINED);
+    CHECK(convertEvent(display, &windowEvent, &out, True) == 0,
+          "SDL focus gained after PointerRoot did not convert to FocusIn");
+    XGetInputFocus(display, &focusKeepResult, &focusKeepRevert);
+    CHECK(focusKeepResult == (Window) PointerRoot,
+          "host focus gain on top-level clobbered PointerRoot focus");
 
     Window gravityChild =
         XCreateSimpleWindow(display, window, 2, 3, 8, 8, 0, 0, 0);

@@ -4,8 +4,22 @@
 #include "X11/Xlib.h"
 #include "window.h"
 
+/* Focus-target classification. The window leaf stays collapsed to None
+ * for routing, but the kind preserves None vs PointerRoot for XGetInputFocus
+ * and focus-change root detail.
+ */
+typedef enum {
+    FocusKindNone,
+    FocusKindPointerRoot,
+    FocusKindWindow,
+} FocusKind;
+
 Window getKeyboardFocus();
+FocusKind getKeyboardFocusKind(void);
+Bool isKeyboardFocusFromHost(void);
+Bool isKeyboardFocusFromClient(void);
 void setKeyboardFocus(Window window);
+void syncKeyboardFocusFromHost(Window window);
 
 extern int revertTo;
 

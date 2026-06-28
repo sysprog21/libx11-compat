@@ -18,6 +18,8 @@ int revertTo = RevertToParent;
  * None for both, so event routing stays binary.
  */
 static FocusKind keyboardFocusKind = FocusKindNone;
+static Bool keyboardFocusFromHost = False;
+static Bool keyboardFocusFromClient = False;
 
 static const struct {
     KeySym keysym;
@@ -71,10 +73,40 @@ Window getKeyboardFocus()
     return keyboardFocus;
 }
 
+FocusKind getKeyboardFocusKind(void)
+{
+    return keyboardFocusKind;
+}
+
+Bool isKeyboardFocusFromHost(void)
+{
+    return keyboardFocusFromHost;
+}
+
+Bool isKeyboardFocusFromClient(void)
+{
+    return keyboardFocusFromClient;
+}
+
 void setKeyboardFocus(Window window)
 {
     LOG("SET keyboard focus is %lu\n", window);
     keyboardFocus = window;
+}
+
+void syncKeyboardFocusFromHost(Window window)
+{
+    if (window != None && !IS_TYPE(window, WINDOW))
+        window = None;
+    setKeyboardFocus(window);
+    keyboardFocusKind = window == None ? FocusKindNone : FocusKindWindow;
+    keyboardFocusFromHost = True;
+    keyboardFocusFromClient = False;
+    /* Host-driven focus carries no client revert_to; reset it so a later
+     * destroy of this window does not apply a stale policy left over from an
+     * earlier XSetInputFocus.
+     */
+    revertTo = RevertToNone;
 }
 
 void revertKeyboardFocusForDestroyedWindow(Display *display, Window window)
@@ -563,6 +595,8 @@ int XSetInputFocus(Display *display, Window focus, int revert_to, Time time)
      * postFocusChange emits the correct root detail.
      */
     Window newFocus = newKind == FocusKindWindow ? focus : None;
+    keyboardFocusFromHost = False;
+    keyboardFocusFromClient = True;
     if (oldKind == newKind && oldFocus == newFocus)
         return 1;
     setKeyboardFocus(newFocus);
