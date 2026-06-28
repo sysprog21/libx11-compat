@@ -1,0 +1,28 @@
+Clamp the File-Manager selection index in both directions.
+
+e_file_window dereferences fw->df->name[fw->nf] in two places, but each only
+clamped fw->nf against the upper bound (anz-1). A negative index, or an empty
+listing where anz-1 is -1, walked before the name array and crashed in strlen
+on a garbage pointer. Clamp fw->nf to a non-negative value at both sites, and
+skip the lookup entirely when the listing is empty.
+
+--- a/we_fl_fkt.c
++++ b/we_fl_fkt.c
+@@ -404,6 +404,7 @@
+    char sustr[18];
+    if(fw->df->anz > 0)
+    {  if(fw->nf >= fw->df->anz) fw->nf = fw->df->anz-1;
++      if(fw->nf < 0) fw->nf = 0;
+       len = strlen(*(fw->df->name+fw->nf));
+       /* Ensure the selected item is visible when entering the panel.
+          Without this, Tab into a panel can land on an off-screen item,
+@@ -480,7 +481,8 @@
+       else if(c) {  nsu = 0;  return(c);  }
+       else if(fw->srcha < 0) nsu = 0;
+       if(fw->nf > fw->df->anz-1) fw->nf = fw->df->anz-1;
+-      len=strlen(*(fw->df->name+fw->nf));
++      if(fw->nf < 0) fw->nf = 0;
++      len = fw->df->anz > 0 ? strlen(*(fw->df->name+fw->nf)) : 0;
+       if(fw->ja >= len) fw->ja = !len ? len : len-1;
+       if(fw->nf-fw->ia >= fw->ye - fw->ya) fw->ia = fw->nf+fw->ya-fw->ye+1;
+       else if(fw->nf-fw->ia < 0) fw->ia = fw->nf;

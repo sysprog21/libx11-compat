@@ -166,6 +166,16 @@ but each exercises behavior that small examples do not reach.
   make check-differential-xnedit         # startup + fixture diff vs native X11/Xft (needs remote host)
   ```
 
+- [xwpe](https://github.com/vejeta/xwpe): the X Window Programming Environment builds against `libX11-compat` and the SDL_ttf-backed `libXft-compat`.
+  This editor workload exercises Xrm option parsing, core window/event paths, XIM key lookup, selections, Xft/fontconfig fallback, and an older terminal-style UI rendered through Xlib.
+
+  <a href="assets/xwpe.png"><img src="assets/xwpe.png" alt="xwpe running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make xwpe                              # build xwpe (depends on Xft shim)
+  XWPE_LIB=$PWD/build/xwpe/source build/xwpe/source/xwpe   # launch from the build tree
+  ```
+
 The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
 `make profile-ui` runs the Motif, ViolaWWW, and Mosaic replay smokes with timing capture and prints the generated `metrics.tsv` and `render-stats.tsv` paths; the Osiris and Xfig smokes are still invoked individually via `make check-smoke-osiris` / `make check-smoke-xfig`.
 They do not require `node11`, `xdotool`, or a native X11 reference run.

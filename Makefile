@@ -33,6 +33,7 @@ include mk/xclock.mk
 include mk/xfig.mk
 include mk/gimp-motif.mk
 include mk/xnedit.mk
+include mk/xwpe.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/upstream-headers.mk

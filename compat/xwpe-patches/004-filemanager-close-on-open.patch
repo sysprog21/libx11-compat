@@ -1,0 +1,21 @@
+Close the File-Manager window when it opens a file.
+
+xwpe already supports this via the FM_CLOSE_WINDOW option flag: when set, the
+open path in WpeHandleFileManager calls e_close_window(f) before e_edit().
+The flag is just off by default, so picking a file leaves the File-Manager
+window sitting behind the new editor. Enable it in the default flopt so
+opening a file from the File-Manager dismisses the manager, matching the
+expectation that the editor takes over. Users can still toggle it back off
+in the File-Manager options dialog.
+
+--- a/we_main.c
++++ b/we_main.c
+@@ -325,7 +325,7 @@
+  cn->tabs = MALLOC((cn->tabn+1)*sizeof(char));
+  WpeStringBlank(cn->tabs, cn->tabn);
+  cn->flopt = FM_REKURSIVE_ACTIONS | FM_REMOVE_INTO_WB | FM_MOVE_PROMPT |
+-   FM_MOVE_PROMPT | FM_PROMPT_DELETE;
++   FM_MOVE_PROMPT | FM_PROMPT_DELETE | FM_CLOSE_WINDOW;
+  cn->edopt = ED_SOURCE_AUTO_INDENT | ED_ERRORS_STOP_AT | ED_SYNTAX_HIGHLIGHT;
+ }
+ 
