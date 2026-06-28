@@ -1,0 +1,8 @@
+# xwpe/xwe startup smoke: both aliases exercise the X11 frontend and differ
+# only in editor vs programming mode.
+delay 1000
+wait-window "xwpe|xwe|Xwpe|Xwe|File_Manager" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+assert-exit running

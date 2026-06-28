@@ -85,7 +85,7 @@ $(MOSAIC_MOTIF_INCLUDE_STAMP): $(MOTIF_LIBXM) $(MOTIF_LIBMRM) mk/mosaic.mk
 	done
 	$(Q)touch $@
 
-.PHONY: mosaic mosaic-run check-smoke-mosaic check-differential-mosaic mosaic-clean
+.PHONY: mosaic check-smoke-mosaic check-differential-mosaic mosaic-clean
 ## Build NCSA Mosaic against libx11-compat, libXt-compat, and in-tree Motif
 mosaic: $(MOSAIC_SOURCE_STAMP) $(MOSAIC_MOTIF_INCLUDE_STAMP) $(MOSAIC_PATCHES) $(PKGCONFIG_FILES) \
     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) \
@@ -134,18 +134,6 @@ ifeq ($(UNAME_S),Darwin)
 	    -change $(abspath $(OUT))/motif-install/lib/libXm.5.dylib \
 	    @rpath/libXm.5.dylib $(MOSAIC_BIN)
 endif
-
-## Run Mosaic against libx11-compat with an HTTP home page
-mosaic-run: mosaic
-	@mkdir -p $(abspath $(MOSAIC_BUILD_DIR))/home
-	$(Q)$(motif_runtime_env) \
-	    HOME=$(abspath $(MOSAIC_BUILD_DIR))/home \
-	    DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-	    LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    XAPPLRESDIR=$(abspath $(MOSAIC_WORK_DIR)) \
-	    XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad \
-	    LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts \
-	    $(abspath $(MOSAIC_BIN)) -geometry $(MOSAIC_SMOKE_GEOMETRY) $(MOSAIC_HOME_URL)
 
 MOSAIC_DIFF_REMOTE ?= node11
 MOSAIC_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-mosaic-differential

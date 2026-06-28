@@ -83,6 +83,7 @@ typedef struct _FcValue {
 #define FC_RGBA "rgba"
 #define FC_MINSPACE "minspace"
 #define FC_CHARSET "charset"
+#define FC_COLOR "color"
 #define FC_RENDER "render"
 #define FC_NAMELANG "namelang"
 
@@ -133,6 +134,11 @@ FcBool FcConfigSubstitute(FcConfig *config, FcPattern *pattern, int kind);
 void FcDefaultSubstitute(FcPattern *pattern);
 FcPattern *FcFontMatch(FcConfig *config, FcPattern *pattern, FcResult *result);
 FcFontSet *FcFontList(FcConfig *config, FcPattern *pattern, FcObjectSet *os);
+FcFontSet *FcFontSort(FcConfig *config,
+                      FcPattern *pattern,
+                      FcBool trim,
+                      FcCharSet **csp,
+                      FcResult *result);
 void FcFontSetDestroy(FcFontSet *set);
 FcCharSet *FcCharSetCreate(void);
 FcBool FcCharSetAddChar(FcCharSet *charset, FcChar32 ucs4);
@@ -151,6 +157,9 @@ FcBool FcPatternAddString(FcPattern *pattern,
 FcBool FcPatternAddInteger(FcPattern *pattern, const char *object, int i);
 FcBool FcPatternAddDouble(FcPattern *pattern, const char *object, double d);
 FcBool FcPatternAddBool(FcPattern *pattern, const char *object, FcBool b);
+FcBool FcPatternAddCharSet(FcPattern *pattern,
+                           const char *object,
+                           const FcCharSet *c);
 FcBool FcPatternAddMatrix(FcPattern *pattern,
                           const char *object,
                           const FcMatrix *matrix);

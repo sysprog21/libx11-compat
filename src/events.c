@@ -109,7 +109,7 @@ void releaseMainEventThread(void)
     mainEventThreadId = 0;
 }
 
-static void pumpEventsSafe(void)
+void pumpEventsSafe(void)
 {
     if (!mainEventThreadCaptured) {
         /* Pre-initialization callers are still single-threaded. */
@@ -1351,9 +1351,14 @@ void clearPointerStateForWindow(Window window)
     if (window == None)
         return;
     lockActivePointerWindow();
-    if (activePointerWindow == window)
+    if (activePointerWindow == window ||
+        (IS_TYPE(activePointerWindow, WINDOW) &&
+         isParent(window, activePointerWindow))) {
         activePointerWindow = None;
-    if (pointerHoverWindow == window)
+        pointerButtonState = 0;
+    }
+    if (pointerHoverWindow == window || (IS_TYPE(pointerHoverWindow, WINDOW) &&
+                                         isParent(window, pointerHoverWindow)))
         pointerHoverWindow = None;
     unlockActivePointerWindow();
 }
@@ -1597,6 +1602,38 @@ int convertEvent(Display *display,
             eventWindow = passiveGrabWindow;
         } else {
             eventWindow = getKeyboardFocus();
+            if (eventWindow == None && !isKeyboardFocusFromClient() &&
+                getKeyboardFocusKind() == FocusKindNone) {
+                /* SDL emits no FOCUS_GAINED transition for a window that is
+                 * born with keyboard focus, so syncKeyboardFocusFromHost may
+                 * never have run and keyboardFocus is still None. A
+                 * single-window client like xwpe never calls XSetInputFocus
+                 * itself, so every key would route to the root window and the
+                 * app would look deaf to the keyboard. Adopt the window SDL
+                 * currently reports as keyboard-focused. Guarded on client
+                 * ownership so explicit None/PointerRoot focus is left
+                 * untouched.
+                 */
+                SDL_Window *sdlFocus = SDL_GetKeyboardFocus();
+                if (sdlFocus) {
+                    Window hostFocus =
+                        getWindowFromId(SDL_GetWindowID(sdlFocus));
+                    if (hostFocus != None) {
+                        FocusKind oldKind = getKeyboardFocusKind();
+                        Window oldFocus = getKeyboardFocus();
+                        syncKeyboardFocusFromHost(hostFocus);
+                        eventWindow = getKeyboardFocus();
+                        /* Deliver the FocusIn the absent SDL FOCUS_GAINED never
+                         * produced, so a client selecting FocusChangeMask still
+                         * learns it holds focus. It trails this first key by
+                         * one event instead of preceding it, the cost of a
+                         * born-focused window SDL never announced.
+                         */
+                        postFocusChange(display, oldKind, oldFocus,
+                                        getKeyboardFocusKind(), eventWindow);
+                    }
+                }
+            }
             eventWindow = eventWindow == None ? xEvent->xkey.root : eventWindow;
         }
         xEvent->xkey.window = eventWindow;
@@ -1961,11 +1998,30 @@ int convertEvent(Display *display,
         case SDL_WINDOWEVENT_FOCUS_GAINED:
             LOG("Window %d gained keyboard focus\n", sdlEvent->window.windowID);
             type = FocusIn;
+            if (eventWindow != None) {
+                /* Do not clobber a client XSetInputFocus target. Adopt the
+                 * host top-level only while focus is still host/default-owned,
+                 * and never when it already points at this window or a
+                 * descendant of it.
+                 */
+                Window currentFocus = getKeyboardFocus();
+                FocusKind currentFocusKind = getKeyboardFocusKind();
+                if (currentFocusKind != FocusKindPointerRoot &&
+                    !isKeyboardFocusFromClient() &&
+                    currentFocus != eventWindow &&
+                    (currentFocus == None || !IS_TYPE(currentFocus, WINDOW) ||
+                     !isParent(eventWindow, currentFocus)))
+                    syncKeyboardFocusFromHost(eventWindow);
+            }
+            /* fallthrough */
         case SDL_WINDOWEVENT_FOCUS_LOST:
             if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_FOCUS_LOST) {
                 LOG("Window %d lost keyboard focus\n",
                     sdlEvent->window.windowID);
                 type = FocusOut;
+                if (eventWindow != None && getKeyboardFocus() == eventWindow &&
+                    isKeyboardFocusFromHost())
+                    syncKeyboardFocusFromHost(None);
             }
             FILL_STANDARD_VALUES(xfocus);
             xEvent->xfocus.window = eventWindow;

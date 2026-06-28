@@ -1,0 +1,13 @@
+# xwpe file-manager popup close-box smoke. Clicking [x] must close the popup.
+delay 1000
+wait-window "xwpe|xwe|Xwpe|Xwe|File_Manager" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+target-motion 480 92
+button 1 click
+delay 500
+wait-converge 200 2 50 200 5000
+screenshot clicked
+assert-image clicked common-visible.json
+assert-image clicked xwpe-dialog-closed.json
+assert-exit running

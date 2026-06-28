@@ -3,6 +3,7 @@
 
 #include <X11/Xlib.h>
 #include "sdl-compat.h"
+#include "input.h"
 
 #define SEND_EVENT_CODE 1
 #define INTERNAL_EVENT_CODE 2
@@ -39,6 +40,12 @@ int initEventPipe(Display *display);
 void closeEventPipe(Display *display);
 void captureMainEventThreadIfUnset(void);
 void releaseMainEventThread(void);
+/* Refresh SDL's cached input state (mouse buttons, position, modifiers) when
+ * the caller is on the main event thread. XQueryPointer relies on this so a
+ * client busy-polling pointer state, like xwpe's button-release wait, observes
+ * a real release instead of spinning forever on a stale pressed bitmask.
+ */
+void pumpEventsSafe(void);
 void wakeEventPipeForExternalEvent(Display *display);
 unsigned int convertModifierState(Uint16 mod);
 Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...);
@@ -54,16 +61,6 @@ Bool postCrossingEvent(Display *display,
                        int detail,
                        unsigned int state);
 Bool postFocusEvent(Display *display, Window window, int type, int detail);
-
-/* Focus-target classification. The window leaf stays collapsed to None
- * for routing, but postFocusChange needs the distinction to pick
- * NotifyDetailNone vs NotifyPointerRoot on the root events per Xlib 10.7.
- */
-typedef enum {
-    FocusKindNone,
-    FocusKindPointerRoot,
-    FocusKindWindow,
-} FocusKind;
 
 void postFocusChange(Display *display,
                      FocusKind oldKind,
