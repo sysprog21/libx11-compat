@@ -6,10 +6,10 @@
  * place. The default build (no LIBX11_COMPAT_SDL3) is a pass-through to SDL2
  * and must stay byte-for-byte equivalent to including <SDL2/SDL.h> directly.
  *
- * Under LIBX11_COMPAT_SDL3 this header reshapes the SDL3 API back into the
- * SDL2 spelling the rest of the tree was written against. It covers only the
- * symbols this codebase actually uses; it is not a general SDL2-on-SDL3 shim.
- * Two rules keep it honest:
+ * Under LIBX11_COMPAT_SDL3 this header reshapes the SDL3 API back into the SDL2
+ * spelling the rest of the tree was written against. It covers only the symbols
+ * this codebase actually uses; it is not a general SDL2-on-SDL3 shim. Two rules
+ * keep it honest:
  *   1. inline wrappers that reuse an SDL3 function whose name collides with the
  *      SDL2 name are defined BEFORE the #define that renames the call sites, so
  *      the wrapper body still binds the real SDL3 symbol;
@@ -20,8 +20,8 @@
 #ifdef LIBX11_COMPAT_SDL3
 
 /* SDL3 ships an "old names" compatibility layer (SDL_oldnames.h) that aliases
- * the SDL2 spelling to the SDL3 name for everything that was a pure rename:
- * the SDLK_* / KMOD_* constants, the SDL_EVENT_* enum, atomics, cursor enums,
+ * the SDL2 spelling to the SDL3 name for everything that was a pure rename: the
+ * SDLK_* / KMOD_* constants, the SDL_EVENT_* enum, atomics, cursor enums,
  * SDL_mutex, and so on. Enabling it carries the bulk of the migration so this
  * header only has to deal with the symbols whose SIGNATURE or semantics
  * changed. Where an old-names alias is actively wrong (it renames but does not
@@ -32,10 +32,10 @@
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 
-/* SDL2's headers transitively dragged in the libc declarations (stdlib,
- * string) that much of the tree relies on without including them directly.
- * SDL3 deliberately stopped leaking libc, so re-provide the same surface here
- * to keep those source files compiling unchanged.
+/* SDL2's headers transitively dragged in the libc declarations (stdlib, string)
+ * that much of the tree relies on without including them directly. SDL3
+ * deliberately stopped leaking libc, so re-provide the same surface here to
+ * keep those source files compiling unchanged.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -58,9 +58,9 @@ static inline XcPixelFormat xcAllocFormat(SDL_PixelFormat format)
     return SDL_GetPixelFormatDetails(format);
 }
 
-/* Colour map/unmap: SDL3 added a palette argument and takes the details
- * struct. The neutral handle is already the details struct, so pass NULL for
- * the (unused, non-indexed) palette.
+/* Colour map/unmap: SDL3 added a palette argument and takes the details struct.
+ * The neutral handle is already the details struct, so pass NULL for the
+ * (unused, non-indexed) palette.
  */
 static inline Uint32 xc_MapRGBA(XcPixelFormat f,
                                 Uint8 r,
@@ -151,8 +151,8 @@ static inline SDL_Surface *xc_CreateRGBSurfaceWithFormatFrom(void *pixels,
 }
 
 /* Renderer: SDL3 renamed the copy/draw calls and moved geometry to floats.
- * These wrappers keep the SDL2 int return convention (0 success / -1 error)
- * the call sites test with `< 0` / `!= 0`.
+ * These wrappers keep the SDL2 int return convention (0 success / -1 error) the
+ * call sites test with `< 0` / `!= 0`.
  */
 static inline int xc_RenderCopy(SDL_Renderer *renderer,
                                 SDL_Texture *texture,
@@ -267,8 +267,8 @@ static inline int xc_RenderReadPixels(SDL_Renderer *renderer,
     return rc;
 }
 
-/* SDL3 flipped the success convention (int 0 -> bool true) for these calls,
- * but the call sites still test the SDL2 way (`< 0` / `!= 0` / `== 0`). Each
+/* SDL3 flipped the success convention (int 0 -> bool true) for these calls, but
+ * the call sites still test the SDL2 way (`< 0` / `!= 0` / `== 0`). Each
  * wrapper restores the int 0/-1 result. The four render entry points that
  * old-names already aliased are #undef'd below before being redefined.
  */
@@ -508,9 +508,9 @@ static inline int xc_WarpMouseGlobal(int x, int y)
 /* libX11-compat tracks a per-display X event count (`qlen`) that the SDL event
  * filter bumps on push and the consume path drains. SDL_FlushEvent removes
  * events without consuming them; the SDL2 build reconciled this inside the
- * dlopen wrapper by calling the exported hook below for each removed event.
- * The SDL3 build links libSDL3 directly, so reconcile here instead. The lib
- * never calls SDL_FlushEvent itself, so this only fires for client flushes.
+ * dlopen wrapper by calling the exported hook below for each removed event. The
+ * SDL3 build links libSDL3 directly, so reconcile here instead. The lib never
+ * calls SDL_FlushEvent itself, so this only fires for client flushes.
  */
 extern void libx11CompatSideQueueEventRemoved(SDL_EventFilter filter,
                                               void *userdata);
@@ -586,6 +586,13 @@ static inline void xc_StopTextInput(void)
         SDL_StopTextInput(w);
 }
 
+static inline void xc_StartTextInput(void)
+{
+    SDL_Window *w = SDL_GetKeyboardFocus();
+    if (w)
+        SDL_StartTextInput(w);
+}
+
 static inline void xc_SetTextInputRect(const SDL_Rect *rect)
 {
     SDL_Window *w = SDL_GetKeyboardFocus();
@@ -658,6 +665,7 @@ static inline int xc_GetDesktopDisplayMode(int displayIndex,
 #define SDL_WaitEvent xc_WaitEvent
 #define SDL_PollEvent xc_PollEvent
 #define SDL_StopTextInput() xc_StopTextInput()
+#define SDL_StartTextInput() xc_StartTextInput()
 #define SDL_SetTextInputRect(rect) xc_SetTextInputRect(rect)
 #define SDL_SetWindowModalFor xc_SetWindowModalFor
 #define SDL_GetCurrentDisplayMode xc_GetCurrentDisplayMode
@@ -684,8 +692,8 @@ static inline int xc_GetDesktopDisplayMode(int displayIndex,
 #define XC_TIMER_CALLBACK_PARAMS \
     void *param, SDL_TimerID xcTimerID, Uint32 interval
 
-/* Window/key event field access differs structurally; the helpers below let
- * the call sites stay backend-neutral.
+/* Window/key event field access differs structurally; the helpers below let the
+ * call sites stay backend-neutral.
  */
 #define XC_WINDOW_SUBEVENT(ev) ((ev)->type)
 #define XC_CASE_WINDOWEVENT \
@@ -719,10 +727,13 @@ static inline int xc_GetDesktopDisplayMode(int displayIndex,
  * outlive the push, e.g. a literal) instead of copying into the struct.
  */
 #define XC_SET_TEXT_EVENT(ev, s) ((ev).text.text = (s))
+#define XC_TEXT_EVENT_TEXT(evptr) ((evptr)->text.text)
+#define XC_SET_EDITING_EVENT(ev, s) ((ev).edit.text = (s))
+#define XC_EDITING_EVENT_TEXT(evptr) ((evptr)->edit.text)
 
 /* SDL3 defaults texture scaling to linear; SDL2 defaulted to nearest. Pin
- * glyph/blit textures to nearest so scaled copies stay crisp (and opaque
- * pixels survive) exactly as on SDL2.
+ * glyph/blit textures to nearest so scaled copies stay crisp (and opaque pixels
+ * survive) exactly as on SDL2.
  */
 #define XC_SCALEMODE_NEAREST SDL_SCALEMODE_NEAREST
 
@@ -760,6 +771,10 @@ typedef SDL_PixelFormat *XcPixelFormat;
 #define XC_SET_WHEEL_X(evptr, v) ((evptr)->wheel.preciseX = (v))
 #define XC_SET_TEXT_EVENT(ev, s) \
     ((void) snprintf((ev).text.text, sizeof((ev).text.text), "%s", (s)))
+#define XC_TEXT_EVENT_TEXT(evptr) ((evptr)->text.text)
+#define XC_SET_EDITING_EVENT(ev, s) \
+    ((void) snprintf((ev).edit.text, sizeof((ev).edit.text), "%s", (s)))
+#define XC_EDITING_EVENT_TEXT(evptr) ((evptr)->edit.text)
 #define XC_SCALEMODE_NEAREST SDL_ScaleModeNearest
 
 #endif /* LIBX11_COMPAT_SDL3 */

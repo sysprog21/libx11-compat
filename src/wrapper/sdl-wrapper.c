@@ -354,14 +354,13 @@ static int sideQueueTextPush(SDL_Event *event)
 /* Drain (GET) or copy (PEEK) side-queued text events whose type falls in
  * [minType, maxType] into the caller's buffer, FIFO order, up to numevents. A
  * non-removing PEEK is forced when events is NULL (the SDL count form).
- * Returns how many were placed (or would be placed, for the count form).
- */
-/* When reclaim is true the caller consumes the drained events itself and
- * libX11's Xlib drain will NOT read their wake-pipe bytes, so we reclaim the
- * push-time accounting here. When reclaim is false the events are handed back
- * to libX11's SDL_PeepEvents drain, which reads one pipe byte per returned
- * event (its qlen count includes ours), so reclaiming here too would
- * double-decrement and steal another event's wake byte.
+ * Returns how many were placed (or would be placed, for the count form). When
+ * reclaim is true the caller consumes the drained events itself and libX11's
+ * Xlib drain will NOT read their wake-pipe bytes, so we reclaim the push-time
+ * accounting here. When reclaim is false the events are handed back to libX11's
+ * SDL_PeepEvents drain, which reads one pipe byte per returned event (its qlen
+ * count includes ours), so reclaiming here too would double-decrement and steal
+ * another event's wake byte.
  */
 static int sideQueueDrain(SDL_Event *events,
                           int numevents,
@@ -720,6 +719,7 @@ SDL_WRAP_VOID(SDL_SetWindowTitle,
               (SDL_Window * window, const char *title),
               (window, title))
 SDL_WRAP_VOID(SDL_ShowWindow, (SDL_Window * window), (window))
+SDL_WRAP_VOID(SDL_StartTextInput, (void), ())
 SDL_WRAP_VOID(SDL_StopTextInput, (void), ())
 SDL_WRAP(SDL_threadID, SDL_ThreadID, (void), ())
 SDL_WRAP(int, SDL_UnlockMutex, (SDL_mutex * mutex), (mutex))

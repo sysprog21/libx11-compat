@@ -44,6 +44,10 @@ static int64_t satMulAdd(int64_t a, int64_t b, int64_t c)
     return sum;
 }
 
+static int decodeUtf8Codepoint(const unsigned char *src,
+                               size_t len,
+                               wchar_t *cp);
+
 static int clampInt64ToInt(int64_t v)
 {
     if (v > INT_MAX)
@@ -106,8 +110,7 @@ static char *copyTextPropertyString(const unsigned char *src,
     return out;
 }
 
-/*
- * Compatibility stub triage:
+/* Compatibility stub triage:
  * - Build/smoke coverage: return stable Xlib-compatible defaults where callers
  *   commonly probe capability before choosing another path.
  * - Window-manager and resource helpers: preserve properties when enough local
@@ -253,7 +256,12 @@ int XSetScreenSaver(register Display *dpy,
 
 void XUnsetICFocus(XIC ic)
 {
-    WARN_UNIMPLEMENTED;
+    /* A NULL IC is a no-op rather than clearing whichever IC happens to hold
+     * focus.
+     */
+    if (!ic)
+        return;
+    inputMethodUnsetFocus(ic);
 }
 
 /* Translate a single keysym to UTF-8. Covers ASCII, Latin-1, and the X11
@@ -342,7 +350,12 @@ int XmbLookupString(XIC ic,
                     KeySym *keysym,
                     Status *status)
 {
-    (void) ic;
+    /* IM commits are forwarded as UTF-8, which matches the locale encoding for
+     * the UTF-8 locales this layer targets; a non-UTF-8 locale would want the
+     * commit transcoded, but no current workload exercises that path.
+     */
+    if (ev && ev->keycode == 0)
+        return Xutf8LookupString(ic, ev, buffer, nbytes, keysym, status);
     return do_locale_lookup(ev, buffer, nbytes, keysym, status);
 }
 /* Xutf8LookupString lives in src/input-method.c with the IM-driven path. */
@@ -611,8 +624,7 @@ int XStoreColor(register Display *dpy, Colormap cmap, XColor *def)
 #endif
 #endif
 
-/*
- * _XGetHostname - similar to gethostname but allows special processing.
+/* _XGetHostname - similar to gethostname but allows special processing.
  */
 int _XGetHostname(char *buf, int maxlen)
 {
@@ -642,8 +654,7 @@ int _XGetHostname(char *buf, int maxlen)
     return len;
 }
 
-/*
- * XSetWMProperties sets the following properties:
+/* XSetWMProperties sets the following properties:
  * 	WM_NAME		  type: TEXT		format: varies?
  * 	WM_ICON_NAME	  type: TEXT		format: varies?
  * 	WM_HINTS	  type: WM_HINTS	format: 32
@@ -678,8 +689,7 @@ void XSetWMProperties(
 
     /* set the command if given */
     if (argv) {
-        /*
-         * for UNIX and other operating systems which use nul-terminated arrays
+        /* for UNIX and other operating systems which use nul-terminated arrays
          * of STRINGs.
          */
         XSetCommand(dpy, w, argv, argc);
@@ -703,8 +713,7 @@ void XSetWMProperties(
         if (!classHints->res_name) {
             tmp.res_name = getenv("RESOURCE_NAME");
             if (!tmp.res_name && argv && argv[0]) {
-                /*
-                 * UNIX uses /dir/subdir/.../basename; other operating systems
+                /* UNIX uses /dir/subdir/.../basename; other operating systems
                  * will have to change this.
                  */
                 char *cp = strrchr(argv[0], '/');
@@ -1097,8 +1106,7 @@ XcmsCCC XcmsCreateCCC(Display *dpy,
                       XPointer gamutCompClientData,
                       XcmsWhiteAdjustProc whitePtAdjProc,
                       XPointer whitePtAdjClientData)
-/*
- * 	DESCRIPTION
+/* 	DESCRIPTION
  * 		Given a Display, Screen, Visual, etc., this routine creates
  * 		an appropriate Color Conversion Context.
  *
@@ -1950,6 +1958,40 @@ XIM XIMOfIC(XIC ic)
     return NULL;
 }
 
+/* Count UTF-8 codepoints in [text, text + byteLen), clamped to INT_MAX. */
+static int wcharCountUtf8(const char *text, size_t byteLen)
+{
+    size_t needed = 0, remaining = byteLen;
+    const unsigned char *src = (const unsigned char *) text;
+    while (remaining > 0) {
+        wchar_t cp = 0;
+        int used = decodeUtf8Codepoint(src, remaining, &cp);
+        if (used <= 0 || (size_t) used > remaining)
+            break;
+        needed++;
+        src += used;
+        remaining -= (size_t) used;
+    }
+    return needed > (size_t) INT_MAX ? INT_MAX : (int) needed;
+}
+
+/* Decode the first `count` codepoints of [text, text + byteLen) into buffer. */
+static void wcharFillUtf8(const char *text,
+                          size_t byteLen,
+                          wchar_t *buffer,
+                          int count)
+{
+    size_t remaining = byteLen;
+    const unsigned char *src = (const unsigned char *) text;
+    for (int i = 0; i < count; i++) {
+        int used = decodeUtf8Codepoint(src, remaining, &buffer[i]);
+        if (used <= 0 || (size_t) used > remaining)
+            break;
+        src += used;
+        remaining -= (size_t) used;
+    }
+}
+
 int XwcLookupString(XIC ic,
                     XKeyEvent *ev,
                     wchar_t *buffer,
@@ -1957,8 +1999,65 @@ int XwcLookupString(XIC ic,
                     KeySym *keysym,
                     Status *status)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    if (ev && ev->keycode == 0) {
+        /* IM commit: peek the pending UTF-8 text and only consume it once the
+         * caller's wide buffer is confirmed large enough, so an overflow retry
+         * with a bigger buffer still finds the committed string. Decoding the
+         * pending text directly also avoids the fixed stack buffer that an
+         * over-long commit could overrun.
+         */
+        unsigned long commitId = (unsigned long) ev->subwindow;
+        char *pendingText = inputMethodPendingText(commitId);
+        if (!pendingText) {
+            if (status)
+                *status = XLookupNone;
+            return 0;
+        }
+        size_t byteLen = strlen(pendingText);
+        int needed = wcharCountUtf8(pendingText, byteLen);
+        if (!buffer || nchars < 0 || needed > nchars) {
+            if (status)
+                *status = XBufferOverflow;
+            return needed;
+        }
+        wcharFillUtf8(pendingText, byteLen, buffer, needed);
+        /* Mirror Xutf8LookupString: a lone ASCII byte also yields a keysym. */
+        if (byteLen == 1) {
+            if (status)
+                *status = XLookupBoth;
+            if (keysym)
+                *keysym = getKeySymForChar(pendingText[0]);
+        } else {
+            if (status)
+                *status = XLookupChars;
+            if (keysym)
+                *keysym = NoSymbol;
+        }
+        inputMethodConsumePendingText(commitId);
+        return needed;
+    }
+
+    /* Real key: appendKeysymUtf8 produces at most 4 bytes (one codepoint), so
+     * the 7 usable bytes here can never overflow and Xutf8LookupString never
+     * reports XBufferOverflow on this path, including when status is NULL.
+     * There is also no committed text to preserve. The bytes-in-range check is
+     * belt and suspenders so a future change to that bound can never let the
+     * decode loop read past utf8.
+     */
+    char utf8[8];
+    int bytes =
+        Xutf8LookupString(ic, ev, utf8, sizeof(utf8) - 1, keysym, status);
+    if (bytes <= 0 || bytes > (int) (sizeof(utf8) - 1) ||
+        (status && *status == XBufferOverflow))
+        return bytes;
+    int needed = wcharCountUtf8(utf8, (size_t) bytes);
+    if (!buffer || nchars < 0 || needed > nchars) {
+        if (status)
+            *status = XBufferOverflow;
+        return needed;
+    }
+    wcharFillUtf8(utf8, (size_t) bytes, buffer, needed);
+    return needed;
 }
 
 /* Decode one UTF-8 sequence from `src[0..len)` into `cp`.

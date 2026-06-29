@@ -259,6 +259,44 @@ int main(void)
     int keys = drain_until(dpy, KeyPress, 32);
     CHECK(keys > 0, "KeyPress arrived");
 
+    /* With an IC focused, the bare keydown is suppressed in favor of the IM
+     * commit. XTest must still deliver the character: it emits a companion
+     * text event that becomes a keycode==0 commit, which even the simple 8-bit
+     * XLookupString resolves (the path Mosaic's URL field uses).
+     */
+    XIM im = XOpenIM(dpy, NULL, NULL, NULL);
+    CHECK(im != NULL, "XOpenIM");
+    XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                       XNClientWindow, win, XNFocusWindow, win, NULL);
+    CHECK(ic != NULL, "XCreateIC");
+    XSetICFocus(ic);
+    while (XPending(dpy) > 0) {
+        XEvent drain;
+        XNextEvent(dpy, &drain);
+    }
+    CHECK(XTestFakeKeyEvent(dpy, 'a', True, 0) == 1, "XTest key press with IC");
+    CHECK(XTestFakeKeyEvent(dpy, 'a', False, 0) == 1,
+          "XTest key release with IC");
+    XSync(dpy, False);
+    Bool gotCommit = False;
+    for (int i = 0; i < 32 && XPending(dpy) > 0; i++) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+        if (ev.type == KeyPress && ev.xkey.keycode == 0) {
+            char buf[8] = {0};
+            KeySym ks = NoSymbol;
+            int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+            CHECK(n == 1 && buf[0] == 'a',
+                  "XLookupString resolved the XTest IM commit");
+            gotCommit = True;
+            break;
+        }
+    }
+    CHECK(gotCommit, "XTest typing under a focused IC produced an IM commit");
+    XUnsetICFocus(ic);
+    XDestroyIC(ic);
+    XCloseIM(im);
+
     XUnmapWindow(dpy, win);
     XSync(dpy, False);
     CHECK(replayTargetWindowId() != target_id,

@@ -1021,6 +1021,18 @@ static Bool removeMatchingPutBackIfEvent(Display *display,
     return False;
 }
 
+/* An IM commit's text lives in the global commit table keyed by the id stored
+ * in xkey.subwindow. When its synthetic KeyPress is discarded instead of
+ * delivered, release that entry so it does not linger until eviction. Real keys
+ * leave subwindow None, so the keycode==0 guard keeps this from touching a
+ * normal KeyPress whose subwindow is a child window.
+ */
+static void releaseDiscardedImCommit(const XEvent *event)
+{
+    if (event->type == KeyPress && event->xkey.keycode == 0)
+        inputMethodConsumePendingText((unsigned long) event->xkey.subwindow);
+}
+
 void discardQueuedEventsForWindow(Display *display, Window window)
 {
     int removedPutBackEvents = 0;
@@ -1030,6 +1042,7 @@ void discardQueuedEventsForWindow(Display *display, Window window)
         PutBackEvent *node = *link;
         if (node->display == display && node->event.xany.window == window) {
             *link = node->next;
+            releaseDiscardedImCommit(&node->event);
             free(node);
             removedPutBackEvents++;
             continue;
@@ -1064,8 +1077,13 @@ void discardQueuedEventsForWindow(Display *display, Window window)
         XEvent converted;
         if (convertEvent(display, &events[i], &converted, True) != 0)
             continue;
-        if (converted.xany.window == window)
+        if (converted.xany.window == window) {
+            /* Discarded with the window: release any IM commit it carried so
+             * its entry does not linger until eviction.
+             */
+            releaseDiscardedImCommit(&converted);
             continue;
+        }
         appendPutBackEventWithTap(display, &converted, True);
     }
     int remainingSdlEvents = 0;
@@ -1541,6 +1559,66 @@ static long motionMaskForButtonState(unsigned int buttonState)
     return mask;
 }
 
+static Bool shouldSuppressIMTextKeydown(const SDL_Event *event)
+{
+    SDL_Keycode keycode = XC_EVENT_KEYSYM(event);
+    SDL_Keymod modifiers = XC_EVENT_KEYMOD(event);
+    /* Any printable character key also arrives as SDL_TEXTINPUT, so suppressing
+     * only ASCII would let a non-ASCII layout key (Latin-1 or any Unicode
+     * codepoint) emit both a raw KeyPress and the IM commit. SDL keycodes for
+     * printable keys are the Unicode value itself, so cover the whole codepoint
+     * range; controls (< space, 0x7f..0x9f) and special keys (>= 0x40000000)
+     * fall outside it and stay unsuppressed.
+     */
+    Bool textKey = (keycode >= XK_space && keycode <= XK_asciitilde) ||
+                   (keycode >= XK_nobreakspace && keycode <= 0x10ffff);
+    switch (keycode) {
+    case SDLK_KP_0:
+    case SDLK_KP_1:
+    case SDLK_KP_2:
+    case SDLK_KP_3:
+    case SDLK_KP_4:
+    case SDLK_KP_5:
+    case SDLK_KP_6:
+    case SDLK_KP_7:
+    case SDLK_KP_8:
+    case SDLK_KP_9:
+    case SDLK_KP_DIVIDE:
+    case SDLK_KP_MULTIPLY:
+    case SDLK_KP_MINUS:
+    case SDLK_KP_PLUS:
+    case SDLK_KP_PERIOD:
+    case SDLK_KP_EQUALS:
+    case SDLK_KP_COMMA:
+    case SDLK_KP_EQUALSAS400:
+    case SDLK_KP_LEFTPAREN:
+    case SDLK_KP_RIGHTPAREN:
+    case SDLK_KP_LEFTBRACE:
+    case SDLK_KP_RIGHTBRACE:
+    case SDLK_KP_A:
+    case SDLK_KP_B:
+    case SDLK_KP_C:
+    case SDLK_KP_D:
+    case SDLK_KP_E:
+    case SDLK_KP_F:
+    case SDLK_KP_PERCENT:
+    case SDLK_KP_LESS:
+    case SDLK_KP_GREATER:
+    case SDLK_KP_AMPERSAND:
+    case SDLK_KP_VERTICALBAR:
+    case SDLK_KP_COLON:
+    case SDLK_KP_HASH:
+    case SDLK_KP_SPACE:
+    case SDLK_KP_AT:
+    case SDLK_KP_PLUSMINUS:
+    case SDLK_KP_DECIMAL:
+        textKey = True;
+        break;
+    }
+    return inputMethodHasActiveTextInput() && textKey &&
+           !(modifiers & (KMOD_CTRL | KMOD_ALT | KMOD_GUI));
+}
+
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
                  XEvent *xEvent,
@@ -1560,6 +1638,8 @@ int convertEvent(Display *display,
     xEvent->eventStruct.display = display
     switch (sdlEvent->type) {
     case SDL_KEYDOWN:
+        if (shouldSuppressIMTextKeydown(sdlEvent))
+            return -1;
         type = KeyPress;
         LOG("SDL_KEYDOWN for winId %d\n", sdlEvent->key.windowID);
     case SDL_KEYUP:
@@ -1576,14 +1656,13 @@ int convertEvent(Display *display,
          * 0..255 exists. Truncating to the low byte keeps every ASCII key on
          * its natural keycode; the cost is that a scancode key whose low byte
          * lands on a printable keycode aliases onto it (SDLK_EXECUTE 0x40000074
-         * -> 116
-         * == 't', SDLK_KP_0 0x40000062 -> 98 == 'b'). XkbKeycodeToKeysym uses
-         * the same truncation so decoding round-trips for the common (ASCII)
-         * keys. XKeysymToKeycode guards the reverse direction (it refuses a
-         * keycode that does not round-trip) so Motif cannot bind a special key
-         * onto a letter; pressing one of the rare aliasing scancode keys still
-         * types the colliding character, which is accepted given the 8-bit
-         * limit.
+         * -> 116 == 't', SDLK_KP_0 0x40000062 -> 98 == 'b'). XkbKeycodeToKeysym
+         * uses the same truncation so decoding round-trips for the common
+         * (ASCII) keys. XKeysymToKeycode guards the reverse direction (it
+         * refuses a keycode that does not round-trip) so Motif cannot bind a
+         * special key onto a letter; pressing one of the rare aliasing scancode
+         * keys still types the colliding character, which is accepted given the
+         * 8-bit limit.
          */
         xEvent->xkey.keycode = (unsigned int) XC_EVENT_KEYSYM(sdlEvent) & 0xFF;
         /* Route priority for key events:
@@ -1999,10 +2078,10 @@ int convertEvent(Display *display,
             LOG("Window %d gained keyboard focus\n", sdlEvent->window.windowID);
             type = FocusIn;
             if (eventWindow != None) {
-                /* Do not clobber a client XSetInputFocus target. Adopt the
-                 * host top-level only while focus is still host/default-owned,
-                 * and never when it already points at this window or a
-                 * descendant of it.
+                /* Do not clobber a client XSetInputFocus target. Adopt the host
+                 * top-level only while focus is still host/default-owned, and
+                 * never when it already points at this window or a descendant
+                 * of it.
                  */
                 Window currentFocus = getKeyboardFocus();
                 FocusKind currentFocusKind = getKeyboardFocusKind();
@@ -2123,10 +2202,49 @@ int convertEvent(Display *display,
 #endif
     case SDL_TEXTEDITING: /**< Keyboard text editing (composition) */
         LOG("SDL_TEXTEDITING\n");
+        inputMethodHandlePreedit(XC_EDITING_EVENT_TEXT(sdlEvent));
         return -1;
     case SDL_TEXTINPUT: /**< Keyboard text input */
         LOG("SDL_TEXTINPUT\n");
-        return -1;
+        {
+            if (!inputMethodHasActiveTextInput())
+                return -1;
+            type = KeyPress;
+            FILL_STANDARD_VALUES(xkey);
+            /* Route the commit like a real key: an active keyboard grab wins
+             * over the focus window so IM text composed during a modal grab
+             * still reaches the grab holder.
+             */
+            Window imGrabWindow = getGrabbedKeyboardWindow();
+            eventWindow =
+                imGrabWindow != None ? imGrabWindow : getKeyboardFocus();
+            if (eventWindow == None)
+                eventWindow = SCREEN_WINDOW;
+            char *text = strdup(XC_TEXT_EVENT_TEXT(sdlEvent));
+            if (!text)
+                return -1;
+            inputMethodHandlePreedit("");
+            unsigned long commitId = inputMethodSetCurrentText(text);
+            /* No id means the commit was not queued (OOM, or a preedit-done
+             * callback above cleared focus), so do not deliver a phantom IM
+             * KeyPress that would look up as XLookupNone.
+             */
+            if (commitId == 0)
+                return -1;
+            xEvent->xkey.root = SCREEN_WINDOW;
+            xEvent->xkey.window = eventWindow;
+            /* Carry the commit id so the lookup retrieves this exact commit
+             * regardless of delivery order; keycode stays 0 as the IM marker.
+             */
+            xEvent->xkey.subwindow = (Window) commitId;
+            xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->text.timestamp);
+            xEvent->xkey.x = xEvent->xkey.y = 0;
+            xEvent->xkey.x_root = xEvent->xkey.y_root = 0;
+            xEvent->xkey.state = 0;
+            xEvent->xkey.keycode = 0;
+            xEvent->xkey.same_screen = True;
+        }
+        break;
     case SDL_MOUSEWHEEL: /**< Mouse wheel motion */
         LOG("SDL_MOUSEWHEEL\n");
         {

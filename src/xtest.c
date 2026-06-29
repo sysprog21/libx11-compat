@@ -24,6 +24,7 @@
 #include "extension.h"
 #include "window.h"
 #include "events.h"
+#include "input-method.h"
 #include "replay-target.h"
 #include "util.h"
 
@@ -224,6 +225,59 @@ static Uint16 kmodForModifierKeycode(unsigned int keycode)
  */
 static Uint16 fakeHeldMods = 0;
 
+/* A real keyboard emits SDL_TEXTINPUT alongside the keydown for a printable
+ * key; the IM path turns that into the committed character, and when an IC owns
+ * focus the bare keydown is suppressed in favor of it. XTest only fakes the
+ * keydown, so without a companion text event the character would be lost under
+ * a focused IC (and text widgets that read the commit see nothing). Emit it for
+ * printable keys so synthetic typing reaches widgets the same way real typing
+ * does.
+ *
+ * Only when an IC owns focus: that is the only case where the keydown is
+ * suppressed, so it is the only case that needs the commit. With no focused IC
+ * the raw keydown is delivered and looked up directly, so a text event would
+ * just be dropped. Deliver to winId, the same target the keydown used.
+ *
+ * keycode is this layer's X keycode (the SDL keysym low byte), so it doubles as
+ * the character for the printable ranges. SDL2 copies the text into the event
+ * at push; SDL3 keeps the pointer, so the string must outlive the push. Hold
+ * recent ones in a static ring sized well past the depth the serialized,
+ * delay-paced replay ever leaves unprocessed.
+ */
+static void pushFakeTextForKey(Display *display,
+                               Uint32 winId,
+                               unsigned int keycode)
+{
+    if (!inputMethodHasActiveTextInput())
+        return;
+    if (fakeHeldMods & (KMOD_CTRL | KMOD_ALT | KMOD_GUI))
+        return;
+    unsigned int cp = keycode;
+    if ((fakeHeldMods & KMOD_SHIFT) && cp >= 'a' && cp <= 'z')
+        cp -= 0x20;
+    if (!((cp >= 0x20 && cp <= 0x7e) || (cp >= 0xa0 && cp <= 0xff)))
+        return;
+    enum { TEXT_RING_SLOTS = 64 };
+    static char ring[TEXT_RING_SLOTS][4];
+    static unsigned int ringIndex;
+    char *buf = ring[ringIndex++ % TEXT_RING_SLOTS];
+    int n = 0;
+    if (cp < 0x80) {
+        buf[n++] = (char) cp;
+    } else {
+        buf[n++] = (char) (0xc0 | (cp >> 6));
+        buf[n++] = (char) (0x80 | (cp & 0x3f));
+    }
+    buf[n] = '\0';
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_TEXTINPUT;
+    ev.text.timestamp = XC_NOW_EVENT_TS();
+    ev.text.windowID = winId;
+    XC_SET_TEXT_EVENT(ev, buf);
+    pushFakeEvent(display, &ev);
+}
+
 int XTestFakeKeyEvent(Display *display,
                       unsigned int keycode,
                       Bool is_press,
@@ -268,8 +322,11 @@ int XTestFakeKeyEvent(Display *display,
     XC_EVENT_SET_KEYSYM(&ev, (SDL_Keycode) keycode);
     XC_EVENT_SET_SCANCODE(&ev, SDL_GetScancodeFromKey((SDL_Keycode) keycode));
     int rc = pushFakeEvent(display, &ev);
-    if (rc)
+    if (rc) {
         fakeHeldMods = nextMods;
+        if (is_press)
+            pushFakeTextForKey(display, winId, keycode);
+    }
     return rc;
 }
 
