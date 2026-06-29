@@ -9,12 +9,49 @@
 #include "X11/XKBlib.h"
 #include "display.h"
 #include "errors.h"
+#include "window-internal.h"
 
 // http://www.x.org/archive/X11R7.6/doc/man/man3/XOpenIM.3.xhtml
 // http://www.x.org/archive/X11R7.6/doc/man/man3/XCreateIC.3.xhtml
 
 static char *currLocaleModifierList = defaultLocaleModifierList;
-char *pendingText = NULL;
+static XIC focusedInputConnection = NULL;
+/* The IC XSetICFocus is about to install, live only across its preedit-clear
+ * callback. XDestroyIC nulls it if that callback destroys the incoming IC, so
+ * XSetICFocus can bail instead of dereferencing freed memory.
+ */
+static XIC pendingFocusTarget = NULL;
+static Bool focusedTextInputActive = False;
+
+/* Committed IM strings awaiting a lookup, keyed by a unique id the synthetic
+ * KeyPress carries in xkey.subwindow. Global because there is a single keyboard
+ * and one host IME; any IC can retrieve its commit by id. Bounded so a client
+ * that drops commit events without looking them up cannot grow this without
+ * limit. These IM globals (this table plus focusedInputConnection) assume the
+ * single-threaded host event loop the rest of the layer relies on; they are not
+ * lock-guarded.
+ */
+static PendingCommit *pendingCommits = NULL;
+static unsigned long nextCommitId = 1;
+static int pendingCommitCount = 0;
+#define MAX_PENDING_COMMITS 64
+
+/* Count UTF-8 codepoints (not bytes) in a NUL-terminated string. Preedit and
+ * lookup callbacks report character positions, so byte lengths would tell the
+ * host app to delete or replace the wrong run of CJK text. Counting lead bytes
+ * agrees with the validating decoder in missing.c on well-formed UTF-8, which
+ * is all SDL emits; the two could only diverge on malformed input that never
+ * reaches here.
+ */
+static int countUtf8Chars(const char *s)
+{
+    int count = 0;
+    for (; s && *s; s++) {
+        if ((*s & 0xc0) != 0x80)
+            count++;
+    }
+    return count;
+}
 
 /* Encode a Latin-1/ASCII keysym as UTF-8.
  *
@@ -96,9 +133,355 @@ static int appendKeysymUtf8(KeySym keysym, char *buffer, int nbytes)
     return needed;
 }
 
-void inputMethodSetCurrentText(char *text)
+/* Evict the oldest commit when the table is full. Only reachable when a client
+ * stops looking commits up; the evicted commit's KeyPress, if still in flight,
+ * then looks up as XLookupNone. That is the deliberate bound, hence the log.
+ */
+static void dropOldestCommit(void)
 {
-    pendingText = text;
+    PendingCommit *head = pendingCommits;
+    if (!head)
+        return;
+    pendingCommits = head->next;
+    pendingCommitCount--;
+    LOG("InputMethod commit queue full; dropping unconsumed commit '%s'\n",
+        head->text ? head->text : "");
+    free(head->text);
+    free(head);
+}
+
+unsigned long inputMethodSetCurrentText(char *text)
+{
+    /* A commit only makes sense while an IC owns focus; the caller takes
+     * ownership of text otherwise.
+     */
+    if (!focusedInputConnection) {
+        free(text);
+        return 0;
+    }
+    PendingCommit *node = malloc(sizeof(*node));
+    if (!node) {
+        free(text);
+        return 0;
+    }
+    /* id 0 is reserved to mean "no commit" (a real KeyPress leaves subwindow
+     * None == 0), so skip it on wraparound. A collision with a still-live id
+     * would need ~2^64 commits with one never consumed, so it is not guarded.
+     */
+    if (nextCommitId == 0)
+        nextCommitId = 1;
+    node->id = nextCommitId++;
+    node->text = text;
+    node->next = NULL;
+    PendingCommit **link = &pendingCommits;
+    while (*link)
+        link = &(*link)->next;
+    *link = node;
+    if (++pendingCommitCount > MAX_PENDING_COMMITS)
+        dropOldestCommit();
+    return node->id;
+}
+
+char *inputMethodPendingText(unsigned long commitId)
+{
+    if (commitId == 0)
+        return NULL;
+    for (PendingCommit *node = pendingCommits; node; node = node->next) {
+        if (node->id == commitId)
+            return node->text;
+    }
+    return NULL;
+}
+
+void inputMethodConsumePendingText(unsigned long commitId)
+{
+    if (commitId == 0)
+        return;
+    PendingCommit **link = &pendingCommits;
+    while (*link) {
+        PendingCommit *node = *link;
+        if (node->id == commitId) {
+            *link = node->next;
+            pendingCommitCount--;
+            free(node->text);
+            free(node);
+            return;
+        }
+        link = &node->next;
+    }
+}
+
+Bool inputMethodHasFocusedIC(void)
+{
+    return focusedInputConnection != NULL;
+}
+
+Bool inputMethodHasActiveTextInput(void)
+{
+    return focusedInputConnection != NULL && focusedTextInputActive;
+}
+
+void inputMethodNoteTextInputStopped(void)
+{
+    focusedTextInputActive = False;
+}
+
+static void restartTextInputIfFocused(XIC inputConnection)
+{
+    if (focusedInputConnection == inputConnection) {
+        SDL_StartTextInput();
+        focusedTextInputActive = True;
+    }
+}
+
+void inputMethodUnsetFocus(XIC inputConnection)
+{
+    if (inputConnection && focusedInputConnection != inputConnection)
+        return;
+    if (focusedInputConnection)
+        inputMethodHandlePreedit("");
+    /* The clear above can fire a done callback that re-focuses another IC; do
+     * not clobber that. Only finish the unset when this IC still holds focus.
+     */
+    if (inputConnection && focusedInputConnection != inputConnection)
+        return;
+    /* If that clear was a reentrant no-op (we were called from inside a preedit
+     * callback), preeditActive may still be set; clear it so the IC is not
+     * stuck mid-preedit and skipping its start callback when focused again.
+     */
+    if (focusedInputConnection)
+        GET_XIC_STRUCT(focusedInputConnection)->preeditActive = False;
+    focusedInputConnection = NULL;
+    focusedTextInputActive = False;
+    SDL_StopTextInput();
+}
+
+static void clearInternalPreedit(_XIC *ic)
+{
+    if (!ic->hasPreeditDrawRect)
+        return;
+    if (!IS_TYPE(ic->preeditDrawWindow, WINDOW)) {
+        /* The window we drew into was destroyed; drop the stale rect instead of
+         * allocating a GC against a dead resource.
+         */
+        ic->hasPreeditDrawRect = False;
+        return;
+    }
+    GC gc = XCreateGC(ic->display, ic->preeditDrawWindow, 0, NULL);
+    if (!gc)
+        return;
+    XSetForeground(
+        ic->display, gc,
+        ic->hasPreeditBackground ? ic->preeditBackground : 0xffffffff);
+    XFillRectangle(ic->display, ic->preeditDrawWindow, gc,
+                   ic->preeditDrawRect.x, ic->preeditDrawRect.y,
+                   (unsigned int) ic->preeditDrawRect.w,
+                   (unsigned int) ic->preeditDrawRect.h);
+    XFreeGC(ic->display, gc);
+    ic->hasPreeditDrawRect = False;
+}
+
+static void setInternalPreeditFont(_XIC *ic, GC gc)
+{
+    static const char *const preeditFonts[] = {
+        "*Arial Unicode*",       "*Hiragino Sans GB*", "*STHeiti*",
+        "*Noto Sans CJK*",       "*Source Han Sans*",  "*WenQuanYi*",
+        "*Droid Sans Fallback*", "helvetica"};
+    /* Resolve the preedit font once per IC and cache it. Probing up to eight
+     * patterns on every keystroke while composing is needless work, and
+     * XDestroyIC frees the cached font.
+     */
+    if (!ic->preeditFontResolved) {
+        for (size_t i = 0; i < sizeof(preeditFonts) / sizeof(preeditFonts[0]);
+             i++) {
+            ic->preeditFont = XLoadQueryFont(ic->display, preeditFonts[i]);
+            if (ic->preeditFont)
+                break;
+        }
+        ic->preeditFontResolved = True;
+    }
+    if (ic->preeditFont)
+        XSetFont(ic->display, gc, ic->preeditFont->fid);
+}
+
+static void drawInternalPreedit(_XIC *ic, const char *text, int len)
+{
+    if ((ic->style &
+         (XIMPreeditArea | XIMPreeditPosition | XIMPreeditNothing)) == 0)
+        return;
+    Window target = (ic->style & XIMPreeditArea) ? ic->client : ic->focus;
+    if (target == None)
+        target = ic->focus != None ? ic->focus : ic->client;
+    if (target == None || !IS_TYPE(target, WINDOW) || IS_INPUT_ONLY(target))
+        return;
+    clearInternalPreedit(ic);
+    if (len <= 0)
+        return;
+    /* ponytail: preedit strings are short; cap before len * 8 so a pathological
+     * length cannot overflow the rect math or hand XDrawString a huge count.
+     */
+    if (len > 4096)
+        len = 4096;
+    int minWidth = len * 8 + 8;
+    SDL_Rect rect = {0, 0, minWidth, 18};
+    if (ic->inputRect) {
+        rect.x = ic->inputRect->x;
+        rect.y = ic->inputRect->y;
+        if (ic->inputRect->w > 0)
+            rect.w = ic->inputRect->w;
+        if (ic->inputRect->h > 0)
+            rect.h = ic->inputRect->h;
+    }
+    if ((ic->style & XIMPreeditNothing) && !ic->inputRect) {
+        rect.x = 2;
+        rect.y = 2;
+    }
+    if (rect.w < minWidth)
+        rect.w = minWidth;
+    if (rect.h < 18)
+        rect.h = 18;
+    GC gc = XCreateGC(ic->display, target, 0, NULL);
+    if (!gc)
+        return;
+    unsigned long bg =
+        ic->hasPreeditBackground ? ic->preeditBackground : 0xffffffff;
+    unsigned long fg =
+        ic->preeditForeground ? ic->preeditForeground : 0xff000000;
+    XSetForeground(ic->display, gc, bg);
+    XFillRectangle(ic->display, target, gc, rect.x, rect.y,
+                   (unsigned int) rect.w, (unsigned int) rect.h);
+    XSetForeground(ic->display, gc, fg);
+    XSetBackground(ic->display, gc, bg);
+    setInternalPreeditFont(ic, gc);
+    Xutf8DrawString(ic->display, target, NULL, gc, rect.x + 4,
+                    rect.y + rect.h - 5, text, len);
+    XFreeGC(ic->display, gc);
+    ic->preeditDrawWindow = target;
+    ic->preeditDrawRect = rect;
+    ic->hasPreeditDrawRect = True;
+}
+
+static void applyTextInputRectForIC(_XIC *ic)
+{
+    if (!ic->inputRect)
+        return;
+    Window source = (ic->style & XIMPreeditArea) ? ic->client : ic->focus;
+    if (source == None || !IS_TYPE(source, WINDOW))
+        source = ic->focus != None ? ic->focus : ic->client;
+    if (source == None || !IS_TYPE(source, WINDOW))
+        return;
+    Window top = source;
+    while (GET_PARENT(top) != None && GET_PARENT(top) != SCREEN_WINDOW)
+        top = GET_PARENT(top);
+    SDL_Rect rect = *ic->inputRect;
+    if (rect.w <= 0)
+        rect.w = 1;
+    if (rect.h <= 0)
+        rect.h = 18;
+    translateWindowPoint(source, top, rect.x, rect.y, &rect.x, &rect.y);
+    SDL_SetTextInputRect(&rect);
+}
+
+static void handlePreeditImpl(const char *text)
+{
+    if (!focusedInputConnection)
+        return;
+    /* User preedit callbacks below can re-enter Xlib and XDestroyIC or unfocus
+     * this IC. Capture it so each callback can be followed by a check that
+     * bails before touching freed or no-longer-focused state.
+     */
+    XIC self = focusedInputConnection;
+    _XIC *ic = GET_XIC_STRUCT(self);
+    const char *s = text ? text : "";
+    int len = (int) strlen(s);
+    int charLen = countUtf8Chars(s);
+    if ((ic->style & XIMPreeditCallbacks) == 0)
+        drawInternalPreedit(ic, s, len);
+
+    /* Start fires once when preedit text first appears; it is independent of
+     * whether the IC registered a draw callback.
+     */
+    if (!ic->preeditActive && charLen > 0) {
+        ic->preeditActive = True;
+        if (ic->hasPreeditStartCallback && ic->preeditStartCallback.callback) {
+            ic->preeditStartCallback.callback(
+                (XIM) self, ic->preeditStartCallback.client_data, NULL);
+            /* A callback that destroyed/unfocused this IC drops focus, so bail
+             * before touching freed or no-longer-focused state. While merely
+             * destroying (focus unchanged, IC still alive) keep going so the
+             * done callback below still fires and start/done stay balanced.
+             */
+            if (focusedInputConnection != self)
+                return;
+        }
+    }
+
+    /* Only deliver draw/caret while a preedit is actually live. events.c clears
+     * preedit with an empty string before every commit, so without this gate a
+     * callback-style client gets a spurious empty draw on each plain keystroke.
+     * A real clear still fires here because preeditActive is not reset until
+     * the done block below. During teardown the clearing draw fires but the
+     * caret is skipped, then control falls through to the done callback.
+     */
+    if ((ic->preeditActive || charLen > 0) && ic->hasPreeditDrawCallback &&
+        ic->preeditDrawCallback.callback) {
+        XIMText ximText = {
+            .length =
+                (unsigned short) (charLen > USHRT_MAX ? USHRT_MAX : charLen),
+            .feedback = NULL,
+            .encoding_is_wchar = False,
+            .string.multi_byte = (char *) s,
+        };
+        XIMPreeditDrawCallbackStruct draw = {
+            .caret = charLen,
+            .chg_first = 0,
+            .chg_length = ic->preeditLength,
+            .text = &ximText,
+        };
+        ic->preeditDrawCallback.callback(
+            (XIM) self, ic->preeditDrawCallback.client_data, (XPointer) &draw);
+        if (focusedInputConnection != self)
+            return;
+        if (!ic->destroying && ic->hasPreeditCaretCallback &&
+            ic->preeditCaretCallback.callback) {
+            XIMPreeditCaretCallbackStruct caret = {
+                .position = charLen,
+                .direction = XIMAbsolutePosition,
+                .style = XIMIsPrimary,
+            };
+            ic->preeditCaretCallback.callback(
+                (XIM) self, ic->preeditCaretCallback.client_data,
+                (XPointer) &caret);
+            if (focusedInputConnection != self)
+                return;
+        }
+    }
+    ic->preeditLength = charLen;
+
+    /* Done fires when preedit text clears, also independent of the draw
+     * callback so start/done stay balanced for status-only ICs.
+     */
+    if (ic->preeditActive && charLen == 0) {
+        ic->preeditActive = False;
+        if (ic->hasPreeditDoneCallback && ic->preeditDoneCallback.callback)
+            ic->preeditDoneCallback.callback(
+                (XIM) self, ic->preeditDoneCallback.client_data, NULL);
+    }
+}
+
+void inputMethodHandlePreedit(const char *text)
+{
+    /* A preedit callback may unfocus or XDestroyIC its IC, and both route back
+     * through inputMethodUnsetFocus -> inputMethodHandlePreedit(""), which
+     * would re-fire the callbacks and recurse. Run the body at most one level
+     * deep; the nested clear is redundant because teardown already drops focus.
+     */
+    static Bool reentered = False;
+    if (reentered)
+        return;
+    reentered = True;
+    handlePreeditImpl(text);
+    reentered = False;
 }
 
 KeySym getKeySymForChar(char c)
@@ -135,8 +518,32 @@ KeySym getKeySymForChar(char c)
     return NoSymbol;
 }
 
+void inputMethodReset(void)
+{
+    /* Drop focus and every queued commit. Called on XCloseIM and on the final
+     * XCloseDisplay so a stale focused IC or leftover commit cannot outlive the
+     * display it belongs to. Route through inputMethodUnsetFocus so an active
+     * preedit is cleared and host text input is stopped rather than left
+     * dangling.
+     */
+    if (focusedInputConnection)
+        inputMethodUnsetFocus(focusedInputConnection);
+    while (pendingCommits) {
+        PendingCommit *next = pendingCommits->next;
+        free(pendingCommits->text);
+        free(pendingCommits);
+        pendingCommits = next;
+    }
+    pendingCommitCount = 0;
+}
+
 Status XCloseIM(XIM inputMethod)
 {
+    /* Unlike full Xlib this does not auto-destroy ICs created under the IM; the
+     * driven toolkits (Xt/Motif) XDestroyIC explicitly. It only drops IM-global
+     * state shared across the single host keyboard.
+     */
+    inputMethodReset();
     return 0;
 }
 
@@ -173,9 +580,21 @@ XIM XOpenIM(Display *display,
 
 void XDestroyIC(XIC inputConnection)
 {
-    if (GET_XIC_STRUCT(inputConnection)->inputRect)
-        free(GET_XIC_STRUCT(inputConnection)->inputRect);
-    SDL_StopTextInput();
+    if (!inputConnection)
+        return;
+    _XIC *ic = GET_XIC_STRUCT(inputConnection);
+    if (ic->destroying)
+        return;
+    ic->destroying = True;
+    /* If XSetICFocus is mid-switch into this IC, tell it the target died so it
+     * does not install and dereference this freed connection.
+     */
+    if (pendingFocusTarget == inputConnection)
+        pendingFocusTarget = NULL;
+    inputMethodUnsetFocus(inputConnection);
+    free(ic->inputRect);
+    if (ic->preeditFont)
+        XFreeFont(ic->display, ic->preeditFont);
     free(inputConnection);
 }
 
@@ -222,7 +641,7 @@ static Bool parseCommonICAttributes(XIC inputConnection,
                 inputRect->y = rect->y;
                 inputRect->w = rect->width;
                 inputRect->h = rect->height;
-                SDL_SetTextInputRect(inputRect);
+                applyTextInputRectForIC(GET_XIC_STRUCT(inputConnection));
             }
         } else if (!strcmp(key, XNAreaNeeded)) {
             consumeICAttributeValue(attrs, &i);
@@ -242,19 +661,43 @@ static Bool parseCommonICAttributes(XIC inputConnection,
                 inputRect->y = point->y;
                 inputRect->w = 0;
                 inputRect->h = 0;
-                SDL_SetTextInputRect(inputRect);
+                applyTextInputRectForIC(GET_XIC_STRUCT(inputConnection));
             }
         } else if (!strcmp(key, XNColormap) || !strcmp(key, XNStdColormap) ||
                    !strcmp(key, XNBackgroundPixmap) ||
                    !strcmp(key, XNLineSpace) || !strcmp(key, XNCursor) ||
-                   !strcmp(key, XNPreeditStartCallback) ||
-                   !strcmp(key, XNPreeditDoneCallback) ||
-                   !strcmp(key, XNPreeditDrawCallback) ||
-                   !strcmp(key, XNPreeditCaretCallback) ||
                    !strcmp(key, XNStatusStartCallback) ||
                    !strcmp(key, XNStatusDoneCallback) ||
                    !strcmp(key, XNStatusDrawCallback)) {
             consumeICAttributeValue(attrs, &i);
+        } else if (!strcmp(key, XNPreeditStartCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback) {
+                GET_XIC_STRUCT(inputConnection)->preeditStartCallback =
+                    *callback;
+                GET_XIC_STRUCT(inputConnection)->hasPreeditStartCallback = True;
+            }
+        } else if (!strcmp(key, XNPreeditDoneCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback) {
+                GET_XIC_STRUCT(inputConnection)->preeditDoneCallback =
+                    *callback;
+                GET_XIC_STRUCT(inputConnection)->hasPreeditDoneCallback = True;
+            }
+        } else if (!strcmp(key, XNPreeditDrawCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback) {
+                GET_XIC_STRUCT(inputConnection)->preeditDrawCallback =
+                    *callback;
+                GET_XIC_STRUCT(inputConnection)->hasPreeditDrawCallback = True;
+            }
+        } else if (!strcmp(key, XNPreeditCaretCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback) {
+                GET_XIC_STRUCT(inputConnection)->preeditCaretCallback =
+                    *callback;
+                GET_XIC_STRUCT(inputConnection)->hasPreeditCaretCallback = True;
+            }
         } else if (!strcmp(key, XNForeground)) {
             unsigned long value = (unsigned long) (uintptr_t) attrs[i++];
             if (preedit)
@@ -263,10 +706,12 @@ static Bool parseCommonICAttributes(XIC inputConnection,
                 GET_XIC_STRUCT(inputConnection)->statusForeground = value;
         } else if (!strcmp(key, XNBackground)) {
             unsigned long value = (unsigned long) (uintptr_t) attrs[i++];
-            if (preedit)
+            if (preedit) {
                 GET_XIC_STRUCT(inputConnection)->preeditBackground = value;
-            else
+                GET_XIC_STRUCT(inputConnection)->hasPreeditBackground = True;
+            } else {
                 GET_XIC_STRUCT(inputConnection)->statusBackground = value;
+            }
         } else if (!strcmp(key, XNFontSet)) {
             GET_XIC_STRUCT(inputConnection)->fontSet = attrs[i++];
         } else {
@@ -346,14 +791,34 @@ static Bool fillCommonICAttributes(XIC inputConnection,
         } else if (!strcmp(key, XNColormap) || !strcmp(key, XNStdColormap) ||
                    !strcmp(key, XNBackgroundPixmap) ||
                    !strcmp(key, XNLineSpace) || !strcmp(key, XNCursor) ||
-                   !strcmp(key, XNPreeditStartCallback) ||
-                   !strcmp(key, XNPreeditDoneCallback) ||
-                   !strcmp(key, XNPreeditDrawCallback) ||
-                   !strcmp(key, XNPreeditCaretCallback) ||
                    !strcmp(key, XNStatusStartCallback) ||
                    !strcmp(key, XNStatusDoneCallback) ||
                    !strcmp(key, XNStatusDrawCallback)) {
             consumeICAttributeValue(attrs, &i);
+        } else if (!strcmp(key, XNPreeditStartCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback &&
+                GET_XIC_STRUCT(inputConnection)->hasPreeditStartCallback)
+                *callback =
+                    GET_XIC_STRUCT(inputConnection)->preeditStartCallback;
+        } else if (!strcmp(key, XNPreeditDoneCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback &&
+                GET_XIC_STRUCT(inputConnection)->hasPreeditDoneCallback)
+                *callback =
+                    GET_XIC_STRUCT(inputConnection)->preeditDoneCallback;
+        } else if (!strcmp(key, XNPreeditDrawCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback &&
+                GET_XIC_STRUCT(inputConnection)->hasPreeditDrawCallback)
+                *callback =
+                    GET_XIC_STRUCT(inputConnection)->preeditDrawCallback;
+        } else if (!strcmp(key, XNPreeditCaretCallback)) {
+            XIMCallback *callback = attrs[i++];
+            if (preedit && callback &&
+                GET_XIC_STRUCT(inputConnection)->hasPreeditCaretCallback)
+                *callback =
+                    GET_XIC_STRUCT(inputConnection)->preeditCaretCallback;
         } else {
             LOG("fillCommonICAttributes failed for key %s\n", key);
             return False;
@@ -406,11 +871,18 @@ static char *setICListValues(XIC inputConnection,
             if (IS_MAPPED_TOP_LEVEL_WINDOW(topLevel)) {
                 SDL_Window *sdlWindow = GET_WINDOW_STRUCT(topLevel)->sdlWindow;
                 SDL_RaiseWindow(sdlWindow);
-                if (GET_XIC_STRUCT(inputConnection)->inputRect) {
-                    SDL_SetTextInputRect(
-                        GET_XIC_STRUCT(inputConnection)->inputRect);
+                /* The input rect and host text input belong to the IC that owns
+                 * focus; reconfiguring an unfocused IC must not retarget or
+                 * stop the focused one's IME.
+                 */
+                if (focusedInputConnection == inputConnection) {
+                    if (GET_XIC_STRUCT(inputConnection)->inputRect)
+                        applyTextInputRectForIC(
+                            GET_XIC_STRUCT(inputConnection));
+                    inputMethodNoteTextInputStopped();
+                    SDL_StopTextInput();
+                    restartTextInputIfFocused(inputConnection);
                 }
-                SDL_StopTextInput();
             }
             GET_XIC_STRUCT(inputConnection)->client = clientWindow;
             if (GET_XIC_STRUCT(inputConnection)->focus == None)
@@ -470,14 +942,19 @@ char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
             if (IS_MAPPED_TOP_LEVEL_WINDOW(topLevel)) {
                 SDL_Window *sdlWindow = GET_WINDOW_STRUCT(topLevel)->sdlWindow;
                 SDL_RaiseWindow(sdlWindow);
-                if (GET_XIC_STRUCT(inputConnection)->inputRect) {
-                    SDL_SetTextInputRect(
-                        GET_XIC_STRUCT(inputConnection)->inputRect);
-                }
-                /* SDL text input tracks the focused IC; XSelectInput restarts
-                 * it when the selected key masks require text events.
+                /* Retarget SDL's IM window only for the IC that owns focus, so
+                 * reconfiguring an unfocused IC does not move or stop the
+                 * focused one's host text input. The restart keeps printable
+                 * keydowns paired with TEXTINPUT.
                  */
-                SDL_StopTextInput();
+                if (focusedInputConnection == inputConnection) {
+                    if (GET_XIC_STRUCT(inputConnection)->inputRect)
+                        applyTextInputRectForIC(
+                            GET_XIC_STRUCT(inputConnection));
+                    inputMethodNoteTextInputStopped();
+                    SDL_StopTextInput();
+                    restartTextInputIfFocused(inputConnection);
+                }
             }
             GET_XIC_STRUCT(inputConnection)->client = clientWindow;
             if (GET_XIC_STRUCT(inputConnection)->focus == None)
@@ -527,20 +1004,44 @@ XIC XCreateIC(XIM inputMethod, ...)
         KeyPressMask | KeyReleaseMask;
     GET_XIC_STRUCT(inputConnection)->preeditForeground = 0;
     GET_XIC_STRUCT(inputConnection)->preeditBackground = 0;
+    GET_XIC_STRUCT(inputConnection)->hasPreeditBackground = False;
     GET_XIC_STRUCT(inputConnection)->statusForeground = 0;
     GET_XIC_STRUCT(inputConnection)->statusBackground = 0;
+    GET_XIC_STRUCT(inputConnection)->hasPreeditStartCallback = False;
+    GET_XIC_STRUCT(inputConnection)->hasPreeditDoneCallback = False;
+    GET_XIC_STRUCT(inputConnection)->hasPreeditDrawCallback = False;
+    GET_XIC_STRUCT(inputConnection)->hasPreeditCaretCallback = False;
+    GET_XIC_STRUCT(inputConnection)->preeditActive = False;
+    GET_XIC_STRUCT(inputConnection)->preeditLength = 0;
+    GET_XIC_STRUCT(inputConnection)->hasPreeditDrawRect = False;
+    GET_XIC_STRUCT(inputConnection)->preeditDrawWindow = None;
+    GET_XIC_STRUCT(inputConnection)->preeditDrawRect = (SDL_Rect) {0, 0, 0, 0};
+    GET_XIC_STRUCT(inputConnection)->preeditStartCallback =
+        (XIMCallback) {NULL, NULL};
+    GET_XIC_STRUCT(inputConnection)->preeditDoneCallback =
+        (XIMCallback) {NULL, NULL};
+    GET_XIC_STRUCT(inputConnection)->preeditDrawCallback =
+        (XIMCallback) {NULL, NULL};
+    GET_XIC_STRUCT(inputConnection)->preeditCaretCallback =
+        (XIMCallback) {NULL, NULL};
+    GET_XIC_STRUCT(inputConnection)->preeditFont = NULL;
+    GET_XIC_STRUCT(inputConnection)->preeditFontResolved = False;
+    GET_XIC_STRUCT(inputConnection)->destroying = False;
     va_list argumentList;
     va_start(argumentList, inputMethod);
     char *key;
     if ((key = setICValues(inputConnection, argumentList, True))) {
         LOG("setICValues failed in %s because of key %s!\n", __func__, key);
-        free(inputConnection);
         va_end(argumentList);
+        /* setICValues may have allocated inputRect before failing; XDestroyIC
+         * tolerates a partially built IC and frees it.
+         */
+        XDestroyIC(inputConnection);
         return NULL;
     }
     va_end(argumentList);
     if (GET_XIC_STRUCT(inputConnection)->style == XIMUndefined) {
-        free(inputConnection);
+        XDestroyIC(inputConnection);
         return NULL;
     }
     return inputConnection;
@@ -623,7 +1124,28 @@ char *XGetICValues(XIC inputConnection, ...)
 void XSetICFocus(XIC inputConnection)
 {
     // http://www.x.org/archive/X11R7.6/doc/man/man3/XSetICFocus.3. Nothing to
-    // do, focus management handled by SDL.
+    // do beyond enabling SDL's host IME while this IC owns focus.
+    if (!inputConnection)
+        return;
+    /* Switching focus directly from another IC (no XUnsetICFocus in between)
+     * must tear down the old IC's on-screen preedit; clear it while it is still
+     * the focused connection. That clear can fire the old IC's preedit
+     * callbacks, one of which could XDestroyIC the IC being focused; publish it
+     * as the pending target so XDestroyIC nulls it and we bail instead of
+     * dereferencing freed memory.
+     */
+    if (focusedInputConnection && focusedInputConnection != inputConnection) {
+        pendingFocusTarget = inputConnection;
+        inputMethodHandlePreedit("");
+        Bool targetAlive = pendingFocusTarget == inputConnection;
+        pendingFocusTarget = NULL;
+        if (!targetAlive)
+            return;
+    }
+    focusedInputConnection = inputConnection;
+    applyTextInputRectForIC(GET_XIC_STRUCT(inputConnection));
+    SDL_StartTextInput();
+    focusedTextInputActive = True;
 }
 
 char *XGetIMValues(XIM inputMethod, ...)
@@ -796,6 +1318,11 @@ int Xutf8LookupString(XIC inputConnection,
         return 0;
     }
     if (event->keycode == 0) {
+        /* convertEvent stamped the commit id into subwindow; look up that exact
+         * commit so out-of-order delivery cannot fetch the wrong one.
+         */
+        unsigned long commitId = (unsigned long) event->subwindow;
+        char *pendingText = inputMethodPendingText(commitId);
         if (!pendingText) {
             if (status_return)
                 *status_return = XLookupNone;
@@ -831,7 +1358,7 @@ int Xutf8LookupString(XIC inputConnection,
                 *keysym_return = NoSymbol;
         }
         memcpy(buffer_return, pendingText, textLen);
-        pendingText = NULL;
+        inputMethodConsumePendingText(commitId);
         return (int) textLen;
     }
 

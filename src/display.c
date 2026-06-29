@@ -17,6 +17,7 @@
 #include "extension.h"
 #include "selection.h"
 #include "image.h"
+#include "input-method.h"
 #include <X11/X.h>
 #include <X11/Xutil.h>
 #include <limits.h>
@@ -110,6 +111,7 @@ int XCloseDisplay(Display *display)
      */
     releaseLastRequestCode(display);
     if (numDisplaysOpen == 1) {
+        inputMethodReset();
         replayStop();
         freeImageStorage();
         destroyScreenWindow(display);
@@ -170,6 +172,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
         SDL_SetMainReady();
 #endif
         SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
+        SDL_SetHint("SDL_IME_SHOW_UI", "1");
 
         /* On macOS, the click that activates a background window is consumed by
          * activation and never seen by the app. Click-through routes that first

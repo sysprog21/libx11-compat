@@ -39,6 +39,107 @@ int convertEvent(Display *display,
 extern Bool mouseFrozen;
 extern Array *fontCache;
 
+#include <stdio.h>
+
+static int preeditDrawCount;
+static int preeditStartCount;
+static int preeditDoneCount;
+static int preeditCaretCount;
+static char preeditDrawText[32];
+
+static void test_preedit_start_done_callback(XIM im,
+                                             XPointer client_data,
+                                             XPointer call_data)
+{
+    (void) im;
+    (void) call_data;
+    int *count = (int *) client_data;
+    (*count)++;
+}
+
+static void test_preedit_draw_callback(XIM im,
+                                       XPointer client_data,
+                                       XPointer call_data)
+{
+    (void) im;
+    (void) client_data;
+    XIMPreeditDrawCallbackStruct *draw =
+        (XIMPreeditDrawCallbackStruct *) call_data;
+    preeditDrawCount++;
+    preeditDrawText[0] = '\0';
+    if (draw && draw->text && !draw->text->encoding_is_wchar &&
+        draw->text->string.multi_byte) {
+        snprintf(preeditDrawText, sizeof(preeditDrawText), "%.*s",
+                 draw->text->length, draw->text->string.multi_byte);
+    }
+}
+
+static void test_preedit_caret_callback(XIM im,
+                                        XPointer client_data,
+                                        XPointer call_data)
+{
+    (void) im;
+    (void) client_data;
+    XIMPreeditCaretCallbackStruct *caret =
+        (XIMPreeditCaretCallbackStruct *) call_data;
+    if (caret && caret->position == 2)
+        preeditCaretCount++;
+}
+
+static XIC reentrantIC;
+static int reentrantDrawCount;
+static int reentrantCaretCount;
+static Bool reentrantDestroyOnDraw;
+
+/* Pathological client: destroys its own IC from inside the draw callback. The
+ * handler must not recurse, double free, or use the IC after this returns.
+ */
+static void test_preedit_reentrant_draw_callback(XIM im,
+                                                 XPointer client_data,
+                                                 XPointer call_data)
+{
+    (void) im;
+    (void) client_data;
+    (void) call_data;
+    reentrantDrawCount++;
+    if (reentrantDestroyOnDraw && reentrantIC) {
+        XIC victim = reentrantIC;
+        reentrantIC = NULL;
+        XDestroyIC(victim);
+    }
+}
+
+static void test_preedit_reentrant_caret_callback(XIM im,
+                                                  XPointer client_data,
+                                                  XPointer call_data)
+{
+    (void) im;
+    (void) client_data;
+    (void) call_data;
+    reentrantCaretCount++;
+}
+
+static XIC focusSwitchVictim;
+static int focusSwitchDoneCount;
+
+/* Pathological client: the outgoing IC's done callback destroys the IC being
+ * focused. XSetICFocus must not install or dereference that freed IC.
+ */
+static void test_focus_switch_done_callback(XIM im,
+                                            XPointer client_data,
+                                            XPointer call_data)
+{
+    (void) im;
+    (void) client_data;
+    (void) call_data;
+    focusSwitchDoneCount++;
+    if (focusSwitchVictim) {
+        XIC victim = focusSwitchVictim;
+        focusSwitchVictim = NULL;
+        XDestroyIC(victim);
+    }
+}
+
 #include <dirent.h>
 #include <math.h>
 #include <stdint.h>
@@ -7301,18 +7402,26 @@ static int test_input_methods(Display *display)
     XIM im = XOpenIM(display, NULL, NULL, NULL);
     CHECK(im, "XOpenIM failed");
     Window root = RootWindow(display, DefaultScreen(display));
-    Window client = XCreateSimpleWindow(display, root, 0, 0, 16, 16, 0, 0, 0);
-    Window focus = XCreateSimpleWindow(display, client, 1, 1, 8, 8, 0, 0, 0);
+    Window client = XCreateSimpleWindow(display, root, 0, 0, 120, 60, 0, 0, 0);
+    Window focus = XCreateSimpleWindow(display, client, 1, 1, 20, 12, 0, 0, 0);
     CHECK(client != None && focus != None, "input method windows failed");
 
-    XRectangle area = {.x = 2, .y = 3, .width = 4, .height = 5};
+    XRectangle area = {.x = 2, .y = 3, .width = 48, .height = 18};
     XFontSet fontSet = (XFontSet) (uintptr_t) 0x1234;
     unsigned long foreground = 0x112233;
-    unsigned long background = 0x445566;
+    unsigned long background = 0xffffffff;
+    XIMCallback preeditStartCallback = {(XPointer) &preeditStartCount,
+                                        test_preedit_start_done_callback};
+    XIMCallback preeditDoneCallback = {(XPointer) &preeditDoneCount,
+                                       test_preedit_start_done_callback};
+    XIMCallback preeditDrawCallback = {NULL, test_preedit_draw_callback};
+    XIMCallback preeditCaretCallback = {NULL, test_preedit_caret_callback};
     XVaNestedList preedit = XVaCreateNestedList(
         0, XNArea, &area, XNForeground, (XPointer) (uintptr_t) foreground,
         XNBackground, (XPointer) (uintptr_t) background, XNFontSet, fontSet,
-        NULL);
+        XNPreeditStartCallback, &preeditStartCallback, XNPreeditDoneCallback,
+        &preeditDoneCallback, XNPreeditDrawCallback, &preeditDrawCallback,
+        XNPreeditCaretCallback, &preeditCaretCallback, NULL);
     CHECK(preedit, "XVaCreateNestedList for preedit failed");
     XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditArea | XIMStatusNothing,
                        XNClientWindow, client, XNFocusWindow, focus,
@@ -7347,6 +7456,665 @@ static int test_input_methods(Display *display)
     CHECK(fontSetBack == fontSet, "XGetICValues returned wrong font set");
     CHECK(filterEvents == (KeyPressMask | KeyReleaseMask),
           "XGetICValues returned wrong filter events");
+
+    GC preeditGc = XCreateGC(display, client, 0, NULL);
+    CHECK(preeditGc, "preedit visibility GC creation failed");
+    CHECK(XSetForeground(display, preeditGc, 0xffffffff),
+          "preedit visibility white foreground failed");
+    CHECK(XFillRectangle(display, client, preeditGc, 0, 0, 120, 60),
+          "preedit visibility background fill failed");
+    XFreeGC(display, preeditGc);
+
+    XIMStyles *styles = NULL;
+    CHECK(!XGetIMValues(im, XNQueryInputStyle, &styles, NULL) && styles,
+          "XGetIMValues did not return input styles");
+    Bool hasCallbackStyle = False;
+    Bool hasServerDrawnStyle = False;
+    for (unsigned short i = 0; i < styles->count_styles; i++) {
+        if (styles->supported_styles[i] ==
+            (XIMPreeditCallbacks | XIMStatusNothing)) {
+            hasCallbackStyle = True;
+        }
+        if (styles->supported_styles[i] &
+            (XIMPreeditArea | XIMPreeditPosition)) {
+            hasServerDrawnStyle = True;
+        }
+    }
+    XFree(styles);
+    CHECK(hasCallbackStyle, "XIMPreeditCallbacks was not advertised");
+    /* XGetIMValues must advertise the same styles XCreateIC accepts, including
+     * the over-the-spot Area/Position styles served by the internal renderer,
+     * so clients can actually select them.
+     */
+    CHECK(hasServerDrawnStyle,
+          "over-the-spot (Area/Position) preedit styles were not advertised");
+
+    XSetInputFocus(display, focus, RevertToNone, CurrentTime);
+    XSelectInput(display, focus, KeyPressMask);
+    {
+        unsigned long blackBackground = 0;
+        unsigned long whiteForeground = 0xffffffff;
+        void *blackPreedit[] = {
+            XNArea,       &area,
+            XNForeground, (XPointer) (uintptr_t) whiteForeground,
+            XNBackground, (XPointer) (uintptr_t) blackBackground,
+            NULL};
+        XIC blackBgIC =
+            XCreateIC(im, XNInputStyle, XIMPreeditArea | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus,
+                      XNPreeditAttributes, blackPreedit, NULL);
+        CHECK(blackBgIC, "XCreateIC failed for black preedit background");
+        preeditGc = XCreateGC(display, client, 0, NULL);
+        CHECK(preeditGc, "black preedit GC creation failed");
+        CHECK(XSetForeground(display, preeditGc, 0xffffffff),
+              "black preedit white foreground failed");
+        CHECK(XFillRectangle(display, client, preeditGc, 0, 0, 120, 60),
+              "black preedit background fill failed");
+        XFreeGC(display, preeditGc);
+        XSetICFocus(blackBgIC);
+        SDL_Event blackEdit;
+        SDL_zero(blackEdit);
+        blackEdit.type = SDL_TEXTEDITING;
+        XC_SET_EDITING_EVENT(blackEdit, "bg");
+        XEvent blackIgnored;
+        CHECK(convertEvent(display, &blackEdit, &blackIgnored, True) == -1,
+              "black-background SDL_TEXTEDITING produced a committed X event");
+        XImage *blackImage =
+            XGetImage(display, client, area.x, area.y, area.width, area.height,
+                      AllPlanes, ZPixmap);
+        CHECK(blackImage, "black preedit XGetImage failed");
+        unsigned long blackPixel = XGetPixel(blackImage, 1, 1);
+        CHECK((blackPixel & 0xffffff00) == 0,
+              "black preedit background pixel was not honored");
+        XDestroyImage(blackImage);
+        XUnsetICFocus(blackBgIC);
+        XDestroyIC(blackBgIC);
+    }
+    XSetICFocus(ic);
+    preeditStartCount = 0;
+    preeditDoneCount = 0;
+    preeditDrawCount = 0;
+    preeditCaretCount = 0;
+    preeditDrawText[0] = '\0';
+    SDL_Event editingEvent;
+    SDL_zero(editingEvent);
+    editingEvent.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(editingEvent, "zh");
+    XEvent ignored;
+    CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+          "SDL_TEXTEDITING should not produce a committed X event");
+    CHECK(preeditDrawCount == 1 && strcmp(preeditDrawText, "zh") == 0,
+          "SDL_TEXTEDITING did not reach XNPreeditDrawCallback");
+    CHECK(preeditStartCount == 1 && preeditDoneCount == 0 &&
+              preeditCaretCount == 1,
+          "SDL_TEXTEDITING did not deliver preedit lifecycle callbacks");
+    XImage *preeditImage =
+        XGetImage(display, client, area.x, area.y, area.width, area.height,
+                  AllPlanes, ZPixmap);
+    CHECK(preeditImage, "preedit visibility XGetImage failed");
+    int darkPixels = 0;
+    for (int py = 0; py < area.height; py++) {
+        for (int px = 0; px < area.width; px++) {
+            if ((XGetPixel(preeditImage, px, py) & 0x00ffffff) != 0x00ffffff)
+                darkPixels++;
+        }
+    }
+    XDestroyImage(preeditImage);
+    CHECK(darkPixels > 0, "area-style preedit was not visibly drawn");
+
+    XIC switchIC =
+        XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                  XNClientWindow, client, XNFocusWindow, focus, NULL);
+    CHECK(switchIC, "XCreateIC failed for focus-switch IC");
+    XSetICFocus(switchIC);
+    XImage *switched = XGetImage(display, client, area.x, area.y, area.width,
+                                 area.height, AllPlanes, ZPixmap);
+    CHECK(switched, "focus-switch preedit clear XGetImage failed");
+    int switchedNonWhite = 0;
+    for (int py = 0; py < area.height; py++) {
+        for (int px = 0; px < area.width; px++) {
+            if ((XGetPixel(switched, px, py) & 0x00ffffff) != 0x00ffffff)
+                switchedNonWhite++;
+        }
+    }
+    XDestroyImage(switched);
+    CHECK(switchedNonWhite == 0, "focus switch did not clear old preedit");
+    CHECK(preeditDoneCount == 1, "focus switch did not finish old preedit");
+    XDestroyIC(switchIC);
+    XSetICFocus(ic);
+    Window replacementClient =
+        XCreateSimpleWindow(display, root, 0, 0, 120, 60, 0, 0, 0);
+    CHECK(replacementClient != None, "replacement IM client creation failed");
+    CHECK(XMapWindow(display, replacementClient),
+          "replacement IM client map failed");
+    CHECK(!XSetICValues(ic, XNClientWindow, replacementClient, NULL),
+          "XSetICValues failed for replacement IM client");
+    {
+        XIC ic2 =
+            XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus, NULL);
+        CHECK(ic2, "XCreateIC failed for second IC");
+        /* Modifying a non-focused IC must not disable text input for the
+         * currently focused IC */
+        CHECK(!XSetICValues(ic2, XNClientWindow, replacementClient, NULL),
+              "XSetICValues failed for second IC client window");
+        /* Verify that key suppression still works on the focused IC (it has
+         * active text input) */
+        SDL_Event keyEvent;
+        SDL_zero(keyEvent);
+        keyEvent.type = SDL_KEYDOWN;
+        keyEvent.key.windowID =
+            SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_a);
+        XC_EVENT_SET_KEYMOD(&keyEvent, 0);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "setting client window on a non-focused IC disabled active IM "
+              "text input");
+        XDestroyIC(ic2);
+    }
+    {
+        SDL_Event keyEvent;
+        SDL_zero(keyEvent);
+        keyEvent.type = SDL_KEYDOWN;
+        keyEvent.key.windowID =
+            SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_a);
+        XC_EVENT_SET_KEYMOD(&keyEvent, 0);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "plain SDL_KEYDOWN under IC focus produced duplicate KeyPress");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_KP_1);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "keypad SDL_KEYDOWN under IC focus produced duplicate KeyPress");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_KP_LEFTPAREN);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "keypad punctuation under IC focus produced duplicate KeyPress");
+
+        /* Non-ASCII printable keys also arrive as SDL_TEXTINPUT, so their raw
+         * keydown must be suppressed too (Latin-1 and arbitrary Unicode).
+         */
+        XC_EVENT_SET_KEYSYM(&keyEvent, 0xe9); /* Latin-1 e-acute */
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "Latin-1 SDL_KEYDOWN under IC focus produced duplicate KeyPress");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, 0x4e2d); /* CJK codepoint */
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "Unicode SDL_KEYDOWN under IC focus produced duplicate KeyPress");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_RETURN);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == 0,
+              "non-text SDL_KEYDOWN under IC focus was suppressed");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_KP_ENTER);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == 0,
+              "keypad Enter under IC focus was suppressed");
+    }
+    XSelectInput(display, focus, KeyPressMask);
+    {
+        SDL_Event selectedKeyEvent;
+        SDL_zero(selectedKeyEvent);
+        selectedKeyEvent.type = SDL_KEYDOWN;
+        selectedKeyEvent.key.windowID =
+            SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
+        XC_EVENT_SET_KEYSYM(&selectedKeyEvent, SDLK_a);
+        XC_EVENT_SET_KEYMOD(&selectedKeyEvent, 0);
+        CHECK(convertEvent(display, &selectedKeyEvent, &ignored, True) == -1,
+              "XSelectInput disabled active IM text input");
+    }
+    XSetICFocus(ic);
+    for (int i = 0; i < 3; i++) {
+        SDL_Event textEvent;
+        SDL_zero(textEvent);
+        textEvent.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(textEvent, "a");
+        SDL_PushEvent(&textEvent);
+        XEvent out;
+        XNextEvent(display, &out);
+        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
+              "SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
+        if (i == 0) {
+            XImage *cleared =
+                XGetImage(display, client, area.x, area.y, area.width,
+                          area.height, AllPlanes, ZPixmap);
+            CHECK(cleared, "preedit clear XGetImage failed");
+            int nonWhite = 0;
+            for (int py = 0; py < area.height; py++) {
+                for (int px = 0; px < area.width; px++) {
+                    if ((XGetPixel(cleared, px, py) & 0x00ffffff) != 0x00ffffff)
+                        nonWhite++;
+                }
+            }
+            XDestroyImage(cleared);
+            CHECK(nonWhite == 0, "commit did not clear visible preedit area");
+        }
+        Status lookupStatus = XLookupNone;
+        KeySym keysym = NoSymbol;
+        if (i == 0) {
+            char buf[4] = {0};
+            int n = Xutf8LookupString(ic, &out.xkey, buf, sizeof(buf), &keysym,
+                                      &lookupStatus);
+            CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a &&
+                      lookupStatus == XLookupBoth,
+                  "Xutf8LookupString did not return focused SDL text");
+        } else if (i == 1) {
+            char buf[4] = {0};
+            int n = XmbLookupString(ic, &out.xkey, buf, sizeof(buf), &keysym,
+                                    &lookupStatus);
+            CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a &&
+                      lookupStatus == XLookupBoth,
+                  "XmbLookupString did not return focused SDL text");
+        } else {
+            wchar_t buf[4] = {0};
+            int n =
+                XwcLookupString(ic, &out.xkey, buf, 4, &keysym, &lookupStatus);
+            CHECK(n == 1 && buf[0] == L'a' && keysym == XK_a &&
+                      lookupStatus == XLookupBoth,
+                  "XwcLookupString did not return focused SDL text");
+        }
+    }
+    {
+        SDL_Event textEvent;
+        SDL_zero(textEvent);
+        textEvent.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(textEvent, "\xe4\xb8\xad");
+        SDL_PushEvent(&textEvent);
+        XEvent out;
+        XNextEvent(display, &out);
+        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
+              "wide-overflow SDL_TEXTINPUT did not produce IM KeyPress");
+        wchar_t small[1] = {0};
+        Status overflowStatus = XLookupNone;
+        KeySym overflowKeysym = NoSymbol;
+        int needed = XwcLookupString(ic, &out.xkey, small, 0, &overflowKeysym,
+                                     &overflowStatus);
+        CHECK(needed == 1 && overflowStatus == XBufferOverflow,
+              "XwcLookupString did not report wide overflow");
+        wchar_t retry[2] = {0};
+        int got = XwcLookupString(ic, &out.xkey, retry, 2, &overflowKeysym,
+                                  &overflowStatus);
+        CHECK(got == 1 && retry[0] == (wchar_t) 0x4e2d &&
+                  overflowKeysym == NoSymbol && overflowStatus == XLookupChars,
+              "XwcLookupString lost pending text after overflow");
+    }
+    for (int i = 0; i < 2; i++) {
+        SDL_Event textEvent;
+        SDL_zero(textEvent);
+        textEvent.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(textEvent, "\xe4\xb8\xad");
+        SDL_PushEvent(&textEvent);
+        XEvent out;
+        XNextEvent(display, &out);
+        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
+              "CJK SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
+        Status lookupStatus = XLookupNone;
+        KeySym keysym = NoSymbol;
+        if (i == 0) {
+            char buf[8] = {0};
+            int n = Xutf8LookupString(ic, &out.xkey, buf, sizeof(buf), &keysym,
+                                      &lookupStatus);
+            CHECK(n == 3 && memcmp(buf, "\xe4\xb8\xad", 3) == 0 &&
+                      keysym == NoSymbol && lookupStatus == XLookupChars,
+                  "Xutf8LookupString did not return focused CJK SDL text");
+        } else {
+            wchar_t buf[4] = {0};
+            int n =
+                XwcLookupString(ic, &out.xkey, buf, 4, &keysym, &lookupStatus);
+            CHECK(n == 1 && buf[0] == (wchar_t) 0x4e2d && keysym == NoSymbol &&
+                      lookupStatus == XLookupChars,
+                  "XwcLookupString did not return focused CJK SDL text");
+        }
+    }
+    {
+        /* drainSdlEventsToPutBack converts a whole SDL batch into put-back
+         * KeyPress events before the client looks any commit up. Each commit is
+         * bound to its event by id, so a batch must not collapse into the last
+         * commit; reproduce that batch conversion here.
+         */
+        SDL_Event firstText, secondText;
+        SDL_zero(firstText);
+        firstText.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(firstText, "a");
+        SDL_zero(secondText);
+        secondText.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(secondText, "b");
+        XEvent firstOut, secondOut;
+        CHECK(convertEvent(display, &firstText, &firstOut, True) == 0 &&
+                  convertEvent(display, &secondText, &secondOut, True) == 0,
+              "batched SDL_TEXTINPUT conversion failed");
+        char buf[4] = {0};
+        Status batchStatus = XLookupNone;
+        KeySym batchKeysym = NoSymbol;
+        int n = Xutf8LookupString(ic, &firstOut.xkey, buf, sizeof(buf),
+                                  &batchKeysym, &batchStatus);
+        CHECK(n == 1 && buf[0] == 'a',
+              "batched IM commits collapsed: first commit lost");
+        buf[0] = '\0';
+        n = Xutf8LookupString(ic, &secondOut.xkey, buf, sizeof(buf),
+                              &batchKeysym, &batchStatus);
+        CHECK(n == 1 && buf[0] == 'b',
+              "batched IM commits collapsed: second commit wrong");
+    }
+    {
+        /* Event scans (XCheckWindowEvent and friends) can hand the client a
+         * later IM commit before an earlier one. Each commit is bound to its
+         * event by id, so an out-of-order lookup must still fetch its own text;
+         * a plain FIFO would return them swapped.
+         */
+        SDL_Event firstText, secondText;
+        SDL_zero(firstText);
+        firstText.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(firstText, "p");
+        SDL_zero(secondText);
+        secondText.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(secondText, "q");
+        XEvent firstOut, secondOut;
+        CHECK(convertEvent(display, &firstText, &firstOut, True) == 0 &&
+                  convertEvent(display, &secondText, &secondOut, True) == 0,
+              "out-of-order IM conversion failed");
+        char buf[4] = {0};
+        Status st = XLookupNone;
+        KeySym ks = NoSymbol;
+        int n =
+            Xutf8LookupString(ic, &secondOut.xkey, buf, sizeof(buf), &ks, &st);
+        CHECK(n == 1 && buf[0] == 'q',
+              "out-of-order IM lookup fetched the wrong commit");
+        buf[0] = '\0';
+        n = Xutf8LookupString(ic, &firstOut.xkey, buf, sizeof(buf), &ks, &st);
+        CHECK(n == 1 && buf[0] == 'p',
+              "out-of-order IM lookup lost the earlier commit");
+    }
+    XUnsetICFocus(ic);
+
+    XIC callbackIC =
+        XCreateIC(im, XNInputStyle, XIMPreeditCallbacks | XIMStatusNothing,
+                  XNClientWindow, client, XNFocusWindow, focus,
+                  XNPreeditAttributes, preedit, NULL);
+    CHECK(callbackIC, "XCreateIC failed for XIMPreeditCallbacks");
+    XSetICFocus(callbackIC);
+    preeditStartCount = 0;
+    preeditDoneCount = 0;
+    preeditDrawCount = 0;
+    preeditCaretCount = 0;
+    preeditDrawText[0] = '\0';
+    SDL_zero(editingEvent);
+    editingEvent.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(editingEvent, "xy");
+    CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+          "callback-style SDL_TEXTEDITING produced a committed X event");
+    CHECK(preeditStartCount == 1 && preeditDrawCount == 1 &&
+              preeditCaretCount == 1 && strcmp(preeditDrawText, "xy") == 0,
+          "callback-style IC did not receive visible preedit callbacks");
+    SDL_Event commitEvent;
+    SDL_zero(commitEvent);
+    commitEvent.type = SDL_TEXTINPUT;
+    XC_SET_TEXT_EVENT(commitEvent, "x");
+    CHECK(convertEvent(display, &commitEvent, &ignored, True) != -1 &&
+              ignored.type == KeyPress,
+          "callback-style SDL_TEXTINPUT did not commit through XIM");
+    CHECK(preeditDoneCount == 1, "commit did not finish active preedit");
+    Status callbackStatus = XLookupNone;
+    KeySym callbackKeysym = NoSymbol;
+    char callbackBuf[4] = {0};
+    int callbackLen = Xutf8LookupString(callbackIC, &ignored.xkey, callbackBuf,
+                                        sizeof(callbackBuf), &callbackKeysym,
+                                        &callbackStatus);
+    CHECK(callbackLen == 1 && callbackBuf[0] == 'x' && callbackKeysym == XK_x &&
+              callbackStatus == XLookupBoth,
+          "callback-style committed text was not available to lookup");
+    /* A plain commit with no preedit in progress (events.c still clears preedit
+     * with an empty string first) must not emit a spurious empty draw callback.
+     */
+    int drawBeforePlainCommit = preeditDrawCount;
+    SDL_Event plainCommit;
+    SDL_zero(plainCommit);
+    plainCommit.type = SDL_TEXTINPUT;
+    XC_SET_TEXT_EVENT(plainCommit, "y");
+    CHECK(convertEvent(display, &plainCommit, &ignored, True) != -1 &&
+              ignored.type == KeyPress,
+          "plain callback-style SDL_TEXTINPUT did not commit through XIM");
+    CHECK(preeditDrawCount == drawBeforePlainCommit,
+          "plain commit fired a spurious empty preedit draw callback");
+    callbackStatus = XLookupNone;
+    callbackBuf[0] = '\0';
+    callbackLen = Xutf8LookupString(callbackIC, &ignored.xkey, callbackBuf,
+                                    sizeof(callbackBuf), &callbackKeysym,
+                                    &callbackStatus);
+    CHECK(callbackLen == 1 && callbackBuf[0] == 'y',
+          "plain callback-style commit text was not available to lookup");
+    XUnsetICFocus(callbackIC);
+    XDestroyIC(callbackIC);
+
+    {
+        /* A preedit callback that destroys its own IC must not recurse,
+         * double free, or fire later callbacks. With the reentrancy and focus
+         * guards the draw callback runs exactly once and the caret callback,
+         * which would deref the freed IC, never runs.
+         */
+        reentrantDrawCount = 0;
+        reentrantCaretCount = 0;
+        reentrantDestroyOnDraw = True;
+        XIMCallback reDraw = {NULL, test_preedit_reentrant_draw_callback};
+        XIMCallback reCaret = {NULL, test_preedit_reentrant_caret_callback};
+        XVaNestedList rePreedit =
+            XVaCreateNestedList(0, XNPreeditDrawCallback, &reDraw,
+                                XNPreeditCaretCallback, &reCaret, NULL);
+        CHECK(rePreedit, "XVaCreateNestedList for reentrant preedit failed");
+        XIC reIC =
+            XCreateIC(im, XNInputStyle, XIMPreeditCallbacks | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus,
+                      XNPreeditAttributes, rePreedit, NULL);
+        CHECK(reIC, "XCreateIC failed for reentrant IC");
+        XFree(rePreedit);
+        reentrantIC = reIC;
+        XSetICFocus(reIC);
+        SDL_zero(editingEvent);
+        editingEvent.type = SDL_TEXTEDITING;
+        XC_SET_EDITING_EVENT(editingEvent, "z");
+        CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+              "reentrant SDL_TEXTEDITING produced a committed X event");
+        CHECK(reentrantDrawCount == 1,
+              "reentrant draw callback did not fire exactly once");
+        CHECK(reentrantCaretCount == 0,
+              "caret callback ran after the IC was destroyed mid-draw");
+        reentrantIC = NULL;
+        reentrantDestroyOnDraw = False;
+    }
+
+    {
+        /* Same reentrant destruction, but while XDestroyIC itself clears active
+         * preedit through inputMethodUnsetFocus.
+         */
+        reentrantDrawCount = 0;
+        reentrantCaretCount = 0;
+        reentrantDestroyOnDraw = False;
+        XIMCallback reDraw = {NULL, test_preedit_reentrant_draw_callback};
+        XIMCallback reCaret = {NULL, test_preedit_reentrant_caret_callback};
+        XVaNestedList rePreedit =
+            XVaCreateNestedList(0, XNPreeditDrawCallback, &reDraw,
+                                XNPreeditCaretCallback, &reCaret, NULL);
+        CHECK(rePreedit,
+              "XVaCreateNestedList for teardown reentrant preedit failed");
+        XIC reIC =
+            XCreateIC(im, XNInputStyle, XIMPreeditCallbacks | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus,
+                      XNPreeditAttributes, rePreedit, NULL);
+        CHECK(reIC, "XCreateIC failed for teardown reentrant IC");
+        XFree(rePreedit);
+        reentrantIC = reIC;
+        XSetICFocus(reIC);
+        SDL_zero(editingEvent);
+        editingEvent.type = SDL_TEXTEDITING;
+        XC_SET_EDITING_EVENT(editingEvent, "w");
+        CHECK(
+            convertEvent(display, &editingEvent, &ignored, True) == -1,
+            "teardown reentrant SDL_TEXTEDITING produced a committed X event");
+        CHECK(reentrantDrawCount == 1 && reentrantCaretCount == 1,
+              "teardown reentrant IC did not enter active preedit");
+        reentrantDestroyOnDraw = True;
+        XDestroyIC(reIC);
+        CHECK(reentrantDrawCount == 2,
+              "teardown reentrant draw callback did not fire exactly once");
+        CHECK(reentrantCaretCount == 1,
+              "caret callback ran after the IC was destroyed during teardown");
+        reentrantIC = NULL;
+        reentrantDestroyOnDraw = False;
+    }
+
+    {
+        /* Destroying an IC with active preedit must still fire the done
+         * callback so a callback client's start/done stay balanced; the caret
+         * is skipped during teardown.
+         */
+        int balanceStart = 0;
+        int balanceDone = 0;
+        XIMCallback balanceStartCb = {(XPointer) &balanceStart,
+                                      test_preedit_start_done_callback};
+        XIMCallback balanceDoneCb = {(XPointer) &balanceDone,
+                                     test_preedit_start_done_callback};
+        XIMCallback balanceDrawCb = {NULL, test_preedit_draw_callback};
+        XVaNestedList balancePreedit = XVaCreateNestedList(
+            0, XNPreeditStartCallback, &balanceStartCb, XNPreeditDoneCallback,
+            &balanceDoneCb, XNPreeditDrawCallback, &balanceDrawCb, NULL);
+        CHECK(balancePreedit, "XVaCreateNestedList for balance preedit failed");
+        XIC balanceIC =
+            XCreateIC(im, XNInputStyle, XIMPreeditCallbacks | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus,
+                      XNPreeditAttributes, balancePreedit, NULL);
+        CHECK(balanceIC, "XCreateIC failed for balance IC");
+        XFree(balancePreedit);
+        XSetICFocus(balanceIC);
+        SDL_zero(editingEvent);
+        editingEvent.type = SDL_TEXTEDITING;
+        XC_SET_EDITING_EVENT(editingEvent, "ab");
+        CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+              "balance SDL_TEXTEDITING produced a committed X event");
+        CHECK(balanceStart == 1 && balanceDone == 0,
+              "balance preedit start did not fire or done fired early");
+        XDestroyIC(balanceIC);
+        CHECK(balanceDone == 1,
+              "destroying an IC mid-preedit did not fire the done callback");
+    }
+
+    {
+        /* Focus switch where the outgoing IC's done callback destroys the
+         * incoming IC. XSetICFocus must detect the freed target and bail rather
+         * than installing and dereferencing it.
+         */
+        focusSwitchDoneCount = 0;
+        XIMCallback outDone = {NULL, test_focus_switch_done_callback};
+        XIMCallback outDraw = {NULL, test_preedit_draw_callback};
+        XVaNestedList outPreedit =
+            XVaCreateNestedList(0, XNPreeditDoneCallback, &outDone,
+                                XNPreeditDrawCallback, &outDraw, NULL);
+        CHECK(outPreedit, "XVaCreateNestedList for focus-switch out IC failed");
+        XIC outIC =
+            XCreateIC(im, XNInputStyle, XIMPreeditCallbacks | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus,
+                      XNPreeditAttributes, outPreedit, NULL);
+        CHECK(outIC, "XCreateIC failed for focus-switch out IC");
+        XFree(outPreedit);
+        XIC inIC =
+            XCreateIC(im, XNInputStyle, XIMPreeditCallbacks | XIMStatusNothing,
+                      XNClientWindow, client, XNFocusWindow, focus, NULL);
+        CHECK(inIC, "XCreateIC failed for focus-switch in IC");
+        XSetICFocus(outIC);
+        SDL_zero(editingEvent);
+        editingEvent.type = SDL_TEXTEDITING;
+        XC_SET_EDITING_EVENT(editingEvent, "q");
+        CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+              "focus-switch SDL_TEXTEDITING produced a committed X event");
+        focusSwitchVictim = inIC;
+        XSetICFocus(inIC);
+        CHECK(focusSwitchDoneCount == 1,
+              "outgoing IC done callback did not fire during focus switch");
+        CHECK(focusSwitchVictim == NULL,
+              "incoming IC was not destroyed by the focus-switch callback");
+        /* Focus must remain on the live outgoing IC, not the freed incoming
+         * one: a further edit still reaches outIC's draw callback. If the freed
+         * IC had been installed this would dereference it.
+         */
+        preeditDrawCount = 0;
+        preeditDrawText[0] = '\0';
+        SDL_zero(editingEvent);
+        editingEvent.type = SDL_TEXTEDITING;
+        XC_SET_EDITING_EVENT(editingEvent, "r");
+        CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+              "post-switch SDL_TEXTEDITING produced a committed X event");
+        CHECK(preeditDrawCount >= 1 && strcmp(preeditDrawText, "r") == 0,
+              "focus did not stay on the live IC after the aborted switch");
+        XDestroyIC(outIC);
+    }
+
+    XIC rootStyleIC =
+        XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                  XNClientWindow, client, XNFocusWindow, client, NULL);
+    CHECK(rootStyleIC, "XCreateIC failed for XIMPreeditNothing");
+    preeditGc = XCreateGC(display, client, 0, NULL);
+    CHECK(preeditGc, "root-style preedit GC creation failed");
+    CHECK(XSetForeground(display, preeditGc, 0xffffffff),
+          "root-style preedit white foreground failed");
+    CHECK(XFillRectangle(display, client, preeditGc, 0, 0, 120, 60),
+          "root-style preedit background fill failed");
+    XFreeGC(display, preeditGc);
+    XSetICFocus(rootStyleIC);
+    SDL_zero(editingEvent);
+    editingEvent.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(editingEvent, "rt");
+    CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+          "root-style SDL_TEXTEDITING produced a committed X event");
+    preeditImage = XGetImage(display, client, 2, 2, 24, 18, AllPlanes, ZPixmap);
+    CHECK(preeditImage, "root-style preedit XGetImage failed");
+    darkPixels = 0;
+    for (int py = 0; py < 18; py++) {
+        for (int px = 0; px < 24; px++) {
+            if ((XGetPixel(preeditImage, px, py) & 0x00ffffff) != 0x00ffffff)
+                darkPixels++;
+        }
+    }
+    XDestroyImage(preeditImage);
+    CHECK(darkPixels > 0, "root-style preedit was not visibly drawn");
+    XUnsetICFocus(rootStyleIC);
+    XDestroyIC(rootStyleIC);
+
+    XIC positionIC =
+        XCreateIC(im, XNInputStyle, XIMPreeditPosition | XIMStatusNothing,
+                  XNClientWindow, client, XNFocusWindow, client, NULL);
+    CHECK(positionIC, "XCreateIC failed for XIMPreeditPosition");
+    XPoint spot = {.x = 32, .y = 22};
+    XVaNestedList spotAttrs =
+        XVaCreateNestedList(0, XNSpotLocation, &spot, NULL);
+    CHECK(spotAttrs, "XVaCreateNestedList for spot location failed");
+    CHECK(!XSetICValues(positionIC, XNPreeditAttributes, spotAttrs, NULL),
+          "XSetICValues failed for spot location");
+    XFree(spotAttrs);
+    preeditGc = XCreateGC(display, client, 0, NULL);
+    CHECK(preeditGc, "position preedit GC creation failed");
+    CHECK(XSetForeground(display, preeditGc, 0xffffffff),
+          "position preedit white foreground failed");
+    CHECK(XFillRectangle(display, client, preeditGc, 0, 0, 120, 60),
+          "position preedit background fill failed");
+    XFreeGC(display, preeditGc);
+    XSetICFocus(positionIC);
+    SDL_zero(editingEvent);
+    editingEvent.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(editingEvent, "os");
+    CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
+          "position SDL_TEXTEDITING produced a committed X event");
+    preeditImage =
+        XGetImage(display, client, spot.x, spot.y, 24, 18, AllPlanes, ZPixmap);
+    CHECK(preeditImage, "position preedit XGetImage failed");
+    darkPixels = 0;
+    for (int py = 0; py < 18; py++) {
+        for (int px = 0; px < 24; px++) {
+            if ((XGetPixel(preeditImage, px, py) & 0x00ffffff) != 0x00ffffff)
+                darkPixels++;
+        }
+    }
+    XDestroyImage(preeditImage);
+    CHECK(darkPixels > 0, "position preedit was not drawn at spot location");
+    XUnsetICFocus(positionIC);
+    XDestroyIC(positionIC);
 
     XFree(preedit);
     XFree(preeditBack);

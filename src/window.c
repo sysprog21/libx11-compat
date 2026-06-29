@@ -11,6 +11,7 @@
 #include "font.h"
 #include "image.h"
 #include "input.h"
+#include "input-method.h"
 #include "net-atoms.h"
 #include "replay.h"
 #include "replay-target.h"
@@ -467,14 +468,16 @@ int XMapWindow(Display *display, Window window)
             free(windowStruct->windowName);
             windowStruct->windowName = NULL;
         }
-        if (windowStruct->eventMask & KeyPressMask ||
-            windowStruct->eventMask & KeyReleaseMask) {
+        if ((windowStruct->eventMask & KeyPressMask ||
+             windowStruct->eventMask & KeyReleaseMask) &&
+            !inputMethodHasFocusedIC()) {
             /* Keep SDL text input off so KeyPress events are not doubled by
              * SDL_TEXTINPUT. No setKeyboardFocus here: focus is owned by
              * XSetInputFocus and its callers; XMapWindow auto-focus stole focus
              * from the active Motif dialog and prevented popup shells from
              * finishing their map sequence.
              */
+            inputMethodNoteTextInputStopped();
             SDL_StopTextInput();
         }
 

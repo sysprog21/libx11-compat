@@ -8,6 +8,7 @@
 #include "errors.h"
 #include "display.h"
 #include "events.h"
+#include "input-method.h"
 #include "timeline.h"
 #include "window-internal.h"
 
@@ -154,10 +155,12 @@ int XSelectInput(Display *display, Window window, long event_mask)
         __func__, window, event_mask, event_mask & KeyPressMask,
         event_mask & KeyReleaseMask, event_mask & ExposureMask,
         event_mask & StructureNotifyMask, event_mask & PropertyChangeMask);
-    if (event_mask & KeyPressMask || event_mask & KeyReleaseMask) {
+    if ((event_mask & KeyPressMask || event_mask & KeyReleaseMask) &&
+        !inputMethodHasFocusedIC()) {
         /* Suppress SDL_TEXTINPUT so each key produces a single XKey event
          * instead of doubling up with a translated text event.
          */
+        inputMethodNoteTextInputStopped();
         SDL_StopTextInput();
     }
     /* Previously this also called setKeyboardFocus(window) whenever

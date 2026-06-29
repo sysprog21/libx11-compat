@@ -1,0 +1,13 @@
+diff --git a/source/text.c b/source/text.c
+index 3fd61b6..4eb87ff 100644
+--- a/source/text.c
++++ b/source/text.c
+@@ -1415,7 +1415,7 @@ static void realize(Widget w, XtValueMask *valueMask,
+     text->text.xim = XmImGetXIM(w);
+     if(text->text.xim) {
+         Window win = XtWindow(w);
+-        XIMStyle style = XIMPreeditNothing | XIMStatusNothing;
++        XIMStyle style = XIMPreeditPosition | XIMStatusNothing;
+         text->text.xic = XCreateIC(
+                 text->text.xim,
+                 XNInputStyle,
