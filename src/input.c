@@ -484,6 +484,39 @@ int XLookupString(XKeyEvent *event_struct,
     (void) status_in_out;
     if (!event_struct)
         return 0;
+    /* An IM commit arrives as a synthetic KeyPress with keycode 0, carrying its
+     * commit id in subwindow. Clients that read with the simple 8-bit
+     * XLookupString (rather than XmbLookupString) would otherwise lose the
+     * committed text once the raw keydown is suppressed, so resolve it here
+     * too.
+     */
+    if (event_struct->keycode == 0) {
+        unsigned long commitId = (unsigned long) event_struct->subwindow;
+        char *pendingText = inputMethodPendingText(commitId);
+        if (!pendingText) {
+            if (keysym_return)
+                *keysym_return = NoSymbol;
+            return 0;
+        }
+        size_t textLen = strlen(pendingText);
+        if (keysym_return)
+            *keysym_return =
+                textLen == 1 ? getKeySymForChar(pendingText[0]) : NoSymbol;
+        if (!buffer_return || bytes_buffer <= 0)
+            return 0;
+        /* Only consume once the whole commit has been delivered. If the
+         * caller's buffer cannot hold it, copy the prefix but leave the commit
+         * pending so a retry with a larger buffer still recovers the rest
+         * rather than dropping it permanently.
+         */
+        if (textLen > (size_t) bytes_buffer) {
+            memcpy(buffer_return, pendingText, (size_t) bytes_buffer);
+            return bytes_buffer;
+        }
+        memcpy(buffer_return, pendingText, textLen);
+        inputMethodConsumePendingText(commitId);
+        return (int) textLen;
+    }
     unsigned int consumedModifiers = 0;
     KeySym keysym = NoSymbol;
     if (!XkbLookupKeySym(event_struct->display, event_struct->keycode,

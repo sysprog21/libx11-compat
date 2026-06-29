@@ -7663,7 +7663,7 @@ static int test_input_methods(Display *display)
               "XSelectInput disabled active IM text input");
     }
     XSetICFocus(ic);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         SDL_Event textEvent;
         SDL_zero(textEvent);
         textEvent.type = SDL_TEXTINPUT;
@@ -7704,14 +7704,46 @@ static int test_input_methods(Display *display)
             CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a &&
                       lookupStatus == XLookupBoth,
                   "XmbLookupString did not return focused SDL text");
-        } else {
+        } else if (i == 2) {
             wchar_t buf[4] = {0};
             int n =
                 XwcLookupString(ic, &out.xkey, buf, 4, &keysym, &lookupStatus);
             CHECK(n == 1 && buf[0] == L'a' && keysym == XK_a &&
                       lookupStatus == XLookupBoth,
                   "XwcLookupString did not return focused SDL text");
+        } else {
+            /* Clients reading the commit with the simple 8-bit XLookupString
+             * (as Mosaic's URL field does) must also get the text.
+             */
+            char buf[4] = {0};
+            int n = XLookupString(&out.xkey, buf, sizeof(buf), &keysym, NULL);
+            CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a,
+                  "XLookupString did not return focused SDL text");
         }
+    }
+    {
+        /* XLookupString into a buffer too small for the commit must copy the
+         * prefix without consuming, so a retry with a larger buffer recovers
+         * the whole text instead of dropping the remainder.
+         */
+        SDL_Event textEvent;
+        SDL_zero(textEvent);
+        textEvent.type = SDL_TEXTINPUT;
+        XC_SET_TEXT_EVENT(textEvent, "ab");
+        SDL_PushEvent(&textEvent);
+        XEvent out;
+        XNextEvent(display, &out);
+        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
+              "two-char SDL_TEXTINPUT did not produce IM KeyPress");
+        char small[1];
+        KeySym ks = NoSymbol;
+        int n = XLookupString(&out.xkey, small, 1, &ks, NULL);
+        CHECK(n == 1 && small[0] == 'a',
+              "XLookupString did not return the truncated prefix");
+        char full[4] = {0};
+        n = XLookupString(&out.xkey, full, sizeof(full), &ks, NULL);
+        CHECK(n == 2 && full[0] == 'a' && full[1] == 'b',
+              "XLookupString lost committed text after a truncated read");
     }
     {
         SDL_Event textEvent;
