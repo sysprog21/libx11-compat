@@ -4856,6 +4856,37 @@ static int test_properties(Display *display)
         XFree(tp.value);
     }
 
+    /* XGetWMProtocols reads the WM_PROTOCOLS atom list. A window with no such
+     * property must report zero protocols; once set, the list round-trips.
+     */
+    {
+        Atom *protoBack = NULL;
+        int protoCount = -1;
+        Window bareWindow =
+            XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
+        CHECK(
+            XGetWMProtocols(display, bareWindow, &protoBack, &protoCount) == 0,
+            "XGetWMProtocols must report failure when WM_PROTOCOLS is absent");
+        CHECK(protoCount == 0 && protoBack == NULL,
+              "XGetWMProtocols absent case must yield no protocols");
+
+        Atom wmProtocols = XInternAtom(display, "WM_PROTOCOLS", False);
+        Atom wmDelete = XInternAtom(display, "WM_DELETE_WINDOW", False);
+        Atom wmTakeFocus = XInternAtom(display, "WM_TAKE_FOCUS", False);
+        Atom protoSet[2] = {wmDelete, wmTakeFocus};
+        XChangeProperty(display, bareWindow, wmProtocols, XA_ATOM, 32,
+                        PropModeReplace, (unsigned char *) protoSet, 2);
+        protoBack = NULL;
+        protoCount = -1;
+        CHECK(XGetWMProtocols(display, bareWindow, &protoBack, &protoCount),
+              "XGetWMProtocols must succeed once WM_PROTOCOLS is set");
+        CHECK(protoCount == 2 && protoBack && protoBack[0] == wmDelete &&
+                  protoBack[1] == wmTakeFocus,
+              "WM_PROTOCOLS atom list did not round-trip");
+        XFree(protoBack);
+        XDestroyWindow(display, bareWindow);
+    }
+
     XDestroyWindow(display, transientFor);
     XDestroyWindow(display, window);
     return 1;
@@ -5092,6 +5123,14 @@ static int test_ewmh_close_window_clientmessage(Display *display)
               storedData && ((Atom *) storedData)[0] == wmDeleteWindow,
           "ewmh-close: WM_PROTOCOLS missing WM_DELETE_WINDOW after store");
     XFree(storedData);
+    Atom *readProtocols = NULL;
+    int protocolCount = 0;
+    CHECK(XGetWMProtocols(display, window, &readProtocols, &protocolCount),
+          "ewmh-close: XGetWMProtocols failed");
+    CHECK(protocolCount == 1 && readProtocols &&
+              readProtocols[0] == wmDeleteWindow,
+          "ewmh-close: XGetWMProtocols did not read back WM_DELETE_WINDOW");
+    XFree(readProtocols);
 
     XEvent event = {.xclient = {
                         .type = ClientMessage,
@@ -5117,6 +5156,39 @@ static int test_ewmh_close_window_clientmessage(Display *display)
           "ewmh-close: WM_DELETE_WINDOW ClientMessage not delivered to target");
     CHECK(GET_WINDOW_STRUCT(window)->mapState == Mapped,
           "ewmh-close: window unmapped despite WM_DELETE_WINDOW handler");
+
+    SDL_Event closeEvent;
+    SDL_zero(closeEvent);
+    XC_INIT_WINDOW_EVENT(&closeEvent);
+    closeEvent.window.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+    XC_SET_WINDOW_SUBEVENT(&closeEvent, SDL_WINDOWEVENT_CLOSE);
+    XEvent converted;
+    CHECK(convertEvent(display, &closeEvent, &converted, True) < 0,
+          "ewmh-close: SDL close event was not consumed internally");
+    sawWmDelete = False;
+    while (XCheckTypedWindowEvent(display, window, ClientMessage, &delivered)) {
+        if (delivered.xclient.message_type == wmProtocols &&
+            (Atom) delivered.xclient.data.l[0] == wmDeleteWindow) {
+            sawWmDelete = True;
+            break;
+        }
+    }
+    CHECK(sawWmDelete,
+          "ewmh-close: SDL close did not deliver WM_DELETE_WINDOW");
+
+    XC_SET_WINDOW_SUBEVENT(&closeEvent, SDL_WINDOWEVENT_CLOSE);
+    CHECK(SDL_PushEvent(&closeEvent) == 1,
+          "ewmh-close: SDL close event was filtered before conversion");
+    XNextEvent(display, &delivered);
+    CHECK(delivered.type == ClientMessage &&
+              delivered.xclient.window == window &&
+              delivered.xclient.message_type == wmProtocols &&
+              (Atom) delivered.xclient.data.l[0] == wmDeleteWindow,
+          "ewmh-close: XNextEvent did not deliver SDL close WM_DELETE_WINDOW");
+    CHECK(
+        GET_WINDOW_STRUCT(window)->mapState == Mapped,
+        "ewmh-close: SDL close changed map state before client handled delete");
 
     /* Path B: a window without WM_DELETE_WINDOW in WM_PROTOCOLS is unmapped
      * instead, mirroring SDL_WINDOWEVENT_CLOSE on a client that did not opt in
@@ -6450,6 +6522,14 @@ static int test_fonts(Display *display)
               "Motif helv bold wildcard fell back to the default font size");
         XFreeFont(display, helvBold);
 
+        XFontStruct *xephemFont = XLoadQueryFont(
+            display, "*-lucidatypewriter*medium*-10-*-iso8859-1");
+        CHECK(xephemFont != NULL,
+              "XEphem lucidatypewriter wildcard did not resolve");
+        CHECK(xephemFont->ascent + xephemFont->descent >= 13,
+              "XEphem lucidatypewriter wildcard used 10 pixels, not 10pt");
+        XFreeFont(display, xephemFont);
+
         XFontStruct *times14 =
             XLoadQueryFont(display, "-*times*medium*-r-*--14-*");
         CHECK(times14 != NULL,
@@ -6800,7 +6880,42 @@ static int test_fonts(Display *display)
                                      &ascent, &descent, &overall);
             CHECK(st != 0,
                   "XQueryTextExtents16 Status must be nonzero on success");
-            XUnloadFont(display, measureFont);
+            GC measureGc =
+                XCreateGC(display, DefaultRootWindow(display), 0, NULL);
+            CHECK(measureGc != NULL,
+                  "XQueryTextExtents GC metric GC creation failed");
+            /* A GC with no font set must still measure via a temporary
+             * fallback font, and must not retain that font afterward. */
+            memset(&overall, 0, sizeof(overall));
+            st = XQueryTextExtents(display, XGContextFromGC(measureGc), "hello",
+                                   5, &dir, &ascent, &descent, &overall);
+            CHECK(st != 0, "XQueryTextExtents must accept a fontless GC id");
+            CHECK(overall.width > 0,
+                  "XQueryTextExtents fontless GC filled overall.width == 0");
+            XGCValues gcValues;
+            memset(&gcValues, 0, sizeof(gcValues));
+            CHECK(XGetGCValues(display, measureGc, GCFont, &gcValues),
+                  "XQueryTextExtents fontless GC XGetGCValues failed");
+            CHECK(gcValues.font == None,
+                  "XQueryTextExtents fontless GC retained the temporary font");
+            CHECK(XSetFont(display, measureGc, measureFont),
+                  "XQueryTextExtents GC metric XSetFont failed");
+            CHECK(XUnloadFont(display, measureFont),
+                  "XQueryTextExtents GC metric XUnloadFont failed");
+            memset(&overall, 0, sizeof(overall));
+            st = XQueryTextExtents(display, XGContextFromGC(measureGc), "hello",
+                                   5, &dir, &ascent, &descent, &overall);
+            CHECK(st != 0,
+                  "XQueryTextExtents must accept a GC-retained unloaded font");
+            CHECK(overall.width > 0,
+                  "XQueryTextExtents GC id filled overall.width == 0");
+            memset(&overall, 0, sizeof(overall));
+            st = XQueryTextExtents16(display, XGContextFromGC(measureGc), wide,
+                                     2, &dir, &ascent, &descent, &overall);
+            CHECK(
+                st != 0,
+                "XQueryTextExtents16 must accept a GC-retained unloaded font");
+            XFreeGC(display, measureGc);
         }
     }
     return 1;
@@ -9291,6 +9406,12 @@ static int test_overlap_pointer_routing(Display *display)
      * in the model and getContainingWindow alone would pick it. */
     Window upper = XCreateSimpleWindow(display, root, 0, 0, 120, 120, 0, 0, 0);
     CHECK(upper != None, "overlap upper-window creation failed");
+    XSetWindowAttributes upperAttrs;
+    memset(&upperAttrs, 0, sizeof(upperAttrs));
+    upperAttrs.override_redirect = True;
+    CHECK(XChangeWindowAttributes(display, upper, CWOverrideRedirect,
+                                  &upperAttrs),
+          "overlap upper-window override_redirect setup failed");
     XSelectInput(display, upper, ButtonPressMask | ButtonReleaseMask);
     CHECK(XMapWindow(display, upper), "overlap upper-window map failed");
     XSync(display, False);

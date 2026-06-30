@@ -141,7 +141,7 @@ but each exercises behavior that small examples do not reach.
   ```
 
 - [GIMP 0.54](https://en.wikipedia.org/wiki/GIMP): the 1996 release, the last GIMP built on the Motif toolkit before the project moved to GTK, builds against the compat stack plus the bundled Motif.
-  It is the heaviest Motif client covered here, a full image editor that drives `XCreateImage` / `XPutImage` / `XGetImage`, the MIT-SHM canvas path (`src/xshm.c`), TrueColor 32bpp visual and colormap handling, large Motif dialog and menu trees, and forked image-format plug-ins (PNG / JPEG) that talk to the core over pipes and SysV shared-memory tiles.
+  It is a full image editor that drives `XCreateImage` / `XPutImage` / `XGetImage`, the MIT-SHM canvas path (`src/xshm.c`), TrueColor 32bpp visual and colormap handling, large Motif dialog and menu trees, and forked image-format plug-ins (PNG / JPEG) that talk to the core over pipes and SysV shared-memory tiles.
   A replay smoke check covers toolbox startup; the patch set under `compat/gimp-patches/` is the GNOME-hosted balooii rework that fixes the 1996 source for a modern LP64 toolchain.
 
   <a href="assets/gimp.png"><img src="assets/gimp.png" alt="GIMP 0.54 running through libx11-compat on macOS" width="420"></a>
@@ -164,6 +164,16 @@ but each exercises behavior that small examples do not reach.
   build/xnedit/source/source/xnedit tests/ui/fixtures/xnedit-fixture.txt
   make check-smoke-xnedit                # replay-driven startup + Unicode fixture smoke
   make check-differential-xnedit         # startup + fixture diff vs native X11/Xft (needs remote host)
+  ```
+
+- [XEphem](https://github.com/XEphem/XEphem): the Motif astronomy application builds against the bundled Motif plus `libXt-compat`, `libXext-compat`, `libXmu-compat`, and `libX11-compat`.
+  It exercises a large Motif UI with Xlib drawing, image/catalog loading, and OpenSSL-backed network paths while keeping the upstream source unchanged.
+
+  <a href="assets/xephem.png"><img src="assets/xephem.png" alt="XEphem running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make xephem                            # build XEphem (depends on motif)
+  build/xephem/source/GUI/xephem/xephem  # launch from the repo root
   ```
 
 - [xwpe](https://github.com/vejeta/xwpe): the X Window Programming Environment builds against `libX11-compat` and the SDL_ttf-backed `libXft-compat`.

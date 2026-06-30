@@ -5,6 +5,7 @@
 #include "util.h"
 
 static SDL_atomic_t targetWindowId;
+static SDL_atomic_t latestWindowId;
 static SDL_atomic_t targetRootX;
 static SDL_atomic_t targetRootY;
 /* Seqlock counter: writers bump it to odd before mutating the (id, rootX,
@@ -64,6 +65,7 @@ void replayTargetOfferWindow(Uint32 sdlWindowId,
                          (unsigned long) (height > 0 ? height : 0);
     if (sdlWindowId == 0)
         return;
+    SDL_AtomicSet(&latestWindowId, (int) sdlWindowId);
 
     Uint32 currentTarget = (Uint32) SDL_AtomicGet(&targetWindowId);
     if (targetArea != 0 && area < targetArea && currentTarget != sdlWindowId)
@@ -101,6 +103,8 @@ void replayTargetForgetWindow(Uint32 sdlWindowId)
 {
     if (sdlWindowId == 0)
         return;
+    if ((Uint32) SDL_AtomicGet(&latestWindowId) == sdlWindowId)
+        SDL_AtomicSet(&latestWindowId, 0);
     if ((Uint32) SDL_AtomicGet(&targetWindowId) != sdlWindowId)
         return;
     seqBumpLocked();
@@ -114,6 +118,11 @@ void replayTargetForgetWindow(Uint32 sdlWindowId)
 Uint32 replayTargetWindowId(void)
 {
     return (Uint32) SDL_AtomicGet(&targetWindowId);
+}
+
+Uint32 replayTargetLatestWindowId(void)
+{
+    return (Uint32) SDL_AtomicGet(&latestWindowId);
 }
 
 void replayTargetRootToLocal(int rootX, int rootY, int *localX, int *localY)

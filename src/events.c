@@ -82,6 +82,7 @@ static void unlockActivePointerWindow(void)
     if (activePointerWindowLock)
         SDL_UnlockMutex(activePointerWindowLock);
 }
+static Bool pointerHoverIsWithin(Window window);
 
 /* clearWindowTreeWithoutExpose, postFullWindowExpose, and
  * postSyntheticWindowResize live in src/events-expose.c alongside the fan-out
@@ -343,6 +344,33 @@ void wakeEventPipeForExternalEvent(Display *display)
     }
 }
 
+Bool postWmDeleteIfHandled(Display *display, Window window, Time time)
+{
+    if (!IS_TYPE(window, WINDOW))
+        return False;
+
+    /* Re-resolve per call: freeAtomStorage drops dynamic atoms on the last
+     * XCloseDisplay without resetting lastUsedAtom, so a static cache would
+     * dangle to a stale id across a close/open cycle.
+     */
+    Atom wmProtocolsAtom = internalInternAtom("WM_PROTOCOLS");
+    Atom wmDeleteWindowAtom = internalInternAtom("WM_DELETE_WINDOW");
+    WindowProperty *windowProperty = findProperty(
+        &GET_WINDOW_STRUCT(window)->properties, wmProtocolsAtom, NULL);
+    if (!windowProperty || windowProperty->type != XA_ATOM ||
+        windowProperty->dataFormat != 32 || !windowProperty->data)
+        return False;
+
+    for (size_t i = 0; i < windowProperty->dataLength; i++) {
+        if (((Atom *) windowProperty->data)[i] == wmDeleteWindowAtom) {
+            postEvent(display, window, ClientMessage, 32, wmProtocolsAtom,
+                      wmDeleteWindowAtom, time);
+            return True;
+        }
+    }
+    return False;
+}
+
 /* postExposeEvent and postExposeEventsForMappedChildren live in
  * src/events-expose.c.
  */
@@ -354,15 +382,20 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
 
     switch (event->type) {
         //        case SDL_QUIT:
-    XC_CASE_WINDOWEVENT:
-        if (!GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlWindow ||
-            event->window.windowID ==
-                SDL_GetWindowID(GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlWindow)) {
+    XC_CASE_WINDOWEVENT: {
+        SDL_Window *screenSdlWindow =
+            GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlWindow;
+        if (screenSdlWindow &&
+            event->window.windowID == SDL_GetWindowID(screenSdlWindow)) {
             return 0;
         }
+        if (!screenSdlWindow &&
+            XC_WINDOW_SUBEVENT(event) != SDL_WINDOWEVENT_CLOSE)
+            return 0;
         /* Fall through to enqueue non-screen window events. */
         ENQUEUE_EVENT_IN_PIPE((Display *) userdata);
         break;
+    }
     default:
         ENQUEUE_EVENT_IN_PIPE((Display *) userdata);
         break;
@@ -705,6 +738,17 @@ static Window selectPointerEventWindow(Display *display,
                                        int *eventXReturn,
                                        int *eventYReturn)
 {
+    Window deepest = None;
+    Window rootChild = getDirectChildContainingPoint(root, rootX, rootY);
+    if (rootChild != None && rootChild != clickTopLevel &&
+        IS_TYPE(rootChild, WINDOW) &&
+        GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
+        pointerHoverIsWithin(rootChild) && getGrabbedPointerWindow() != None) {
+        int rx = 0, ry = 0;
+        GET_WINDOW_POS(rootChild, rx, ry);
+        deepest = getContainingWindow(rootChild, rootX - rx, rootY - ry);
+    }
+
     /* SDL tells us which top-level the pointer event belongs to (the window the
      * user actually clicked on screen). Trust that over a global stacking
      * search: a top-level's logical position in the window model can diverge
@@ -715,9 +759,9 @@ static Window selectPointerEventWindow(Display *display,
      * Descend from clickTopLevel using coordinates relative to it; rootX/rootY
      * were derived from the same logical origin, so the offset cancels out.
      */
-    Window deepest = None;
     if (clickTopLevel != None && clickTopLevel != SCREEN_WINDOW &&
-        IS_TYPE(clickTopLevel, WINDOW) && GET_PARENT(clickTopLevel) == root) {
+        IS_TYPE(clickTopLevel, WINDOW) && GET_PARENT(clickTopLevel) == root &&
+        deepest == None) {
         int tlx = 0, tly = 0, tlw = 0, tlh = 0;
         GET_WINDOW_POS(clickTopLevel, tlx, tly);
         GET_WINDOW_DIMS(clickTopLevel, tlw, tlh);
@@ -1307,6 +1351,17 @@ static unsigned int pointerButtonStateSnapshot(void)
 static Window activePointerWindow = None;
 static Window pointerHoverWindow = None;
 static int pointerHoverRootX = 0, pointerHoverRootY = 0;
+
+static Bool pointerHoverIsWithin(Window window)
+{
+    Bool inside = False;
+    lockActivePointerWindow();
+    inside =
+        pointerHoverWindow == window || (IS_TYPE(pointerHoverWindow, WINDOW) &&
+                                         isParent(window, pointerHoverWindow));
+    unlockActivePointerWindow();
+    return inside;
+}
 
 static int buildWindowPathToRoot(Window window, Window *path, int capacity)
 {
@@ -2109,35 +2164,14 @@ int convertEvent(Display *display,
             break;
         case SDL_WINDOWEVENT_CLOSE:
             LOG("Window %d closed\n", sdlEvent->window.windowID);
-            /* Re-resolve per call: freeAtomStorage drops dynamic atoms on the
-             * last XCloseDisplay without resetting lastUsedAtom, so a static
-             * cache would dangle to a stale id across a close/open cycle.
-             */
-            Atom wmProtocolsAtom = internalInternAtom("WM_PROTOCOLS");
-            Atom wmDeleteWindowAtom = internalInternAtom("WM_DELETE_WINDOW");
-            WindowProperty *windowProperty =
-                findProperty(&GET_WINDOW_STRUCT(eventWindow)->properties,
-                             wmProtocolsAtom, NULL);
-            Bool clientHandlesDelete = False;
-            if (windowProperty && windowProperty->type == XA_ATOM &&
-                windowProperty->dataFormat == 32 && windowProperty->data) {
-                for (size_t i = 0; i < windowProperty->dataLength; i++) {
-                    if (((Atom *) windowProperty->data)[i] ==
-                        wmDeleteWindowAtom) {
-                        postEvent(display, eventWindow, ClientMessage, 32,
-                                  wmProtocolsAtom, wmDeleteWindowAtom,
-                                  (Time) XC_EVENT_TIME_MS(
-                                      sdlEvent->window.timestamp));
-                        clientHandlesDelete = True;
-                        break;
-                    }
-                }
-            }
             /* Real X11 kills the client connection here. Route through the IO
              * error hook so a client that installed one can intercept;
              * otherwise it terminates.
              */
-            if (!clientHandlesDelete)
+            if (eventWindow == None ||
+                !postWmDeleteIfHandled(
+                    display, eventWindow,
+                    (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp)))
                 triggerIOError(display);
             return -1;
             break;

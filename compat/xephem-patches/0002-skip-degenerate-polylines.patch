@@ -1,0 +1,24 @@
+diff -uNr a/GUI/xephem/ps.c b/GUI/xephem/ps.c
+--- a/GUI/xephem/ps.c
++++ b/GUI/xephem/ps.c
+@@ -743,8 +743,10 @@
+ int nxp;
+ int mode;
+ {
++	if (nxp < 2)
++	    return;
+ 	XDrawLines (dsp, win, gc, xp, nxp, mode);
+-	if (xpsc.state != XDRAWING || xpsc.win != win || nxp < 2)
++	if (xpsc.state != XDRAWING || xpsc.win != win)
+ 	    return;
+ 
+ 	setColor (dsp, gc);
+@@ -1440,7 +1442,7 @@
+ 	}
+ 	if (fill)
+ 	    XFillPolygon (dsp, win, gc, xpt, nxpt, Convex, CoordModeOrigin);
+-	else
++	else if (nxpt >= 2)
+ 	    XDrawLines (dsp, win, gc, xpt, nxpt, CoordModeOrigin);
+ 	if (xpsc.state != XDRAWING || xpsc.win != win)
+ 	    return;

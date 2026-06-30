@@ -1,0 +1,47 @@
+diff --git a/GUI/xephem/homeio.c b/GUI/xephem/homeio.c
+index 3ddc638..d118de5 100644
+--- a/GUI/xephem/homeio.c
++++ b/GUI/xephem/homeio.c
+@@ -190,6 +190,10 @@ tempfilename (prefix, suffix)
+  * use TELHOME env first, else ShareDir X resource, else current dir.
+  */
+ char *
++#ifndef XEPHEM_DEFAULT_SHAREDIR
++#define XEPHEM_DEFAULT_SHAREDIR "."
++#endif
++
+ getShareDir()
+ {
+ 	static char *basedir;
+@@ -210,6 +214,7 @@ getShareDir()
+ 	    }
+ 	    if (!basedir) {
+-		char *homebase = expand_home (getXRes ("ShareDir", "."));
++		char *homebase =
++		    expand_home (getXRes ("ShareDir", XEPHEM_DEFAULT_SHAREDIR));
+ 		basedir = strcpy(malloc(strlen(homebase)+1), homebase);
+ 	    }
+ 	}
+diff --git a/GUI/xephem/fallbacks.c b/GUI/xephem/fallbacks.c
+index cfd4db7..26397a1 100644
+--- a/GUI/xephem/fallbacks.c
++++ b/GUI/xephem/fallbacks.c
+@@ -1,5 +1,9 @@
+ #include <Xm/Xm.h>
+ 
++#ifndef XEPHEM_DEFAULT_SHAREDIR
++#define XEPHEM_DEFAULT_SHAREDIR "."
++#endif
++
+ /* build this programmatically but put it in fallbacks[] */
+ char Version_resource[50];
+ 
+@@ -890,7 +894,7 @@ String fallbacks[] = {
+     "XEphem.SOHOhost: sohowww.nascom.nasa.gov",
+     "XEphem.SatViewUp: 0",
+     "XEphem.SaturnBackground: #151515",
+-    "XEphem.ShareDir: .",
++    "XEphem.ShareDir: " XEPHEM_DEFAULT_SHAREDIR,
+     "XEphem.Sitename: Chicago, Illinois",
+     "XEphem.SkyAnnotColor: #bfc1c6",
+     "XEphem.SkyCnsBndColor: #435964",

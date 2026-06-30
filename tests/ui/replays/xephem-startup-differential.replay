@@ -1,0 +1,12 @@
+# System-X11 and libx11-compat XEphem startup differential capture.
+# The Motif control window must come up against both stacks, render real
+# content, and stay alive. The shared common-visible assertion (non-empty +
+# not-all-black) catches a "window mapped but blank" regression without a
+# calibrated per-app baseline; the cross-stack pixel diff is done afterward by
+# scripts/compare-motif-reference.py.
+delay 2000
+wait-window "xephem" 20000
+wait-converge 200 2 50 200 20000
+screenshot startup
+assert-image startup common-visible.json
+assert-exit running

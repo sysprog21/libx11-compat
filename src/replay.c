@@ -1,4 +1,5 @@
-/* Scripted event replay
+/*
+ * Scripted event replay
  *
  * Read a small command file pointed to by $LIBX11_COMPAT_REPLAY and dispatch
  * its instructions as synthetic input via the XTest fake-event API. Each line
@@ -11,6 +12,7 @@
  *   target-motion <x> <y> # x/y relative to the current replay target window
  *   button <n> press|release
  *   click  <x> <y>           # motion + button 1 press + release
+ *   close [latest]           # SDL window-manager close request for target
  *   key    <scancode> press|release
  *
  * Why this exists: on macOS, external event-injection tools (cliclick, CGEvent,
@@ -234,6 +236,37 @@ static void runScript(const char *path)
                 XTestFakeMotionEvent(replayDisplay, 0, x, y, 0);
                 XTestFakeButtonEvent(replayDisplay, 1, True, 10);
                 XTestFakeButtonEvent(replayDisplay, 1, False, 10);
+                replayLastInputAnchorMs = replayNowMs();
+            }
+        } else if (!strcmp(cmd, "close")) {
+            /* Default (no arg) closes the primary target; "latest" closes the
+             * most recently mapped window. Reject anything else so a typo like
+             * "close lateest" fails loudly instead of silently closing the
+             * wrong window and producing a misleading smoke result.
+             */
+            Uint32 winId = 0;
+            Bool badArg = False;
+            if (*args == '\0')
+                winId = replayTargetWindowId();
+            else if (!strcmp(args, "latest"))
+                winId = replayTargetLatestWindowId();
+            else
+                badArg = True;
+            if (badArg) {
+                fprintf(stderr, "replay: line %d: close bad argument '%s'\n",
+                        lineno, args);
+            } else if (winId == 0) {
+                fprintf(stderr, "replay: line %d: close has no target window\n",
+                        lineno);
+            } else {
+                SDL_Event ev;
+                SDL_zero(ev);
+                XC_INIT_WINDOW_EVENT(&ev);
+                ev.window.windowID = winId;
+                XC_SET_WINDOW_SUBEVENT(&ev, SDL_WINDOWEVENT_CLOSE);
+                if (SDL_PushEvent(&ev) != 1)
+                    fprintf(stderr, "replay: line %d: close push failed: %s\n",
+                            lineno, SDL_GetError());
                 replayLastInputAnchorMs = replayNowMs();
             }
         } else if (!strcmp(cmd, "key")) {

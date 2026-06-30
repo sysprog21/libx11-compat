@@ -591,6 +591,32 @@ static int wildcardStylePixelSize(const char *name)
     return 0;
 }
 
+static int compactWildcardPointSize(const char *name)
+{
+    if (!name || name[0] == '-')
+        return 0;
+    const char *firstDash = strchr(name, '-');
+    if (!firstDash)
+        return 0;
+    const char *sizeStart = strchr(firstDash + 1, '-');
+    if (!sizeStart)
+        return 0;
+    sizeStart++;
+    const char *sizeEnd = strchr(sizeStart, '-');
+    if (!sizeEnd || sizeEnd == sizeStart)
+        return 0;
+    size_t len = (size_t) (sizeEnd - sizeStart);
+    if (len >= 16)
+        return 0;
+    char buffer[16];
+    int points = 0;
+    memcpy(buffer, sizeStart, len);
+    buffer[len] = '\0';
+    if (!parsePositiveInt(buffer, &points))
+        return 0;
+    return decipointsToPixelSize(points * 10);
+}
+
 static int requestedFontSize(const char *name)
 {
     if (!name)
@@ -641,6 +667,10 @@ static int requestedFontSize(const char *name)
     int wildcardPixelSize = wildcardStylePixelSize(name);
     if (wildcardPixelSize)
         return wildcardPixelSize;
+
+    int compactPointSize = compactWildcardPointSize(name);
+    if (compactPointSize)
+        return compactPointSize;
 
     const char *fieldStart = name;
     int field = name[0] == '-' ? 0 : 1;
@@ -718,11 +748,10 @@ static Bool coreFontMetricsForName(const char *name,
     /* Xvfb's built-in "fixed" resolves to a 6x13 bitmap font: ascent=11,
      * descent=2, width=6. Motif uses this alias in fallback fontLists;
      * reporting smaller TTF metrics lets widgets pack too many text rows
-     * compared with native libX11.
-     */
-    /* Only advertise bitmap-font metrics when the BDF actually loaded;
-     * otherwise the renderer falls back to TTF and the layout engine would lay
-     * out at 11/2 while glyphs draw at TTF size, overlapping adjacent lines.
+     * compared with native libX11. Only advertise bitmap-font metrics when the
+     * BDF actually loaded; otherwise the renderer falls back to TTF and the
+     * layout engine would lay out at 11/2 while glyphs draw at TTF size,
+     * overlapping adjacent lines.
      */
     Bool haveBitmap = loadFixedBitmapFont();
     if (haveBitmap && (!strcmp(name, "fixed") || !strcmp(name, "cursor") ||
@@ -1910,12 +1939,12 @@ XFontStruct *XLoadQueryFont(Display *display, _Xconst char *name)
     return fontStruct;
 }
 
-XFontStruct *XQueryFont(Display *display, XID fontId)
+static XFontStruct *queryFontStruct(Display *display,
+                                    XID fontId,
+                                    Bool requireClientUsable)
 {
-    // https://tronche.com/gui/x/xlib/graphics/font-metrics/XQueryFont.html
-    SET_X_SERVER_REQUEST(display, X_QueryFont);
     TYPE_CHECK(fontId, FONT, display, NULL);
-    if (!compatFontIsClientUsable(fontId)) {
+    if (requireClientUsable && !compatFontIsClientUsable(fontId)) {
         handleError(0, display, fontId, 0, BadFont, 0);
         return NULL;
     }
@@ -1939,6 +1968,18 @@ XFontStruct *XQueryFont(Display *display, XID fontId)
                              resource->coreDescent, resource->coreWidth);
     }
     return fontStruct;
+}
+
+XFontStruct *XQueryFont(Display *display, XID fontId)
+{
+    // https://tronche.com/gui/x/xlib/graphics/font-metrics/XQueryFont.html
+    SET_X_SERVER_REQUEST(display, X_QueryFont);
+    return queryFontStruct(display, fontId, True);
+}
+
+XFontStruct *compatFontQueryRetained(Display *display, Font fontXid)
+{
+    return queryFontStruct(display, fontXid, False);
 }
 
 /* XDrawString and friends take a length-bounded buffer that may or may not be
