@@ -71,30 +71,12 @@ Bool dispatchRootEwmhClientMessage(Display *display, XEvent *event)
             return True;
 
         /* Mirror SDL_WINDOWEVENT_CLOSE: hand the request off via
-         * WM_DELETE_WINDOW when the target opted in, otherwise unmap.
+         * WM_DELETE_WINDOW when the target opted in, otherwise unmap. Shares
+         * postWmDeleteIfHandled with the SDL close path so the two cannot
+         * diverge.
          */
-        Atom wmProtocolsAtom = internalInternAtom("WM_PROTOCOLS");
-        Atom wmDeleteWindowAtom = internalInternAtom("WM_DELETE_WINDOW");
-        WindowProperty *protocols = findProperty(
-            &GET_WINDOW_STRUCT(target)->properties, wmProtocolsAtom, NULL);
-        Bool clientHandlesDelete = False;
-        /* type/format/data guards keep the (Atom *) cast safe against a
-         * malformed XA_ATOM property stored at format 8 or 16.
-         */
-        if (protocols && protocols->type == XA_ATOM &&
-            protocols->dataFormat == 32 && protocols->data) {
-            for (size_t i = 0; i < protocols->dataLength; i++) {
-                if (((Atom *) protocols->data)[i] == wmDeleteWindowAtom) {
-                    postEvent(display, target, ClientMessage, 32,
-                              wmProtocolsAtom, wmDeleteWindowAtom,
-                              (Time) CurrentTime);
-                    clientHandlesDelete = True;
-                    break;
-                }
-            }
-        }
-
-        if (!clientHandlesDelete && IS_MAPPED_TOP_LEVEL_WINDOW(target))
+        if (!postWmDeleteIfHandled(display, target, (Time) CurrentTime) &&
+            IS_MAPPED_TOP_LEVEL_WINDOW(target))
             XUnmapWindow(display, target);
         return True;
     }

@@ -49,6 +49,12 @@ void pumpEventsSafe(void);
 void wakeEventPipeForExternalEvent(Display *display);
 unsigned int convertModifierState(Uint16 mod);
 Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...);
+/* Post a WM_DELETE_WINDOW ClientMessage if the window opted into the protocol
+ * via WM_PROTOCOLS; returns True when posted. Shared by the SDL window-close
+ * path (convertEvent) and the EWMH _NET_CLOSE_WINDOW path (events-ewmh.c) so
+ * the two cannot diverge.
+ */
+Bool postWmDeleteIfHandled(Display *display, Window window, Time time);
 Bool postReparentUnmapNotify(Display *display,
                              Window eventWindow,
                              Window oldParent);

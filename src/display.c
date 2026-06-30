@@ -143,8 +143,25 @@ int XCloseDisplay(Display *display)
     return 0;
 }
 
+/* Set only while this library drives SDL_Init(VIDEO) from XOpenDisplay. When a
+ * real X server is present, host SDL's x11 video driver opens the display
+ * through XOpenDisplay, which this library interposes; without this guard that
+ * re-enters XOpenDisplay and recurses into SDL_Init until the stack overflows.
+ * This must be thread-local: concurrent client XOpenDisplay calls are valid,
+ * only same-thread recursion from SDL's probe should be refused.
+ */
+static __thread Bool sdlVideoInitInProgress = False;
+
 Display *XOpenDisplay(_Xconst char *display_name)
 {
+    /* Refuse the re-entrant open from SDL's x11 driver so SDL reports x11
+     * unavailable and falls back to a headless video driver instead of
+     * recursing. A genuine second client XOpenDisplay never nests inside our
+     * own SDL_Init, so this only ever rejects the driver's recursion.
+     */
+    if (sdlVideoInitInProgress)
+        return NULL;
+
     setenv("DISPLAY", ":0", 0);
 
     // https://tronche.com/gui/x/xlib/display/opening.html
@@ -181,7 +198,10 @@ Display *XOpenDisplay(_Xconst char *display_name)
          * CGEvent).
          */
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
-        if (SDL_Init(SDL_INIT_VIDEO) == -1) {
+        sdlVideoInitInProgress = True;
+        int sdlInitResult = SDL_Init(SDL_INIT_VIDEO);
+        sdlVideoInitInProgress = False;
+        if (sdlInitResult == -1) {
             /* Diagnose intermittent XOpenDisplay -> NULL failures observed
              * under load on the remote Xvfb differential test. The Xt error
              * "Can't open display" is generic; without this line the actual SDL

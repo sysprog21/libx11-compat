@@ -4,8 +4,8 @@
 # LLVM apt repo is added so clang-format-20 is available on ubuntu-24.04
 # (which ships clang-format-18 by default).
 #
-# All nine top-level jobs (lint, build, debug-build, sanitize, motif,
-# osiris, xfig, gimp, sdl3) run in parallel. The sdl3 job builds the
+# All 11 top-level jobs (lint, build, debug-build, sanitize, motif,
+# osiris, xfig, xwpe, xephem, gimp, sdl3) run in parallel. The sdl3 job builds the
 # compat stack against the native SDL3 backend (SDL_BACKEND=sdl3); every
 # other job uses the default SDL2 backend, so the SDL3 translation shim in
 # src/sdl-compat.h is only exercised there. Osiris and Xfig each have no Motif
@@ -64,6 +64,11 @@ env:
   # python3-pil backs the replay smoke's image assertions; the smoke runs fully
   # offscreen, so no Xvfb or screenshot tool from DIFFERENTIAL_PKGS is needed.
   XWPE_BUILD_PKGS: "libjson-c-dev libncurses-dev python3-pil"
+  # XEphem links OpenSSL for its network catalog fetches (the bundled libpng /
+  # libz / libjpegd / libastro support libs build from XEphem's own source, so
+  # no system image libs are needed), and runs autoreconf for the bundled Motif
+  # (MOTIF_BUILD_PKGS). python3-pil backs the offscreen replay smoke.
+  XEPHEM_BUILD_PKGS: "libssl-dev python3-pil"
   DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
 
 jobs:
@@ -72,7 +77,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install LLVM 20 apt source
         # Drop the GPG key in /usr/share/keyrings/ and reference it with
@@ -129,7 +134,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -146,7 +151,7 @@ jobs:
         # sharing them across release / debug / sanitize jobs would let
         # one job's compiled objects substitute for another's. Also
         # exclude motif-src which has its own cache below.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -164,7 +169,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-build-v2-${{ runner.os }}-${{ github.sha }}
@@ -204,7 +209,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -221,7 +226,7 @@ jobs:
         # sharing them across release / debug / sanitize jobs would let
         # one job's compiled objects substitute for another's. Also
         # exclude motif-src which has its own cache below.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -241,7 +246,7 @@ jobs:
       - name: Cache ccache
         # Separate key from the release job so the debug
         # -DDEBUG_LIBX11_COMPAT objects don't collide with release builds.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-debug-v2-${{ runner.os }}-${{ github.sha }}
@@ -276,7 +281,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -293,7 +298,7 @@ jobs:
         # sharing them across release / debug / sanitize jobs would let
         # one job's compiled objects substitute for another's. Also
         # exclude motif-src which has its own cache below.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -311,7 +316,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-sanitize-v2-${{ runner.os }}-${{ github.sha }}
@@ -380,7 +385,7 @@ jobs:
       MOTIF_YACC: "bison -y"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -394,7 +399,7 @@ jobs:
         # sync-upstream-headers.py and stripped of CFLAGS-sensitive build
         # artifacts so this job and the release / debug / sanitize jobs
         # can share warm extractions safely.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -417,7 +422,7 @@ jobs:
         # a fallback restore could leave a stale clone+autoreconf in
         # place when the inputs changed; missing the cache and rebuilding
         # from scratch is the safer default for any drift.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
@@ -426,13 +431,13 @@ jobs:
         # Exact-match key only. Mosaic patches are applied to a throwaway
         # work tree, but the source stamp is pinned by mk/mosaic.mk, so a
         # stale fallback clone would hide revision or patch-input drift.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/mosaic
           key: mosaic-src-${{ runner.os }}-${{ hashFiles('mk/mosaic.mk', 'compat/mosaic-patches/**') }}
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-motif-v2-${{ runner.os }}-${{ github.sha }}
@@ -585,7 +590,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         # No MOTIF_BUILD_PKGS here: Osiris configures with Meson and
@@ -602,7 +607,7 @@ jobs:
         # sync-upstream-headers.py and stripped of CFLAGS-sensitive build
         # artifacts so this job and the release / debug / sanitize jobs
         # can share warm extractions safely.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -623,7 +628,7 @@ jobs:
         # Exact-match key only. Patch inputs feed into the Osiris build
         # stamp, so a fallback would risk applying an older patch set to
         # the pinned revision; re-cloning is the safe default on drift.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/osiris
           key: osiris-src-${{ runner.os }}-${{ hashFiles('mk/osiris.mk', 'compat/osiris-patches/**') }}
@@ -632,7 +637,7 @@ jobs:
         # Distinct key from the motif job so the Osiris .o set doesn't
         # collide with Motif / ViolaWWW / Mosaic objects compiled with a
         # different include path.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-osiris-v2-${{ runner.os }}-${{ github.sha }}
@@ -734,7 +739,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         # Xfig ships a pre-generated configure script (no autoreconf
@@ -746,7 +751,7 @@ jobs:
             ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -769,7 +774,7 @@ jobs:
         # compat/xfig-patches/ are applied to that stamped tree, so a
         # fallback restore on stale inputs would risk landing newer
         # patches on an older source set.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/xfig-3.2.9a
           key: xfig-src-${{ runner.os }}-${{ hashFiles('mk/xfig.mk', 'compat/xfig-patches/**') }}
@@ -777,7 +782,7 @@ jobs:
       - name: Cache ccache
         # Distinct key from motif and osiris so the xfig .o set does not
         # collide with objects compiled with a different include path.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-xfig-v2-${{ runner.os }}-${{ github.sha }}
@@ -853,7 +858,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -864,7 +869,7 @@ jobs:
             ${{ env.XWPE_BUILD_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -886,7 +891,7 @@ jobs:
         # mk/xwpe.mk pins XWPE_REVISION and applies compat/xwpe-patches/ to the
         # clone, so key on both. Exact-match only: a fallback restore on stale
         # inputs could land newer patches on an older revision.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/xwpe
           key: xwpe-src-${{ runner.os }}-${{ hashFiles('mk/xwpe.mk', 'compat/xwpe-patches/**') }}
@@ -894,7 +899,7 @@ jobs:
       - name: Cache ccache
         # Distinct key from the other workload jobs so the xwpe .o set does not
         # collide with objects compiled against a different include path.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-xwpe-v1-${{ runner.os }}-${{ github.sha }}
@@ -955,6 +960,117 @@ jobs:
         if: ${{ !cancelled() }}
         run: ccache --show-stats
 
+  # ---- XEphem (Motif astronomy application) integration and validation ----
+  #
+  # XEphem builds against the bundled Motif plus libXt-compat, libXext-compat,
+  # libXmu-compat, and libX11-compat. It exercises a large Motif UI with Xlib
+  # drawing, image/catalog loading, and OpenSSL-backed network paths while
+  # keeping the upstream source unchanged. No differential gate yet, so it
+  # stays out of differential.yml (cf. xwpe).
+  xephem:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} \
+            ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.XEPHEM_BUILD_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/xephem-src
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache XEphem source clone
+        # mk/xephem.mk pins XEPHEM_REVISION and applies compat/xephem-patches/ to
+        # the clone, so key on both. Exact-match only: a fallback restore on
+        # stale inputs could land newer patches on an older revision.
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/xephem-src
+          key: xephem-src-${{ runner.os }}-${{ hashFiles('mk/xephem.mk', 'compat/xephem-patches/**') }}
+
+      - name: Cache ccache
+        # Distinct key from the other workload jobs so the xephem .o set does not
+        # collide with objects compiled against a different include path.
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xephem-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xephem-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=500M
+          ccache --zero-stats
+          echo "CC=ccache clang" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for xephem)
+        # Prime the upstream stamp serially before fanning out, matching the
+        # other workload jobs (a cold parallel build can race the sync recipe).
+        run: |
+          make build/upstream/include/.upstream-stamp
+          make -j"$(nproc)"
+
+      - name: Build xephem against Motif + compat stack
+        id: xephem
+        # mk/xephem.mk clones XEphem at XEPHEM_REVISION, applies
+        # compat/xephem-patches/, builds the bundled Motif and XEphem's own
+        # support libraries, and links the GUI against libXm + libXt-compat +
+        # libX11-compat. The build log lives at build/xephem/build.log and is
+        # uploaded on failure.
+        run: make xephem -j"$(nproc)"
+
+      - name: Run xephem replay smoke check
+        id: xephem-smoke
+        # Offscreen in-process snapshot: XEphem's Motif control window comes up,
+        # renders, and survives, asserted without a display server.
+        if: ${{ !cancelled() && steps.xephem.outcome == 'success' }}
+        run: make check-smoke-xephem
+
+      - name: Upload xephem build log on failure
+        if: ${{ failure() && steps.xephem.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: xephem-build-log
+          path: build/xephem/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload UI smoke artifacts on failure
+        # Distinct artifact name so concurrent workload uploads do not overwrite.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-xephem
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
   # ---- GIMP 0.54 (Motif image editor) integration and validation ----
   #
   # GIMP 0.54.1 (1996) is the last Motif-based GIMP. It builds against
@@ -975,7 +1091,7 @@ jobs:
       MOTIF_YACC: "bison -y"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         run: |
@@ -985,7 +1101,7 @@ jobs:
             ${{ env.GIMP_BUILD_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -1006,7 +1122,7 @@ jobs:
         # GIMP reuses the in-tree thentenaar/motif as its libXm/libMrm
         # provider, so cache the same clone+autoreconf the motif job does.
         # Exact-match key only, matching the motif job's rationale.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
@@ -1017,7 +1133,7 @@ jobs:
         # set is applied to a throwaway work tree (build/gimp-motif/source),
         # so the extracted tree here stays pristine. Cache the tarball too
         # so a cache hit avoids both the re-download and the re-extract.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream/gimp-0.54.1
@@ -1027,7 +1143,7 @@ jobs:
       - name: Cache ccache
         # Distinct key from motif/osiris/xfig so the GIMP .o set does not
         # collide with objects compiled with a different include path.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-gimp-v2-${{ runner.os }}-${{ github.sha }}
@@ -1109,7 +1225,7 @@ jobs:
       SDL3_PREFIX: ${{ github.workspace }}/.sdl3-prefix
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build dependencies
         # cmake/ninja drive the SDL3 source build; freetype/harfbuzz back
@@ -1129,7 +1245,7 @@ jobs:
 
       - name: Cache SDL3 + SDL3_ttf prefix
         id: sdl3-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.SDL3_PREFIX }}
           key: sdl3-src-prefix-v1-${{ runner.os }}
@@ -1168,7 +1284,7 @@ jobs:
           rm -rf "$tmp"
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -1186,7 +1302,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-sdl3-v1-${{ runner.os }}-${{ github.sha }}

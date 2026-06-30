@@ -1,0 +1,10 @@
+# XEphem startup smoke: the Motif control window must come up against the
+# libx11-compat + Motif + libXt stack, render real content, and stay alive.
+# The shared common-visible assertion (non-empty + not-all-black) catches a
+# "window mapped but blank" regression without a calibrated per-app baseline.
+delay 1500
+wait-window "xephem" 15000
+wait-converge 200 2 50 200 20000
+screenshot initial
+assert-image initial common-visible.json
+assert-exit running

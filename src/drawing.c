@@ -187,6 +187,13 @@ static Bool hasPendingWindowPresent(void)
     WindowStruct *screenWindow = GET_WINDOW_STRUCT(SCREEN_WINDOW);
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
     for (size_t i = 0; i < screenWindow->children.length; i++) {
+        /* destroyScreenWindow destroys children with freeParentData False, so
+         * the array transiently holds already-destroyed ids: destroyWindow
+         * leaves them typed CLOSED_WINDOW with a NULL data pointer. Skip any
+         * non-WINDOW id; GET_WINDOW_STRUCT would return NULL and deref-crash.
+         */
+        if (!IS_TYPE(children[i], WINDOW))
+            continue;
         WindowStruct *child = GET_WINDOW_STRUCT(children[i]);
         if (child->sdlWindow && child->needsPresent)
             return True;
@@ -237,6 +244,12 @@ void drawWindowDataToScreen()
     Bool screenTargetMutated = False;
     size_t i;
     for (i = 0; i < GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length; i++) {
+        /* A child destroyed mid-teardown lingers in the array typed
+         * CLOSED_WINDOW; skip it before GET_WINDOW_STRUCT returns NULL (see
+         * hasPendingWindowPresent).
+         */
+        if (!IS_TYPE(children[i], WINDOW))
+            continue;
         WindowStruct *child = GET_WINDOW_STRUCT(children[i]);
         if (!child->sdlWindow)
             continue;
@@ -583,8 +596,7 @@ static Bool drawableTopLevelRect(Drawable drawable,
     return False;
 }
 
-/* text-stamp cache (see drawing.h)
- */
+/* text-stamp cache (see drawing.h) */
 #define TEXT_STAMP_CAPACITY 256
 
 typedef struct {

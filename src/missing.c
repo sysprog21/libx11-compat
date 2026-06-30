@@ -64,6 +64,9 @@ static void fillTextExtents(XFontStruct *fs,
                             int *font_descent,
                             XCharStruct *overall);
 static void freeQueriedFontStruct(XFontStruct *fs);
+static XFontStruct *queryTextExtentsFont(Display *dpy,
+                                         XID fontOrGc,
+                                         Font *temporaryFontReturn);
 
 static void freeTextList(char **list, int count)
 {
@@ -624,8 +627,7 @@ int XStoreColor(register Display *dpy, Colormap cmap, XColor *def)
 #endif
 #endif
 
-/* _XGetHostname - similar to gethostname but allows special processing.
- */
+/* _XGetHostname - similar to gethostname but allows special processing. */
 int _XGetHostname(char *buf, int maxlen)
 {
     int len;
@@ -1223,12 +1225,15 @@ int XQueryTextExtents(register Display *dpy,
                       int *font_descent,
                       register XCharStruct *overall)
 {
-    XFontStruct *fs = XQueryFont(dpy, fid);
+    Font temporaryFont = None;
+    XFontStruct *fs = queryTextExtentsFont(dpy, fid, &temporaryFont);
     if (!fs)
         return 0;
     int width = string && nchars > 0 ? XTextWidth(fs, string, nchars) : 0;
     fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
     freeQueriedFontStruct(fs);
+    if (temporaryFont != None)
+        XUnloadFont(dpy, temporaryFont);
     /* Spec: Status nonzero on success. Returning 0 here made Motif and Xt
      * widget measurement paths treat the filled metrics as invalid and fall
      * back to zero-width text.
@@ -1484,6 +1489,29 @@ static void freeQueriedFontStruct(XFontStruct *fs)
     free(fs);
 }
 
+static XFontStruct *queryTextExtentsFont(Display *dpy,
+                                         XID fontOrGc,
+                                         Font *temporaryFontReturn)
+{
+    *temporaryFontReturn = None;
+    if (IS_TYPE(fontOrGc, GRAPHICS_CONTEXT)) {
+        Font font = GET_GC_FROM_XID(fontOrGc)->font;
+        if (font == None) {
+            font = XLoadFont(dpy, "fixed");
+            *temporaryFontReturn = font;
+        }
+        if (font == None)
+            return NULL;
+        XFontStruct *fs = compatFontQueryRetained(dpy, font);
+        if (!fs && *temporaryFontReturn != None) {
+            XUnloadFont(dpy, *temporaryFontReturn);
+            *temporaryFontReturn = None;
+        }
+        return fs;
+    }
+    return XQueryFont(dpy, fontOrGc);
+}
+
 int XTextExtents16(
     XFontStruct *fs,
     _Xconst XChar2b *string,
@@ -1582,12 +1610,15 @@ int XQueryTextExtents16(register Display *dpy,
                         int *font_descent,
                         register XCharStruct *overall)
 {
-    XFontStruct *fs = XQueryFont(dpy, fid);
+    Font temporaryFont = None;
+    XFontStruct *fs = queryTextExtentsFont(dpy, fid, &temporaryFont);
     if (!fs)
         return 0;
     int width = string && nchars > 0 ? XTextWidth16(fs, string, nchars) : 0;
     fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
     freeQueriedFontStruct(fs);
+    if (temporaryFont != None)
+        XUnloadFont(dpy, temporaryFont);
     /* See XQueryTextExtents: Status must be nonzero on success. */
     return 1;
 }
@@ -2837,8 +2868,32 @@ Status XGetWMProtocols(Display *dpy,
                        Atom **protocols,
                        int *countReturn)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    if (!protocols || !countReturn)
+        return 0;
+    *protocols = NULL;
+    *countReturn = 0;
+
+    Atom property = XInternAtom(dpy, "WM_PROTOCOLS", True);
+    if (property == None)
+        return 0;
+
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long nitems = 0;
+    unsigned long bytesAfter = 0;
+    unsigned char *data = NULL;
+    if (XGetWindowProperty(dpy, w, property, 0, LONG_MAX, False, XA_ATOM,
+                           &actualType, &actualFormat, &nitems, &bytesAfter,
+                           &data) != Success)
+        return 0;
+    if (actualType != XA_ATOM || actualFormat != 32 || bytesAfter != 0 ||
+        nitems > INT_MAX) {
+        XFree(data);
+        return 0;
+    }
+    *protocols = (Atom *) data;
+    *countReturn = (int) nitems;
+    return 1;
 }
 
 int XWriteBitmapFile(Display *display,

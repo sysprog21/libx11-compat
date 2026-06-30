@@ -69,7 +69,7 @@ jobs:
       MOTIF_DIFF_SECONDS: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         run: |
@@ -80,7 +80,7 @@ jobs:
 
       - name: Cache upstream tarballs and extracted source/headers
         # Match the ci.yml key so a warm CI cache primes this job.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -98,7 +98,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache Motif source clone and autoreconf output
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
@@ -109,7 +109,7 @@ jobs:
         # prior run of any of the three jobs are picked up here. Save
         # keys stay distinct per job so all three persist their own
         # post-run snapshots.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-motif
@@ -122,7 +122,7 @@ jobs:
         # behind a .configure-stamp file; restoring that stamp plus the
         # built lib/* and demos/* trees lets make hit incrementally
         # rather than rerun autoreconf + configure cold.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/motif-differential/_work/system-build
@@ -179,7 +179,7 @@ jobs:
       VIOLAWWW_DIFF_SECONDS: "2"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         # libxrender-dev covers the ViolaWWW build paths the base
@@ -192,7 +192,7 @@ jobs:
             libxrender-dev
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -210,7 +210,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache Motif source clone and autoreconf output
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
@@ -220,7 +220,7 @@ jobs:
         # with motif-differential and mosaic-differential so the
         # cross-job Motif gcc object cache primes this job's
         # system-Motif rebuild.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-violawww
@@ -266,7 +266,7 @@ jobs:
       MOTIF_YACC: "bison -y"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         run: |
@@ -276,7 +276,7 @@ jobs:
             ${{ env.SYSTEM_X11_DEV_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -294,13 +294,13 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache Motif source clone and autoreconf output
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
 
       - name: Cache Mosaic source clone
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/mosaic
           key: mosaic-src-${{ runner.os }}-${{ hashFiles('mk/mosaic.mk', 'compat/mosaic-patches/**') }}
@@ -310,7 +310,7 @@ jobs:
         # with motif-differential and violawww-differential so the
         # cross-job Motif gcc object cache primes this job's
         # system-Motif rebuild.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-mosaic
@@ -354,7 +354,7 @@ jobs:
     timeout-minutes: 12
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         run: |
@@ -365,7 +365,7 @@ jobs:
             zlib1g-dev
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -383,7 +383,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache Osiris source clone
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/osiris
           key: osiris-src-${{ runner.os }}-${{ hashFiles('mk/osiris.mk', 'compat/osiris-patches/**') }}
@@ -391,7 +391,7 @@ jobs:
       - name: Cache ccache
         # Osiris has no Motif coupling so it keeps a distinct ccache
         # key from the motifstack jobs.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-osiris-diff-v3-${{ runner.os }}-${{ github.sha }}
@@ -403,7 +403,7 @@ jobs:
         # script and mk inputs are unchanged. The script gates configure
         # behind a .configure-stamp file; restoring the meson build dir
         # lets ninja hit incrementally rather than reconfigure cold.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/osiris-differential/_work/system-build
@@ -449,7 +449,7 @@ jobs:
     timeout-minutes: 12
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         # libxaw7-dev / libxft-dev / libxpm-dev cover the Xfig build
@@ -462,7 +462,7 @@ jobs:
             libfontconfig1-dev libxaw7-dev libxft-dev libxpm-dev patch
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -480,7 +480,7 @@ jobs:
             upstream-src-v2-${{ runner.os }}-
 
       - name: Cache Xfig source tree
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/xfig-3.2.9a
           key: xfig-src-${{ runner.os }}-${{ hashFiles('mk/xfig.mk', 'compat/xfig-patches/**') }}
@@ -488,7 +488,7 @@ jobs:
       - name: Cache ccache
         # Xfig has no Motif coupling so it keeps a distinct ccache
         # key from the motifstack jobs.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-xfig-diff-v3-${{ runner.os }}-${{ github.sha }}
@@ -544,7 +544,7 @@ jobs:
       MOTIF_YACC: "bison -y"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         # libmotif-dev supplies the system OpenMotif baseline; libpng-dev
@@ -558,7 +558,7 @@ jobs:
             libmotif-dev libpng-dev libjpeg-dev zlib1g-dev
 
       - name: Cache upstream tarballs and extracted source/headers
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -578,13 +578,13 @@ jobs:
       - name: Cache Motif source clone and autoreconf output
         # The compat side reuses the in-tree thentenaar/motif as libXm /
         # libMrm, so share the motif job's clone+autoreconf cache key.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
 
       - name: Cache GIMP source tree
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream/gimp-0.54.1
@@ -592,7 +592,7 @@ jobs:
           key: gimp-src-${{ runner.os }}-${{ hashFiles('mk/gimp-motif.mk', 'compat/gimp-patches/**') }}
 
       - name: Cache ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-gimp-diff-v3-${{ runner.os }}-${{ github.sha }}
@@ -649,7 +649,7 @@ jobs:
       MOTIF_YACC: "bison -y"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install build + system X11 dependencies
         # libmotif-dev supplies the system OpenMotif baseline; libxft-dev /
@@ -667,7 +667,7 @@ jobs:
       - name: Cache upstream tarballs and extracted source/headers
         # Exclude the XNEdit clone so its dedicated cache below owns it,
         # matching how the other big source trees are split out.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             build/upstream
@@ -688,13 +688,13 @@ jobs:
       - name: Cache Motif source clone and autoreconf output
         # The compat side reuses the in-tree thentenaar/motif as libXm /
         # libMrm, so share the motif job's clone+autoreconf cache key.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/motif
           key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
 
       - name: Cache XNEdit source clone
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: build/upstream/xnedit
           key: xnedit-src-${{ runner.os }}-${{ hashFiles('mk/xnedit.mk', 'compat/xnedit-patches/**') }}
@@ -704,7 +704,7 @@ jobs:
         # the ccache-motifstack-diff-v3-* restore-keys prefix with motif /
         # violawww / mosaic to prime the Motif gcc object cache; the save
         # key stays distinct so this job persists its own snapshot.
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-xnedit
@@ -735,6 +735,114 @@ jobs:
             build/xnedit-differential/diff
             build/xnedit-differential/system
             build/xnedit-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- XEphem (Motif astronomy ephemeris) screenshot differential ----
+  #
+  # XEphem is a heavy Motif client whose control window mixes Motif chrome
+  # with a custom-drawn star/sky canvas. It is built twice on the runner:
+  # once against system libX11 + OpenMotif (libmotif-dev) + OpenSSL, and
+  # once against libx11-compat + the bundled thentenaar/motif. Both render
+  # the control window under Xvfb and the startup screen is compared.
+  # The compat side builds the bundled Motif, so this job carries the
+  # MOTIF_BUILD_PKGS autoreconf chain and the MOTIF_YACC override.
+  xephem-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build + system X11 dependencies
+        # libmotif-dev supplies the system OpenMotif baseline; libssl-dev
+        # backs the XEphem network/ssl code that the GUI link line pulls in
+        # via -lssl -lcrypto.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            libmotif-dev libssl-dev
+
+      - name: Cache upstream tarballs and extracted source/headers
+        # Exclude the XEphem clone so its dedicated cache below owns it,
+        # matching how the other big source trees are split out.
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/xnedit
+            !build/upstream/xephem-src
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        # The compat side reuses the in-tree thentenaar/motif as libXm /
+        # libMrm, so share the motif job's clone+autoreconf cache key.
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache XEphem source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/xephem-src
+          key: xephem-src-${{ runner.os }}-${{ hashFiles('mk/xephem.mk', 'compat/xephem-patches/**') }}
+
+      - name: Cache ccache
+        # XEphem builds the bundled Motif on the compat side, so it shares
+        # the ccache-motifstack-diff-v3-* restore-keys prefix with motif /
+        # violawww / mosaic to prime the Motif gcc object cache; the save
+        # key stays distinct so this job persists its own snapshot.
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-xephem
+          restore-keys: |
+            ccache-motifstack-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run XEphem differential
+        env:
+          XEPHEM_DIFF_LOCAL: "1"
+          XEPHEM_DIFF_COMPARE_LOCATION: local
+          XEPHEM_DIFF_JOBS: "2"
+        run: make check-differential-xephem
+
+      - name: Upload XEphem differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xephem-differential
+          path: |
+            build/xephem-differential/report.tsv
+            build/xephem-differential/junit.xml
+            build/xephem-differential/logs
+            build/xephem-differential/diff
+            build/xephem-differential/system
+            build/xephem-differential/compat
           if-no-files-found: warn
           retention-days: 7
 
