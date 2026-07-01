@@ -317,8 +317,8 @@ static void drawInternalPreedit(_XIC *ic, const char *text, int len)
     clearInternalPreedit(ic);
     if (len <= 0)
         return;
-    /* ponytail: preedit strings are short; cap before len * 8 so a pathological
-     * length cannot overflow the rect math or hand XDrawString a huge count.
+    /* Preedit strings are short; cap before len * 8 so a pathological length
+     * cannot overflow the rect math or hand XDrawString a huge count.
      */
     if (len > 4096)
         len = 4096;

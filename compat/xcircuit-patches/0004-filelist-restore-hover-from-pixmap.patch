@@ -1,0 +1,74 @@
+--- a/filelist.c
++++ b/filelist.c
+@@ -110,6 +110,7 @@ void dragfilebox(xcWidget w, caddr_t clientdata, XMotionEvent *event)
+ {
+    short filenum;
+    int twidth;
++   int oldy;
+    Window lwin = xcWindow(w);
+ 
+    filenum = (event->y - 10 + FILECHARHEIGHT) / FILECHARHEIGHT + flstart - 1;
+@@ -118,21 +119,29 @@ void dragfilebox(xcWidget w, caddr_t clientdata, XMotionEvent *event)
+   
+    if (filenum == flcurrent) return;
+ 
+-   if (flcurrent >= 0) 		/* erase previous box */
+-      XDrawRectangle(dpy, lwin, areawin->gc, 5,
+-	   10 + FILECHARHEIGHT * (flcurrent
+-	   - flstart), flcurwidth + 10, FILECHARHEIGHT);
++   if (flcurrent >= 0 && flistpix != (Pixmap)NULL) {
++      oldy = 10 + FILECHARHEIGHT * (flcurrent - flstart);
++      XCopyArea(dpy, flistpix, lwin, (sgc != NULL) ? sgc : areawin->gc,
++	   5, 10 + FILECHARHEIGHT * flcurrent, flcurwidth + 11,
++	   FILECHARHEIGHT + 1, 5, oldy);
++   }
+ 
+    if (files == NULL) return;
+ 
+    twidth = XTextWidth(appdata.filefont, files[filenum].filename,
+ 	    strlen(files[filenum].filename));
+-   XDrawRectangle(dpy, lwin, areawin->gc, 5,
+-	   10 + FILECHARHEIGHT * (filenum
+-	   - flstart), twidth + 10, FILECHARHEIGHT);
+-
+    flcurrent = filenum;
+    flcurwidth = twidth;
++
++   /* Draw the hover box on the new row. The pixmap restore above only */
++   /* erases the old row, so without this the file under the pointer   */
++   /* loses its highlight. sgc is a GXcopy GC, so draw the box solid   */
++   /* in AUXCOLOR rather than the old XOR toggle.                      */
++   XSetForeground(dpy, (sgc != NULL) ? sgc : areawin->gc,
++	   colorlist[AUXCOLOR].color.pixel);
++   XDrawRectangle(dpy, lwin, (sgc != NULL) ? sgc : areawin->gc, 5,
++	   10 + FILECHARHEIGHT * (filenum - flstart), twidth + 10,
++	   FILECHARHEIGHT);
+ }
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -157,9 +166,6 @@ void startfiletrack(xcWidget w, caddr_t clientdata, XCrossingEvent *event)
+    flcurrent = -1;
+    dragfilebox(w, NULL, (XMotionEvent *)event);
+ 
+-   XSetFunction(dpy, areawin->gc, GXxor);
+-   XSetForeground(dpy, areawin->gc, colorlist[AUXCOLOR].color.pixel ^
+-		colorlist[BACKGROUND].color.pixel);
+ }
+ 
+ /*-------------------------------------------------------------------------*/
+@@ -170,9 +176,12 @@ void endfiletrack(xcWidget w, caddr_t clientdata, XCrossingEvent *event)
+ {
+    Window lwin = xcWindow(w);
+ 
+-   XDrawRectangle(dpy, lwin, areawin->gc, 5,
+-	   10 + FILECHARHEIGHT * (flcurrent
+-	   - flstart), flcurwidth + 10, FILECHARHEIGHT);
++   if (flcurrent >= 0 && flistpix != (Pixmap)NULL) {
++      int oldy = 10 + FILECHARHEIGHT * (flcurrent - flstart);
++      XCopyArea(dpy, flistpix, lwin, (sgc != NULL) ? sgc : areawin->gc,
++	   5, 10 + FILECHARHEIGHT * flcurrent, flcurwidth + 11,
++	   FILECHARHEIGHT + 1, 5, oldy);
++   }
+ 
+ #ifdef TCL_WRAPPER
+    Tk_DeleteEventHandler(w, PointerMotionMask,

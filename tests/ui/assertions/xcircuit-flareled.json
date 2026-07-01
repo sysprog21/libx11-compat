@@ -1,0 +1,18 @@
+{
+  "assertions": [
+    {
+      "type": "region_non_background",
+      "display_rect": [220, 80, 760, 620],
+      "display_size": [1024, 768],
+      "dark_threshold": 230,
+      "min_dark_ratio": 0.01
+    },
+    {
+      "type": "region_non_background",
+      "display_rect": [960, 60, 60, 650],
+      "display_size": [1024, 768],
+      "dark_threshold": 245,
+      "min_dark_ratio": 0.005
+    }
+  ]
+}

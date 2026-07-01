@@ -249,12 +249,28 @@ MOTIF_DIFF_LOCAL ?= 0
 # Thresholds calibrated to the GitHub Actions ubuntu-24.04 runner with
 # xfonts-base / 100dpi / 75dpi / scalable installed. The system-side
 # Motif Xm widget defaults differ from the libx11-compat-built Xm in a
-# handful of representative demos (ColorSel left-pane width, Ext18List
-# row metrics, TabStack header padding, workspace/wsm geometry), all of
-# which are real library behavior gaps to chase in follow-up PRs rather
-# than CI-side regressions. The diff job stays gated; tighten these
-# when the underlying Xm parity work lands.
-MOTIF_DIFF_MAE_THRESHOLD ?= 0.15
+# handful of representative demos, all real library behavior gaps to
+# chase in follow-up PRs rather than CI-side regressions.
+#
+# MAE is 0.11, which the bulk of the representative set clears with margin.
+# The two captures that cannot clear it are ColorSel and Ext18List: their
+# native side renders helvetica from the adobe-helvetica BITMAP X font,
+# which the compat SDL_ttf substitute cannot match at any width (measured
+# ~0.133 / ~0.11 on CI, verified independent of SDL/freetype version, DPI,
+# and probe-font choice). They are listed in MOTIF_DIFF_ALLOW_DIFF so the
+# compare reports them as expected-diff instead of failing the gate; drop
+# them from that list once the compat side can render bitmap helvetica.
+# changed_ratio stays a coarse backstop because glyph antialiasing alone
+# puts correct output at 0.15 to 0.20.
+MOTIF_DIFF_MAE_THRESHOLD ?= 0.11
+MOTIF_DIFF_ALLOW_DIFF ?= ColorSel,Ext18List
+# The allow-list exemption is bounded: an allow-listed capture that clears
+# these ceilings is still failed, so a crash frame, a missing widget, or an
+# unrelated break in ColorSel/Ext18List cannot hide behind expected-diff.
+# The known font-parity floor is ~0.13 MAE / ~0.30 changed, so these sit
+# above it with margin but well under a gross regression.
+MOTIF_DIFF_ALLOW_MAE_CEILING ?= 0.20
+MOTIF_DIFF_ALLOW_CHANGED_CEILING ?= 0.45
 MOTIF_DIFF_CHANGED_THRESHOLD ?= 0.32
 MOTIF_DIFF_SECONDS ?= 3
 MOTIF_DIFF_GEOMETRY ?= 1280x1024x24
@@ -273,6 +289,9 @@ motif_diff_env = \
     MOTIF_DIFF_FILTER='$(MOTIF_DIFF_FILTER)' \
     MOTIF_DIFF_MAE_THRESHOLD='$(MOTIF_DIFF_MAE_THRESHOLD)' \
     MOTIF_DIFF_CHANGED_THRESHOLD='$(MOTIF_DIFF_CHANGED_THRESHOLD)' \
+    MOTIF_DIFF_ALLOW_DIFF='$(MOTIF_DIFF_ALLOW_DIFF)' \
+    MOTIF_DIFF_ALLOW_MAE_CEILING='$(MOTIF_DIFF_ALLOW_MAE_CEILING)' \
+    MOTIF_DIFF_ALLOW_CHANGED_CEILING='$(MOTIF_DIFF_ALLOW_CHANGED_CEILING)' \
     MOTIF_DIFF_SECONDS='$(MOTIF_DIFF_SECONDS)' \
     MOTIF_DIFF_GEOMETRY='$(MOTIF_DIFF_GEOMETRY)' \
     MOTIF_DIFF_TOP='$(MOTIF_DIFF_TOP)' \

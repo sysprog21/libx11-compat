@@ -1,4 +1,5 @@
-/* XTest extension implementation
+/*
+ * XTest extension implementation
  *
  * Real X11 implements XTest in the server: a test client calls
  * XTestFakeXxxEvent and the server distributes the resulting events to every
@@ -221,7 +222,7 @@ static Uint16 kmodForModifierKeycode(unsigned int keycode)
  * the running mask onto every fake key event. This lets replays hold Shift and
  * type uppercase, matching how a real keyboard reports modifiers.
  *
- * ponytail: single static for the serial replay-input path, no locking.
+ * Single static for the serial replay-input path, no locking.
  */
 static Uint16 fakeHeldMods = 0;
 

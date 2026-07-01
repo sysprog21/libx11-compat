@@ -1,0 +1,22 @@
+--- a/functions.c
++++ b/functions.c
+@@ -2777,7 +2777,7 @@ void UDrawObject(objinstptr theinstance, short level, int passcolor,
+ 
+        switch(ELEMENTTYPE(*areagen)) {
+ 	  case(POLYGON):
+-	     if (level == 0 || !((TOPOLY(areagen))->style & BBOX))
++	     if (level == 0 || !((TOPOLY(areagen))->style & (BBOX | FIXEDBBOX)))
+                 UDrawPolygon(TOPOLY(areagen), passwidth);
+ 	     break;
+ 
+--- a/cairo.c
++++ b/cairo.c
+@@ -426,7 +426,7 @@ void UDrawObject(objinstptr theinstance, short level, int passcolor,
+ 
+        switch(ELEMENTTYPE(*areagen)) {
+ 	  case(POLYGON):
+-	     if (level == 0 || !((TOPOLY(areagen))->style & BBOX))
++	     if (level == 0 || !((TOPOLY(areagen))->style & (BBOX | FIXEDBBOX)))
+                 UDrawPolygon(TOPOLY(areagen), passwidth);
+ 	     break;
+ 

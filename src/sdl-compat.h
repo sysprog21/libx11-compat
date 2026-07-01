@@ -396,7 +396,7 @@ static inline int xc_BlitScaled(SDL_Surface *src,
                                 SDL_Rect *dstrect)
 {
     return SDL_BlitSurfaceScaled(src, srcrect, dst, dstrect,
-                                 SDL_SCALEMODE_NEAREST)
+                                 SDL_SCALEMODE_LINEAR)
                ? 0
                : -1;
 }
@@ -731,11 +731,12 @@ static inline int xc_GetDesktopDisplayMode(int displayIndex,
 #define XC_SET_EDITING_EVENT(ev, s) ((ev).edit.text = (s))
 #define XC_EDITING_EVENT_TEXT(evptr) ((evptr)->edit.text)
 
-/* SDL3 defaults texture scaling to linear; SDL2 defaulted to nearest. Pin
- * glyph/blit textures to nearest so scaled copies stay crisp (and opaque pixels
- * survive) exactly as on SDL2.
+/* SDL3 defaults texture scaling to linear; SDL2 defaulted to nearest. Pin glyph
+ * textures explicitly where needed; window-surface blits use linear above so
+ * Retina presentation does not pixel-double text.
  */
 #define XC_SCALEMODE_NEAREST SDL_SCALEMODE_NEAREST
+#define XC_SCALEMODE_LINEAR SDL_SCALEMODE_LINEAR
 
 #else /* SDL2 */
 
@@ -776,6 +777,7 @@ typedef SDL_PixelFormat *XcPixelFormat;
     ((void) snprintf((ev).edit.text, sizeof((ev).edit.text), "%s", (s)))
 #define XC_EDITING_EVENT_TEXT(evptr) ((evptr)->edit.text)
 #define XC_SCALEMODE_NEAREST SDL_ScaleModeNearest
+#define XC_SCALEMODE_LINEAR SDL_ScaleModeLinear
 
 #endif /* LIBX11_COMPAT_SDL3 */
 

@@ -1,7 +1,7 @@
 # Differential gates for the SDL2-based libx11-compat stack.
 #
-# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, GIMP,
-# XNEdit) is built twice on the same GitHub-hosted runner: once against the
+# Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, XCircuit,
+# GIMP, XNEdit) is built twice on the same GitHub-hosted runner: once against the
 # system libX11 stack from apt and once against libx11-compat. The
 # resulting screenshots are compared under Xvfb. This is the local
 # counterpart to the SSH-driven path in scripts/run-*-differential-tests.py
@@ -10,7 +10,7 @@
 # Differential gates live in a separate workflow from ci.yml so the
 # fast PR feedback loop (lint / build / smoke) is not delayed by the
 # heavier double-build pipeline, and so each downstream target reports
-# its own status check independent of the others. The seven jobs run
+# its own status check independent of the others. The jobs run
 # in parallel; total wallclock is bounded by the slowest single job
 # rather than the sum of all jobs.
 #
@@ -52,7 +52,17 @@ env:
   # resolution failure) or render with the default 9x15 fallback, which
   # blows up the diff threshold against the libx11-compat side's
   # SDL_ttf font path.
-  DIFFERENTIAL_PKGS: "imagemagick python3-pil rsync xauth xvfb xdotool xfonts-base xfonts-100dpi xfonts-75dpi xfonts-scalable"
+  #
+  # fonts-urw-base35 pins the compat side's sans face. src/font.c probes
+  # SANS_PROBE_PATHS in order and its first entry is NimbusSansNarrow
+  # (this package); without it the compat side falls through to whatever
+  # wider sans the runner image happens to ship (DejaVuSans), which shifts
+  # every gated Motif dialog's width run-to-run. Installing it keeps the
+  # gated captures' margins deterministic. (It does not, on its own, close
+  # the ColorSel/Ext18List gap - their native side uses the adobe-helvetica
+  # bitmap the TTF path cannot match at any width - so those two stay
+  # allow-listed in mk/motif.mk.)
+  DIFFERENTIAL_PKGS: "imagemagick python3-pil rsync xauth xvfb xdotool xfonts-base xfonts-100dpi xfonts-75dpi xfonts-scalable fonts-urw-base35"
   MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4"
   OSIRIS_BUILD_PKGS: "meson ninja-build libjpeg-dev libpng-dev libfreetype-dev"
 
@@ -519,6 +529,86 @@ jobs:
             build/xfig-differential/diff
             build/xfig-differential/system
             build/xfig-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- XCircuit schematic capture screenshot differential ----
+  xcircuit-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build + system X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} \
+            libxpm-dev patch
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/xcircuit-src
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache XCircuit source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/xcircuit-src
+          key: xcircuit-src-${{ runner.os }}-${{ hashFiles('mk/xcircuit.mk', 'compat/xcircuit-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xcircuit-diff-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xcircuit-diff-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run XCircuit differential
+        env:
+          XCIRCUIT_DIFF_LOCAL: "1"
+          XCIRCUIT_DIFF_COMPARE_LOCATION: local
+          XCIRCUIT_DIFF_JOBS: "2"
+        run: make check-differential-xcircuit
+
+      - name: Upload XCircuit differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcircuit-differential
+          path: |
+            build/xcircuit-differential/report.tsv
+            build/xcircuit-differential/junit.xml
+            build/xcircuit-differential/logs
+            build/xcircuit-differential/diff
+            build/xcircuit-differential/system
+            build/xcircuit-differential/compat
           if-no-files-found: warn
           retention-days: 7
 

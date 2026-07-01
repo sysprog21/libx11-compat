@@ -434,14 +434,14 @@ static Bool isFontAlias(const char *name)
      * -adobe-times- is not fixed-width, but x11perf requests it for TR10/TR24
      * tests and would otherwise abort on XOpenFont(None).
      */
-    return !strcmp(name, "fixed") || !strcmp(name, "variable") ||
-           !strcmp(name, "cursor") || !strcmp(name, "6x13") ||
-           !strcmp(name, "7x13") || !strcmp(name, "7x13bold") ||
-           !strcmp(name, "8x13") || !strcmp(name, "7x14") ||
-           !strcmp(name, "9x13") || !strcmp(name, "9x15") ||
-           !strcmp(name, "9x18") || !strcmp(name, "12x24") ||
-           !strncmp(name, "-misc-fixed-", 12) ||
-           !strncmp(name, "-jis-fixed-", 11) ||
+    return !strcasecmp(name, "fixed") || !strcasecmp(name, "variable") ||
+           !strcasecmp(name, "cursor") || !strcasecmp(name, "6x13") ||
+           !strcasecmp(name, "7x13") || !strcasecmp(name, "7x13bold") ||
+           !strcasecmp(name, "8x13") || !strcasecmp(name, "7x14") ||
+           !strcasecmp(name, "9x13") || !strcasecmp(name, "9x15") ||
+           !strcasecmp(name, "9x18") || !strcasecmp(name, "12x24") ||
+           !strncasecmp(name, "-misc-fixed-", 12) ||
+           !strncasecmp(name, "-jis-fixed-", 11) ||
            containsIgnoreCase(name, "helvetica") ||
            containsIgnoreCase(name, "helv") ||
            containsIgnoreCase(name, "courier") ||
@@ -450,8 +450,9 @@ static Bool isFontAlias(const char *name)
            containsIgnoreCase(name, "times") ||
            containsIgnoreCase(name, "schoolbook") ||
            (name[0] == '-' && containsIgnoreCase(name, "iso8859")) ||
-           ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
-            strstr(name, "-p-"));
+           ((containsIgnoreCase(name, "-medium-r-") ||
+             containsIgnoreCase(name, "-bold-r-")) &&
+            containsIgnoreCase(name, "-p-"));
 }
 
 /* Probe paths for a monospace face when the search-path scan does not pick one
@@ -754,32 +755,34 @@ static Bool coreFontMetricsForName(const char *name,
      * overlapping adjacent lines.
      */
     Bool haveBitmap = loadFixedBitmapFont();
-    if (haveBitmap && (!strcmp(name, "fixed") || !strcmp(name, "cursor") ||
-                       !strcmp(name, "6x13"))) {
+    if (haveBitmap &&
+        (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
+         !strcasecmp(name, "6x13"))) {
         *ascent = 11;
         *descent = 2;
         *width = 6;
         return True;
     }
-    if (haveBitmap && (!strcmp(name, "7x13") || !strcmp(name, "7x13bold"))) {
+    if (haveBitmap &&
+        (!strcasecmp(name, "7x13") || !strcasecmp(name, "7x13bold"))) {
         *ascent = 11;
         *descent = 2;
         *width = 7;
         return True;
     }
-    if (haveBitmap && !strcmp(name, "7x14")) {
+    if (haveBitmap && !strcasecmp(name, "7x14")) {
         *ascent = 12;
         *descent = 2;
         *width = 7;
         return True;
     }
-    if (haveBitmap && !strcmp(name, "9x18")) {
+    if (haveBitmap && !strcasecmp(name, "9x18")) {
         *ascent = 14;
         *descent = 4;
         *width = 9;
         return True;
     }
-    if (haveBitmap && !strcmp(name, "12x24")) {
+    if (haveBitmap && !strcasecmp(name, "12x24")) {
         *ascent = 22;
         *descent = 2;
         *width = 12;
@@ -821,8 +824,8 @@ static Bool usesFixedFallbackFont(const char *name)
 {
     if (!name)
         return False;
-    if (!strcmp(name, "fixed") || !strcmp(name, "cursor") ||
-        !strcmp(name, "6x13"))
+    if (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
+        !strcasecmp(name, "6x13"))
         return True;
     return isMotifTimesIso14Fallback(name);
 }
@@ -1015,7 +1018,7 @@ static FontCacheEntry *findAliasedFontForName(const char *name)
 {
     if (usesFixedFallbackFont(name))
         return findAliasedFixedWidthFont();
-    if (!strcmp(name, "variable"))
+    if (!strcasecmp(name, "variable"))
         return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
     if (containsIgnoreCase(name, "times") ||
         containsIgnoreCase(name, "adobe-times") ||
@@ -2582,12 +2585,11 @@ Bool renderText(Display *display,
             return False;
         }
         SDL_SetTextureBlendMode(fontTexture, SDL_BLENDMODE_BLEND);
-        /* Match SDL2's default nearest scaling: when the glyph texture is
-         * scaled to the core-metric cell, linear filtering (SDL3's default)
-         * would smear opaque strokes into partial coverage.
-         */
 #if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
-        SDL_SetTextureScaleMode(fontTexture, XC_SCALEMODE_NEAREST);
+        SDL_SetTextureScaleMode(fontTexture,
+                                fontResource && fontResource->useFixedBitmap
+                                    ? XC_SCALEMODE_NEAREST
+                                    : XC_SCALEMODE_LINEAR);
 #endif
         textureAscent = TTF_FontAscent(GET_FONT(gContext->font));
         if (stringHasEmbeddedNul ||

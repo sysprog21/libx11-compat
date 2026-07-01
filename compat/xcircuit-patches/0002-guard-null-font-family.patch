@@ -1,0 +1,20 @@
+--- a/text.c
++++ b/text.c
+@@ -889,6 +889,8 @@ Boolean stringcomp(stringpart *strptr1, stringpart *strptr2)
+ 
+ Boolean issymbolfont(int fontnumber)
+ {
++   if (fontnumber < 0 || fontnumber >= fontcount || fonts[fontnumber].family == NULL)
++      return False;
+    if (!strcmp(fonts[fontnumber].family, "Symbol")) return True;
+    return False;
+ }
+@@ -904,6 +906,8 @@ Boolean issymbolfont(int fontnumber)
+ 
+ Boolean issansfont(int fontnumber)
+ {
++   if (fontnumber < 0 || fontnumber >= fontcount || fonts[fontnumber].family == NULL)
++      return False;
+    if (!strcmp(fonts[fontnumber].family, "Helvetica")) return True;
+    return False;
+ }
