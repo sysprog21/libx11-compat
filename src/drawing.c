@@ -347,9 +347,17 @@ void drawWindowDataToScreen()
         enum { DIRTY_RECT_BUDGET = 256 };
         SDL_Rect rects[DIRTY_RECT_BUDGET];
         int nrects = 0;
+        Bool forceFullPresent = needsScale;
         Bool useRegion = !child->fullyDirty && child->hasPresented &&
                          child->hasPresentRect &&
                          pixman_region32_n_rects(&child->dirty) > 0;
+        if (forceFullPresent) {
+            /* Scaled partial presents create linear-filter seams at each
+             * dirty-rect edge; use a full-window present on HiDPI until the
+             * present path grows padded dirty-rect sampling.
+             */
+            useRegion = False;
+        }
         if (useRegion) {
             int rn = pixman_region32_n_rects(&child->dirty);
             if (rn > DIRTY_RECT_BUDGET) {
@@ -383,8 +391,8 @@ void drawWindowDataToScreen()
              * already gated on !fullyDirty, so this fallback handles fullyDirty
              * + no-region + no-prior-present together.
              */
-            if (!child->fullyDirty && child->hasPresented &&
-                child->hasPresentRect)
+            if (!forceFullPresent && !child->fullyDirty &&
+                child->hasPresented && child->hasPresentRect)
                 r = child->presentRect;
             if (!SDL_IntersectRect(&r, &bounds, &r))
                 continue;

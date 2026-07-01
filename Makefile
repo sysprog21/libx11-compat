@@ -35,6 +35,7 @@ include mk/gimp-motif.mk
 include mk/xnedit.mk
 include mk/xwpe.mk
 include mk/xephem.mk
+include mk/xcircuit.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/upstream-headers.mk

@@ -1,0 +1,17 @@
+--- a/xcircuit.h
++++ b/xcircuit.h
+@@ -25,10 +25,12 @@ typedef unsigned int		u_int;
+ typedef unsigned long		u_long;
+ typedef unsigned long long	u_long_long;
+ 
+ /* In addition, caddr_t is deprecated but will just be recast here to	*/
+-/* the recommended void *.						*/
++/* the recommended void * where the system headers do not expose it.	*/
++#ifndef __APPLE__
+ typedef void *			caddr_t;
+ #endif
+ #endif
++#endif
+ 
+ #ifdef XC_WIN32
+ #ifdef TCL_WRAPPER

@@ -1984,6 +1984,40 @@ static int test_drawables_and_gcs(Display *display)
           "GXcopy arc fill blended instead of replacing");
     SDL_FreeSurface(surface);
 
+    Pixmap starPixmap =
+        XCreatePixmap(display, root, 32, 32, DefaultDepth(display, 0));
+    CHECK(starPixmap != None, "star pixmap creation failed");
+    GC starGc = XCreateGC(display, starPixmap, 0, NULL);
+    CHECK(starGc, "star GC creation failed");
+    CHECK(XSetForeground(display, starGc, 0xFF0000FF),
+          "star background blue failed");
+    CHECK(XFillRectangle(display, starPixmap, starGc, 0, 0, 32, 32),
+          "star background fill failed");
+    CHECK(XSetFillRule(display, starGc, EvenOddRule),
+          "star even-odd setup failed");
+    CHECK(XSetForeground(display, starGc, 0xFFFFFFFF),
+          "star foreground white failed");
+    XPoint star[] = {{16, 4},  {19, 12}, {28, 12}, {21, 17}, {24, 28},
+                     {16, 22}, {8, 28},  {11, 17}, {4, 12},  {13, 12}};
+    CHECK(XFillPolygon(display, starPixmap, starGc, star, 10, Nonconvex,
+                       CoordModeOrigin),
+          "nonconvex star fill failed");
+    SDL_Renderer *starRenderer = NULL;
+    GET_RENDERER(starPixmap, starRenderer);
+    SDL_Surface *starSurface = getRenderSurface(starRenderer);
+    CHECK(starSurface, "star surface readback failed");
+    CHECK(pixel_is_rgb(starSurface, 16, 8, 255, 255, 255),
+          "nonconvex star missed top arm");
+    CHECK(pixel_is_rgb(starSurface, 16, 16, 255, 255, 255),
+          "nonconvex star missed center");
+    CHECK(pixel_is_rgb(starSurface, 5, 5, 0, 0, 255),
+          "nonconvex star overfilled upper-left bounding box");
+    CHECK(pixel_is_rgb(starSurface, 27, 5, 0, 0, 255),
+          "nonconvex star overfilled upper-right bounding box");
+    SDL_FreeSurface(starSurface);
+    XFreeGC(display, starGc);
+    XFreePixmap(display, starPixmap);
+
     Window clipTop =
         XCreateSimpleWindow(display, root, 120, 40, 24, 24, 0, 0, 0);
     CHECK(clipTop != None, "child clip top-level creation failed");
@@ -2563,6 +2597,49 @@ static int test_gxxor_self_inverse(Display *display)
     XFreePixmap(display, pm);
     CHECK(mismatches == 0,
           "GXxor was not self-inverse - rubber-band drag will leak trails");
+
+    Window win = XCreateSimpleWindow(display, root, 0, 0, TEST_W, TEST_H, 0, 0,
+                                     WhitePixel(display, screen));
+    CHECK(win != None, "XCreateSimpleWindow for GXxor window test failed");
+    XMapWindow(display, win);
+    GC winGc = XCreateGC(display, win, 0, NULL);
+    CHECK(winGc != NULL, "XCreateGC for GXxor window test failed");
+    CHECK(XSetForeground(display, winGc, WhitePixel(display, screen)),
+          "GXxor window background setup failed");
+    CHECK(XSetFunction(display, winGc, GXcopy),
+          "GXxor window copy setup failed");
+    CHECK(XFillRectangle(display, win, winGc, 0, 0, TEST_W, TEST_H),
+          "GXxor window background fill failed");
+
+    unsigned long outline = 0x0000AA33ul;
+    unsigned long background = WhitePixel(display, screen);
+    CHECK(XSetForeground(display, winGc, outline),
+          "GXxor window outline setup failed");
+    CHECK(XDrawRectangle(display, win, winGc, 4, 4, 32, 18),
+          "GXcopy initial hover rectangle failed");
+    CHECK(XSetForeground(display, winGc, outline ^ background),
+          "GXxor erase source setup failed");
+    CHECK(XSetFunction(display, winGc, GXxor),
+          "GXxor window erase setup failed");
+    CHECK(XDrawRectangle(display, win, winGc, 4, 4, 32, 18),
+          "GXxor hover erase failed");
+
+    SDL_Renderer *winRenderer = NULL;
+    GET_RENDERER(win, winRenderer);
+    SDL_Surface *winSurface = getRenderSurface(winRenderer);
+    CHECK(winSurface, "GXxor window readback failed");
+    int hoverLeaks = 0;
+    for (int y = 0; y < TEST_H; y++) {
+        for (int x = 0; x < TEST_W; x++) {
+            if (!pixel_is_rgb(winSurface, x, y, 255, 255, 255))
+                hoverLeaks++;
+        }
+    }
+    SDL_FreeSurface(winSurface);
+    XFreeGC(display, winGc);
+    XDestroyWindow(display, win);
+    CHECK(hoverLeaks == 0,
+          "GXcopy hover rectangle was not erased by the following GXxor draw");
     return 1;
 }
 
@@ -2570,6 +2647,25 @@ static int test_images(Display *display)
 {
     CHECK(XImageByteOrder(display) == ImageByteOrder(display),
           "XImageByteOrder did not match display byte order");
+
+#if defined(LIBX11_COMPAT_SDL3)
+    SDL_Surface *scaleSrc =
+        SDL_CreateRGBSurfaceWithFormat(0, 2, 1, 32, SDL_PIXELFORMAT_RGBA8888);
+    SDL_Surface *scaleDst =
+        SDL_CreateRGBSurfaceWithFormat(0, 4, 1, 32, SDL_PIXELFORMAT_RGBA8888);
+    CHECK(scaleSrc && scaleDst, "scale-mode surface creation failed");
+    putPixel(scaleSrc, 0, 0,
+             SDL_MapRGBA(XC_SURFACE_FORMAT(scaleSrc), 0, 0, 0, 255));
+    putPixel(scaleSrc, 1, 0,
+             SDL_MapRGBA(XC_SURFACE_FORMAT(scaleSrc), 255, 255, 255, 255));
+    SDL_Rect scaleDstRect = {0, 0, 4, 1};
+    CHECK(SDL_BlitScaled(scaleSrc, NULL, scaleDst, &scaleDstRect) == 0,
+          "SDL3 scaled blit wrapper failed");
+    CHECK(pixel_is_between_black_and_white(scaleDst, 1, 0),
+          "SDL3 scaled blit wrapper used nearest-neighbor sampling");
+    SDL_FreeSurface(scaleDst);
+    SDL_FreeSurface(scaleSrc);
+#endif
 
     char *data = calloc(1, 16);
     CHECK(data != NULL, "image data allocation failed");
@@ -6359,6 +6455,22 @@ static int test_fonts(Display *display)
         CHECK(XTextWidth16(fixed, fixedWide, 1) == 6,
               "fixed alias XTextWidth16 did not count 16-bit characters");
         XFreeFont(display, fixed);
+
+        /* Capitalized aliases must resolve through the same core-metric path
+         * as the lowercase form, not fall through to TTF metrics. Assert the
+         * 6x13 geometry, not merely that some font loaded.
+         */
+        XFontStruct *upperFixed = XLoadQueryFont(display, "Fixed");
+        CHECK(upperFixed != NULL && upperFixed->fid != None,
+              "capitalized Fixed alias did not load");
+        CHECK(upperFixed->ascent == 11 && upperFixed->descent == 2,
+              "capitalized Fixed alias did not use core 6x13 ascent/descent");
+        CHECK(upperFixed->min_bounds.width == 6 &&
+                  upperFixed->max_bounds.width == 6,
+              "capitalized Fixed alias did not use core 6x13 width");
+        CHECK(XTextWidth(upperFixed, "A", 1) == 6,
+              "capitalized Fixed alias XTextWidth did not use core width");
+        XFreeFont(display, upperFixed);
 
         XFontStruct *variable = XLoadQueryFont(display, "variable");
         CHECK(variable != NULL && variable->fid != None,

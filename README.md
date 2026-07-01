@@ -76,7 +76,7 @@ The screenshot above is from the larger ViolaWWW port described in [Larger Workl
 
 ## Larger Workloads Under Investigation
 
-Six ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
+Several ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
 They are still compatibility workloads rather than daily-use application ports,
 but each exercises behavior that small examples do not reach.
 
@@ -139,6 +139,10 @@ but each exercises behavior that small examples do not reach.
   build/xfig/source/src/xfig tests/data/mindmap.fig
   make check-smoke-xfig                  # replay-driven startup smoke check
   ```
+
+- [XCircuit](http://opencircuitdesign.com/xcircuit/): the PostScript-oriented schematic capture and drawing tool builds against the compat stack and exercises menu redraw, file dialogs, font rendering, pixmap-backed icon/tool rendering, and larger PostScript example imports.
+
+  <a href="assets/xcircuit.png"><img src="assets/xcircuit.png" alt="XCircuit running through libx11-compat on macOS" width="420"></a>
 
 - [GIMP 0.54](https://en.wikipedia.org/wiki/GIMP): the 1996 release, the last GIMP built on the Motif toolkit before the project moved to GTK, builds against the compat stack plus the bundled Motif.
   It is a full image editor that drives `XCreateImage` / `XPutImage` / `XGetImage`, the MIT-SHM canvas path (`src/xshm.c`), TrueColor 32bpp visual and colormap handling, large Motif dialog and menu trees, and forked image-format plug-ins (PNG / JPEG) that talk to the core over pipes and SysV shared-memory tiles.

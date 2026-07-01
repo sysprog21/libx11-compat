@@ -17,16 +17,14 @@ from differential import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUT_ROOT = ROOT / "build" / "osiris-differential"
-DEFAULT_REFERENCE_DIR = ROOT / "build" / "osiris-reference-screens"
+DEFAULT_OUT_ROOT = ROOT / "build" / "xcircuit-differential"
 
 
 def remote_script(args, remote_repo):
     clean_remote = ""
     if args.clean:
         clean_remote = (
-            f"rm -rf {q(args.remote_root + '/system-build')} "
-            f"{q(args.remote_root + '/system-out')} "
+            f"rm -rf {q(args.remote_root + '/system-xcircuit')} "
             f"{q(args.remote_root + '/screens')} "
             f"{q(args.remote_root + '/logs')} "
             f"{q(args.remote_root + '/diff')}\n"
@@ -37,12 +35,16 @@ def remote_script(args, remote_repo):
         install_deps = """
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update
+    # Do not let an unrelated third-party repo with a transient GPG or
+    # signature error abort the whole differential: the metadata refresh
+    # is best-effort, and the install below still fails loudly if a
+    # package we actually need cannot be resolved from the cached lists.
+    sudo apt-get update || true
     sudo apt-get install -y --no-install-recommends \\
-        build-essential ca-certificates git imagemagick meson ninja-build \\
-        pkg-config python3 python3-pil rsync xauth xvfb xdotool \\
-        libfreetype-dev libice-dev libjpeg-dev libpng-dev libsm-dev \\
-        libx11-dev libxext-dev libxmu-dev zlib1g-dev
+        autoconf automake build-essential ca-certificates git imagemagick \\
+        libice-dev libsm-dev libx11-dev libxext-dev libxmu-dev libxpm-dev \\
+        libxt-dev make patch \\
+        pkg-config python3 python3-pil rsync xauth xvfb xdotool
 fi
 """
 
@@ -63,11 +65,9 @@ need() {{
 }}
 
 need gcc
-need git
 need import
 need make
-need meson
-need ninja
+need patch
 need pkg-config
 need python3
 need rsync
@@ -76,8 +76,7 @@ need xdotool
 
 remote_root={q(args.remote_root)}
 repo={q(remote_repo)}
-system_build="$remote_root/system-build"
-system_out="$remote_root/system-out"
+system_build="$remote_root/system-xcircuit"
 system_logs="$remote_root/logs/system"
 compat_logs="$remote_root/logs/compat"
 system_screens="$remote_root/screens/system"
@@ -98,24 +97,25 @@ run_logged() {{
     fi
 }}
 
-capture_osiris() {{
+capture_xcircuit() {{
     name=$1
     app=$2
     workdir=$3
     replay=$4
-    geometry_arg=$5
-    libpath=$6
-    log_dir=$7
-    screen_dir=$8
-    input_backend=$9
+    libpath=$5
+    log_dir=$6
+    screen_dir=$7
+    input_backend=$8
     replay_out="$remote_root/replay-$name"
     rm -rf "$replay_out" "$remote_root/home-$name"
-    mkdir -p "$replay_out" "$log_dir" "$screen_dir" "$remote_root/home-$name"
-    replay_path="$repo/tests/ui/replays/$replay"
-    if [ "$input_backend" = xdotool ]; then
-        replay_path="$replay_out/$replay"
-        awk '/^wait-window / {{ sub(/[0-9]+[ \t]*$/, "15000") }} {{ print }}' \
-            "$repo/tests/ui/replays/$replay" > "$replay_path"
+    mkdir -p "$log_dir" "$screen_dir" "$remote_root/home-$name"
+    lib_env="$libpath"
+    if [ -n "${{LD_LIBRARY_PATH:-}}" ]; then
+        if [ -n "$lib_env" ]; then
+            lib_env="$lib_env:$LD_LIBRARY_PATH"
+        else
+            lib_env="$LD_LIBRARY_PATH"
+        fi
     fi
     # Read display from the current env so the parallel capture
     # subshells can each target their own Xvfb. Strip the leading
@@ -123,29 +123,60 @@ capture_osiris() {{
     # display index that run-ui-replay's --display flag wants.
     display_num=${{DISPLAY#:}}
     display_num=${{display_num%%.*}}
+    # No -geometry: xcircuit only loads a command-line file when its own
+    # main() sees argc == 2 (program + file). Passing -geometry leaves two
+    # extra argv entries, so xcircuit takes the crash-recovery branch and
+    # the drawing stays empty. The Xvfb screen size already fixes the
+    # capture region, so the geometry flag is unnecessary here.
     python3 "$repo/scripts/run-ui-replay.py" \\
-        --name "osiris-$name" \\
+        --name "$replay" \\
         --app "$app" \\
-        --app-arg=-geometry --app-arg="$geometry_arg" \\
+        --app-arg=examples/FlareLED.ps \\
         --workdir "$workdir" \\
-        --replay "$replay_path" \\
+        --replay "$repo/tests/ui/replays/$replay.replay" \\
         --out-root "$replay_out" \\
         --display "$display_num" \\
         --geometry {q(args.geometry)} \\
         --input-backend "$input_backend" \\
         --screenshot-command import \\
-        $([ "$input_backend" = internal ] && printf %s --in-process-snapshots) \\
         --screenshot-region {q(args.screenshot_region)} \\
         --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
-        --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
+        --env LD_LIBRARY_PATH="$lib_env" \\
         --env LIBX11_COMPAT_FONT_DIR="$repo/fonts"
-    cp "$replay_out"/screens/*.png "$screen_dir"/
-    if [ -f "$log_dir/results.tsv" ]; then
-        tail -n +2 "$replay_out/results.tsv" >>"$log_dir/results.tsv"
-    else
-        cp "$replay_out/results.tsv" "$log_dir/results.tsv"
-    fi
+    python3 - "$replay_out/results.tsv" "$log_dir/results.tsv" "$replay" \\
+        "$screen_dir" <<'PY'
+import csv
+import shutil
+import sys
+from pathlib import Path
+
+src_results = Path(sys.argv[1])
+dest_results = Path(sys.argv[2])
+prefix = sys.argv[3]
+screen_dir = Path(sys.argv[4])
+
+with src_results.open(newline="") as f:
+    rows = list(csv.DictReader(f, delimiter="\\t"))
+
+for row in rows:
+    screenshot = row.get("screenshot") or ""
+    if not screenshot:
+        continue
+    src = Path(screenshot)
+    dest = screen_dir / f"{{prefix}}-{{src.name}}"
+    shutil.copy2(src, dest)
+    row["screenshot"] = str(dest)
+
+write_header = not dest_results.exists()
+with dest_results.open("a", newline="") as f:
+    fields = ["status", "relative_path", "screenshot", "detail"]
+    writer = csv.DictWriter(f, fieldnames=fields, delimiter="\\t")
+    if write_header:
+        writer.writeheader()
+    for row in rows:
+        writer.writerow({{field: row.get(field, "") for field in fields}})
+PY
     cp "$replay_out"/junit.xml "$log_dir/junit.xml"
     cp "$replay_out"/logs/* "$log_dir"/ 2>/dev/null || true
 }}
@@ -153,13 +184,12 @@ capture_osiris() {{
 {clean_remote}
 rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
     "$remote_root/report.tsv" "$remote_root/junit.xml" "$remote_root"/replay-*
-mkdir -p "$system_build" "$system_out" "$system_logs" "$compat_logs" \\
+mkdir -p "$system_build/source" "$system_logs" "$compat_logs" \\
     "$system_screens" "$compat_screens" "$remote_root/logs"
 
-# Wrap gcc with ccache so the system-side Osiris meson build and the
-# compat-side osiris build both hit the ccache populated by the
-# GitHub Actions cache action. Meson bakes $CC into its build.ninja
-# at configure time, so set it before `meson setup`.
+# Wrap gcc with ccache so the system-side and compat-side gcc objects
+# hit the ccache populated by the GitHub Actions cache action. Bare
+# `CC=gcc` would skip the cache and recompile cold every CI run.
 if command -v ccache >/dev/null 2>&1; then
     if [ -d /usr/lib/ccache ]; then
         export PATH="/usr/lib/ccache:$PATH"
@@ -167,51 +197,59 @@ if command -v ccache >/dev/null 2>&1; then
     export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
 fi
 cc_wrapped="gcc"
-cxx_wrapped="g++"
 
-osiris_src="$repo/build/upstream/osiris"
-
-# Pre-extract upstream Osiris so the parallel compat-side and
+# Pre-extract upstream XCircuit so the parallel compat-side and
 # system-side builds below don't race on the source-stamp step. The
 # make rule is a no-op when the actions/cache step already restored
-# the osiris-src cache.
-(cd "$repo" && make build/upstream/osiris/.source-stamp)
+# the xcircuit-src cache.
+(cd "$repo" && make build/upstream/xcircuit-src/.source-stamp)
 
 # Run compat-side and system-side builds concurrently. They write into
-# disjoint trees ($repo/build/osiris vs $system_build) and share only
-# the read-only upstream source. ccache is process-safe via its own
-# locking. Pin ninja's parallelism on both sides; its default
-# auto-detect would otherwise launch $vCPU+2 per side and oversubscribe
-# the runner when the two builds run concurrently.
+# disjoint trees ($repo/build/xcircuit vs $system_build/source) and share
+# only the read-only upstream tarball extraction. ccache is
+# process-safe via its own locking.
 compat_make_log="$remote_root/logs/compat-make.log"
 : >"$compat_make_log"
 (
     set -e
     cd "$repo"
-    make -j{q(args.jobs)} CC="$cc_wrapped" CXX="$cxx_wrapped" \\
-        OSIRIS_NINJA="ninja -j{q(args.jobs)}" osiris
+    make -j{q(args.jobs)} CC="$cc_wrapped" xcircuit
 ) >"$compat_make_log" 2>&1 &
 compat_pid=$!
 
 (
     set -e
-    if [ ! -f "$system_build/.configure-stamp" ]; then
-        rm -rf "$system_build"
-        mkdir -p "$system_build"
-        run_logged "$remote_root/logs/system-configure.log" \\
-            env CC="$cc_wrapped" CXX="$cxx_wrapped" \\
-            meson setup "$system_build" "$osiris_src" \\
-                --prefix="$system_out/install" \\
-                -Dxft=disabled \\
-                -Dopengl=disabled \\
-                -Dsm=disabled \\
-                -Dmng=disabled \\
-                -Dgif=disabled \\
-                -Dexamples=enabled \\
-                -Dtutorial=enabled
-        touch "$system_build/.configure-stamp"
-    fi
-    run_logged "$remote_root/logs/system-build.log" ninja -j{q(args.jobs)} -C "$system_build"
+    rm -rf "$system_build/source"
+    mkdir -p "$system_build/source"
+    tar --exclude .git --exclude '*.o' --exclude '*.a' --exclude '*.dSYM' \\
+        -cf - -C "$repo/build/upstream/xcircuit-src" . | \\
+        tar -xf - -C "$system_build/source"
+    for patch_file in "$repo"/compat/xcircuit-patches/*.patch; do
+        [ -e "$patch_file" ] || continue
+        patch -d "$system_build/source" -p1 < "$patch_file"
+    done
+
+    # Configure generates Makefile in the current working directory,
+    # not at the configure script's location. cd into the source tree
+    # before invoking it so the Makefiles land where the subsequent
+    # make -C expects them.
+    cd "$system_build/source"
+
+    : >"$remote_root/logs/system-configure.log"
+    run_logged "$remote_root/logs/system-configure.log" \\
+        env CC="$cc_wrapped" \\
+            CPPFLAGS="$(pkg-config --cflags x11 xext xpm xt ice sm 2>/dev/null || true)" \\
+            LDFLAGS="$(pkg-config --libs-only-L x11 xext xpm xt ice sm 2>/dev/null || true)" \\
+            ./configure \\
+                --prefix="$system_build/install" \\
+                --without-tcl \\
+                --without-cairo \\
+                --without-python
+    : >"$remote_root/logs/system-build.log"
+    run_logged "$remote_root/logs/system-build.log" \\
+        make -j{q(args.jobs)} \\
+            librarydir="$system_build/source/lib" \\
+            scriptsdir="$system_build/source/lib"
 ) &
 system_pid=$!
 
@@ -235,37 +273,51 @@ fi
 [ "$compat_status" -eq 0 ] || exit "$compat_status"
 [ "$system_status" -eq 0 ] || exit "$system_status"
 
-check_target() {{
-    test -x "$1" || {{
-        echo "missing Osiris representative target: $1" >&2
-        exit 1
-    }}
+test -x "$system_build/source/xcircuit" || {{
+    echo "missing system XCircuit binary" >&2
+    exit 1
+}}
+test -x "$repo/build/xcircuit/source/xcircuit" || {{
+    echo "missing compat XCircuit binary" >&2
+    exit 1
 }}
 
-system_application="$system_build/examples/application/application"
-system_listviews="$system_build/examples/listviews/listviews"
-system_fileiconview="$system_build/examples/fileiconview/fileiconview"
-system_designer="$system_build/designer"
-compat_application="$repo/build/osiris/build/examples/application/application"
-compat_listviews="$repo/build/osiris/build/examples/listviews/listviews"
-compat_fileiconview="$repo/build/osiris/build/examples/fileiconview/fileiconview"
-compat_designer="$repo/build/osiris/build/designer"
-for target in \\
-    "$system_application" "$system_listviews" "$system_fileiconview" \\
-    "$system_designer" "$compat_application" \\
-    "$compat_listviews" "$compat_fileiconview" \\
-    "$compat_designer"; do
-    check_target "$target"
-done
-
-rm -f "/tmp/.X{q(args.display)}-lock" "/tmp/.X{compat_display_num}-lock"
+# The default displays are high to dodge collisions, but on a shared SSH
+# host another user's server may already own one. Only clear a lock when no
+# server actually answers on that display; a live server's lock must not be
+# clobbered out from under it.
+claim_display() {{
+    disp=$1
+    num=${{disp#:}}
+    if DISPLAY="$disp" xdotool getdisplaygeometry >/dev/null 2>&1; then
+        echo "display $disp already has a live X server; refusing to clobber its lock" >&2
+        exit 1
+    fi
+    # xdotool failing does not prove the display is free: a live server we
+    # cannot authenticate against still owns its socket. Treat a bound
+    # /tmp/.X11-unix socket as proof the display is taken and leave the lock
+    # alone; only a socket-less display has a genuinely stale lock to clear.
+    if [ -e "/tmp/.X11-unix/X$num" ]; then
+        echo "display $disp has a bound X11 socket; refusing to clobber its lock" >&2
+        exit 1
+    fi
+    rm -f "/tmp/.X$num-lock"
+}}
+claim_display "$display"
+claim_display "$compat_display"
 Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-system.log" 2>&1 &
 xvfb_pid=$!
 Xvfb "$compat_display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-compat.log" 2>&1 &
 compat_xvfb_pid=$!
-trap 'exit' INT TERM HUP
 trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
 
+# Wait for each Xvfb to accept connections instead of sleeping a fixed
+# second. On a loaded headless runner the server can take longer than a
+# second to come up, and the old `sleep 1` then raced the first xcircuit
+# launch and xdotool query against a display that was not listening yet,
+# surfacing as a spurious capture timeout. Probe with xdotool (already a
+# hard dependency above; xdpyinfo is not in the differential package set)
+# and fail fast if an Xvfb died, e.g. on a stale display lock.
 wait_for_display() {{
     target=$1
     server_pid=$2
@@ -278,9 +330,6 @@ wait_for_display() {{
         if DISPLAY="$target" xdotool getdisplaygeometry >/dev/null 2>&1; then
             return 0
         fi
-        # Sub-second poll assumes GNU coreutils sleep (the CI
-        # runner); switch to integer sleep if a POSIX-only sleep is ever
-        # targeted.
         sleep 0.1
         waited=$((waited + 1))
     done
@@ -290,59 +339,21 @@ wait_for_display() {{
 wait_for_display "$display" "$xvfb_pid"
 wait_for_display "$compat_display" "$compat_xvfb_pid"
 
-# Osiris has 5 demos per side and each capture runs a replay so the
-# capture phase dominates the job. Run system-side and compat-side
-# captures concurrently on separate Xvfb instances.
+# Run the startup replay for both sides concurrently on separate Xvfb
+# instances so the capture phase scales with one side rather than both.
 system_cap_log="$remote_root/logs/system-capture.log"
 compat_cap_log="$remote_root/logs/compat-capture.log"
 : >"$system_cap_log"
 : >"$compat_cap_log"
-
+echo "xcircuit differential: diffing FlareLED startup" >&2
 (
     set -e
     export DISPLAY="$display"
-    capture_osiris system-application \\
-        "$system_application" \\
-        "$osiris_src/examples/application" \\
-        osiris-application.replay \\
-        520x680+0+0 \\
-        "$system_build" \\
-        "$system_logs" \\
-        "$system_screens" \\
-        xdotool
-    capture_osiris system-listviews \\
-        "$system_listviews" \\
-        "$osiris_src/examples/listviews" \\
-        osiris-listviews.replay \\
-        720x540+0+0 \\
-        "$system_build" \\
-        "$system_logs" \\
-        "$system_screens" \\
-        xdotool
-    capture_osiris system-fileiconview \\
-        "$system_fileiconview" \\
-        "$osiris_src/examples/fileiconview" \\
-        osiris-fileiconview.replay \\
-        760x560+0+0 \\
-        "$system_build" \\
-        "$system_logs" \\
-        "$system_screens" \\
-        xdotool
-    capture_osiris system-designer \\
-        "$system_designer" \\
-        "$osiris_src/tools/designer/designer" \\
-        osiris-designer.replay \\
-        940x740+0+0 \\
-        "$system_build" \\
-        "$system_logs" \\
-        "$system_screens" \\
-        xdotool
-    capture_osiris system-designer-menu \\
-        "$system_designer" \\
-        "$osiris_src/tools/designer/designer" \\
-        osiris-designer-menu.replay \\
-        940x740+0+0 \\
-        "$system_build" \\
+    capture_xcircuit system-startup \\
+        "$system_build/source/xcircuit" \\
+        "$system_build/source" \\
+        xcircuit-flareled-differential \\
+        "" \\
         "$system_logs" \\
         "$system_screens" \\
         xdotool
@@ -352,48 +363,11 @@ system_cap_pid=$!
 (
     set -e
     export DISPLAY="$compat_display"
-    capture_osiris compat-application \\
-        "$compat_application" \\
-        "$osiris_src/examples/application" \\
-        osiris-application.replay \\
-        520x680+0+0 \\
-        "$repo/build/osiris/build:$repo/build" \\
-        "$compat_logs" \\
-        "$compat_screens" \\
-        internal
-    capture_osiris compat-listviews \\
-        "$compat_listviews" \\
-        "$osiris_src/examples/listviews" \\
-        osiris-listviews.replay \\
-        720x540+0+0 \\
-        "$repo/build/osiris/build:$repo/build" \\
-        "$compat_logs" \\
-        "$compat_screens" \\
-        internal
-    capture_osiris compat-fileiconview \\
-        "$compat_fileiconview" \\
-        "$osiris_src/examples/fileiconview" \\
-        osiris-fileiconview.replay \\
-        760x560+0+0 \\
-        "$repo/build/osiris/build:$repo/build" \\
-        "$compat_logs" \\
-        "$compat_screens" \\
-        internal
-    capture_osiris compat-designer \\
-        "$compat_designer" \\
-        "$osiris_src/tools/designer/designer" \\
-        osiris-designer.replay \\
-        940x740+0+0 \\
-        "$repo/build/osiris/build:$repo/build" \\
-        "$compat_logs" \\
-        "$compat_screens" \\
-        internal
-    capture_osiris compat-designer-menu \\
-        "$compat_designer" \\
-        "$osiris_src/tools/designer/designer" \\
-        osiris-designer-menu.replay \\
-        940x740+0+0 \\
-        "$repo/build/osiris/build:$repo/build" \\
+    capture_xcircuit compat-startup \\
+        "$repo/build/xcircuit/source/xcircuit" \\
+        "$repo/build/xcircuit/source" \\
+        xcircuit-flareled-differential \\
+        "$repo/build" \\
         "$compat_logs" \\
         "$compat_screens" \\
         internal
@@ -426,11 +400,11 @@ fi
 """
 
 
-def remote_compare_script(args):
+def remote_compare_script(args, remote_repo):
     return f"""
 set -eu
 remote_root={q(args.remote_root)}
-repo="$remote_root/repo"
+repo={q(remote_repo)}
 python3 "$repo/scripts/compare-motif-reference.py" \\
     --skip-local \\
     --skip-remote \\
@@ -480,39 +454,38 @@ def compare(args, system_dir, compat_dir, out_root):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Build Osiris on a Linux SSH host against system libX11 and "
-            "libx11-compat, capture representative Qt2 screenshots, and "
-            "compare output."
+            "Build XCircuit on a Linux SSH host against system libX11 and "
+            "libx11-compat, capture representative screenshots, and compare output."
         )
     )
     parser.add_argument(
         "--remote",
-        default=parse_env_default("OSIRIS_DIFF_REMOTE", "node11"),
+        default=parse_env_default("XCIRCUIT_DIFF_REMOTE", "node11"),
     )
     parser.add_argument(
         "--remote-root",
         default=None,
         help=(
-            "staging directory. Precedence: CLI flag > OSIRIS_DIFF_REMOTE_ROOT "
+            "staging directory. Precedence: CLI flag > XCIRCUIT_DIFF_REMOTE_ROOT "
             "env > local-mode default (out_root/_work) > SSH default "
-            "(/tmp/libx11-compat-osiris-differential)."
+            "(/tmp/libx11-compat-xcircuit-differential)."
         ),
     )
     parser.add_argument(
         "--display",
-        default=parse_env_default("OSIRIS_DIFF_DISPLAY", "124"),
+        default=parse_env_default("XCIRCUIT_DIFF_DISPLAY", "131"),
     )
     parser.add_argument(
         "--geometry",
-        default=parse_env_default("OSIRIS_DIFF_GEOMETRY", "1280x1024x24"),
+        default=parse_env_default("XCIRCUIT_DIFF_GEOMETRY", "1280x1024x24"),
     )
     parser.add_argument(
         "--jobs",
-        default=parse_env_default("OSIRIS_DIFF_JOBS", os.environ.get("JOBS", "1")),
+        default=parse_env_default("XCIRCUIT_DIFF_JOBS", os.environ.get("JOBS", "1")),
     )
     parser.add_argument(
         "--screenshot-region",
-        default=parse_env_default("OSIRIS_DIFF_SCREENSHOT_REGION", "0,0,360,180"),
+        default=parse_env_default("XCIRCUIT_DIFF_SCREENSHOT_REGION", "0,0,1024,768"),
     )
     parser.add_argument("--clean", action="store_true")
     parser.add_argument(
@@ -523,7 +496,7 @@ def main():
     parser.add_argument(
         "--local",
         action="store_true",
-        default=parse_env_bool("OSIRIS_DIFF_LOCAL"),
+        default=parse_env_bool("XCIRCUIT_DIFF_LOCAL"),
         help=(
             "run the build / capture / compare pipeline on the local host "
             "instead of SSHing to --remote. Used by the GitHub Actions "
@@ -533,31 +506,23 @@ def main():
     parser.add_argument(
         "--mae-threshold",
         type=float,
-        default=float(parse_env_default("OSIRIS_DIFF_MAE_THRESHOLD", "0.16")),
+        default=float(parse_env_default("XCIRCUIT_DIFF_MAE_THRESHOLD", "0.20")),
     )
     parser.add_argument(
         "--changed-threshold",
         type=float,
-        default=float(parse_env_default("OSIRIS_DIFF_CHANGED_THRESHOLD", "0.55")),
+        default=float(parse_env_default("XCIRCUIT_DIFF_CHANGED_THRESHOLD", "0.50")),
     )
     parser.add_argument(
         "--top",
         type=int,
-        default=int(parse_env_default("OSIRIS_DIFF_TOP", "12")),
+        default=int(parse_env_default("XCIRCUIT_DIFF_TOP", "12")),
     )
     parser.add_argument(
         "--out-root",
         type=Path,
-        default=Path(parse_env_default("OSIRIS_DIFF_OUT_ROOT", DEFAULT_OUT_ROOT)),
+        default=Path(parse_env_default("XCIRCUIT_DIFF_OUT_ROOT", DEFAULT_OUT_ROOT)),
         help="local artifact directory for synced screenshots, diffs, TSV, and JUnit",
-    )
-    parser.add_argument(
-        "--reference-dir",
-        type=Path,
-        default=Path(
-            parse_env_default("OSIRIS_REFERENCE_SCREEN_DIR", DEFAULT_REFERENCE_DIR)
-        ),
-        help="local directory for native Osiris reference screenshots",
     )
     parser.add_argument(
         "--compare-location",
@@ -576,25 +541,27 @@ def main():
         parser.error("--screenshot-region must use x,y,width,height")
 
     # Resolve --remote-root precedence: explicit CLI flag wins, then
-    # the OSIRIS_DIFF_REMOTE_ROOT env var, then the local-mode default
+    # the XCIRCUIT_DIFF_REMOTE_ROOT env var, then the local-mode default
     # (out_root/_work) or the SSH default.
     if args.remote_root is None:
-        env_remote_root = os.environ.get("OSIRIS_DIFF_REMOTE_ROOT")
+        env_remote_root = os.environ.get("XCIRCUIT_DIFF_REMOTE_ROOT")
         if env_remote_root:
             args.remote_root = env_remote_root
         elif args.local:
             args.remote_root = str(args.out_root / "_work")
         else:
-            args.remote_root = "/tmp/libx11-compat-osiris-differential"
+            args.remote_root = "/tmp/libx11-compat-xcircuit-differential"
 
     # Resolve --compare-location precedence: explicit CLI flag wins,
-    # then the OSIRIS_DIFF_COMPARE_LOCATION env var, then the local-mode
+    # then the XCIRCUIT_DIFF_COMPARE_LOCATION env var, then the local-mode
     # default (local) or the SSH default (remote).
     if args.compare_location is None:
-        env_compare_location = os.environ.get("OSIRIS_DIFF_COMPARE_LOCATION")
+        env_compare_location = os.environ.get("XCIRCUIT_DIFF_COMPARE_LOCATION")
         if env_compare_location:
             if env_compare_location not in ("remote", "local"):
-                parser.error("OSIRIS_DIFF_COMPARE_LOCATION must be 'remote' or 'local'")
+                parser.error(
+                    "XCIRCUIT_DIFF_COMPARE_LOCATION must be 'remote' or 'local'"
+                )
             args.compare_location = env_compare_location
         elif args.local:
             args.compare_location = "local"
@@ -602,12 +569,12 @@ def main():
             args.compare_location = "remote"
 
     if args.local:
+        # In local mode the shell payload writes under remote_root and
+        # fetch_results then rmtrees the matching out_root subdirs before
+        # syncing back. Reject overlap so a misconfigured remote_root
+        # cannot delete its own source tree.
         try:
-            check_local_paths(
-                args.out_root,
-                Path(args.remote_root),
-                reference_dir=args.reference_dir,
-            )
+            check_local_paths(args.out_root, Path(args.remote_root))
         except ValueError as error:
             parser.error(str(error))
 
@@ -622,7 +589,7 @@ def main():
 
     if args.compare_location == "remote" and not remote_status:
         try:
-            execute(args, remote_compare_script(args))
+            execute(args, remote_compare_script(args, remote_repo))
         except subprocess.CalledProcessError as error:
             compare_status = error.returncode
 

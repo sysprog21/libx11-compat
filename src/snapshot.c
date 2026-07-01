@@ -1,4 +1,5 @@
-/* In-process window snapshot for the smoke-test pipeline.
+/*
+ * In-process window snapshot for the smoke-test pipeline.
  *
  * Why this exists: macOS screencapture deactivates the frontmost NSApp briefly
  * while it grabs pixels, which stalls SDL's Cocoa event pump just long enough
@@ -182,17 +183,15 @@ static int waitSnapshotResult(int *waitRcOut)
     return rc;
 }
 
-/* In-process snapshots read a single SDL window surface (the replay
- * target). Qt popup menus and other override-redirect shells live in
- * their own borderless SDL windows, so they are absent from that read
- * even though they render correctly. Composite every mapped
- * override-redirect top-level onto a copy of the target surface, in
- * stacking order, so the snapshot matches what a whole-screen capture
- * (the system side's import) would see.
+/* In-process snapshots read a single SDL window surface (the replay target). Qt
+ * popup menus and other override-redirect shells live in their own borderless
+ * SDL windows, so they are absent from that read even though they render
+ * correctly. Composite every mapped override-redirect top-level onto a copy of
+ * the target surface, in stacking order, so the snapshot matches what a
+ * whole-screen capture (the system side's import) would see.
  *
- * Returns a newly allocated surface the caller must free, or NULL when
- * no popup is present, in which case the caller saves the target
- * surface unchanged.
+ * Returns a newly allocated surface the caller must free, or NULL when no popup
+ * is present, in which case the caller saves the target surface unchanged.
  */
 static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
 {
@@ -216,8 +215,8 @@ static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
             continue;
         if (!composed) {
             /* SDL_DuplicateSurface is absent from the older SDL2 on the
-             * differential runners, so build the copy the way drawing.c
-             * does: a matching-format surface plus a base blit.
+             * differential runners, so build the copy the way drawing.c does: a
+             * matching-format surface plus a base blit.
              */
             composed = SDL_CreateRGBSurfaceWithFormat(
                 0, target->w, target->h, 32, XC_SURFACE_FMT_ENUM(target));
@@ -228,10 +227,10 @@ static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
                 return NULL;
             }
         }
-        /* ponytail: 1:1 X-logical to surface pixel mapping, correct on the
-         * Xvfb CI path. A HiDPI host would need the surface-to-logical
-         * scale folded into the offset; blit clipping handles popups that
-         * fall partly or wholly outside the target rect.
+        /* 1:1 X-logical to surface pixel mapping, correct on the Xvfb CI path.
+         * A HiDPI host would need the surface-to-logical scale folded into the
+         * offset; blit clipping handles popups that fall partly or wholly
+         * outside the target rect.
          */
         SDL_Rect dst = {
             .x = childStruct->x - targetStruct->x,
@@ -292,8 +291,8 @@ int snapshotHandleEvent(const SDL_Event *event)
         }
     }
 
-    /* Fold any mapped popup windows (Qt menus etc.) into the saved image so
-     * the single-window read matches the system side's whole-screen capture.
+    /* Fold any mapped popup windows (Qt menus etc.) into the saved image so the
+     * single-window read matches the system side's whole-screen capture.
      */
     composed = composeOverlayPopups(surface, getWindowFromId(winId));
     SDL_Surface *saveSurface = composed ? composed : surface;

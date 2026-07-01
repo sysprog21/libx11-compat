@@ -1,0 +1,7 @@
+# System-X11 and libx11-compat XCircuit FlareLED differential capture.
+delay 3000
+wait-window "xcircuit|XCircuit" 15000
+delay 2000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial xcircuit-flareled.json
