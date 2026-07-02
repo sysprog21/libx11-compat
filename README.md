@@ -159,7 +159,7 @@ but each exercises behavior that small examples do not reach.
 
 - [XNEdit](https://github.com/unixwork/xnedit): the Motif NEdit fork that renders editor text through Xft/fontconfig builds against the bundled Motif, `libXt-compat`, and the SDL_ttf-backed `libXft-compat`.
   It validates Unicode text rendering in an interactive Motif editor, including Latin-1, Greek, and CJK glyph fallback through the Xft path.
-  Replay smoke checks cover startup and opening a controlled UTF-8 fixture; screenshot-based differential checks compare the same states against native libX11/OpenMotif/Xft on `node11`.
+  Replay smoke checks cover startup and opening a controlled UTF-8 fixture; screenshot-based differential checks compare the same states against native libX11/OpenMotif/Xft on a remote reference host.
 
   <a href="assets/xnedit.png"><img src="assets/xnedit.png" alt="XNEdit running through libx11-compat on macOS" width="420"></a>
 
@@ -192,7 +192,7 @@ but each exercises behavior that small examples do not reach.
 
 The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
 `make profile-ui` runs the Motif, ViolaWWW, and Mosaic replay smokes with timing capture and prints the generated `metrics.tsv` and `render-stats.tsv` paths; the Osiris and Xfig smokes are still invoked individually via `make check-smoke-osiris` / `make check-smoke-xfig`.
-They do not require `node11`, `xdotool`, or a native X11 reference run.
+They do not require a remote reference host, `xdotool`, or a native X11 reference run.
 Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
 
 See [`docs/UI-REPLAY.md`](docs/UI-REPLAY.md) for the replay grammar, the runner CLI, the state / image / timeline assertion schemas, and the artifact layout.

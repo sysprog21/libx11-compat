@@ -83,7 +83,6 @@ while IFS= read -r exe; do
         cd "$src_work_dir"
         DYLD_LIBRARY_PATH="$abs_out_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
             LD_LIBRARY_PATH="$abs_out_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-            LIBX11_COMPAT_FONT_DIR="$abs_out_dir/../fonts" \
             SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}" \
             "$timeout_bin" --kill-after=1s "$run_seconds" "$exe"
     ) >"$log" 2>&1

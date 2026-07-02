@@ -552,9 +552,7 @@ def main():
     parser.add_argument(
         "--allow-diff-changed-ceiling",
         type=float,
-        default=float(
-            parse_env_default("MOTIF_DIFF_ALLOW_CHANGED_CEILING", "0.45")
-        ),
+        default=float(parse_env_default("MOTIF_DIFF_ALLOW_CHANGED_CEILING", "0.45")),
     )
     parser.add_argument(
         "--top",

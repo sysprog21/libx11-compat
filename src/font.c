@@ -1,5 +1,3 @@
-#include "X11/Xatom.h"
-#include <ctype.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -10,6 +8,8 @@
 #include <dirent.h>
 #include <limits.h>
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
+
 #include "sdl-compat.h"
 #include "sdl-ttf-compat.h"
 #include "errors.h"
@@ -57,16 +57,8 @@ typedef struct {
 #define FIXED_BITMAP_ASCENT 11
 #define FIXED_BITMAP_DESCENT 2
 #define FIXED_BITMAP_CHAR_COUNT 128
-/* Minimum decoded glyphs before the loader declares the BDF usable. ASCII
- * printable is 0x20..0x7E (95 glyphs); requiring 64 keeps a partially trimmed
- * file out of the renderer while still tolerating glyphs that are intentionally
- * blank (e.g. space).
- */
-#define FIXED_BITMAP_MIN_GLYPHS 64
-
 typedef struct {
     Bool loaded;
-    Bool available;
     unsigned char rows[FIXED_BITMAP_CHAR_COUNT][FIXED_BITMAP_HEIGHT];
 } FixedBitmapFont;
 
@@ -103,8 +95,8 @@ static const char *DEFAULT_FONT_SEARCH_PATHS[] = {
 
 // This are the custom search paths for fonts can be set via XSetFontPath. Has
 // to be initialized via XSetFontPath(display, NULL, 0);
-Array *fontSearchPaths = NULL;
-Array *fontCache = NULL;
+static Array *fontSearchPaths = NULL;
+static Array *fontCache = NULL;
 
 /* coreFontMetricsForName needs to consult loadFixedBitmapFont() (defined
  * further down) to decide whether to advertise the bitmap-font metrics.
@@ -113,7 +105,7 @@ static Bool loadFixedBitmapFont(void);
 static Array *fontAliasNames = NULL;
 
 // Check if the given path points to an existing directory
-Bool checkFontPath(const char *path)
+static Bool checkFontPath(const char *path)
 {
     if (!path)
         return False;
@@ -124,7 +116,7 @@ Bool checkFontPath(const char *path)
     return err == 0 && S_ISDIR(s.st_mode);
 }
 
-char *getFontXLFDName(TTF_Font *font)
+static char *getFontXLFDName(TTF_Font *font)
 {
     /* FOUNDRY - FAMILY_NAME - WEIGHT_NAME - SLANT - SETWIDTH_NAME - ADD_STYLE -
      * PIXEL_SIZE - POINT_SIZE - RESOLUTION_X - RESOLUTION_Y - SPACING -
@@ -162,7 +154,7 @@ char *getFontXLFDName(TTF_Font *font)
     return name;
 }
 
-Bool fontCacheEntryFileNameCmp(void *entry, void *name)
+static Bool fontCacheEntryFileNameCmp(void *entry, void *name)
 {
     size_t nameLen = strlen(name);
     size_t pathLen = strlen(((FontCacheEntry *) entry)->filePath);
@@ -170,11 +162,6 @@ Bool fontCacheEntryFileNameCmp(void *entry, void *name)
         return False;
     return !strcmp(&((FontCacheEntry *) entry)->filePath[pathLen - nameLen],
                    name);
-}
-
-Bool fontCmp(void *entry, void *fontWildCard)
-{
-    return matchWildcard(fontWildCard, ((FontCacheEntry *) entry)->XLFName);
 }
 
 static Bool isSupportedFontFileName(const char *name)
@@ -226,7 +213,7 @@ static Bool fontHasAsciiTextMetrics(TTF_Font *font)
     return renderable;
 }
 
-Bool updateFontCache()
+static Bool updateFontCache()
 {
     size_t i;
     size_t fontCacheIndex = 0;
@@ -789,8 +776,8 @@ static Bool coreFontMetricsForName(const char *name,
         return True;
     }
     /* thentenaar/motif's hellomotifi18n demo asks Mrm for
-     * -*-times-medium-r-normal--14-*-iso8859-1. The native Xvfb baseline on
-     * node11 does not have that font and Motif falls back to the default core
+     * -*-times-medium-r-normal--14-*-iso8859-1. The native Xvfb differential
+     * baseline does not have that font and Motif falls back to the default core
      * font. Match that geometry only when the BDF can actually render to it;
      * without BDF, the answer would lie to the layout engine.
      */
@@ -830,38 +817,15 @@ static Bool usesFixedFallbackFont(const char *name)
     return isMotifTimesIso14Fallback(name);
 }
 
-/* Treat as a bitmap row only when the line is a single hex token of the
- * expected 1-byte width. Rejects COMMENT lines that happen to fall inside a
- * BITMAP block and tails of fgets-truncated long lines, both of which would
- * otherwise be misread as glyph pixel data.
- */
-static Bool isFixedBitmapRowLine(const char *line)
-{
-    while (*line == ' ' || *line == '\t')
-        line++;
-    int hexCount = 0;
-    while (line[hexCount] && isxdigit((unsigned char) line[hexCount]))
-        hexCount++;
-    if (hexCount == 0 || hexCount > 2)
-        return False;
-    for (const char *p = line + hexCount; *p; p++) {
-        if (*p != '\r' && *p != '\n' && *p != ' ' && *p != '\t')
-            return False;
-    }
-    return True;
-}
-
 #include "font-6x13-bitmap.h"
 
 static void useEmbeddedFixedBitmap(void)
 {
     /* The renderer reads fixedBitmapFont.rows directly, so a one-shot memcpy
-     * from the generated table is enough. Same width / height / char-count
-     * contract as the BDF reader below.
+     * from the generated table is enough.
      */
     memcpy(fixedBitmapFont.rows, EMBEDDED_FIXED_BITMAP_ROWS,
            sizeof(EMBEDDED_FIXED_BITMAP_ROWS));
-    fixedBitmapFont.available = True;
     fixedBitmapFont.loaded = True;
 }
 
@@ -869,79 +833,13 @@ static Bool loadFixedBitmapFont(void)
 {
     SDL_AtomicLock(&fixedBitmapFontLock);
     if (fixedBitmapFont.loaded) {
-        Bool result = fixedBitmapFont.available;
-        SDL_AtomicUnlock(&fixedBitmapFontLock);
-        return result;
-    }
-
-    /* Prefer an external BDF when LIBX11_COMPAT_FONT_DIR points at one; this
-     * lets a downstream user swap in a different fixed font without
-     * recompiling. Otherwise fall through to the in-tree embedded font
-     * generated from 6x13.bdf so CI hosts and packagers do not need to stage a
-     * separate data file.
-     */
-    char path[PATH_MAX];
-    const char *fontDir = getenv("LIBX11_COMPAT_FONT_DIR");
-    FILE *fp = NULL;
-    if (fontDir && fontDir[0] != '\0') {
-        snprintf(path, sizeof(path), "%s/6x13.bdf", fontDir);
-        fp = fopen(path, "r");
-    }
-    if (!fp) {
-        useEmbeddedFixedBitmap();
         SDL_AtomicUnlock(&fixedBitmapFontLock);
         return True;
     }
 
-    int currentEncoding = -1;
-    int bitmapRow = -1;
-    int glyphsDecoded = 0;
-    Bool glyphHasRows = False;
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        if (!strncmp(line, "STARTCHAR ", 10)) {
-            currentEncoding = -1;
-            bitmapRow = -1;
-            glyphHasRows = False;
-            continue;
-        }
-        if (!strncmp(line, "ENCODING ", 9)) {
-            /* strtol over atoi so a malformed BDF line cannot quietly decode to
-             * 0; .ci/check-security.sh also bans atoi.
-             */
-            char *end = NULL;
-            long enc = strtol(&line[9], &end, 10);
-            currentEncoding =
-                end != &line[9] && enc >= 0 && enc <= INT_MAX ? (int) enc : -1;
-            continue;
-        }
-        if (!strncmp(line, "BITMAP", 6)) {
-            Bool encodingInRange = currentEncoding >= 0 &&
-                                   currentEncoding < FIXED_BITMAP_CHAR_COUNT;
-            bitmapRow = encodingInRange ? 0 : -1;
-            continue;
-        }
-        if (!strncmp(line, "ENDCHAR", 7)) {
-            if (glyphHasRows)
-                glyphsDecoded++;
-            bitmapRow = -1;
-            glyphHasRows = False;
-            continue;
-        }
-        if (bitmapRow >= 0 && bitmapRow < FIXED_BITMAP_HEIGHT &&
-            isFixedBitmapRowLine(line)) {
-            unsigned long bits = strtoul(line, NULL, 16);
-            fixedBitmapFont.rows[currentEncoding][bitmapRow++] =
-                (unsigned char) bits;
-            glyphHasRows = True;
-        }
-    }
-    fclose(fp);
-    fixedBitmapFont.available = glyphsDecoded >= FIXED_BITMAP_MIN_GLYPHS;
-    fixedBitmapFont.loaded = True;
-    Bool result = fixedBitmapFont.available;
+    useEmbeddedFixedBitmap();
     SDL_AtomicUnlock(&fixedBitmapFontLock);
-    return result;
+    return True;
 }
 
 static FontCacheEntry *adoptProbePath(const char *path)
@@ -1686,9 +1584,9 @@ Bool XGetFontProperty(XFontStruct *font_struct,
     return res;
 }
 
-Bool fillXCharStruct(TTF_Font *font,
-                     unsigned int character,
-                     XCharStruct *charStruct)
+static Bool fillXCharStruct(TTF_Font *font,
+                            unsigned int character,
+                            XCharStruct *charStruct)
 {
     int minX, maxX, minY, maxY, advance;
     if (TTF_GlyphMetrics(font, (Uint16) character, &minX, &maxX, &minY, &maxY,
@@ -1992,7 +1890,7 @@ XFontStruct *compatFontQueryRetained(Display *display, Font fontXid)
  * font, so escape interpretation (\n, \xHH, ...) would silently mangle
  * legitimate Latin-1/file-path input.
  */
-char *decodeString(const char *string, int count)
+static char *decodeString(const char *string, int count)
 {
     if (!string || count < 0)
         return NULL;
@@ -2039,7 +1937,7 @@ static int getTextWidthForChars(XFontStruct *font_struct,
     return width;
 }
 
-int getTextWidth(XFontStruct *font_struct, const char *string)
+static int getTextWidth(XFontStruct *font_struct, const char *string)
 {
     if (!string)
         return 0;
@@ -2488,15 +2386,15 @@ static void normalizeGlyphAlpha(SDL_Surface *surface)
         SDL_UnlockSurface(surface);
 }
 
-Bool renderText(Display *display,
-                Drawable drawable,
-                SDL_Renderer *renderer,
-                GC gc,
-                int x,
-                int y,
-                const char *string,
-                size_t length,
-                SDL_Rect *drawnBounds)
+static Bool renderText(Display *display,
+                       Drawable drawable,
+                       SDL_Renderer *renderer,
+                       GC gc,
+                       int x,
+                       int y,
+                       const char *string,
+                       size_t length,
+                       SDL_Rect *drawnBounds)
 {
     if (!string || length == 0)
         return True;

@@ -118,7 +118,6 @@ xephem_ui_lib_path = $(abspath $(OUT))$(if $(SDL_RUNTIME_LIBDIR),:$(SDL_RUNTIME_
 xephem_ui_env = \
     --env DYLD_LIBRARY_PATH=$(xephem_ui_lib_path)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
     --env LD_LIBRARY_PATH=$(xephem_ui_lib_path)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts \
     --env HOME=$(abspath $(UI_SMOKE_OUT_ROOT))/xephem-home
 
 ## Run a replay-based XEphem startup smoke check against libx11-compat
