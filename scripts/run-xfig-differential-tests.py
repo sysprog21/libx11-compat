@@ -137,8 +137,7 @@ capture_xfig() {{
         --screenshot-region {q(args.screenshot_region)} \\
         --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
-        --env LD_LIBRARY_PATH="$lib_env" \\
-        --env LIBX11_COMPAT_FONT_DIR="$repo/fonts"
+        --env LD_LIBRARY_PATH="$lib_env"
     python3 - "$replay_out/results.tsv" "$log_dir/results.tsv" "$replay" \\
         "$screen_dir" <<'PY'
 import csv

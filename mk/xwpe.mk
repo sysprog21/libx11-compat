@@ -114,8 +114,7 @@ xwpe_ui_lib_path = $(abspath $(OUT)):$(abspath $(XWPE_LIB_ALIASES))$(if $(SDL_RU
 xwpe_ui_env = \
     --env DYLD_LIBRARY_PATH=$(xwpe_ui_lib_path)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
     --env LD_LIBRARY_PATH=$(xwpe_ui_lib_path)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-    --env XWPE_LIB=$(abspath $(XWPE_WORK_DIR)) \
-    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+    --env XWPE_LIB=$(abspath $(XWPE_WORK_DIR))
 
 ## Run replay-based xwpe/xwe startup and input smoke checks against libx11-compat
 check-smoke-xwpe: $(UI_SMOKE_OUT_ROOT)/xwe-startup/.stamp \

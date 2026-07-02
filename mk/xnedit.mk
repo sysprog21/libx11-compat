@@ -144,7 +144,6 @@ XNEDIT_FIXTURE := $(abspath tests/ui/fixtures/xnedit-fixture.txt)
 xnedit_ui_env = \
     --env DYLD_LIBRARY_PATH=$(XNEDIT_UI_LIB_PATH)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
     --env LD_LIBRARY_PATH=$(XNEDIT_UI_LIB_PATH)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts \
     --env LIBX11_COMPAT_SCREEN_GEOMETRY=1280x1024 \
     --env XNEDIT_HOME=$(abspath $(@D))/home
 

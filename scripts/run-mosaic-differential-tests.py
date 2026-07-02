@@ -143,8 +143,7 @@ capture_mosaic() {{
         --env HOME="$remote_root/home-$name" \\
         --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
         --env XAPPLRESDIR="$workdir" \\
-        --env XFILESEARCHPATH="$workdir/%N:$workdir/%N.ad" \\
-        --env LIBX11_COMPAT_FONT_DIR="$repo/build/../fonts"
+        --env XFILESEARCHPATH="$workdir/%N:$workdir/%N.ad"
     cp "$replay_out"/screens/*.png "$screen_dir"/
     cp "$replay_out"/results.tsv "$log_dir/results.tsv"
     cp "$replay_out"/junit.xml "$log_dir/junit.xml"

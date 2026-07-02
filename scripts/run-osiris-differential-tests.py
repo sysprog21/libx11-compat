@@ -138,8 +138,7 @@ capture_osiris() {{
         --screenshot-region {q(args.screenshot_region)} \\
         --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
-        --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}" \\
-        --env LIBX11_COMPAT_FONT_DIR="$repo/fonts"
+        --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
     cp "$replay_out"/screens/*.png "$screen_dir"/
     if [ -f "$log_dir/results.tsv" ]; then
         tail -n +2 "$replay_out/results.tsv" >>"$log_dir/results.tsv"

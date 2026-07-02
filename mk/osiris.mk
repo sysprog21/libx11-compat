@@ -198,8 +198,7 @@ $(UI_SMOKE_OUT_ROOT)/osiris-t1/.stamp: FORCE osiris
 	    --render-stats $(abspath $(UI_SMOKE_OUT_ROOT))/osiris-t1/render-stats.tsv \
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 	$(Q)touch $@
 
 $(UI_SMOKE_OUT_ROOT)/osiris-designer-menu/.stamp: FORCE osiris
@@ -216,8 +215,7 @@ $(UI_SMOKE_OUT_ROOT)/osiris-designer-menu/.stamp: FORCE osiris
 	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OSIRIS_BUILD_DIR)):$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-	    --env LD_LIBRARY_PATH=$(abspath $(OSIRIS_BUILD_DIR)):$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env LD_LIBRARY_PATH=$(abspath $(OSIRIS_BUILD_DIR)):$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 	$(Q)touch $@
 
 ## Compare Osiris screenshots for system libX11 vs libx11-compat. Set

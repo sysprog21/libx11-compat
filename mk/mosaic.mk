@@ -202,8 +202,7 @@ $(UI_SMOKE_OUT_ROOT)/mosaic-home/.stamp: FORCE mosaic
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
 	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
 	    --env XAPPLRESDIR=$(abspath $(MOSAIC_WORK_DIR)) \
-	    --env XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad
 	$(Q)touch $@
 
 $(UI_SMOKE_OUT_ROOT)/mosaic-link/.stamp: FORCE mosaic \
@@ -231,8 +230,7 @@ $(UI_SMOKE_OUT_ROOT)/mosaic-link/.stamp: FORCE mosaic \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
 	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
 	    --env XAPPLRESDIR=$(abspath $(MOSAIC_WORK_DIR)) \
-	    --env XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad
 	$(Q)touch $@
 
 $(UI_SMOKE_OUT_ROOT)/mosaic-url-edit/.stamp: FORCE mosaic \
@@ -260,8 +258,7 @@ $(UI_SMOKE_OUT_ROOT)/mosaic-url-edit/.stamp: FORCE mosaic \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
 	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
 	    --env XAPPLRESDIR=$(abspath $(MOSAIC_WORK_DIR)) \
-	    --env XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env XFILESEARCHPATH=$(abspath $(MOSAIC_WORK_DIR))/%N:$(abspath $(MOSAIC_WORK_DIR))/%N.ad
 	$(Q)touch $@
 
 mosaic-clean:

@@ -18,6 +18,7 @@ include mk/config.mk
 include mk/sdl.mk
 include mk/sources.mk
 include mk/common.mk
+include mk/font-data.mk
 include mk/sdl-wrapper.mk
 include mk/library.mk
 include mk/libxt.mk

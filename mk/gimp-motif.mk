@@ -236,8 +236,7 @@ gimp-motif-clean:
 gimp_ui_replay_lib_path = $(abspath $(OUT)):$(abspath $(GIMP_LIB_ALIASES))$(if $(SDL_RUNTIME_LIBDIR),:$(SDL_RUNTIME_LIBDIR))
 gimp_ui_replay_env = \
     --env DYLD_LIBRARY_PATH=$(gimp_ui_replay_lib_path)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-    --env LD_LIBRARY_PATH=$(gimp_ui_replay_lib_path)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+    --env LD_LIBRARY_PATH=$(gimp_ui_replay_lib_path)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 
 # GIMP 0.54 searches "~/:/usr/local/lib/gimp" for gimprc, so a generated
 # HOME/gimprc with an absolute brush-path is the deterministic config.

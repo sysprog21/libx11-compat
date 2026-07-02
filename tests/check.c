@@ -37,7 +37,6 @@ int convertEvent(Display *display,
                  XEvent *xEvent,
                  Bool freeInternalEvents);
 extern Bool mouseFrozen;
-extern Array *fontCache;
 
 #include <stdio.h>
 
@@ -1393,6 +1392,150 @@ static int count_rgb_pixels(SDL_Surface *surface,
         }
     }
     return count;
+}
+
+/* Read the pixmap back and count pure-black pixels, or -1 if readback fails.
+ * Used to prove each text draw put ink down on its own, not riding on a
+ * previous draw's pixels.
+ */
+static int readback_black_count(SDL_Renderer *renderer)
+{
+    SDL_Surface *surface = getRenderSurface(renderer);
+    if (!surface)
+        return -1;
+    int count = count_rgb_pixels(surface, 0, 0, 0);
+    SDL_FreeSurface(surface);
+    return count;
+}
+
+static int exercise_fixed_font_program(Display *display)
+{
+    XFontStruct *fixed = XLoadQueryFont(display, "fixed");
+    CHECK(fixed != NULL && fixed->fid != None, "fixed alias did not load");
+    CHECK(fixed->ascent == 11 && fixed->descent == 2,
+          "fixed alias did not use core 6x13 ascent/descent");
+    CHECK(fixed->min_bounds.width == 6 && fixed->max_bounds.width == 6,
+          "fixed alias did not use core 6x13 width");
+    CHECK(XTextWidth(fixed, "Motif", 5) == 30,
+          "fixed alias XTextWidth did not use core width");
+    CHECK(XTextWidth(fixed, "\xc3\xa9", 2) == 12,
+          "fixed alias XTextWidth did not count core-font bytes");
+    const char fixedWithNul[] = {'A', '\0', 'B'};
+    CHECK(XTextWidth(fixed, fixedWithNul, 3) == 18,
+          "fixed alias XTextWidth did not honor byte count through NUL");
+    XChar2b fixedWide[] = {{0, 0xe9}};
+    CHECK(XTextWidth16(fixed, fixedWide, 1) == 6,
+          "fixed alias XTextWidth16 did not count 16-bit characters");
+
+    XFontStruct *upperFixed = XLoadQueryFont(display, "Fixed");
+    CHECK(upperFixed != NULL && upperFixed->fid != None,
+          "capitalized Fixed alias did not load");
+    CHECK(upperFixed->ascent == 11 && upperFixed->descent == 2,
+          "capitalized Fixed alias did not use core 6x13 ascent/descent");
+    CHECK(
+        upperFixed->min_bounds.width == 6 && upperFixed->max_bounds.width == 6,
+        "capitalized Fixed alias did not use core 6x13 width");
+    CHECK(XTextWidth(upperFixed, "A", 1) == 6,
+          "capitalized Fixed alias XTextWidth did not use core width");
+    XFreeFont(display, upperFixed);
+
+    XFontStruct *sixByThirteen = XLoadQueryFont(display, "6x13");
+    CHECK(sixByThirteen != NULL && sixByThirteen->fid != None,
+          "6x13 alias did not load");
+    CHECK(sixByThirteen->ascent == 11 && sixByThirteen->descent == 2,
+          "6x13 alias did not use native ascent/descent");
+    CHECK(XTextWidth(sixByThirteen, "Motif", 5) == 30,
+          "6x13 alias XTextWidth did not use native width");
+    XFreeFont(display, sixByThirteen);
+
+    Window root = RootWindow(display, DefaultScreen(display));
+    Pixmap pixmap = XCreatePixmap(
+        display, root, 128, 48, DefaultDepth(display, DefaultScreen(display)));
+    CHECK(pixmap != None, "fixed-font program pixmap creation failed");
+    GC gc = XCreateGC(display, pixmap, 0, NULL);
+    CHECK(gc != NULL, "fixed-font program GC creation failed");
+    CHECK(XSetFont(display, gc, fixed->fid),
+          "fixed-font program XSetFont failed");
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(pixmap, renderer);
+
+    /* Verify each text API in isolation: clear to white, draw once, and
+     * confirm that draw alone put black pixels down. Sharing one pixmap across
+     * all three draws would let a dead XDrawImageString or XDrawText ride on
+     * the pixels left by XDrawString and still pass.
+     */
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program white setup failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program background fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program black setup failed");
+    CHECK(XDrawString(display, pixmap, gc, 2, fixed->ascent, "fixed", 5),
+          "fixed-font program XDrawString failed");
+    CHECK(readback_black_count(renderer) > 0,
+          "fixed-font program XDrawString rendered no pixels");
+
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program image-string clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program image-string fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program image-string black setup failed");
+    CHECK(XDrawImageString(display, pixmap, gc, 2, fixed->ascent, "image", 5),
+          "fixed-font program XDrawImageString failed");
+    CHECK(readback_black_count(renderer) > 0,
+          "fixed-font program XDrawImageString rendered no pixels");
+
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program text-item clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program text-item fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program text-item black setup failed");
+    XTextItem item = {
+        .chars = "text",
+        .nchars = 4,
+        .delta = 0,
+        .font = fixed->fid,
+    };
+    CHECK(XDrawText(display, pixmap, gc, 2, fixed->ascent, &item, 1),
+          "fixed-font program XDrawText failed");
+    CHECK(readback_black_count(renderer) > 0,
+          "fixed-font program XDrawText rendered no pixels");
+
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program clear color setup failed");
+    int rowHeight = fixed->ascent + fixed->descent;
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program second clear failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program second black setup failed");
+    CHECK(XDrawString(display, pixmap, gc, 0, fixed->ascent, "gjpqy", 5),
+          "fixed-font program descender draw failed");
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program row clear color setup failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128,
+                         (unsigned int) rowHeight),
+          "fixed-font program row clear failed");
+    SDL_Surface *surface = getRenderSurface(renderer);
+    CHECK(surface, "fixed-font program row readback failed");
+    int escapedPixel = 0;
+    for (int y = rowHeight; y < surface->h && !escapedPixel; y++) {
+        for (int x = 0; x < surface->w; x++) {
+            if (pixel_is_rgb(surface, x, y, 0, 0, 0)) {
+                escapedPixel = 1;
+                break;
+            }
+        }
+    }
+    SDL_FreeSurface(surface);
+    CHECK(!escapedPixel,
+          "fixed-font program rendered outside advertised row metrics");
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, pixmap);
+    XFreeFont(display, fixed);
+    return 1;
 }
 
 static int test_pixmaps(Display *display)
@@ -6388,6 +6531,9 @@ static int test_fonts(Display *display)
               "XFreeFontInfo failed for listed fonts");
     }
 
+    CHECK(exercise_fixed_font_program(display),
+          "fixed-font program compatibility failed");
+
     const char *fontDirs[] = {"fonts", "/System/Library/Fonts",
                               "/Library/Fonts", "/usr/share/fonts",
                               "/usr/local/share/fonts"};
@@ -6438,53 +6584,10 @@ static int test_fonts(Display *display)
         }
         XFreeFontNames(aliasList);
 
-        XFontStruct *fixed = XLoadQueryFont(display, "fixed");
-        CHECK(fixed != NULL && fixed->fid != None, "fixed alias did not load");
-        CHECK(fixed->ascent == 11 && fixed->descent == 2,
-              "fixed alias did not use core 6x13 ascent/descent");
-        CHECK(fixed->min_bounds.width == 6 && fixed->max_bounds.width == 6,
-              "fixed alias did not use core 6x13 width");
-        CHECK(XTextWidth(fixed, "Motif", 5) == 30,
-              "fixed alias XTextWidth did not use core width");
-        CHECK(XTextWidth(fixed, "\xc3\xa9", 2) == 12,
-              "fixed alias XTextWidth did not count core-font bytes");
-        const char fixedWithNul[] = {'A', '\0', 'B'};
-        CHECK(XTextWidth(fixed, fixedWithNul, 3) == 18,
-              "fixed alias XTextWidth did not honor byte count through NUL");
-        XChar2b fixedWide[] = {{0, 0xe9}};
-        CHECK(XTextWidth16(fixed, fixedWide, 1) == 6,
-              "fixed alias XTextWidth16 did not count 16-bit characters");
-        XFreeFont(display, fixed);
-
-        /* Capitalized aliases must resolve through the same core-metric path
-         * as the lowercase form, not fall through to TTF metrics. Assert the
-         * 6x13 geometry, not merely that some font loaded.
-         */
-        XFontStruct *upperFixed = XLoadQueryFont(display, "Fixed");
-        CHECK(upperFixed != NULL && upperFixed->fid != None,
-              "capitalized Fixed alias did not load");
-        CHECK(upperFixed->ascent == 11 && upperFixed->descent == 2,
-              "capitalized Fixed alias did not use core 6x13 ascent/descent");
-        CHECK(upperFixed->min_bounds.width == 6 &&
-                  upperFixed->max_bounds.width == 6,
-              "capitalized Fixed alias did not use core 6x13 width");
-        CHECK(XTextWidth(upperFixed, "A", 1) == 6,
-              "capitalized Fixed alias XTextWidth did not use core width");
-        XFreeFont(display, upperFixed);
-
         XFontStruct *variable = XLoadQueryFont(display, "variable");
         CHECK(variable != NULL && variable->fid != None,
               "variable alias did not load");
         XFreeFont(display, variable);
-
-        XFontStruct *sixByThirteen = XLoadQueryFont(display, "6x13");
-        CHECK(sixByThirteen != NULL && sixByThirteen->fid != None,
-              "6x13 alias did not load");
-        CHECK(sixByThirteen->ascent == 11 && sixByThirteen->descent == 2,
-              "6x13 alias did not use native ascent/descent");
-        CHECK(XTextWidth(sixByThirteen, "Motif", 5) == 30,
-              "6x13 alias XTextWidth did not use native width");
-        XFreeFont(display, sixByThirteen);
 
         XFontStruct *sevenByThirteenBold = XLoadQueryFont(display, "7x13bold");
         CHECK(sevenByThirteenBold != NULL && sevenByThirteenBold->fid != None,
@@ -6608,6 +6711,32 @@ static int test_fonts(Display *display)
                       XTextWidth(helvetica, "WWWW", 4),
                   "helvetica XLFD alias did not use proportional metrics");
             XFreeFont(display, helvetica);
+
+            /* Re-probing the same wildcard must not duplicate font cache
+             * entries. fontCache is now static, so check it black-box: since
+             * XListFonts enumerates the cache, a duplicate entry would show up
+             * as an extra or repeated name here.
+             */
+            const char *helvPattern = "*-helvetica-medium-r-normal--14-*";
+            int helvBeforeCount = 0;
+            char **helvBefore =
+                XListFonts(display, helvPattern, 64, &helvBeforeCount);
+            XFreeFontNames(helvBefore);
+            XFontStruct *helvReprobe = XLoadQueryFont(display, helvPattern);
+            if (helvReprobe)
+                XFreeFont(display, helvReprobe);
+            int helvAfterCount = 0;
+            char **helvAfter =
+                XListFonts(display, helvPattern, 64, &helvAfterCount);
+            CHECK(helvAfterCount == helvBeforeCount,
+                  "repeated helvetica probe duplicated font cache entries");
+            for (int a = 0; a < helvAfterCount; a++) {
+                for (int b = a + 1; b < helvAfterCount; b++) {
+                    CHECK(strcmp(helvAfter[a], helvAfter[b]) != 0,
+                          "font cache listed a duplicate name");
+                }
+            }
+            XFreeFontNames(helvAfter);
         }
         XFontStruct *helvetica140 = XLoadQueryFont(
             display, "-*-helvetica-medium-r-*-*-*-140-*-*-*-*-*-*");
@@ -6677,16 +6806,6 @@ static int test_fonts(Display *display)
               "Motif Times bold menu wildcard fell back to the default font "
               "size");
         XFreeFont(display, timesBoldMenu);
-
-        if (fontCache) {
-            size_t cacheLength = fontCache->length;
-            helvetica =
-                XLoadQueryFont(display, "*-helvetica-medium-r-normal--14-*");
-            CHECK(fontCache->length == cacheLength,
-                  "repeated helvetica probe duplicated font cache entries");
-            if (helvetica)
-                XFreeFont(display, helvetica);
-        }
 
         Window root = RootWindow(display, DefaultScreen(display));
         Pixmap pixmap =
@@ -6820,106 +6939,6 @@ static int test_fonts(Display *display)
                                "MM"),
               "unmapping an overlapping child left a stale XDrawString stamp");
         XDestroyWindow(display, stampWindow);
-
-        Window textWindow =
-            XCreateSimpleWindow(display, root, 0, 0, 96, 32, 0, 0, 0x00FFFFFF);
-        CHECK(textWindow != None, "XDrawText window creation failed");
-        XMapWindow(display, textWindow);
-        GC textGc = XCreateGC(display, textWindow, 0, NULL);
-        CHECK(textGc != NULL, "XDrawText GC creation failed");
-        CHECK(XSetForeground(display, textGc, 0),
-              "XDrawText foreground setup failed");
-        Font textFont = XLoadFont(display, "fixed");
-        CHECK(textFont != None, "XDrawText font load failed");
-        XTextItem textItem = {
-            .chars = "text",
-            .nchars = 4,
-            .delta = 0,
-            .font = textFont,
-        };
-        CHECK(XDrawText(display, textWindow, textGc, 2, 18, &textItem, 1),
-              "XDrawText failed");
-        GET_RENDERER(textWindow, renderer);
-        textSurface = getRenderSurface(renderer);
-        CHECK(textSurface, "getRenderSurface for XDrawText window failed");
-        sawBlackTextPixel = 0;
-        for (int ty = 0; ty < textSurface->h && !sawBlackTextPixel; ty++) {
-            for (int tx = 0; tx < textSurface->w; tx++) {
-                if (pixel_is_rgb(textSurface, tx, ty, 0, 0, 0)) {
-                    sawBlackTextPixel = 1;
-                    break;
-                }
-            }
-        }
-        SDL_FreeSurface(textSurface);
-        CHECK(sawBlackTextPixel, "XDrawText rendered no visible black pixels");
-        XUnloadFont(display, textFont);
-        XFreeGC(display, textGc);
-        XDestroyWindow(display, textWindow);
-
-        Pixmap metricPixmap =
-            XCreatePixmap(display, root, 96, 32,
-                          DefaultDepth(display, DefaultScreen(display)));
-        CHECK(metricPixmap != None, "fixed metric pixmap creation failed");
-        GC metricGc = XCreateGC(display, metricPixmap, 0, NULL);
-        CHECK(metricGc != NULL, "fixed metric GC creation failed");
-        Font metricFont = XLoadFont(display, "fixed");
-        CHECK(metricFont != None, "fixed metric font load failed");
-        XFontStruct *metricStruct = XQueryFont(display, metricFont);
-        CHECK(metricStruct != NULL, "fixed metric query failed");
-        CHECK(XSetFont(display, metricGc, metricFont),
-              "fixed metric XSetFont failed");
-        CHECK(XSetForeground(display, metricGc, 0x00FFFFFF),
-              "fixed metric white setup failed");
-        CHECK(XFillRectangle(display, metricPixmap, metricGc, 0, 0, 96, 32),
-              "fixed metric background fill failed");
-        CHECK(XSetForeground(display, metricGc, 0x00000000),
-              "fixed metric black setup failed");
-        int metricBaseline = metricStruct->ascent;
-        CHECK(XDrawString(display, metricPixmap, metricGc, 0, metricBaseline,
-                          "gjpqy", 5),
-              "fixed metric draw failed");
-        GET_RENDERER(metricPixmap, renderer);
-        textSurface = getRenderSurface(renderer);
-        CHECK(textSurface, "fixed antialias readback failed");
-        int sawFixedAntialiasPixel = 0;
-        for (int ty = 0; ty < textSurface->h && !sawFixedAntialiasPixel; ty++) {
-            for (int tx = 0; tx < textSurface->w; tx++) {
-                if (pixel_is_between_black_and_white(textSurface, tx, ty)) {
-                    sawFixedAntialiasPixel = 1;
-                    break;
-                }
-            }
-        }
-        SDL_FreeSurface(textSurface);
-        CHECK(sawFixedAntialiasPixel,
-              "fixed font rendered no antialiased edge pixels");
-        CHECK(XSetForeground(display, metricGc, 0x00FFFFFF),
-              "fixed metric clear color setup failed");
-        int metricClearHeight = metricStruct->ascent + metricStruct->descent;
-        CHECK(XFillRectangle(display, metricPixmap, metricGc, 0, 0, 96,
-                             (unsigned int) metricClearHeight),
-              "fixed metric row clear failed");
-        GET_RENDERER(metricPixmap, renderer);
-        textSurface = getRenderSurface(renderer);
-        CHECK(textSurface, "fixed metric readback failed");
-        int escapedMetricPixel = 0;
-        for (int ty = metricClearHeight;
-             ty < textSurface->h && !escapedMetricPixel; ty++) {
-            for (int tx = 0; tx < textSurface->w; tx++) {
-                if (pixel_is_rgb(textSurface, tx, ty, 0, 0, 0)) {
-                    escapedMetricPixel = 1;
-                    break;
-                }
-            }
-        }
-        SDL_FreeSurface(textSurface);
-        XFreeFontInfo(NULL, metricStruct, 1);
-        XUnloadFont(display, metricFont);
-        XFreeGC(display, metricGc);
-        XFreePixmap(display, metricPixmap);
-        CHECK(!escapedMetricPixel,
-              "fixed font rendered outside its advertised row metrics");
 
         XGCValues values;
         CHECK(XGetGCValues(display, gc, GCForeground | GCBackground, &values),

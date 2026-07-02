@@ -208,8 +208,7 @@ $(UI_SMOKE_OUT_ROOT)/violawww-scroll/.stamp: FORCE $(VIOLAWWW_SMOKE_DEPS)
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
 	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    --env WWW_HOME=file:$(abspath tests/ui/fixtures/violawww-scroll.html) \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env WWW_HOME=file:$(abspath tests/ui/fixtures/violawww-scroll.html)
 	$(Q)touch $@
 
 $(UI_SMOKE_OUT_ROOT)/violawww-help/.stamp: FORCE $(VIOLAWWW_SMOKE_DEPS)
@@ -229,8 +228,7 @@ $(UI_SMOKE_OUT_ROOT)/violawww-help/.stamp: FORCE $(VIOLAWWW_SMOKE_DEPS)
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
 	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    --env WWW_HOME=file:$(abspath tests/ui/fixtures/violawww-scroll.html) \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env WWW_HOME=file:$(abspath tests/ui/fixtures/violawww-scroll.html)
 	$(Q)touch $@
 
 ## Run local replay-only UI smoke checks that do not require node11

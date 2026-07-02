@@ -237,8 +237,7 @@ $(UI_SMOKE_OUT_ROOT)/xfig-startup/.stamp: FORCE $(XFIG_BIN)
 	    --in-process-snapshots \
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 	$(Q)touch $@
 
 $(UI_SMOKE_OUT_ROOT)/xfig-draw-line/.stamp: FORCE $(XFIG_BIN)
@@ -256,6 +255,5 @@ $(UI_SMOKE_OUT_ROOT)/xfig-draw-line/.stamp: FORCE $(XFIG_BIN)
 	    --in-process-snapshots \
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
-	    --env LIBX11_COMPAT_FONT_DIR=$(abspath $(OUT))/../fonts
+	    --env LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 	$(Q)touch $@
