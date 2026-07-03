@@ -6,10 +6,14 @@ out_dir=${2:?usage: validate-motif-demos.sh BUILD_DIR OUT_DIR}
 timeout_bin=${TIMEOUT_BIN:-}
 run_seconds=${MOTIF_DEMO_SECONDS:-2}
 log_dir=${MOTIF_DEMO_LOG_DIR:-"$out_dir/motif-demo-logs"}
-# Space-separated list of demo paths (relative to demos/) to skip while
-# their crashes are being triaged. Each entry is an exact match against
-# the path printed in RUN lines, e.g. "programs/Tree/tree".
-demo_skip=${MOTIF_DEMO_SKIP:-}
+# Space-separated list of demo paths (relative to demos/) to skip. Each entry is
+# an exact match against the path printed in RUN lines, e.g. "programs/Tree/tree".
+# GLw/paperplane is skipped by default: it is a GLX/OpenGL demo rather than a plain
+# Motif widget one, and needs its GLw runtime library on the loader path plus a
+# live GLX/GL provider, neither of which this process-smoke harness sets up. Its
+# GLX rendering is validated by the dedicated GLX/mesa-demos flow instead. Extend
+# the set per host via MOTIF_DEMO_SKIP (for crashes under triage, and so on).
+demo_skip="GLw/paperplane ${MOTIF_DEMO_SKIP:-}"
 
 is_skipped() {
     candidate=$1
@@ -202,7 +206,7 @@ EOF
 done <"$tmp_list"
 
 if [ "$skipped" -ne 0 ]; then
-    echo "$skipped Motif demos skipped via MOTIF_DEMO_SKIP" >&2
+    echo "$skipped Motif demos skipped (default set + MOTIF_DEMO_SKIP)" >&2
 fi
 
 if [ "$failed" -ne 0 ]; then

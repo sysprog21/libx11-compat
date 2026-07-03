@@ -2,12 +2,11 @@
 #define LIBX11_COMPAT_SDL_TTF_COMPAT_H
 
 /* Include chokepoint for SDL_ttf, mirroring sdl-compat.h. The default build is
- * a pass-through to SDL2_ttf; under LIBX11_COMPAT_SDL3 it reshapes the
- * SDL_ttf 3.x API into the 2.x spelling the tree was written against. The
- * inline wrappers preserve the SDL2_ttf return conventions (0 success / -1
- * error) that the call sites test against, and are defined before the renaming
- * #defines so a wrapper that reuses a surviving name still binds the real
- * function.
+ * a pass-through to SDL2_ttf; under LIBX11_COMPAT_SDL3 it reshapes the SDL_ttf
+ * 3.x API into the 2.x spelling the tree was written against. The inline
+ * wrappers preserve the SDL2_ttf return conventions (0 success / -1 error) that
+ * the call sites test against, and are defined before the renaming #defines so
+ * a wrapper that reuses a surviving name still binds the real function.
  */
 
 #include "sdl-compat.h"

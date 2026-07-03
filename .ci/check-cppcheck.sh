@@ -4,11 +4,12 @@
 # Scope is src/*.c; tests, examples, and the generated upstream tree
 # under build/upstream/ are out of scope (tests use stubs, examples are
 # downstream Xlib clients, and the upstream snapshot is reviewed at
-# import time).
+# import time). src/GL is vendored gl4es (see src/GL/README.md), likewise an
+# upstream snapshot reviewed at import, so it is excluded too.
 
 set -e -u -o pipefail
 
-mapfile -t SOURCES < <(git ls-files -z -- 'src/*.c' | tr '\0' '\n')
+mapfile -t SOURCES < <(git ls-files -z -- 'src/*.c' ':!src/GL' | tr '\0' '\n')
 
 if [ ${#SOURCES[@]} -eq 0 ]; then
     echo "No tracked C source files found."

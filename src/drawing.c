@@ -254,6 +254,27 @@ void drawWindowDataToScreen()
         if (!child->sdlWindow)
             continue;
 
+        /* A window presenting through a GLX/ANGLE CAMetalLayer drives its own
+         * swap via eglSwapBuffers; the 2D software present (texture fill plus
+         * SDL_UpdateWindowSurfaceRects) would fight the Metal layer for the
+         * same pixels. Skip it so Metal owns the window. glxMetalView is only
+         * ever set on the macOS on-screen GLX path, NULL everywhere else. Clear
+         * the software-present bookkeeping (as the success path below does) so
+         * a pending mark does not keep hasPendingWindowPresent waking the
+         * present loop every frame, and any accumulated dirty region is
+         * released.
+         */
+        if (child->glxMetalView) {
+            if (child->needsPresent) {
+                child->needsPresent = False;
+                child->hasPresentRect = False;
+                pixman_region32_clear(&child->dirty);
+                child->fullyDirty = False;
+                child->hasPresented = True;
+            }
+            continue;
+        }
+
         /* A window can enter Mapped state without ever drawing, so its backing
          * texture is still NULL. Triggering getWindowRenderer here lazily
          * allocates and background-fills the texture so the present pipeline
@@ -573,6 +594,104 @@ void markWindowNeedsPresent(Window window)
     GET_WINDOW_DIMS(window, w, h);
     SDL_Rect full = {0, 0, w, h};
     markWindowNeedsPresentRect(window, &full);
+}
+
+/* Composite an embedded GL child widget's read-back frame into its window. An
+ * embedded GL widget (e.g. a Motif GLwDrawingArea) is a child window with no
+ * native surface of its own, so its GL renders to an offscreen pbuffer; these
+ * pixels (GL bottom-up, GL_RGBA byte order) are drawn through the normal
+ * child-window render target so the widget appears in its toolkit shell. Called
+ * from src/glx.c at glXSwapBuffers.
+ */
+unsigned char *glxAcquireCompositeReadback(Window window, size_t need)
+{
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (need > windowStruct->glxReadbackCap) {
+        unsigned char *grown = realloc(windowStruct->glxReadbackBuf, need);
+        if (!grown)
+            return NULL;
+        windowStruct->glxReadbackBuf = grown;
+        windowStruct->glxReadbackCap = need;
+    }
+    return windowStruct->glxReadbackBuf;
+}
+
+void glxCompositeToWindow(Window window,
+                          const unsigned char *rgba,
+                          int width,
+                          int height)
+{
+    /* Cap dimensions so the size math below and the int row pitch cannot
+     * overflow; a real GL drawable is orders of magnitude smaller.
+     */
+    if (!rgba || width <= 0 || height <= 0 || width >= 32768 || height >= 32768)
+        return;
+    SDL_Renderer *renderer = getWindowRenderer(window);
+    if (!renderer)
+        return;
+    /* ABGR8888 in SDL's little-endian byte order is R,G,B,A in memory, matching
+     * glReadPixels(GL_RGBA, GL_UNSIGNED_BYTE); SDL_RenderCopy converts to the
+     * window texture's own format. GL is bottom-up, so flip the rows on the CPU
+     * into a scratch buffer (cheaper than wrapping SDL_RenderCopyEx).
+     *
+     * The staging texture and flip buffer are cached on the widget's
+     * WindowStruct and reused across frames; only a size change reallocates
+     * them. An animating canvas at a fixed size therefore does no per-frame
+     * malloc or texture create/destroy, just the flip memcpy and the
+     * upload/copy.
+     */
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (width != windowStruct->glxCompositeW ||
+        height != windowStruct->glxCompositeH) {
+        if (windowStruct->glxCompositeTexture)
+            SDL_DestroyTexture(windowStruct->glxCompositeTexture);
+        free(windowStruct->glxCompositeFlip);
+        windowStruct->glxCompositeTexture =
+            SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
+                              SDL_TEXTUREACCESS_STREAMING, width, height);
+        windowStruct->glxCompositeFlip = malloc((size_t) width * height * 4);
+        windowStruct->glxCompositeW = width;
+        windowStruct->glxCompositeH = height;
+        if (!windowStruct->glxCompositeTexture ||
+            !windowStruct->glxCompositeFlip) {
+            /* Reset so a later frame retries the allocation cleanly. */
+            if (windowStruct->glxCompositeTexture) {
+                SDL_DestroyTexture(windowStruct->glxCompositeTexture);
+                windowStruct->glxCompositeTexture = NULL;
+            }
+            free(windowStruct->glxCompositeFlip);
+            windowStruct->glxCompositeFlip = NULL;
+            windowStruct->glxCompositeW = 0;
+            windowStruct->glxCompositeH = 0;
+            return;
+        }
+    }
+    unsigned char *flipped = windowStruct->glxCompositeFlip;
+    for (int row = 0; row < height; row++)
+        memcpy(flipped + (size_t) row * width * 4,
+               rgba + (size_t) (height - 1 - row) * width * 4,
+               (size_t) width * 4);
+    SDL_UpdateTexture(windowStruct->glxCompositeTexture, NULL, flipped,
+                      width * 4);
+    SDL_Rect dst = {0, 0, width, height};
+    SDL_RenderCopy(renderer, windowStruct->glxCompositeTexture, NULL, &dst);
+    invalidateSdlDrawStateCache();
+
+    /* Present the top-level ancestor over the widget's rect; walk up
+     * accumulating the child offset the same way getWindowRenderer does.
+     */
+    Window top = window;
+    int ox = 0, oy = 0;
+    while (GET_PARENT(top) != None && !GET_WINDOW_STRUCT(top)->sdlWindow &&
+           GET_WINDOW_STRUCT(top)->mapState != UnMapped) {
+        int px, py;
+        GET_WINDOW_POS(top, px, py);
+        ox += px;
+        oy += py;
+        top = GET_PARENT(top);
+    }
+    SDL_Rect region = {ox, oy, width, height};
+    markWindowNeedsPresentRect(top, &region);
 }
 
 /* Walk drawable up to its mapped top-level window, translating an optional

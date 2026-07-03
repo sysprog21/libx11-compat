@@ -648,3 +648,40 @@ XwcTextExtents
 XwcTextListToTextProperty
 XwcTextPerCharExtents
 XwcTextPropertyToTextList
+
+# GLX entry points (GL/glx.h), implemented as a translation onto EGL in
+# src/glx.c. Exported so Xlib+GLX clients link. glXQueryExtension is the
+# provider-aware probe; the generic XQueryExtension("GLX") stays False by design.
+glXChooseFBConfig
+glXChooseVisual
+glXCreateContext
+glXCreateContextAttribsARB
+glXCreateNewContext
+glXCreatePbuffer
+glXCreateWindow
+glXDestroyContext
+glXDestroyPbuffer
+glXDestroyWindow
+glXGetClientString
+glXGetConfig
+glXGetCurrentContext
+glXGetCurrentDisplay
+glXGetCurrentDrawable
+glXGetCurrentReadDrawable
+glXGetFBConfigAttrib
+glXGetFBConfigs
+glXGetProcAddress
+glXGetProcAddressARB
+glXGetVisualFromFBConfig
+glXIsDirect
+glXMakeContextCurrent
+glXMakeCurrent
+glXQueryDrawable
+glXQueryExtension
+glXQueryExtensionsString
+glXQueryServerString
+glXQueryVersion
+glXSwapBuffers
+glXSwapIntervalEXT
+glXWaitGL
+glXWaitX

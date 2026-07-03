@@ -1,8 +1,9 @@
-/* XTest protocol constants kept here so libx11-compat consumers can
- * include <X11/extensions/XTest.h> without depending on a host
- * xorgproto / libXtst dev install. The pinned upstream tarball also
- * provides this file (synced into build/upstream/include/) but the
- * public copy under include/ is what shipped headers reference.
+/*
+ * XTest protocol constants kept here so libx11-compat consumers can include
+ * <X11/extensions/XTest.h> without depending on a host xorgproto / libXtst dev
+ * install. The pinned upstream tarball also provides this file (synced into
+ * build/upstream/include/) but the public copy under include/ is what shipped
+ * headers reference.
  *
  * Copyright 1992, 1998 The Open Group. SPDX-License-Identifier: MIT
  */

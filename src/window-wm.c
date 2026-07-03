@@ -1,4 +1,5 @@
-/* Window manager hint and state helpers
+/*
+ * Window manager hint and state helpers
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

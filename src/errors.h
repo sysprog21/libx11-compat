@@ -22,16 +22,15 @@ unsigned char resourceTypeToErrorCode(XResourceType resourceType);
 /* Drop the per-Display lastRequestCode entry; called from XCloseDisplay. */
 void releaseLastRequestCode(Display *display);
 
-/* Drain remaining lastRequestCode entries and destroy the side-table
- * mutex; called from XCloseDisplay's last-display-closing branch BEFORE
- * SDL_Quit so the SDL_mutex teardown reaches a still-valid SDL.
+/* Drain remaining lastRequestCode entries and destroy the side-table mutex;
+ * called from XCloseDisplay's last-display-closing branch BEFORE SDL_Quit so
+ * the SDL_mutex teardown reaches a still-valid SDL.
  */
 void freeLastRequestStorage(void);
 
-/* Fatal-disconnect path: invokes the client-installed XIOErrorHandler if
- * any, then exits. Used when the window manager closes a window the client
- * has not opted in to handle, or when the host signals quit. Does not
- * return.
+/* Fatal-disconnect path: invokes the client-installed XIOErrorHandler if any,
+ * then exits. Used when the window manager closes a window the client has not
+ * opted in to handle, or when the host signals quit. Does not return.
  */
 void triggerIOError(Display *display);
 

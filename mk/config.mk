@@ -1,9 +1,16 @@
 OUT ?= build
 TARGET ?= $(OUT)/libX11-compat.so
+
+# GLX ?= 1 builds the optional GLX-over-EGL layer (src/glx.c + src/egl-wrapper.c)
+# and exports the glX* symbols. Set GLX=0 to compile it out entirely: the glX*
+# surface and the libEGL dlopen dependency disappear, and the coverage gate plus
+# the glX link test drop with it. GLX is inert without a runtime EGL provider
+# either way, so GLX=0 is only for builds that want the smaller symbol surface.
+GLX ?= 1
+
 # PYTHON is set in mk/toolchain.mk; do not redefine here.
 # SDL detection lives in mk/sdl.mk; this file consumes SDL_CPPFLAGS and
 # SDL_COMPAT_LIBS from it.
-
 PIXMAN_CFLAGS := $(shell $(PKG_CONFIG) --cflags pixman-1 2>/dev/null)
 PIXMAN_LIBS := $(shell $(PKG_CONFIG) --libs pixman-1 2>/dev/null)
 
@@ -26,6 +33,7 @@ CPPFLAGS += -Iinclude -Isrc \
             -iquote $(OUT)/upstream/src \
             $(SDL_CPPFLAGS) $(PIXMAN_CFLAGS) \
             -DNARROWPROTO -DXTHREADS -D_GNU_SOURCE
+
 # SDL3's SDL_system.h forward-declares `typedef union _XEvent XEvent;` (for the
 # X11 event-hook API) with no opt-out, and Xlib.h defines the same typedef. The
 # two are identical, so it is harmless; -std=c99 just flags the C11-legal
@@ -33,6 +41,7 @@ CPPFLAGS += -Iinclude -Isrc \
 # does not warn here and accepts the unknown -Wno- option quietly.
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter \
           -Wno-typedef-redefinition -fPIC
+
 # Opt-in strict mode: STRICT=1 turns warnings into errors so CI surfaces
 # new diagnostics at PR time. STRICT_CFLAGS is applied only to first-
 # party objects via mk/common.mk's compile rule; upstream-derived libXt
@@ -44,7 +53,8 @@ ifeq ($(STRICT),1)
 endif
 # SDL_COMPAT_LIBS comes from mk/sdl.mk.
 LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm -pthread \
-          $(if $(filter Linux,$(UNAME_S)),-ldl)
+          $(if $(filter Linux,$(UNAME_S)),-ldl) \
+          $(if $(filter Darwin,$(UNAME_S)),$(if $(filter 1,$(GLX)),-lobjc))
 
 GREEN  := \033[0;32m
 BLUE   := \033[0;34m

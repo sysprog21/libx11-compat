@@ -37,9 +37,9 @@ typedef struct _GraphicContext {
                    // concatenated with itself.
     size_t numDashes;
     int arcMode;
-    /* Bumped on every mutation. Lets the draw path skip re-applying
-     * unchanged SDL state by caching the (gc, generation) pair per
-     * drawable / renderer. */
+    /* Bumped on every mutation. Lets the draw path skip re-applying unchanged
+     * SDL state by caching the (gc, generation) pair per drawable / renderer.
+     */
     unsigned long generation;
 } GraphicContext;
 
@@ -47,9 +47,9 @@ typedef struct _GraphicContext {
 
 #define GET_GC_FROM_XID(id) ((GraphicContext *) GET_XID_VALUE(id))
 
-/* Debug-only NULL guard. Production keeps the bare deref so well-formed
- * callers pay nothing; misbehaving callers (or future regressions like
- * the round-6 XCopyArea NULL gc finding) abort with file:line.
+/* Debug-only NULL guard. Production keeps the bare deref so well-formed callers
+ * pay nothing; misbehaving callers (or future regressions like the round-6
+ * XCopyArea NULL gc finding) abort with file:line.
  */
 #ifdef DEBUG_LIBX11_COMPAT
 #include <stdio.h>

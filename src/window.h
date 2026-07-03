@@ -32,13 +32,37 @@ typedef struct {
     /* List of children */
     Array children;
     /* This is the drawing target of the window and its children while it is
-     * unmapped. Might be NULL.*/
+     * unmapped. Might be NULL.
+     */
     SDL_Texture *sdlTexture;
-    /*
-     * This is the SDL Window handler to the real window of this window.
-     * Only set if this window is a mapped top level window.
+    /* This is the SDL Window handler to the real window of this window. Only
+     * set if this window is a mapped top level window.
      */
     SDL_Window *sdlWindow;
+    /* Cached SDL_MetalView (a CAMetalLayer-backed view) created once by the
+     * optional GLX layer for on-screen ANGLE rendering, reused across surface
+     * rebuilds so resizes do not stack layers or leak views. void * to avoid a
+     * hard SDL_Metal type dependency here; NULL unless GLX bound this window.
+     */
+    void *glxMetalView;
+    /* Composite scratch for an offscreen GLX child widget: a streaming staging
+     * texture and a CPU row-flip buffer, both sized to glxCompositeW x
+     * glxCompositeH and reused across frames. glxCompositeToWindow reallocates
+     * them only when the widget's composite size changes, so a steadily
+     * animating GL canvas does no per-frame allocation. NULL/0 until GLX
+     * composites this window; torn down with the rest of the SDL resources.
+     */
+    SDL_Texture *glxCompositeTexture;
+    unsigned char *glxCompositeFlip;
+    int glxCompositeW;
+    int glxCompositeH;
+    /* Readback scratch for the same widget, filled by glReadPixels before the
+     * flip. Cached here (grown on demand, sized by glxReadbackCap) so it is
+     * freed with the window and never leaks per thread; see
+     * glxAcquireCompositeReadback.
+     */
+    unsigned char *glxReadbackBuf;
+    size_t glxReadbackCap;
     /* True when a top-level window's backing texture must be copied to its
      * SDL_Window surface on the next flush/sync.
      */
@@ -49,12 +73,11 @@ typedef struct {
     /* Dirty region in window-local coords for the next present.
      * drawWindowDataToScreen walks this region and emits one
      * SDL_RenderReadPixels per rect, then submits the whole set via
-     * SDL_UpdateWindowSurfaceRects. fullyDirty is a sentinel that collapses
-     * the region to the entire window when the rect budget (LIBX11_COMPAT_
-     * DIRTY_MAX_RECTS, default 16) is exceeded or a NULL-rect mark arrives;
-     * the read side then falls back to a single full-window readback.
-     * Initialized in initWindowStruct; finalized in destroyWindow /
-     * destroyScreenWindow.
+     * SDL_UpdateWindowSurfaceRects. fullyDirty is a sentinel that collapses the
+     * region to the entire window when the rect budget (LIBX11_COMPAT_
+     * DIRTY_MAX_RECTS, default 16) is exceeded or a NULL-rect mark arrives; the
+     * read side then falls back to a single full-window readback. Initialized
+     * in initWindowStruct; finalized in destroyWindow / destroyScreenWindow.
      */
     pixman_region32_t dirty;
     Bool fullyDirty;
@@ -110,14 +133,14 @@ typedef struct {
      */
     Window deferredTransientParent;
     Bool deferredTransientApplied;
-    /* Cached sibling-occlusion clip in window-local coords. Equals
-     * (0,0,w,h) minus the union of higher siblings on this window's
-     * parent, walked up the ancestor chain. Recomputed lazily through
-     * ensureVisibleRegion; invalidated by configureWindow and the
-     * restack helpers when stacking, geometry, or mapping changes.
-     * Drawing primitives in src/drawing.c intersect each clip rect with
-     * this region before issuing SDL_RenderSetClipRect, so a higher
-     * sibling cannot be drawn through by a lower one.
+    /* Cached sibling-occlusion clip in window-local coords. Equals (0,0,w,h)
+     * minus the union of higher siblings on this window's parent, walked up the
+     * ancestor chain. Recomputed lazily through ensureVisibleRegion;
+     * invalidated by configureWindow and the restack helpers when stacking,
+     * geometry, or mapping changes. Drawing primitives in src/drawing.c
+     * intersect each clip rect with this region before issuing
+     * SDL_RenderSetClipRect, so a higher sibling cannot be drawn through by a
+     * lower one.
      */
     pixman_region32_t visibleRegion;
     Bool visibleRegionValid;

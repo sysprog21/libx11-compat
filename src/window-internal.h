@@ -67,11 +67,11 @@ Bool configureWindow(Display *display,
                      XWindowChanges *values);
 
 /* Sibling-occlusion clipping support. computeVisibleRegion writes the
- * caller-owned region (which must be uninitialized) and is the slow
- * path; drawing code should go through ensureVisibleRegion, which
- * recomputes only when the cached region was invalidated.
- * invalidateVisibleRegionForTopLevel walks the nearest top-level
- * subtree and marks every descendant's cached region stale.
+ * caller-owned region (which must be uninitialized) and is the slow path;
+ * drawing code should go through ensureVisibleRegion, which recomputes only
+ * when the cached region was invalidated. invalidateVisibleRegionForTopLevel
+ * walks the nearest top-level subtree and marks every descendant's cached
+ * region stale.
  */
 void computeVisibleRegion(Window window, pixman_region32_t *out);
 const pixman_region32_t *ensureVisibleRegion(Window window);
@@ -110,8 +110,8 @@ enum {
 
 /* Decode a stored _MOTIF_WM_HINTS property and apply functions/decorations to
  * the SDL window. Called from XChangeProperty after a write lands and from
- * top-level map/reparent paths once the SDL window exists and is mapped.
- * Safe to invoke when no _MOTIF_WM_HINTS property is stored: no-op.
+ * top-level map/reparent paths once the SDL window exists and is mapped. Safe
+ * to invoke when no _MOTIF_WM_HINTS property is stored: no-op.
  */
 void applyMotifWmHintsFromProperty(Window window);
 
@@ -132,8 +132,8 @@ void applyTransientForRelationship(Display *display, Window window);
 void clearTransientForRelationship(Window window);
 
 /* Apply a single _NET_WM_STATE atom transition (add/remove) to the SDL window
- * and mirror it into the stored _NET_WM_STATE property.
- * action: 0 remove, 1 add, 2 toggle.
+ * and mirror it into the stored _NET_WM_STATE property. action: 0 remove, 1
+ * add, 2 toggle.
  */
 void applyNetWmStateAction(Display *display,
                            Window window,

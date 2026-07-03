@@ -13,6 +13,13 @@
 
 Window SCREEN_WINDOW = None;
 
+/* Optional GLX layer teardown hook. src/glx.c registers a callback here from a
+ * constructor when GLX is built (GLX=0 compiles it out); the pointer stays NULL
+ * and the call is skipped otherwise. A registered pointer is portable where a
+ * weak reference to a possibly-absent symbol is not (Mach-O rejects it).
+ */
+void (*glxDrawableDestroyedHook)(Window drawable) = NULL;
+
 static void ensureMappingListLock(void);
 
 static unsigned long resolvedWindowBackgroundColor(Window window)
@@ -55,6 +62,13 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->visual = visual;
     windowStruct->sdlTexture = NULL;
     windowStruct->sdlWindow = NULL;
+    windowStruct->glxMetalView = NULL;
+    windowStruct->glxCompositeTexture = NULL;
+    windowStruct->glxCompositeFlip = NULL;
+    windowStruct->glxCompositeW = 0;
+    windowStruct->glxCompositeH = 0;
+    windowStruct->glxReadbackBuf = NULL;
+    windowStruct->glxReadbackCap = 0;
     windowStruct->needsPresent = False;
     windowStruct->hasPresentRect = False;
     windowStruct->presentRect = (SDL_Rect) {0, 0, 0, 0};
@@ -528,6 +542,13 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      * where XDestroyWindow ran before the SDL motion queue drained.
      */
     clearPointerStateForWindow(window);
+    /* Tear down any GLX/EGL surface bound to this drawable. The GLX layer is
+     * optional (GLX=0 compiles src/glx.c out), so this is a registered
+     * function-pointer hook: src/glx.c sets it from a constructor when built,
+     * and it stays NULL (call skipped) otherwise.
+     */
+    if (glxDrawableDestroyedHook)
+        glxDrawableDestroyedHook(window);
     freeArray(&windowStruct->children);
     XFreeColormap(display, GET_COLORMAP(window));
     for (i = 0; i < windowStruct->properties.length; i++)
@@ -549,12 +570,19 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     }
     if (windowStruct->sdlTexture)
         SDL_DestroyTexture(windowStruct->sdlTexture);
+    /* GLX offscreen-composite scratch (destroyed before the top-level renderer
+     * that owns the staging texture, since children tear down before parents).
+     */
+    if (windowStruct->glxCompositeTexture)
+        SDL_DestroyTexture(windowStruct->glxCompositeTexture);
+    free(windowStruct->glxCompositeFlip);
+    free(windowStruct->glxReadbackBuf);
     if (windowStruct->sdlWindow) {
 #if SDL_VERSION_ATLEAST(2, 0, 5)
         /* Detach any live modal-for binding so the host WM does not keep
-         * blocking the parent shell once this child is gone.
-         * SDL_DestroyWindow cleans up child resources but parent state on
-         * some platforms (Wayland, X11/xdg-popup) is observably stickier.
+         * blocking the parent shell once this child is gone. SDL_DestroyWindow
+         * cleans up child resources but parent state on some platforms
+         * (Wayland, X11/xdg-popup) is observably stickier.
          */
         if (windowStruct->deferredTransientApplied) {
             SDL_SetWindowModalFor(windowStruct->sdlWindow, NULL);

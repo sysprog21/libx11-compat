@@ -3,6 +3,7 @@ MOTIF_URL := https://github.com/thentenaar/motif
 MOTIF_SRC_DIR := $(OUT)/upstream/motif
 MOTIF_SRC_STAMP := $(MOTIF_SRC_DIR)/.source-stamp
 MOTIF_PATCHES := $(sort $(wildcard compat/motif-patches/*.patch))
+
 # Snapshot the patch list so removals (not just edits) bump an mtime.
 # $(MOTIF_PATCHES) alone only re-triggers on edits to files that still
 # exist, so dropping a .patch would otherwise leave the patched tree
@@ -30,12 +31,53 @@ MOTIF_LIBMRM := $(OUT)/libMrm.so
 MOTIF_TEST_BINS := $(OUT)/tests/test-motif-link \
                    $(OUT)/tests/test-motif-resources
 MOTIF_YACC ?= $(shell if [ -x /opt/homebrew/opt/bison/bin/bison ]; then printf '%s\n' '/opt/homebrew/opt/bison/bin/bison -y'; else printf '%s\n' yacc; fi)
+
 MOTIF_CFLAGS ?= -g -O0
 MOTIF_LIBS ?= -lm
 MOTIF_CONFIGURE_LDFLAGS := -L$(abspath $(OUT))
+
 ifeq ($(UNAME_S),Darwin)
   MOTIF_CONFIGURE_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
   MOTIF_LIBS += -liconv
+  # GLw's configure runs PKG_CHECK_MODULES([GL],[gl]) and links whatever gl.pc
+  # names for gl*. macOS Homebrew Mesa is a monolithic libGL: it exports both
+  # gl* AND glX* and drags in a real libX11, so linking it directly would bind
+  # GLw/paperplane's glX* to Mesa (a real-X11 GLX stack) instead of our layer,
+  # and the app would crash with no X server. Linux avoids this for free via the
+  # GLVND split (gl*-only libOpenGL). We reconstruct that split on macOS with a
+  # gl-only reexport shim (see the $(MOTIF_GLSHIM_DIR)/gl.pc rule): it reexports
+  # Mesa's gl* but NOT glX*, so glX* can only resolve to libx11-compat while gl*
+  # still runs on Mesa's desktop-GL context. Empty when Mesa is absent, in which
+  # case GLw configures off and the rest of Motif still builds.
+  ifeq ($(GLX),1)
+    MOTIF_MESA_PREFIX := $(shell brew --prefix mesa 2>/dev/null)
+    ifneq ($(wildcard $(MOTIF_MESA_PREFIX)/lib/libGL.dylib),)
+      MOTIF_GLSHIM_DIR := $(OUT)/glshim
+      MOTIF_GL_PKGCONFIG := $(MOTIF_GLSHIM_DIR)/gl.pc
+    endif
+  endif
+endif
+# Colon-appended to the pinned PKG_CONFIG_PATH so our own .pc files still win.
+MOTIF_PKGCONFIG_PATH = $(abspath $(PKGCONFIG_DIR))$(if $(MOTIF_GL_PKGCONFIG),:$(abspath $(dir $(MOTIF_GL_PKGCONFIG))))
+
+# gl-only reexport shim over Mesa's monolithic libGL: exports every gl* symbol
+# Mesa defines except glX* (those fall through to libx11-compat at link time,
+# order-independently, because the shim simply does not offer them). The gl.pc
+# points GLw/paperplane's -lGL at it and carries Mesa's include path for the
+# GL headers. Only defined on Darwin+GLX with Mesa present.
+ifdef MOTIF_GLSHIM_DIR
+$(MOTIF_GLSHIM_DIR)/gl.pc:
+	@mkdir -p $(MOTIF_GLSHIM_DIR)
+	@echo "  GLSHIM  gl-only reexport over Mesa (glX* -> libx11-compat)"
+	$(Q)scripts/gen-mesa-gl-reexport-syms.sh $(MOTIF_MESA_PREFIX)/lib/libGL.dylib \
+	    > $(MOTIF_GLSHIM_DIR)/gl.syms
+	$(Q)clang -dynamiclib \
+	    -o $(MOTIF_GLSHIM_DIR)/libGL.dylib \
+	    -L$(MOTIF_MESA_PREFIX)/lib -lGL \
+	    -Wl,-reexported_symbols_list,$(MOTIF_GLSHIM_DIR)/gl.syms \
+	    -install_name $(abspath $(MOTIF_GLSHIM_DIR)/libGL.dylib)
+	$(Q)printf 'Name: gl\nDescription: gl-only shim; glX* routed to libx11-compat\nVersion: 1.0\nCflags: -I%s/include\nLibs: -L%s -lGL\n' \
+	    '$(MOTIF_MESA_PREFIX)' '$(abspath $(MOTIF_GLSHIM_DIR))' > $@
 endif
 motif_runtime_env = \
     DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
@@ -56,9 +98,41 @@ else
   motif_log_redirect = >> $(1) 2>&1 || { echo "  FAIL    see $(1)" >&2; tail -40 $(1) >&2; exit 1; }
 endif
 
+# GLw is Motif's OpenGL drawing-area widget (GLwDrawingArea/GLwMDrawingArea); it
+# uses GLX (glXChooseVisual/MakeCurrent/SwapBuffers). Enable it when the GLX layer
+# is built (GLX=1) so libGLw binds to libx11-compat's glX*, disable it otherwise.
+# On macOS GLw also needs the gl-only shim's gl.pc (its PKG_CHECK_MODULES([GL],[gl])
+# has nothing else to resolve against), so enable it only when Mesa is present and
+# MOTIF_GL_PKGCONFIG got set above; otherwise configure would force --enable-glw with
+# no gl.pc and the GLw sub-make would fail. Linux has a system gl.pc, so GLX=1 alone
+# is enough there. When enabled, lib/GLw must be built before any demo that links it;
+# motif_glw_step builds it in the given tree (empty when GLw is off). $(1) is the build dir.
+MOTIF_GLW_ENABLED :=
+ifeq ($(GLX),1)
+  ifeq ($(UNAME_S),Darwin)
+    ifdef MOTIF_GL_PKGCONFIG
+      MOTIF_GLW_ENABLED := 1
+    endif
+  else
+    MOTIF_GLW_ENABLED := 1
+  endif
+endif
+ifdef MOTIF_GLW_ENABLED
+  MOTIF_GLW_FLAG := --enable-glw
+  define motif_glw_step
+	@echo "  MAKE    motif lib/GLw"
+	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(1)/lib/GLw CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_LIBS)" \
+	    $(call motif_log_redirect,$(abspath $(1))/build.log)
+  endef
+else
+  MOTIF_GLW_FLAG := --disable-glw
+  define motif_glw_step
+  endef
+endif
+
 MOTIF_COMMON_CONFIGURE_FLAGS := \
     --prefix=$(abspath $(OUT)/motif-install) \
-    --disable-glw \
+    $(MOTIF_GLW_FLAG) \
     --disable-tests \
     --without-xft \
     --with-jpeg=no \
@@ -114,11 +188,11 @@ $(MOTIF_DEMOS_BUILD_DIR):
 	@mkdir -p $@
 
 $(MOTIF_CONFIG_STAMP): $(MOTIF_AUTOGEN_STAMP) $(PKGCONFIG_FILES) \
-    $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) | $(MOTIF_BUILD_DIR)
+    $(MOTIF_GL_PKGCONFIG)     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) | $(MOTIF_BUILD_DIR)
 	@echo "  CONFIG  motif"
 	$(Q)cd $(MOTIF_BUILD_DIR) && \
 	    $(motif_runtime_env) \
-	    PKG_CONFIG_PATH=$(abspath $(PKGCONFIG_DIR)) \
+	    PKG_CONFIG_PATH=$(MOTIF_PKGCONFIG_PATH) \
 	    CPP="$(CC) -E" \
 	    CPPFLAGS="-include stdlib.h" \
 	    CFLAGS="$(MOTIF_CFLAGS)" \
@@ -138,14 +212,15 @@ $(MOTIF_BUILD_STAMP): $(MOTIF_CONFIG_STAMP)
 	@echo "  MAKE    motif lib/Mrm"
 	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(MOTIF_BUILD_DIR)/lib/Mrm CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_LIBS)" \
 	    $(call motif_log_redirect,$(abspath $(MOTIF_BUILD_DIR))/build.log)
+	$(call motif_glw_step,$(MOTIF_BUILD_DIR))
 	$(Q)touch $@
 
 $(MOTIF_DEMOS_CONFIG_STAMP): $(MOTIF_AUTOGEN_STAMP) $(PKGCONFIG_FILES) \
-    $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) | $(MOTIF_DEMOS_BUILD_DIR)
+    $(MOTIF_GL_PKGCONFIG)     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) | $(MOTIF_DEMOS_BUILD_DIR)
 	@echo "  CONFIG  motif demos"
 	$(Q)cd $(MOTIF_DEMOS_BUILD_DIR) && \
 	    $(motif_runtime_env) \
-	    PKG_CONFIG_PATH=$(abspath $(PKGCONFIG_DIR)) \
+	    PKG_CONFIG_PATH=$(MOTIF_PKGCONFIG_PATH) \
 	    CPP="$(CC) -E" \
 	    CPPFLAGS="-include stdlib.h" \
 	    CFLAGS="$(MOTIF_CFLAGS)" \
@@ -170,6 +245,7 @@ $(MOTIF_DEMOS_BUILD_STAMP): $(MOTIF_DEMOS_CONFIG_STAMP)
 	    $(call motif_log_redirect,$(abspath $(MOTIF_DEMOS_BUILD_DIR))/build.log)
 	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(MOTIF_DEMOS_BUILD_DIR)/clients/uil CPP="$(CC) -E" CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_LIBS)" \
 	    $(call motif_log_redirect,$(abspath $(MOTIF_DEMOS_BUILD_DIR))/build.log)
+	$(call motif_glw_step,$(MOTIF_DEMOS_BUILD_DIR))
 	@echo "  MAKE    motif demos"
 	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(MOTIF_DEMOS_BUILD_DIR)/demos CPP="$(CC) -E" CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_LIBS)" \
 	    $(call motif_log_redirect,$(abspath $(MOTIF_DEMOS_BUILD_DIR))/build.log)
@@ -304,7 +380,7 @@ motif_ui_replay_env = \
     --env DYLD_LIBRARY_PATH=$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Xm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Mrm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/clients/uil/.libs:$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
     --env LD_LIBRARY_PATH=$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Xm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Mrm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/clients/uil/.libs:$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 
-.PHONY: check-differential-motif check-differential-motif-full check-demos-motif motif-demos-screenshots check-smoke-motif profile-ui FORCE
+.PHONY: check-differential-motif check-differential-motif-full check-demos-motif motif-demos-screenshots check-paperplane-macos check-paperplane-linux check-smoke-motif profile-ui FORCE
 ## Compare representative Motif demo screenshots for system libX11 vs
 ## libx11-compat. Set MOTIF_DIFF_LOCAL=1 to run on the current host (used
 ## by the GitHub Actions differential workflow); otherwise the script
@@ -331,6 +407,37 @@ check-demos-motif: $(MOTIF_DEMOS_BUILD_STAMP)
 ## Capture screenshots for Motif demos built against libx11-compat
 motif-demos-screenshots: $(MOTIF_DEMOS_BUILD_STAMP)
 	$(Q)scripts/capture-motif-demo-screenshots.sh $(MOTIF_DEMOS_BUILD_DIR) $(OUT)
+
+## Headless GLX render regression: run unmodified paperplane (Motif GLwDrawingArea
+## + immediate-mode desktop GL) against libx11-compat and assert its canvas
+## actually paints, not a black frame. Guards the whole macOS GLX-over-EGL stack
+## (surfaceless Mesa desktop GL, the offscreen pbuffer readback/composite, and the
+## GLwDrawingArea resize-delivery wobble). Darwin + GLX=1 + Homebrew Mesa only; a
+## no-op elsewhere so it is safe inside the aggregate check.
+ifdef MOTIF_GLSHIM_DIR
+check-paperplane-macos: $(MOTIF_DEMOS_BUILD_STAMP)
+	@echo "  CHECK   paperplane (macOS GLX headless render)"
+	$(Q)scripts/run-paperplane.sh --snapshot $(OUT)/paperplane-macos.png
+	$(Q)python3 scripts/assert-image-content.py $(OUT)/paperplane-macos.png 0.30
+else
+check-paperplane-macos:
+	@echo "  SKIP    paperplane macOS GLX render (needs Darwin + GLX=1 + Homebrew Mesa)"
+endif
+
+## Linux twin of check-paperplane-macos: render unmodified paperplane through the
+## same surfaceless-Mesa GLX-over-EGL path Linux CI uses for the mesa demos, and
+## assert the GLwDrawingArea canvas paints (not a black frame). GLw is enabled on
+## Linux + GLX=1, so the binary is already built by motif-demos; the run picks the
+## system Mesa libEGL. A no-op elsewhere so it is safe inside an aggregate check.
+ifeq ($(UNAME_S)/$(if $(MOTIF_GLW_ENABLED),on),Linux/on)
+check-paperplane-linux: $(MOTIF_DEMOS_BUILD_STAMP)
+	@echo "  CHECK   paperplane (linux GLX headless render)"
+	$(Q)scripts/run-paperplane.sh --snapshot $(OUT)/paperplane-linux.png
+	$(Q)$(PYTHON) scripts/assert-image-content.py $(OUT)/paperplane-linux.png 0.30
+else
+check-paperplane-linux:
+	@echo "  SKIP    paperplane linux GLX render (needs Linux + GLX=1)"
+endif
 
 ## Run replay-based local Motif UI smoke checks against libx11-compat
 check-smoke-motif: $(UI_SMOKE_OUT_ROOT)/motif-fileview-done/.stamp $(UI_SMOKE_OUT_ROOT)/motif-wsm-labels/.stamp

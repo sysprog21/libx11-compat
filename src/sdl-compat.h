@@ -781,4 +781,24 @@ typedef SDL_PixelFormat *XcPixelFormat;
 
 #endif /* LIBX11_COMPAT_SDL3 */
 
+#if defined(__linux__)
+/* Native X11 window id of an SDL window, or 0 when it is not an X11 window (the
+ * dummy driver). SDL2 implements this in the wrapper shim so SDL_syswm.h and
+ * its X11 headers stay out of the compat Xlib sources; SDL3 exposes it through
+ * window properties.
+ */
+#ifdef LIBX11_COMPAT_SDL3
+static inline unsigned long sdlX11WindowHandle(SDL_Window *window)
+{
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    if (!props)
+        return 0;
+    return (unsigned long) SDL_GetNumberProperty(
+        props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+}
+#else
+unsigned long sdlX11WindowHandle(SDL_Window *window);
+#endif
+#endif
+
 #endif

@@ -1,0 +1,9 @@
+# macOS -exported_symbols_list allowlist for the ANGLE dylibs. Only the public
+# EGL/GLES entry points (egl*/gl*) and the EGL_ dispatch entry points that the
+# libEGL loader dlsyms out of libGLESv2 are exposed; every internal symbol is
+# hidden from the dynamic export table. GL_* is ANGLE's internal GL dispatch, not
+# the GLES ABI and not dlsym'd by the loader, so it is deliberately NOT exported.
+# Applied to both dylibs; patterns that match nothing in one are harmless.
+_egl*
+_gl*
+_EGL_*

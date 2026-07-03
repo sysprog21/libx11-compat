@@ -1,4 +1,5 @@
-/* Timeline JSONL writer + atomic per-kind counters.
+/*
+ * Timeline JSONL writer + atomic per-kind counters.
  *
  * Why this exists: pixel-diff replay tests see "the screen changed", but they
  * do not see who selected for what, which input verb caused which present, or

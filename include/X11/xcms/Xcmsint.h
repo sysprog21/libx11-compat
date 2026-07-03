@@ -2,30 +2,28 @@
  * Code and supporting documentation (c) Copyright 1990 1991 Tektronix, Inc.
  * 	All Rights Reserved
  *
- * This file is a component of an X Window System-specific implementation
- * of Xcms based on the TekColor Color Management System.  Permission is
- * hereby granted to use, copy, modify, sell, and otherwise distribute this
- * software and its documentation for any purpose and without fee, provided
- * that this copyright, permission, and disclaimer notice is reproduced in
- * all copies of this software and in supporting documentation.  TekColor
- * is a trademark of Tektronix, Inc.
+ * This file is a component of an X Window System-specific implementation of
+ * Xcms based on the TekColor Color Management System. Permission is hereby
+ * granted to use, copy, modify, sell, and otherwise distribute this software
+ * and its documentation for any purpose and without fee, provided that this
+ * copyright, permission, and disclaimer notice is reproduced in all copies of
+ * this software and in supporting documentation. TekColor is a trademark of
+ * Tektronix, Inc.
  *
- * Tektronix makes no representation about the suitability of this software
- * for any purpose.  It is provided "as is" and with all faults.
+ * Tektronix makes no representation about the suitability of this software for
+ * any purpose. It is provided "as is" and with all faults.
  *
- * TEKTRONIX DISCLAIMS ALL WARRANTIES APPLICABLE TO THIS SOFTWARE,
- * INCLUDING THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
- * PARTICULAR PURPOSE.  IN NO EVENT SHALL TEKTRONIX BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA, OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE, OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR THE PERFORMANCE OF THIS SOFTWARE.
- *
+ * TEKTRONIX DISCLAIMS ALL WARRANTIES APPLICABLE TO THIS SOFTWARE, INCLUDING THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ * IN NO EVENT SHALL TEKTRONIX BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+ * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+ * DATA, OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE, OR OTHER
+ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR THE
+ * PERFORMANCE OF THIS SOFTWARE.
  *
  *	DESCRIPTION
  *		Private include file for Color Management System.
  *		(i.e., for API internal use only)
- *
  */
 
 #ifndef _XCMSINT_H_
@@ -33,17 +31,12 @@
 
 #include <X11/Xcms.h>
 
-/*
- *	DEFINES
- */
+/* 	DEFINES */
 
-/*
- * Private Status Value
- */
+/* Private Status Value */
 #define _XCMS_NEWNAME -1
 
-/*
- * Color Space ID's are of XcmsColorFormat type.
+/* Color Space ID's are of XcmsColorFormat type.
  *
  *	bit 31
  *	    0 == Device-Independent
@@ -62,12 +55,9 @@
 #define XCMS_FIRST_REG_DD_ID (XcmsColorFormat) 0x80000000
 #define XCMS_FIRST_UNREG_DD_ID (XcmsColorFormat) 0xc0000000
 
-/*
- *	TYPEDEFS
- */
+/* 	TYPEDEFS */
 
-/*
- * Structure for caching Colormap info.
+/* Structure for caching Colormap info.
  *    This is provided for the Xlib modifications to:
  *		XAllocNamedColor()
  *		XLookupColor()
@@ -83,25 +73,19 @@ typedef struct _XcmsCmapRec {
     struct _XcmsCmapRec *pNext;
 } XcmsCmapRec;
 
-/*
- * Intensity Record (i.e., value / intensity tuple)
- */
+/* Intensity Record (i.e., value / intensity tuple) */
 typedef struct _IntensityRec {
     unsigned short value;
     XcmsFloat intensity;
 } IntensityRec;
 
-/*
- * Intensity Table
- */
+/* Intensity Table */
 typedef struct _IntensityTbl {
     IntensityRec *pBase;
     unsigned int nEntries;
 } IntensityTbl;
 
-/*
- * Structure for storing per-Visual Intensity Tables (aka gamma maps).
- */
+/* Structure for storing per-Visual Intensity Tables (aka gamma maps). */
 typedef struct _XcmsIntensityMap {
     VisualID visualID;
     XPointer screenData; /* pointer to corresponding Screen Color*/
@@ -113,31 +97,24 @@ typedef struct _XcmsIntensityMap {
 } XcmsIntensityMap;
 
 
-/*
- * Structure for storing "registered" color space prefix/ID
- */
+/* Structure for storing "registered" color space prefix/ID */
 typedef struct _XcmsRegColorSpaceEntry {
     const char *prefix; /* Color Space prefix (e.g., "CIEXYZ:") */
     XcmsColorFormat id; /* Color Space ID (e.g., XcmsCIEXYZFormat) */
 } XcmsRegColorSpaceEntry;
 
 
-/*
- * Xcms Per Display (i.e. connection) related data
- */
+/* Xcms Per Display (i.e. connection) related data */
 typedef struct _XcmsPerDpyInfo {
     XcmsCCC paDefaultCCC;      /* based on default visual of screen */
-                               /*
-                                * Pointer to an array of XcmsCCC structures, one for
-                                * each screen.
+                               /* Pointer to an array of XcmsCCC structures, one
+                                * for each screen.
                                 */
     XcmsCmapRec *pClientCmaps; /* Pointer to linked list of XcmsCmapRec's */
 
 } XcmsPerDpyInfo, *XcmsPerDpyInfoPtr;
 
-/*
- *	DEFINES
- */
+/* 	DEFINES */
 
 #define XDCCC_NUMBER 0x8000000L /* 2**27 per XDCCC */
 
@@ -158,9 +135,7 @@ typedef struct {
 } GRAY_SCCData;
 #endif /* GRAY */
 
-/*
- *	DEFINES
- */
+/* 	DEFINES */
 
 #define XDCCC_MATRIX_ATOM_NAME "XDCCC_LINEAR_RGB_MATRICES"
 #define XDCCC_CORRECT_ATOM_NAME "XDCCC_LINEAR_RGB_CORRECTION"
@@ -186,8 +161,7 @@ extern Status _XcmsResolveColorString(XcmsCCC ccc,
                                       XcmsColor *pColor_exact_return,
                                       XcmsColorFormat result_format);
 extern void _XUnresolveColor(XcmsCCC ccc, XColor *pXColor);
-/*
- *	DESCRIPTION
+/* 	DESCRIPTION
  *		Include file for defining the math macros used in the
  *		XCMS source.  Instead of using math library routines
  *		directly, XCMS uses macros so that based on the
@@ -212,9 +186,7 @@ double _XcmsCubeRoot(double a);
 double _XcmsSine(double a);
 double _XcmsSquareRoot(double a);
 
-/*
- *  DEFINES FOR GAMUT COMPRESSION AND QUERY ROUTINES
- */
+/* DEFINES FOR GAMUT COMPRESSION AND QUERY ROUTINES */
 #ifndef PI
 #ifdef M_PI
 #define PI M_PI

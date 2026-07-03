@@ -1,4 +1,5 @@
-/* Expose-event helpers shared between events.c and events-expose.c
+/*
+ * Expose-event helpers shared between events.c and events-expose.c
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

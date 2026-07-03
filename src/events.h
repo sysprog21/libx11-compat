@@ -9,28 +9,29 @@
 #define INTERNAL_EVENT_CODE 2
 /* Snapshot the replay target window's backing surface to a path. Carried on
  * SDL_USEREVENT.user.data1 (path, allocated by replay thread, freed by the
- * main-thread handler). Used by the in-process smoke-snapshot path to
- * bypass macOS screencapture, which deactivates NSApp briefly and stalls
- * the SDL event pump just long enough that synthetic input goes
- * undelivered.
+ * main-thread handler). Used by the in-process smoke-snapshot path to bypass
+ * macOS screencapture, which deactivates NSApp briefly and stalls the SDL event
+ * pump just long enough that synthetic input goes undelivered.
  */
 #define SNAPSHOT_EVENT_CODE 3
-/* Resize the replay target window. user.data1 carries width, user.data2
- * carries height, each as intptr_t. Runs synchronously on the main thread
- * (SDL_SetWindowSize is main-thread only on macOS). Used by the replay
- * engine's resize command so the smoke can exercise ViolaWWW's
- * ConfigureNotify reflow without depending on the OS window manager.
+/* Resize the replay target window. user.data1 carries width, user.data2 carries
+ * height, each as intptr_t. Runs synchronously on the main thread
+ * (SDL_SetWindowSize is main-thread only on macOS). Used by the replay engine's
+ * resize command so the smoke can exercise ViolaWWW's ConfigureNotify reflow
+ * without depending on the OS window manager.
  */
 #define RESIZE_EVENT_CODE 4
 /* Flush pending top-level backing textures to their SDL windows. Posted by the
  * drawing layer after X drawing operations that happen away from a blocking
- * XNextEvent/XFlush path, such as Motif popup menu expose redraws. */
+ * XNextEvent/XFlush path, such as Motif popup menu expose redraws.
+ */
 #define PRESENT_EVENT_CODE 5
 /* Set keyboard focus to the X subwindow under a replay-target-local point.
  * user.data1 carries the target-local x, user.data2 the y, each as intptr_t.
  * Runs synchronously on the main thread so the window-tree walk and
  * XSetInputFocus mutation never race with main-thread mutators. Used by the
- * replay engine's focus-at verb. */
+ * replay engine's focus-at verb.
+ */
 #define FOCUS_AT_EVENT_CODE 6
 
 #define HAS_EVENT_MASK(window, mask) \

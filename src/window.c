@@ -180,6 +180,27 @@ static void unrealizeTopLevelWindow(Window window)
     replayTargetForgetWindow(destroyedId);
 
     deleteWindowMapping(window);
+    /* Drop any cached GLX/EGL surface bound to this window before its SDL
+     * window (and, on Linux, the native X11 window behind it) is destroyed, so
+     * an EGL window surface never outlives the window it renders to. A later
+     * remap rebuilds the surface. The hook is NULL when the GLX layer is not
+     * loaded.
+     */
+    extern void (*glxDrawableDestroyedHook)(Window drawable);
+    if (glxDrawableDestroyedHook)
+        glxDrawableDestroyedHook(window);
+
+    /* Tear down the GLX Metal view (if any) before its SDL window, and clear
+     * the cache so a later remap creates a fresh one instead of reusing a stale
+     * view. Metal surface is macOS + SDL 2.0.12; elsewhere glxMetalView stays
+     * NULL. The guard matches src/glx.c and src/wrapper/sdl-wrapper.c.
+     */
+#if defined(__APPLE__) && SDL_VERSION_ATLEAST(2, 0, 12)
+    if (windowStruct->glxMetalView) {
+        SDL_Metal_DestroyView(windowStruct->glxMetalView);
+        windowStruct->glxMetalView = NULL;
+    }
+#endif
     SDL_DestroyWindow(windowStruct->sdlWindow);
     windowStruct->sdlWindow = NULL;
     windowStruct->needsPresent = False;
@@ -517,6 +538,30 @@ int XMapWindow(Display *display, Window window)
     mapRequestedChildren(display, window);
 
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    /* Under a real window manager the post-map ConfigureNotify carries a
+     * WM-adjusted geometry that differs from what the shell requested, and Xt
+     * uses that size change to run its post-realize layout pass, reconfiguring
+     * managed children and firing their resize procs. An embedded
+     * GLwDrawingArea only gets its initial XmNresizeCallback (where GL clients
+     * set glViewport/glFrustum) from that pass. With no window manager under
+     * SDL it never happens, so a GL widget renders with no viewport. Emulate it
+     * with a one-pixel size wobble on the shell: Xt ignores a same-size
+     * configure, so report width-1 then the true width. Both configures precede
+     * the Expose below, so no frame is drawn at the interim size (no flicker);
+     * the flexible drawing-area child absorbs the delta so the change reaches
+     * it. Top-level windows only; children are sized by their own managers. The
+     * event size is snapshotted from the struct at post time (see
+     * ConfigureNotify in src/events.c), hence the temporary size swap.
+     */
+    if (IS_TOP_LEVEL(window) && windowStruct->w > 1 && windowStruct->h > 1) {
+        unsigned int realW = windowStruct->w, realH = windowStruct->h;
+        windowStruct->w = realW - 1;
+        windowStruct->h = realH - 1;
+        postEvent(display, window, ConfigureNotify);
+        windowStruct->w = realW;
+        windowStruct->h = realH;
+        postEvent(display, window, ConfigureNotify);
+    }
     if (!windowStruct->inputOnly) {
         SDL_Rect exposeRect = {0, 0, windowStruct->w, windowStruct->h};
         postExposeEvent(display, window, &exposeRect, 1);

@@ -262,9 +262,7 @@ int XVendorRelease(Display *display)
     return VendorRelease(display);
 }
 
-/*
- * XListDepths - return info from connection setup
- */
+/* XListDepths - return info from connection setup */
 int *XListDepths(Display *dpy, int scrnum, int *countp)
 {
     Screen *scr;
