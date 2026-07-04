@@ -939,3 +939,49 @@ jobs:
       - name: ccache stats
         if: ${{ !cancelled() }}
         run: ccache --show-stats
+
+  # ---- GLX-over-EGL vs direct-EGL differential ----
+  # Unlike the screenshot gates above, this renders one fixed GLES2 scene through
+  # our GLX->EGL layer and through direct EGL on the SAME system Mesa driver under
+  # Xvfb, then asserts the two RGBA readbacks are byte-identical. Any difference is
+  # our GLX translation. No system-X11 build or screenshot capture is involved, so
+  # the job only needs Mesa's EGL/GLES plus Xvfb. Mirrors the SSH path in
+  # scripts/run-glx-differential-tests.py, run locally via GLX_DIFF_LOCAL=1.
+  glx-differential:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build + Mesa EGL/GLES dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} \
+            libegl-dev libgles-dev libgl1-mesa-dri xvfb
+
+      - name: Run GLX differential (local, Mesa under Xvfb)
+        env:
+          GLX_DIFF_LOCAL: "1"
+          GLX_DIFF_CC: clang
+        run: make check-differential-glx-linux
+
+      # Render the six unmodified Mesa xdemos through libx11-compat + gl4es over
+      # the system Mesa GLESv2 (surfaceless EGL under Xvfb) and assert each paints
+      # (geometry gate). Consolidates the gl4es / src-GL render coverage that used
+      # to run only on macOS + ANGLE onto the same Linux provider as the
+      # differential above.
+      - name: Render Mesa xdemos (gl4es -> system Mesa GLES, Xvfb)
+        run: make GLX=1 check-mesa-demos
+
+      - name: Upload GLX render outputs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: glx-differential
+          path: |
+            build/glx-diff-glx.rgba
+            build/glx-diff-egl.rgba
+            build/mesa-demo-*.png
+          if-no-files-found: warn
+          retention-days: 7

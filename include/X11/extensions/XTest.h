@@ -1,13 +1,13 @@
-/* libx11-compat XTest extension public surface.
+/*
+ * libx11-compat XTest extension public surface.
  *
  * Mirrors the API from libXtst (xorg). On real X11, XTest is implemented
- * server-side and an external client uses it to inject input events that
- * the server then distributes to every connected client. libx11-compat is
- * single-process (no IPC), so XTest here injects directly into the
- * calling process's SDL event queue, which is the same queue the local
- * vw / Motif application drains. Functionally equivalent: the fake event
- * is indistinguishable from a real user click on the way through
- * convertEvent().
+ * server-side and an external client uses it to inject input events that the
+ * server then distributes to every connected client. libx11-compat is
+ * single-process (no IPC), so XTest here injects directly into the calling
+ * process's SDL event queue, which is the same queue the local vw / Motif
+ * application drains. Functionally equivalent: the fake event is
+ * indistinguishable from a real user click on the way through convertEvent().
  */
 
 #ifndef _XTEST_H_
@@ -17,11 +17,11 @@
 #include <X11/Xfuncproto.h>
 #include <X11/extensions/xtestconst.h>
 
-/* Forward-declare XDevice as opaque. Callers wanting device-aware
- * XTestFake* variants must include XInput's <X11/extensions/XInput.h>
- * themselves. libx11-compat treats device-event entry points as stubs.
- * Guard against the typedef colliding with XInput.h, which defines the
- * same name. The xorgproto convention is to gate it on _XTYPEDEF_XDEVICE.
+/* Forward-declare XDevice as opaque. Callers wanting device-aware XTestFake*
+ * variants must include XInput's <X11/extensions/XInput.h> themselves.
+ * libx11-compat treats device-event entry points as stubs. Guard against the
+ * typedef colliding with XInput.h, which defines the same name. The xorgproto
+ * convention is to gate it on _XTYPEDEF_XDEVICE.
  */
 #ifndef _XTYPEDEF_XDEVICE
 #define _XTYPEDEF_XDEVICE

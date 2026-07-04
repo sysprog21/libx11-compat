@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -10,8 +11,19 @@ from pathlib import Path
 
 PUBLIC_API_RE = re.compile(
     r"^(X[A-Z]|XXorRegion|Xkb|Xcms|Xrm|Xmb|Xutf8|Xwc|XShm|XShape|"
-    r"XSync|XRender|XFixes|XDamage|XRR)"
+    r"XSync|XRender|XFixes|XDamage|XRR|glX)"
 )
+
+# GLX is an optional build (GLX=0 in the makefiles compiles src/glx.c out). When
+# it is disabled the glX* symbols are neither exported nor expected, so drop them
+# from both sides of the comparison.
+GLX_ENABLED = os.environ.get("LIBX11_COMPAT_GLX", "1") != "0"
+
+
+def _glx_filtered(symbols: set[str]) -> set[str]:
+    if GLX_ENABLED:
+        return symbols
+    return {s for s in symbols if not s.startswith("glX")}
 
 
 def run_nm(library: Path) -> str:
@@ -72,8 +84,8 @@ def main() -> int:
 
     library = Path(sys.argv[1])
     manifest = Path(sys.argv[2])
-    exported = exported_public_symbols(library)
-    covered = manifest_symbols(manifest)
+    exported = _glx_filtered(exported_public_symbols(library))
+    covered = _glx_filtered(manifest_symbols(manifest))
 
     missing = exported - covered
     stale = covered - exported

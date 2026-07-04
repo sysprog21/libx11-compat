@@ -881,10 +881,10 @@ static TTF_Font *openFallbackForCharSet(const char *family,
             TTF_CloseFont(font);
     }
     /* No single host font covers the whole requested charset (for example a
-     * Latin + CJK mix on a box without a CJK font). Real Xft never refuses
-     * the pattern here; it returns a base font and resolves the rest per
-     * glyph at draw time. Mirror that and hand back the best-effort family
-     * fallback instead of NULL so XftFontOpenPattern stays non-NULL.
+     * Latin + CJK mix on a box without a CJK font). Real Xft never refuses the
+     * pattern here; it returns a base font and resolves the rest per glyph at
+     * draw time. Mirror that and hand back the best-effort family fallback
+     * instead of NULL so XftFontOpenPattern stays non-NULL.
      */
     return compatFontOpenFamilyFallback(family, size);
 }

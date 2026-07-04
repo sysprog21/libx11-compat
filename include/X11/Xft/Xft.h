@@ -6,11 +6,11 @@
 #include <fontconfig/fontconfig.h>
 
 typedef unsigned int FT_UInt;
-/* FcEndian is a fontconfig type. When the host fontconfig header is
- * picked up alongside this shim (Xfig pkg-configs the host fontconfig
- * even when our libXft-compat resolves the Fc* / Xft* surface) the
- * upstream definition wins. Gate ours on the upstream header guard
- * macro so the duplicate enum / typedef does not collide.
+/* FcEndian is a fontconfig type. When the host fontconfig header is picked up
+ * alongside this shim (Xfig pkg-configs the host fontconfig even when our
+ * libXft-compat resolves the Fc* / Xft* surface) the upstream definition wins.
+ * Gate ours on the upstream header guard macro so the duplicate enum / typedef
+ * does not collide.
  */
 #ifndef _FCFREETYPE_H_
 #ifndef _FONTCONFIG_H_
@@ -39,9 +39,9 @@ typedef FcResult XftResult;
 #define XFT_VERSION ((XFT_MAJOR * 10000) + (XFT_MINOR * 100) + XFT_REVISION)
 #define XftVersion XFT_VERSION
 
-/* Real libXft mostly re-exports fontconfig property names but also
- * defines a handful of its own. Aliasing keeps client code that uses
- * either spelling source-compatible against this shim.
+/* Real libXft mostly re-exports fontconfig property names but also defines a
+ * handful of its own. Aliasing keeps client code that uses either spelling
+ * source-compatible against this shim.
  */
 #define XFT_FAMILY FC_FAMILY
 #define XFT_STYLE FC_STYLE
@@ -219,12 +219,11 @@ void XftDrawRect(XftDraw *draw,
                  unsigned int width,
                  unsigned int height);
 
-/* Legacy Xft 1.x pattern surface. Real libXft typedefs XftPattern /
- * XftMatrix to FcPattern / FcMatrix and aliases each XftPattern*
- * mutator to the matching FcPattern* mutator; Xfig and a couple of
- * older Athena toolkits use the prefixed names. Keeping these as
- * macros (not separate symbols) keeps the link contract focused on
- * the Fc* surface our libXft-compat actually exports.
+/* Legacy Xft 1.x pattern surface. Real libXft typedefs XftPattern / XftMatrix
+ * to FcPattern / FcMatrix and aliases each XftPattern* mutator to the matching
+ * FcPattern* mutator; Xfig and a couple of older Athena toolkits use the
+ * prefixed names. Keeping these as macros (not separate symbols) keeps the link
+ * contract focused on the Fc* surface our libXft-compat actually exports.
  */
 typedef FcPattern XftPattern;
 typedef FcMatrix XftMatrix;

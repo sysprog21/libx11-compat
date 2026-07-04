@@ -84,6 +84,10 @@ but each exercises behavior that small examples do not reach.
   Menu posting, pointer grabs, focus changes, text rendering, resource lookups, and selected demo workflows are covered by local replay smoke tests.
   Screenshot-based differential checks compare selected paths against native X11/Motif and continue to flag visible layout or repaint regressions.
   Some widget paths still expose layout artifacts or map/expose propagation gaps that require further work.
+
+  Motif's GLw OpenGL-widget path runs too: the classic `paperplane` demo drives a `GLwDrawingArea` through the in-tree GLX-over-EGL layer, so live Motif menus and an animated 3D scene render together with no X server and no desktop-GL driver (desktop GL 1.x/2.x is translated by the bundled [gl4es](https://github.com/ptitSeb/gl4es) to [ANGLE](https://github.com/google/angle)'s GLES on Metal, with surfaceless Mesa as the Linux provider). See [GLX and OpenGL](#glx-and-opengl) for the capability and its limits.
+
+  <a href="assets/paperplane.png"><img src="assets/paperplane.png" alt="Motif paperplane GLw/GLX demo running through libx11-compat on macOS" width="420"></a>
 - [ViolaWWW](https://en.wikipedia.org/wiki/ViolaWWW): the 1992-era Motif web browser builds and runs out of the consolidated `build/` tree,
   loads HTTP pages over the network,
   renders inline XPM images through `libXpm-compat`,
@@ -210,9 +214,25 @@ The exported public Xlib surface is listed in [`tests/api-symbols.txt`](tests/ap
 It covers window, drawable, GC, pixmap, image, event, input, atom, property, color, font, cursor, region, X Resource Manager, and selected Xt/Motif-adjacent compatibility paths for the cases that real Xlib clients exercise.
 Selection, property, and resource-manager support is partial;
 MIT-SHM is a thin wrapper over the regular image path;
-GLX, Xcms, and input methods are intentionally stubbed.
+Xcms and input methods are intentionally stubbed.
+GLX is supported through an in-process translation onto EGL; see [GLX and OpenGL](#glx-and-opengl) below for the capability and its limits.
 
 See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the per-subsystem status table, surface notes (window manager hints, raster ops, mouse wheel mapping), and compatibility limits.
+
+### GLX and OpenGL
+
+GLX 1.3 is implemented in process as a thin translation onto EGL, resolved at runtime to a provider: ANGLE (GLES on Metal) on macOS, or surfaceless Mesa on Linux (also the macOS fallback). With no provider present every `glX*` entry point returns a safe null/false and `XQueryExtension` keeps reporting GLX absent, so a non-GLX client is unaffected. `GLX=0` compiles the layer out entirely.
+
+Desktop GL 1.x/2.x is translated to GLES2 by the bundled [gl4es](https://github.com/ptitSeb/gl4es); its public `gl*` are baked into a static archive (`libgl4es.a`) that a client links directly, so a demo binary needs no dynamic desktop-GL library. Rendering works headless (an offscreen pbuffer is composited back to the window; `SDL_VIDEODRIVER=dummy` drives CI) and on screen through an ANGLE `CAMetalLayer` on macOS. It is exercised by the unmodified Mesa `xdemos` (glxgears, glxdemo, glxheads, sharedtex, multictx, glxswapcontrol) and the Motif `paperplane` GLw demo shown above.
+
+Limitations:
+- Not the GLX wire protocol; there is no indirect or networked GLX. It is in-process only.
+- No GLVND dispatch. A desktop-GL client that resolves `gl*` through the system GLVND / `libGL` dispatcher (for example `glxinfo`, or anything that `dlopen`s `libGL`) does not route into the translation: those `gl*` calls never reach the EGL context. A client renders only if its `gl*` bind to the linked gl4es archive, directly or through `glXGetProcAddress`. So this drives GLX clients whose OpenGL goes through gl4es, not arbitrary desktop-GL binaries.
+- GLES feature ceiling. Only what gl4es maps onto GLES2/3, and what the provider exposes, is available; desktop-GL features beyond that are not.
+- Shared and multi-context rendering works (each `GLXContext` gets its own gl4es state), but some gl4es cross-context caches (shader programs, FBOs, queries) are only partially separated, so unusual object-sharing patterns can still misrender.
+- macOS specifics: ANGLE is opt-in (`make build-angle`), and the GL window is pinned to a 1:1 point-to-pixel drawable, so it fills the window at logical (non-native Retina) resolution.
+
+Treat GLX here as a migration bridge for GLX+Motif/GLw and other gl4es-linkable clients, not a general-purpose OpenGL runtime.
 
 ## Porting an Existing Xlib Client
 

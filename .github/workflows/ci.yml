@@ -459,6 +459,33 @@ jobs:
       - name: Build Motif demos
         run: make motif-demos -j"$(nproc)"
 
+      # Render unmodified paperplane (Motif GLwDrawingArea + immediate-mode
+      # desktop GL) through libx11-compat over the system Mesa provider
+      # (surfaceless EGL under Xvfb) and assert its canvas paints, not a black
+      # frame. This is the one GL render test that needs the Motif build, so it
+      # rides this job; the Mesa EGL/GLES provider deps are pulled in here since
+      # the rest of the Motif build does not need them. Exercises the
+      # offscreen-pbuffer readback/composite path for a child GL widget.
+      - name: Render paperplane (Motif GLwDrawingArea, surfaceless Mesa)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libegl-dev libgles-dev libgl1-mesa-dri xvfb
+          echo "provider libEGL: $(clang -print-file-name=libEGL.so)"
+          ls -l "$(clang -print-file-name=libEGL.so)" 2>&1 || true
+          make check-paperplane-linux || {
+            echo "=== glx-snapshot-run.log ==="; cat /tmp/glx-snapshot-run.log 2>/dev/null || true
+            exit 1
+          }
+
+      - name: Upload paperplane render on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: paperplane-linux
+          path: build/paperplane-linux.png
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Run Motif demo smoke checks
         env:
           SDL_VIDEODRIVER: dummy

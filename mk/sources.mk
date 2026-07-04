@@ -1,5 +1,11 @@
 SRCS := $(wildcard src/*.c) $(wildcard src/path/*.c)
 
+# GLX (src/glx.c + src/egl-wrapper.c) is optional; drop it when GLX=0. See the
+# GLX toggle note in mk/config.mk.
+ifneq ($(GLX),1)
+SRCS := $(filter-out src/glx.c src/egl-wrapper.c,$(SRCS))
+endif
+
 # Upstream libX11 translation units staged by mk/upstream-headers.mk via
 # scripts/sync-upstream-headers.py. The Makefile compiles them in place so
 # the upstream tree is the single source of truth for the libX11 internals

@@ -1,8 +1,8 @@
 #ifndef _STD_COLORS_H_
 #define _STD_COLORS_H_
 
-// Values taken from http://cgit.freedesktop.org/xorg/app/rgb/tree/rgb.txt
-// Names must be all lowercase, names which are missing spaces are taken out
+// Values taken from http://cgit.freedesktop.org/xorg/app/rgb/tree/rgb.txt Names
+// must be all lowercase, names which are missing spaces are taken out
 
 typedef struct {
     char *name;

@@ -1,0 +1,21 @@
+# GNU ld --dynamic-list: the symbols a statically-linked gl4es client must expose
+# so libx11-compat can find them via dlsym(RTLD_DEFAULT) at runtime (see
+# src/glx.c). The Linux/Mesa counterpart of mk/mesa-demos.exports: --dynamic-list
+# adds exactly these to the executable's dynamic symbol table, leaving everything
+# else local, so dlsym sees them without --export-dynamic dumping the whole
+# ~979-entry gl* table into the dynsym.
+#
+# initialize_gl4es and set_getprocaddress wire the layer; glFlush drains gl4es's
+# batch before the composite readback (without it a sparse single-frame client
+# like glxdemo reads back blank). NewGLState/ActivateGLState/DeleteGLState give
+# each GLXContext its own gl4es glstate so a second non-sharing context (multictx,
+# sharedtex) does not draw with handles bound to another EGLContext. No leading
+# underscore here, unlike the Mach-O export list: ELF symbol names have none.
+{
+    initialize_gl4es;
+    set_getprocaddress;
+    glFlush;
+    NewGLState;
+    ActivateGLState;
+    DeleteGLState;
+};

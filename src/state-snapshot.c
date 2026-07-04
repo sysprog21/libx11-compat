@@ -1,4 +1,5 @@
-/* Replay-time state introspection.
+/*
+ * Replay-time state introspection.
  *
  * Marshals the in-process focus, grab, mapped-window, geometry and
  * named-property surface into a UiSnapshot struct, serialized to JSON. The

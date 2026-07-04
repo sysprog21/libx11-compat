@@ -1,5 +1,11 @@
 # Generic build rules.
 
+# Remove a target whose recipe failed or was interrupted: a rule that redirects
+# with > $@ (generated headers, alias assembly, flattened wrap sources) would
+# otherwise leave a truncated file whose mtime looks up to date, so the next make
+# compiles garbage. Applies to every rule in the build.
+.DELETE_ON_ERROR:
+
 # Verbosity: make V=1 shows full commands.
 ifeq ($(V),1)
   Q :=

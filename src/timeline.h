@@ -5,14 +5,14 @@
 #include <X11/Xlib.h>
 #include "sdl-compat.h"
 
-/* Stable JSONL trace of X events, window lifecycle, present activity, focus
- * and grab transitions. Gated on LIBX11_COMPAT_TIMELINE=1; off in release
- * builds the helpers compile to a single env-var-cached load + branch so the
- * tap call sites stay cheap.
+/* Stable JSONL trace of X events, window lifecycle, present activity, focus and
+ * grab transitions. Gated on LIBX11_COMPAT_TIMELINE=1; off in release builds
+ * the helpers compile to a single env-var-cached load + branch so the tap call
+ * sites stay cheap.
  *
  * Per-kind atomic counters (read via timelineCounter) back the in-process
- * convergence detector even when the file writer is disabled; the counters
- * are always live so an embedded wait-converge replay verb works against an
+ * convergence detector even when the file writer is disabled; the counters are
+ * always live so an embedded wait-converge replay verb works against an
  * untapped build.
  */
 
@@ -51,10 +51,9 @@ typedef enum {
 Bool timelineEnabled(void);
 uint64_t timelineNowMs(void);
 
-/* Emit one JSON line. payloadJson, if non-NULL and non-empty, is spliced as
- * a trailing fragment of the JSON object (must begin with ',' and contain
- * raw escaped JSON members, e.g. ",\"x\":12"). Safe to call with payload
- * == NULL.
+/* Emit one JSON line. payloadJson, if non-NULL and non-empty, is spliced as a
+ * trailing fragment of the JSON object (must begin with ',' and contain raw
+ * escaped JSON members, e.g. ",\"x\":12"). Safe to call with payload == NULL.
  */
 void timelineEmit(TimelineKind kind, Window window, const char *payloadJson);
 
@@ -76,8 +75,8 @@ void timelineTapSetInputFocus(Window window, int revertTo);
 void timelineTapGrabPointer(Window window, Bool active);
 void timelineTapGrabKeyboard(Window window, Bool active);
 
-/* Per-kind atomic counter (monotonically increasing). Used by the
- * convergence detector + summary assertions.
+/* Per-kind atomic counter (monotonically increasing). Used by the convergence
+ * detector + summary assertions.
  */
 uint64_t timelineCounter(TimelineKind kind);
 
@@ -93,7 +92,7 @@ uint64_t timelineCounter(TimelineKind kind);
  * Returns:
  *   1 -- converged
  *   0 -- timed out without ever reaching quiet
- *  -1 -- divergent (logged as a "diverged" record)
+ * -1 -- divergent (logged as a "diverged" record)
  */
 int timelineWaitConverge(uint64_t anchorMs,
                          uint64_t bucketMs,

@@ -196,6 +196,39 @@ SDL_WRAP(SDL_Texture *,
 SDL_WRAP(SDL_bool, SDL_GetRelativeMouseMode, (void), ())
 SDL_WRAP(Uint32, SDL_GetWindowFlags, (SDL_Window * window), (window))
 SDL_WRAP(SDL_Window *, SDL_GetWindowFromID, (Uint32 id), (id))
+/* Metal view/layer, used by the GLX layer to give ANGLE a CAMetalLayer window
+ * surface for on-screen rendering (src/glx.c). macOS-only; SDL_Metal_GetLayer
+ * is a 2.0.14 addition (CreateView/DestroyView are 2.0.12), absent on node11's
+ * SDL2 2.0.10. Gate all three at 2.0.14 since they are used together, matching
+ * the on-screen path's guard in src/glx.c.
+ */
+#if defined(__APPLE__) && SDL_VERSION_ATLEAST(2, 0, 14)
+SDL_WRAP(SDL_MetalView, SDL_Metal_CreateView, (SDL_Window * window), (window))
+SDL_WRAP(void *, SDL_Metal_GetLayer, (SDL_MetalView view), (view))
+SDL_WRAP_VOID(SDL_Metal_DestroyView, (SDL_MetalView view), (view))
+#endif
+
+/* On Linux/X11 the GLX layer needs the SDL window's native X11 window to create
+ * an on-screen EGL window surface (src/glx.c). Kept here so SDL_syswm.h and its
+ * X11 headers stay out of the compat Xlib translation unit; the helper hands
+ * back just the window id (0 when the window is not X11, e.g. the dummy
+ * driver).
+ */
+#if defined(__linux__)
+#include <SDL_syswm.h>
+SDL_WRAP(SDL_bool,
+         SDL_GetWindowWMInfo,
+         (SDL_Window * window, SDL_SysWMinfo *info),
+         (window, info))
+unsigned long sdlX11WindowHandle(SDL_Window *window)
+{
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(window, &info) && info.subsystem == SDL_SYSWM_X11)
+        return (unsigned long) info.info.x11.window;
+    return 0;
+}
+#endif
 SDL_WRAP(Uint32, SDL_GetWindowID, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_GetWindowPosition,
               (SDL_Window * window, int *x, int *y),

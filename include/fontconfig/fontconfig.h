@@ -96,11 +96,10 @@ typedef struct _FcValue {
 #define FC_WEIGHT_MEDIUM 100
 #define FC_WEIGHT_BOLD 200
 
-/* Maximum bytes needed to encode any UTF-8 codepoint. The RFC-3629
- * range stops at 4, but fontconfig sizes scratch buffers off the
- * original 6-byte UTF-8 spec and downstream clients (Xfig) declare
- * arrays of this size. Keep the larger bound so caller-supplied
- * buffers always have room.
+/* Maximum bytes needed to encode any UTF-8 codepoint. The RFC-3629 range stops
+ * at 4, but fontconfig sizes scratch buffers off the original 6-byte UTF-8 spec
+ * and downstream clients (Xfig) declare arrays of this size. Keep the larger
+ * bound so caller-supplied buffers always have room.
  */
 #define FC_UTF8_MAX_LEN 6
 

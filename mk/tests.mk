@@ -7,6 +7,14 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
               $(OUT)/tests/test-libxpm-link \
               $(OUT)/tests/test-xft-link \
               $(OUT)/tests/test-xtest
+# The GLX tests only exist when the optional GLX layer is built (GLX=1).
+# test-glx-link covers the no-provider degrade path; test-glx-provider drives the
+# full GLX->EGL translation against the in-tree fake EGL provider.
+FAKE_EGL_LIB := $(OUT)/tests/libEGL-fake.so
+ifeq ($(GLX),1)
+  CHECK_BINS += $(OUT)/tests/test-glx-link $(OUT)/tests/test-glx-provider \
+                $(OUT)/tests/test-glx-init-fail
+endif
 # The libXaw link test only runs in-process on Linux. The macOS dyld loader
 # hangs before main() while resolving the libXaw -> libXt -> libXmu chain
 # under SDL_VIDEODRIVER=dummy (see TODO.md "Athena widget stack" Tier 1).
@@ -32,6 +40,11 @@ endif
 
 .PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths
 
+DIFFERENTIAL_TARGETS := check-differential-motif check-differential-violawww
+ifeq ($(GLX),1)
+  DIFFERENTIAL_TARGETS += check-differential-glx-linux
+endif
+
 ## Run only the in-tree binary regression tests + api-symbol coverage.
 ## This is the cheap, sanitizer-friendly subset: no motif autoconf, no
 ## ViolaWWW build, no replay-driven UI smoke. Use this from CI sanitize
@@ -45,7 +58,7 @@ check-unit: $(CHECK_BINS)
 		$(TEST_RUNTIME_ENV) SDL_VIDEODRIVER=dummy $$test_bin; \
 	done
 	@printf "$(BLUE)RUN$(RESET) tests/check-api-symbols.py\n"
-	$(Q)$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
+	$(Q)LIBX11_COMPAT_GLX=$(GLX) $(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
 
 ## Full local regression suite: unit tests, motif link/demos gates, the
 ## replay smoke tier, and the SSH-backed differential screenshots. The
@@ -57,13 +70,38 @@ check: check-unit
 	$(Q)$(MAKE) --no-print-directory check-link-motif
 	@printf "$(BLUE)RUN$(RESET) check-demos-motif\n"
 	$(Q)$(MAKE) --no-print-directory check-demos-motif
+	@printf "$(BLUE)RUN$(RESET) check-glx\n"
+	$(Q)$(MAKE) --no-print-directory check-glx
 	@printf "$(BLUE)RUN$(RESET) check-smoke\n"
 	$(Q)$(MAKE) --no-print-directory check-smoke
 	@printf "$(BLUE)RUN$(RESET) check-differential\n"
 	$(Q)$(MAKE) --no-print-directory check-differential
 
+## GLX render tier: the desktop-GL-over-EGL/ANGLE screenshot gates (the Mesa
+## xdemos and Motif paperplane). Both sub-targets self-skip when GLX=0 or the
+## runtime provider (ANGLE) is absent, so this is safe in any configuration and
+## is the single entry point for the GLX rendering checks.
+.PHONY: check-glx
+check-glx:
+	@printf "$(BLUE)RUN$(RESET) check-mesa-demos\n"
+	$(Q)$(MAKE) --no-print-directory check-mesa-demos
+	@printf "$(BLUE)RUN$(RESET) check-paperplane-macos\n"
+	$(Q)$(MAKE) --no-print-directory check-paperplane-macos
+	@printf "$(BLUE)RUN$(RESET) check-gl4es-wrap\n"
+	$(Q)$(MAKE) --no-print-directory check-gl4es-wrap
+
 ## Run all system-libX11-vs-libx11-compat differential checks
-check-differential: check-differential-motif check-differential-violawww
+check-differential: $(DIFFERENTIAL_TARGETS)
+
+## GLX differential: render one fixed GLES2 scene through our GLX layer and
+## through direct EGL on the same system Mesa driver under Xvfb, and assert the
+## readbacks are identical (see scripts/run-glx-differential-tests.py). Runs over
+## SSH to a Linux host by default; GLX_DIFF_LOCAL=1 runs it on this host instead
+## (the CI path, where the runner already has Mesa + Xvfb).
+.PHONY: check-differential-glx-linux
+check-differential-glx-linux:
+	$(Q)$(PYTHON) scripts/run-glx-differential-tests.py \
+	    $(if $(filter 1 yes true,$(GLX_DIFF_LOCAL)),--local)
 
 ## Build the Athena libXaw link-test binary.
 check-link-xaw: $(OUT)/tests/test-libxaw-link
@@ -73,7 +111,7 @@ symbol-coverage: $(OUT)/tests/symbol-coverage api-symbol-coverage
 	$(TEST_RUNTIME_ENV) SDL_VIDEODRIVER=dummy $(OUT)/tests/symbol-coverage
 
 api-symbol-coverage: $(TARGET) tests/api-symbols.txt tests/check-api-symbols.py
-	$(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
+	LIBX11_COMPAT_GLX=$(GLX) $(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
 
 ## Run all local benchmark suites
 bench:
@@ -164,6 +202,26 @@ $(OUT)/tests/symbol-coverage: tests/symbol-coverage.c $(TARGET) $(XFT_COMPAT_TAR
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(TARGET) $(XFT_COMPAT_TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+# The fake EGL provider is a standalone loadable object (no libX11-compat link);
+# test-glx-provider dlopens it at runtime via LIBX11_COMPAT_EGL. The absolute
+# path is baked in so the test resolves it regardless of the working directory.
+$(FAKE_EGL_LIB): tests/fake-egl.c
+	@mkdir -p $(dir $@)
+	@echo "  LD      $@"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) -shared -o $@ $<
+
+$(OUT)/tests/test-glx-provider: tests/test-glx-provider.c $(TARGET) $(FAKE_EGL_LIB)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) -DFAKE_EGL_PATH=\"$(abspath $(FAKE_EGL_LIB))\" \
+	    $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+$(OUT)/tests/test-glx-init-fail: tests/test-glx-init-fail.c $(TARGET) $(FAKE_EGL_LIB)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) -DFAKE_EGL_PATH=\"$(abspath $(FAKE_EGL_LIB))\" \
+	    $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)

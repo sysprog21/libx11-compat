@@ -1,4 +1,5 @@
-/* EWMH ClientMessage dispatch
+/*
+ * EWMH ClientMessage dispatch
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

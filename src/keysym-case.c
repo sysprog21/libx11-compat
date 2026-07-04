@@ -1,4 +1,5 @@
-/* KeySym case folding
+/*
+ * KeySym case folding
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT
@@ -26,12 +27,13 @@
 
 static void UCSConvertCase(register unsigned code, KeySym *lower, KeySym *upper)
 {
-    /* Case conversion for UCS, as in Unicode Data version 4.0.0. */
-    /* NB: Only converts simple one-to-one mappings. */
+    /* Case conversion for UCS, as in Unicode Data version 4.0.0. NB: Only
+     * converts simple one-to-one mappings.
+     */
 
-    /* Tables are used where they take less space than     */
-    /* the code to work out the mappings. Zero values mean */
-    /* undefined code points.                              */
+    /* Tables are used where they take less space than the code to work out the
+     * mappings. Zero values mean undefined code points.
+     */
 
     static unsigned short const IPAExt_upper_mapping[] = {
         /* part only */

@@ -1,4 +1,5 @@
-/* Window property storage and retrieval
+/*
+ * Window property storage and retrieval
  *
  * Copyright 2026 libx11-compat contributors
  * SPDX-License-Identifier: MIT

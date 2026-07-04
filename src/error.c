@@ -156,8 +156,7 @@ void freeLastRequestStorage(void)
         SDL_UnlockMutex(lk);
         SDL_DestroyMutex(lk);
     } else {
-        /* Lock never created (SDL_CreateMutex failed); still drain the list.
-         */
+        /* Lock never created (SDL_CreateMutex failed); still drain the list. */
         LastRequestEntry *e = lastRequestList;
         lastRequestList = NULL;
         while (e) {

@@ -1,4 +1,5 @@
-/* Definitions for symbols upstream libX11 expects from XlibInt.c and the
+/*
+ * Definitions for symbols upstream libX11 expects from XlibInt.c and the
  * lcWrap/lcConv i18n helpers, which libx11-compat does not compile.
  *
  * Copyright 2026 libx11-compat contributors
@@ -45,9 +46,9 @@ LIBX11_COMPAT_HIDDEN void (*_XUnlockMutex_fn)(LockInfoPtr
                                               ) = NULL;
 LIBX11_COMPAT_HIDDEN xthread_t (*_Xthread_self_fn)(void) = NULL;
 
-/* lcWrap.c owns _Xi18n_lock and lcConv.c owns _conv_lock in upstream;
- * neither file is compiled here, so locking.c initializes through these
- * stubs at XInitThreads() time.
+/* lcWrap.c owns _Xi18n_lock and lcConv.c owns _conv_lock in upstream; neither
+ * file is compiled here, so locking.c initializes through these stubs at
+ * XInitThreads() time.
  */
 LIBX11_COMPAT_HIDDEN LockInfoPtr _Xi18n_lock = NULL;
 LIBX11_COMPAT_HIDDEN LockInfoPtr _conv_lock = NULL;

@@ -13,7 +13,8 @@ typedef enum {
     COLORMAP = 7,
     CLOSED_FONT = 8,
     CLOSED_PIXMAP = 9,
-    CLOSED_WINDOW = 10
+    CLOSED_WINDOW = 10,
+    GLX_PBUFFER_RESOURCE = 11
 } XResourceType;
 
 typedef struct {
@@ -35,12 +36,11 @@ XID_Struct *getXidStruct(XID id);
 #define GET_XID_TYPE(id) (getXidStruct(id)->type)
 #define GET_XID_VALUE(id) (getXidStruct(id)->dataPointer)
 
-/* GET_WINDOW_STRUCT dereferences the XID's data pointer with no NULL
- * guard. Debug builds trip an abort on misuse so the offending call
- * site shows up in the test log instead of a SIGSEGV in unrelated
- * frames. Release builds keep the bare deref to avoid any overhead on
- * the hot path. Uses a GCC/Clang statement expression to evaluate the
- * argument once.
+/* GET_WINDOW_STRUCT dereferences the XID's data pointer with no NULL guard.
+ * Debug builds trip an abort on misuse so the offending call site shows up in
+ * the test log instead of a SIGSEGV in unrelated frames. Release builds keep
+ * the bare deref to avoid any overhead on the hot path. Uses a GCC/Clang
+ * statement expression to evaluate the argument once.
  */
 #ifdef DEBUG_LIBX11_COMPAT
 #include <stdio.h>

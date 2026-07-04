@@ -1,0 +1,32 @@
+# Symbols a statically-linked gl4es client must expose so libx11-compat can find
+# them via dlsym(RTLD_DEFAULT) at runtime (see src/glx.c). Fed to the macOS
+# linker as -exported_symbols_list, this is the ONLY thing the demo exports: it
+# hides the ~979 public gl* and all gl4es internals that the static link would
+# otherwise dump into the binary's global symbol table, and (as export roots,
+# alongside the executable entry point) lets -dead_strip drop the unreachable
+# code with them.
+#
+# initialize_gl4es and set_getprocaddress wire the layer, and glFlush drains
+# gl4es's batch before the composite readback. glReadPixels and glPixelStorei are
+# taken from the provider (ANGLE), not the client, so are not listed. Leading
+# underscores are the Mach-O symbol spelling.
+#
+# NewGLState/ActivateGLState/DeleteGLState let libx11-compat give each GLXContext
+# its own gl4es glstate and switch it at glXMakeCurrent. Without them, gl4es falls
+# back to a single global glstate whose GLES program/VBO/texture handles are bound
+# to whichever EGLContext was current when they were built; a second, non-sharing
+# context (mesa multictx, sharedtex) then draws with handles invalid in its own
+# EGLContext and renders nothing. dlsym(RTLD_DEFAULT) only sees exported symbols,
+# so they must be listed here for the per-context switch to engage.
+#
+# Limitation, by design: because only these are exported, glXGetProcAddress in
+# libx11-compat (which resolves gl* via dlsym(RTLD_DEFAULT)) cannot hand a demo
+# its own statically-linked gl* aliases. The mesa xdemos call gl* directly (bound
+# at link time), so this never bites them; a client that instead resolved gl*
+# through glXGetProcAddress would need those symbols exported too.
+_initialize_gl4es
+_set_getprocaddress
+_glFlush
+_NewGLState
+_ActivateGLState
+_DeleteGLState

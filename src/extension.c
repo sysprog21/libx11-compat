@@ -60,6 +60,13 @@ Bool XQueryExtension(Display *display,
                      int *first_error_return)
 {
     (void) display;
+    /* Deliberately do NOT advertise "GLX" here. Apps that want our GLX layer
+     * use glXQueryExtension (which is provider-aware). Reporting GLX present
+     * through the generic probe steers real toolkits into a GLX-protocol path:
+     * on any host with real GL/GLX loaded in-process (node11 has a system
+     * libEGL) that path issues X_GLXGetVisualConfigs and dies. Never break
+     * userspace.
+     */
     if (name && !strcmp(name, SHAPENAME)) {
         if (major_opcode_return)
             *major_opcode_return = 129;

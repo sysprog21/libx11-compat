@@ -45,7 +45,12 @@ while IFS= read -r -d '' f; do
         grep -nE "$dangerous_pp" "$f" | grep -vE "$comment_only"
         failed=1
     fi
-done < <(git ls-files -z -- 'src/*.c' 'src/*.h' 'include/X11/*.h' 'include/X11/**/*.h')
+    # src/GL is vendored gl4es (upstream desktop-GL-to-GLES translation, see
+    # src/GL/README.md); it legitimately uses sprintf/strcpy/atoi and friends in its
+    # own style, and rewriting it would break re-diffing against upstream. Exclude it
+    # like examples/ and tests/, so the ban applies only to our own code.
+done < <(git ls-files -z -- 'src/*.c' 'src/*.h' ':!src/GL' \
+    'include/X11/*.h' 'include/X11/**/*.h')
 
 if [ $failed -eq 0 ]; then
     echo "Security checks passed."

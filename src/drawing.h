@@ -69,21 +69,27 @@ void putPixel(SDL_Surface *surface,
               Uint32 pixel);
 Uint32 getPixel(SDL_Surface *surface, unsigned int x, unsigned int y);
 SDL_Renderer *getWindowRenderer(Window window);
+unsigned char *glxAcquireCompositeReadback(Window window, size_t need);
+void glxCompositeToWindow(Window window,
+                          const unsigned char *rgba,
+                          int width,
+                          int height);
 SDL_Surface *getRenderSurface(SDL_Renderer *renderer);
 SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
                                   const SDL_Rect *source);
-/* Number of clip iterations to perform when drawing into "d" through "gc".
- * Each iteration is one (gc clip rect) x (visible-region rect) pair. Returns 0
- * when the gc clip excludes all pixels or "d"'s sibling occlusion fully covers
- * it, so callers can short-circuit the draw. "d" may be None or a Pixmap, in
- * which case only gc clipping is considered; sibling occlusion only applies to
- * windows.
+/* Number of clip iterations to perform when drawing into "d" through "gc". Each
+ * iteration is one (gc clip rect) x (visible-region rect) pair.
+ *
+ * Returns 0 when the gc clip excludes all pixels or "d"'s sibling occlusion
+ * fully covers it, so callers can short-circuit the draw. "d" may be None or a
+ * Pixmap, in which case only gc clipping is considered; sibling occlusion only
+ * applies to windows.
  */
 int getGcClipIterationCount(GC gc, Drawable d);
 void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip);
 /* Pair "iteration" of getGcClipIterationCount: intersect the gc clip rect, the
- * cached parent-chain drawable clip, and "d"'s sibling visible region (when
- * "d" is a window), then push the result through SDL_RenderSetClipRect.
+ * cached parent-chain drawable clip, and "d"'s sibling visible region (when "d"
+ * is a window), then push the result through SDL_RenderSetClipRect.
  * Returns False when the intersected region is empty so the caller skips draw
  * work for this iteration.
  */
@@ -92,10 +98,10 @@ Bool setGcClipForIteration(SDL_Renderer *renderer,
                            int iteration,
                            Drawable d);
 void clearRendererClip(SDL_Renderer *renderer);
-/* Flush the per-primitive cache that pairs a Drawable with its resolved
- * visible region and rect count. Called from invalidateVisibleRegionSubtree so
- * the cached pointer cannot outlive the underlying pixman rect storage across
- * a region recomputation.
+/* Flush the per-primitive cache that pairs a Drawable with its resolved visible
+ * region and rect count. Called from invalidateVisibleRegionSubtree so the
+ * cached pointer cannot outlive the underlying pixman rect storage across a
+ * region recomputation.
  */
 void invalidatePrimitiveClipCache(void);
 void drawWindowDataToScreen(void);
@@ -132,12 +138,12 @@ void invalidateTextStampsForDrawableRect(Drawable drawable,
 void flushTextStampsForWindow(Window window);
 void freeTextStamps(void);
 
-/* Single-slot (renderer, gc, generation) cache. The shim is single
- * threaded and tends to issue runs of draw calls against one renderer
- * with the same GC, so a one-deep cache catches most redundant pushes.
- * applySdlDrawState pushes the requested blend mode + color only when
- * the cached state diverges; invalidateGcStateCache is called from
- * XFreeGC so stale GC pointers don't fool a future generation match.
+/* Single-slot (renderer, gc, generation) cache. The shim is single threaded and
+ * tends to issue runs of draw calls against one renderer with the same GC, so a
+ * one-deep cache catches most redundant pushes. applySdlDrawState pushes the
+ * requested blend mode + color only when the cached state diverges;
+ * invalidateGcStateCache is called from XFreeGC so stale GC pointers don't fool
+ * a future generation match.
  */
 void applySdlDrawState(SDL_Renderer *renderer,
                        GC gc,
@@ -145,40 +151,40 @@ void applySdlDrawState(SDL_Renderer *renderer,
                        unsigned long color);
 void invalidateGcStateCache(GC gc);
 /* Call after any direct SDL_SetRenderDrawColor / SDL_SetRenderDrawBlendMode
- * that does not go through applySdlDrawState. Otherwise the next cached
- * apply may see a "matching" cache entry and skip the SDL push even
- * though the renderer's real state has drifted.
+ * that does not go through applySdlDrawState. Otherwise the next cached apply
+ * may see a "matching" cache entry and skip the SDL push even though the
+ * renderer's real state has drifted.
  */
 void invalidateSdlDrawStateCache(void);
 
 /* Shape-mask post-process for draw primitives.
  *
- * captureShapeMaskBaseline returns NULL on the fast path (drawable is not
- * a window, or the window has no shape mask installed). Otherwise it
- * returns a freshly allocated SDL_Surface holding the pre-draw pixels
- * of `rect` so the caller can restore mask-excluded pixels afterwards.
+ * captureShapeMaskBaseline returns NULL on the fast path (drawable is not a
+ * window, or the window has no shape mask installed). Otherwise it returns a
+ * freshly allocated SDL_Surface holding the pre-draw pixels of `rect` so the
+ * caller can restore mask-excluded pixels afterwards.
  *
- * applyShapeMaskOverDrawnRect composites the now-drawn pixels in `rect`
- * with `baseline` using the window's installed shape mask: pixels where
- * the mask is opaque-white keep the freshly drawn value; pixels outside
- * the mask bounding box, or where the mask is black, are restored from
- * `baseline`. Callers must free `baseline` themselves.
+ * applyShapeMaskOverDrawnRect composites the now-drawn pixels in `rect` with
+ * `baseline` using the window's installed shape mask: pixels where the mask is
+ * opaque-white keep the freshly drawn value; pixels outside the mask bounding
+ * box, or where the mask is black, are restored from `baseline`. Callers must
+ * free `baseline` themselves.
  */
 SDL_Surface *captureShapeMaskBaseline(Drawable d,
                                       SDL_Renderer *renderer,
                                       const SDL_Rect *rect);
-/* Returns True on success (or when no work was needed). False means the
- * SDL readback / texture upload failed and masked pixels may still be
- * visible on screen; callers may want to skip presentDrawableIfVisible
- * or log a BadMatch in that case.
+/* Returns True on success (or when no work was needed). False means the SDL
+ * readback / texture upload failed and masked pixels may still be visible on
+ * screen; callers may want to skip presentDrawableIfVisible or log a BadMatch
+ * in that case.
  */
 Bool applyShapeMaskOverDrawnRect(Drawable d,
                                  SDL_Renderer *renderer,
                                  SDL_Surface *baseline,
                                  const SDL_Rect *rect);
 
-/* RAII-style guard so each draw primitive can wrap its SDL draws with a
- * single declaration and a single end call (handling all early returns).
+/* RAII-style guard so each draw primitive can wrap its SDL draws with a single
+ * declaration and a single end call (handling all early returns).
  *
  * Usage:
  *   ShapeGuard sg;
@@ -187,10 +193,9 @@ Bool applyShapeMaskOverDrawnRect(Drawable d,
  *   if (shapeGuardEnd(&sg))
  *       presentDrawableIfVisible(d);
  *
- * If shapeGuardEnd returns False the shape composite failed; masked-out
- * pixels may still be visible, so callers should skip the present rather
- * than show that stale state (the next draw composes from a fresh
- * baseline).
+ * If shapeGuardEnd returns False the shape composite failed; masked-out pixels
+ * may still be visible, so callers should skip the present rather than show
+ * that stale state (the next draw composes from a fresh baseline).
  */
 typedef struct {
     SDL_Surface *baseline;
@@ -210,9 +215,9 @@ static inline void shapeGuardBegin(ShapeGuard *g,
     g->baseline = captureShapeMaskBaseline(d, renderer, bbox);
 }
 
-/* Returns True on success (or when nothing was captured). False signals
- * that the post-draw composite failed and masked pixels may still show;
- * callers that care can suppress the subsequent present or raise BadMatch.
+/* Returns True on success (or when nothing was captured). False signals that
+ * the post-draw composite failed and masked pixels may still show; callers that
+ * care can suppress the subsequent present or raise BadMatch.
  */
 static inline Bool shapeGuardEnd(ShapeGuard *g)
 {
@@ -238,10 +243,10 @@ static inline int clampToInt(int64_t value)
 }
 
 /* SDL_UnionRect is not in the SDL wrapper shim's export list. The inline
- * equivalent below produces the smallest rect containing both inputs
- * (both assumed non-empty; w/h are width/height, not extents). The
- * extent and span math runs in int64_t so caller-supplied coordinates
- * near INT_MAX/INT_MIN cannot wrap into invalid SDL_Rects.
+ * equivalent below produces the smallest rect containing both inputs (both
+ * assumed non-empty; w/h are width/height, not extents). The extent and span
+ * math runs in int64_t so caller-supplied coordinates near INT_MAX/INT_MIN
+ * cannot wrap into invalid SDL_Rects.
  */
 static inline void unionRect(const SDL_Rect *a,
                              const SDL_Rect *b,
