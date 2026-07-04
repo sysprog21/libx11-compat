@@ -335,7 +335,8 @@ $(OUT)/tests/glx-egl-diff: tests/glx-egl-diff.c $(TARGET) $(ANGLE_LIBGLESV2) \
 	    -Wl,-rpath,$(abspath $(OUT)) -Wl,-rpath,$(abspath $(ANGLE_OUT_DIR)) \
 	    -o $@
 
-## GLX differential: render the same scene via our GLX layer and via direct EGL
+## GLX differential: render fixed GLES2 cases (single + multi-context) via our
+## GLX layer and via direct EGL
 ## on the same driver, then diff the pixels. Any difference is our translation.
 GLX_DIFF_LIBS = DYLD_LIBRARY_PATH=$(abspath $(OUT)):$(abspath $(ANGLE_OUT_DIR))
 .PHONY: check-differential-glx

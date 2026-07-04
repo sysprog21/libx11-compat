@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare two raw RGBA dumps for the GLX differential (tests/glx-egl-diff).
 
-Both dumps come from the same driver rendering the same fixed scene, so they
+Both dumps come from the same driver rendering the same fixed cases, so they
 should be near identical; a real GLX->EGL translation bug shows up as a pixel
 difference. Exits nonzero if the mean or max per-byte delta exceeds the limits.
 

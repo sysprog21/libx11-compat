@@ -20,10 +20,20 @@ GL4ES_WRAP_CACHE := third_party/gl4es-wrap
 GL4ES_WRAP_RAW := $(addprefix $(GL4ES_WRAP_CACHE)/,gl4es.h gl4eswraps.c gles.h gles.c)
 
 # Archive tool for libgl4es.a. angle.mk sets this for the macOS/ANGLE path, but
-# it is not included on Linux (no ANGLE) and the build runs with make's built-in
-# variables disabled, so $(AR) would be empty there. Define it here too; ?= keeps
-# any caller or environment override.
+# it is not included on Linux (no ANGLE). The build disables make's built-in
+# variables (mk/toolchain.mk --no-builtin-variables). That strips the default
+# AR=ar at recipe-expansion time, so a plain "AR ?= ar" (or an "ifeq empty" guard,
+# which still sees the default "ar" during parse) leaves AR empty when the recipe
+# runs and the archive link expands to "rcs ..." with no tool: "make: rcs: No such
+# file or directory" (the CI motif regression). Pin it the way mk/toolchain.mk
+# pins CC: turn a default-origin AR into a file-origin one (which survives
+# --no-builtin-variables) while leaving a real command-line/environment override
+# untouched.
+ifeq ($(origin AR),default)
+AR := ar
+else
 AR ?= ar
+endif
 
 .PHONY: sync-gl4es-wrap check-gl4es-wrap
 ## Refresh the cached gl4es/gles wrapper sources from the pinned upstream commit
@@ -106,7 +116,10 @@ GL4ES_CPPFLAGS := -DDEFAULT_ES=2 -DEGL_NO_X11 -DNOEGL -DNOX11 -DNO_GBM -DSTATICL
 # these take the archive from ~1.79 MB (upstream -O2) to ~1.47 MB. Bump back to
 # -O2 (and restore unwind tables) if an immediate-mode-heavy client turns out
 # CPU-bound in gl4es, or if you need gl4es frames in a backtrace.
-GL4ES_CFLAGS := -std=gnu11 -Oz -fno-unwind-tables -fno-asynchronous-unwind-tables -w
+# -fPIC so the same objects both static-link into a PIE demo and go into the
+# shared gl4es libGL below (GL4ES_SHARED_LIB); PIC is already the default on
+# macOS, so this only affects the Linux archive and is safe for either use.
+GL4ES_CFLAGS := -std=gnu11 -Oz -fno-unwind-tables -fno-asynchronous-unwind-tables -w -fPIC
 
 # The two DXT users need the fetched header present before they compile.
 $(GL4ES_OBJDIR)/decompress.o $(GL4ES_OBJDIR)/texture_compressed.o: $(STB_DXT_H)
@@ -149,3 +162,21 @@ $(GL4ES_LIB): $(GL4ES_OBJS) $(GL4ES_ALIASES_OBJ)
 
 .PHONY: gl4es
 gl4es: $(GL4ES_LIB)
+
+# Shared desktop-GL loader for dynamically-linked clients that cannot static-link
+# the archive (Linux Motif GLw/paperplane, built by Motif's own autotools). Such
+# a client links the system GLVND libGL, whose gl* dispatch never sees our EGL
+# context, so its canvas stays black. Preloading this gl4es-backed libGL.so
+# interposes the desktop gl* ahead of GLVND and routes them through gl4es to the
+# GLES provider on our EGL context; glX* stay with libx11-compat, and the readback
+# still resolves glReadPixels provider-first (src/glx.c). --whole-archive keeps the
+# public gl* aliases, which are unreferenced at link time. Linux only; macOS routes
+# Motif GLw through the gl-only Mesa reexport shim instead (mk/motif.mk).
+ifeq ($(UNAME_S),Linux)
+GL4ES_SHARED_LIB := $(OUT)/gl4es/libGL.so
+$(GL4ES_SHARED_LIB): $(GL4ES_LIB)
+	@mkdir -p $(@D)
+	@echo "  LD      $@ (gl4es desktop-GL interposer)"
+	$(Q)$(CC) $(LDFLAGS) -shared -Wl,--whole-archive $(GL4ES_LIB) \
+	    -Wl,--no-whole-archive -lm -ldl -o $@
+endif
