@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GLX differential on a Linux SSH host (node11): render one fixed GLES2 scene
+"""GLX differential on a Linux SSH host (node11): render fixed GLES2 cases
 through our GLX layer and through direct EGL on the same system Mesa driver, and
 assert the readbacks are identical. Any difference is our GLX->EGL translation.
 

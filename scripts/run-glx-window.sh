@@ -39,4 +39,10 @@ case "$(uname -s)" in
 esac
 
 echo "opening $(basename "$demo") window (close it or press its quit key to exit)..."
+# Scope any caller-supplied preload (gl4es interposer) to the demo only; see
+# glx-snapshot.sh for why it is not a process-wide LD_PRELOAD. Quote the value so
+# a build path with spaces survives.
+if [ -n "${GLX_DEMO_PRELOAD:-}" ]; then
+    exec env "LD_PRELOAD=$GLX_DEMO_PRELOAD" "$demo"
+fi
 exec "$demo"

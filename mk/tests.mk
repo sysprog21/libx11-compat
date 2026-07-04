@@ -87,15 +87,18 @@ check-glx:
 	$(Q)$(MAKE) --no-print-directory check-mesa-demos
 	@printf "$(BLUE)RUN$(RESET) check-paperplane-macos\n"
 	$(Q)$(MAKE) --no-print-directory check-paperplane-macos
+	@printf "$(BLUE)RUN$(RESET) check-paperplane-linux\n"
+	$(Q)$(MAKE) --no-print-directory check-paperplane-linux
 	@printf "$(BLUE)RUN$(RESET) check-gl4es-wrap\n"
 	$(Q)$(MAKE) --no-print-directory check-gl4es-wrap
 
 ## Run all system-libX11-vs-libx11-compat differential checks
 check-differential: $(DIFFERENTIAL_TARGETS)
 
-## GLX differential: render one fixed GLES2 scene through our GLX layer and
-## through direct EGL on the same system Mesa driver under Xvfb, and assert the
-## readbacks are identical (see scripts/run-glx-differential-tests.py). Runs over
+## GLX differential: render fixed GLES2 cases (single-context and a two-context
+## switch) through our GLX layer and through direct EGL on the same system Mesa
+## driver under Xvfb, and assert the readbacks are identical (see
+## scripts/run-glx-differential-tests.py). Runs over
 ## SSH to a Linux host by default; GLX_DIFF_LOCAL=1 runs it on this host instead
 ## (the CI path, where the runner already has Mesa + Xvfb).
 .PHONY: check-differential-glx-linux

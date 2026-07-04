@@ -414,11 +414,25 @@ motif-demos-screenshots: $(MOTIF_DEMOS_BUILD_STAMP)
 ## (surfaceless Mesa desktop GL, the offscreen pbuffer readback/composite, and the
 ## GLwDrawingArea resize-delivery wobble). Darwin + GLX=1 + Homebrew Mesa only; a
 ## no-op elsewhere so it is safe inside the aggregate check.
+
+# Render paperplane and assert its canvas painted (>=30% non-background), retrying
+# a few times. The first frame can miss the fixed snapshot delay on a slow/loaded
+# host (surfaceless llvmpipe on a shared CI runner), which reads back a blank
+# window; the render has no persistent state, so a fresh attempt is the simplest
+# robust guard against that transient miss. $(1) is the output png path.
+define paperplane_render_check
+	$(Q)ok=0; for attempt in 1 2 3; do \
+	    scripts/run-paperplane.sh --snapshot $(1) && \
+	    $(PYTHON) scripts/assert-image-content.py $(1) 0.30 && { ok=1; break; }; \
+	    echo "  RETRY   paperplane produced no valid frame on attempt $$attempt"; \
+	done; \
+	[ "$$ok" = 1 ] || { echo "  FAIL    paperplane produced no valid frame after 3 attempts"; exit 1; }
+endef
+
 ifdef MOTIF_GLSHIM_DIR
 check-paperplane-macos: $(MOTIF_DEMOS_BUILD_STAMP)
 	@echo "  CHECK   paperplane (macOS GLX headless render)"
-	$(Q)scripts/run-paperplane.sh --snapshot $(OUT)/paperplane-macos.png
-	$(Q)python3 scripts/assert-image-content.py $(OUT)/paperplane-macos.png 0.30
+	$(call paperplane_render_check,$(OUT)/paperplane-macos.png)
 else
 check-paperplane-macos:
 	@echo "  SKIP    paperplane macOS GLX render (needs Darwin + GLX=1 + Homebrew Mesa)"
@@ -430,10 +444,13 @@ endif
 ## Linux + GLX=1, so the binary is already built by motif-demos; the run picks the
 ## system Mesa libEGL. A no-op elsewhere so it is safe inside an aggregate check.
 ifeq ($(UNAME_S)/$(if $(MOTIF_GLW_ENABLED),on),Linux/on)
-check-paperplane-linux: $(MOTIF_DEMOS_BUILD_STAMP)
+# paperplane links the system GLVND libGL (built by Motif's autotools, not us), so
+# its immediate-mode gl* never reach our EGL context. run-paperplane.sh preloads
+# the gl4es-backed libGL.so ($(OUT)/gl4es/libGL.so) to interpose those gl* and
+# route them through gl4es; build it as a prerequisite here.
+check-paperplane-linux: $(MOTIF_DEMOS_BUILD_STAMP) $(OUT)/gl4es/libGL.so
 	@echo "  CHECK   paperplane (linux GLX headless render)"
-	$(Q)scripts/run-paperplane.sh --snapshot $(OUT)/paperplane-linux.png
-	$(Q)$(PYTHON) scripts/assert-image-content.py $(OUT)/paperplane-linux.png 0.30
+	$(call paperplane_render_check,$(OUT)/paperplane-linux.png)
 else
 check-paperplane-linux:
 	@echo "  SKIP    paperplane linux GLX render (needs Linux + GLX=1)"

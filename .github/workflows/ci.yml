@@ -473,7 +473,16 @@ jobs:
           echo "provider libEGL: $(clang -print-file-name=libEGL.so)"
           ls -l "$(clang -print-file-name=libEGL.so)" 2>&1 || true
           make check-paperplane-linux || {
+            # On failure, capture what the headless GL path actually bound to:
+            # the demo log, /dev/dri (GPU vs llvmpipe), and the surfaceless GLES
+            # renderer (tests/egl-renderer-probe.c). Enough to tell a provider or
+            # renderer regression from the occasional slow-first-frame miss the
+            # render retry already absorbs.
             echo "=== glx-snapshot-run.log ==="; cat /tmp/glx-snapshot-run.log 2>/dev/null || true
+            echo "=== /dev/dri (GPU vs llvmpipe) ==="; ls -la /dev/dri 2>&1 || echo "NO /dev/dri"
+            echo "=== surfaceless GLES renderer ==="
+            clang tests/egl-renderer-probe.c -lEGL -lGLESv2 -o /tmp/rend 2>/dev/null \
+              && EGL_PLATFORM=surfaceless /tmp/rend 2>&1 || echo "renderer probe failed"
             exit 1
           }
 
