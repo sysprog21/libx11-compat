@@ -1,0 +1,10 @@
+{
+  "assertions": [
+    {
+      "type": "region_non_background",
+      "rect": [150, 150, 660, 630],
+      "dark_threshold": 96,
+      "min_dark_ratio": 0.004
+    }
+  ]
+}

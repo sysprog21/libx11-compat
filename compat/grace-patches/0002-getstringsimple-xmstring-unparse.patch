@@ -1,0 +1,35 @@
+Extract compound-string text with XmStringUnparse instead of XmStringGetLtoR.
+
+Under the in-tree Motif built against libx11-compat, XmStringGetLtoR misbehaves
+for an optimized compound string: it returns the segment tag
+("FONTLIST_DEFAULT_TAG_STRING") instead of the text. Grace routes every
+XmString-to-char conversion through GetStringSimple, so a filename picked in the
+file selection box comes back as the tag and the file cannot be opened
+("Can't stat file ..."). XmStringUnparse decodes the same string correctly; this
+mirrors the established compat/gimp-patches XmStringUnparse workaround for the
+identical GetLtoR defect.
+
+--- a/src/motifutils.c
++++ b/src/motifutils.c
+@@ -4156,13 +4156,14 @@
+ 
+ char *GetStringSimple(XmString xms)
+ {
+-    char *s;
+-
+-    if (XmStringGetLtoR(xms, charset, &s)) {
+-        return s;
+-    } else {
+-        return NULL;
+-    }
++    /* XmStringGetLtoR returns the segment tag rather than the text for an
++     * optimized compound string under the libx11-compat Motif build, so a
++     * selected filename comes back as "FONTLIST_DEFAULT_TAG_STRING" and cannot
++     * be opened. XmStringUnparse decodes the same string correctly, matching the
++     * compat/gimp-patches XmStringUnparse workaround.
++     */
++    return XmStringUnparse(xms, NULL, XmCHARSET_TEXT, XmCHARSET_TEXT,
++                           NULL, 0, XmOUTPUT_ALL);
+ }
+ 
+ extern int ReqUpdateColorSel;

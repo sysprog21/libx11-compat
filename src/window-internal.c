@@ -306,7 +306,32 @@ void translateWindowPoint(Window sourceWindow,
     *destinationYReturn = sourceAbsY + sourceY - destAbsY;
 }
 
-static Bool nativeDecoratedWindowOffset(int *offsetX, int *offsetY)
+/* Decoration offset of the decorated top-level whose logical rectangle contains
+ * (logicalX, logicalY). Each native window is placed independently by the host
+ * WM, so the gap between where X thinks a window sits and where the host drew
+ * its content differs per window (a window near the top of the screen is pushed
+ * down further than one lower down). A posted menu shell's logical origin is
+ * its cascade button, which lies inside its owning window, so matching by
+ * containment applies that specific window's offset, and the nearest window is
+ * used for the rare menu whose origin lands just outside every rectangle.
+ */
+/* Squared distance from a point to a rectangle, 0 when inside. int64 throughout
+ * to match this file's overflow discipline for hostile geometry.
+ */
+static int64_t rectDistanceSq(int px, int py, int rx, int ry, int rw, int rh)
+{
+    int64_t right = (int64_t) rx + rw, bottom = (int64_t) ry + rh;
+    int64_t dx =
+        px < rx ? (int64_t) rx - px : (px > right ? (int64_t) px - right : 0);
+    int64_t dy =
+        py < ry ? (int64_t) ry - py : (py > bottom ? (int64_t) py - bottom : 0);
+    return dx * dx + dy * dy;
+}
+
+static Bool decoratedWindowOffsetAt(int logicalX,
+                                    int logicalY,
+                                    int *offsetX,
+                                    int *offsetY)
 {
     *offsetX = 0;
     *offsetY = 0;
@@ -315,16 +340,45 @@ static Bool nativeDecoratedWindowOffset(int *offsetX, int *offsetY)
 
     WindowStruct *screenStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
-    for (size_t i = 0; i < screenStruct->children.length; i++) {
+    Window nearest = None;
+    int64_t nearestDistSq = 0;
+    /* Top-down (children run bottom-to-top) so an overlapping stack resolves to
+     * the top-most owner the menu was posted from.
+     */
+    for (size_t i = screenStruct->children.length; i-- > 0;) {
         Window child = children[i];
         WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
         if (!childStruct->sdlWindow || childStruct->overrideRedirect)
             continue;
-
+        int rx = childStruct->x, ry = childStruct->y;
+        int rw = (int) childStruct->w, rh = (int) childStruct->h;
+        if ((int64_t) logicalX >= rx &&
+            (int64_t) logicalX < (int64_t) rx + rw &&
+            (int64_t) logicalY >= ry &&
+            (int64_t) logicalY < (int64_t) ry + rh) {
+            int hostX = 0, hostY = 0;
+            SDL_GetWindowPosition(childStruct->sdlWindow, &hostX, &hostY);
+            *offsetX = hostX - rx;
+            *offsetY = hostY - ry;
+            return True;
+        }
+        /* No rectangle contains the point when a menu drops below or beside its
+         * owner. Track the nearest decorated window instead of falling back to
+         * an arbitrary one, so a dropdown just past its owner still picks that
+         * owner's offset.
+         */
+        int64_t distSq = rectDistanceSq(logicalX, logicalY, rx, ry, rw, rh);
+        if (nearest == None || distSq < nearestDistSq) {
+            nearest = child;
+            nearestDistSq = distSq;
+        }
+    }
+    if (nearest != None) {
+        WindowStruct *nearestStruct = GET_WINDOW_STRUCT(nearest);
         int hostX = 0, hostY = 0;
-        SDL_GetWindowPosition(childStruct->sdlWindow, &hostX, &hostY);
-        *offsetX = hostX - childStruct->x;
-        *offsetY = hostY - childStruct->y;
+        SDL_GetWindowPosition(nearestStruct->sdlWindow, &hostX, &hostY);
+        *offsetX = hostX - nearestStruct->x;
+        *offsetY = hostY - nearestStruct->y;
         return True;
     }
     return False;
@@ -342,7 +396,7 @@ void topLevelWindowHostPosition(Window window,
         return;
 
     int offsetX = 0, offsetY = 0;
-    if (nativeDecoratedWindowOffset(&offsetX, &offsetY)) {
+    if (decoratedWindowOffsetAt(logicalX, logicalY, &offsetX, &offsetY)) {
         *hostX += offsetX;
         *hostY += offsetY;
     }
@@ -359,11 +413,45 @@ void topLevelWindowLogicalPosition(Window window,
     if (!IS_TOP_LEVEL(window) || !GET_WINDOW_STRUCT(window)->overrideRedirect)
         return;
 
+    /* Undo the same per-window offset the forward mapping applied. The
+     * override- redirect window's stored logical origin identifies its owning
+     * decorated window by containment, so the two directions stay consistent
+     * even when several native windows sit at different host offsets.
+     */
+    int wx = 0, wy = 0;
+    GET_WINDOW_POS(window, wx, wy);
     int offsetX = 0, offsetY = 0;
-    if (nativeDecoratedWindowOffset(&offsetX, &offsetY)) {
+    if (decoratedWindowOffsetAt(wx, wy, &offsetX, &offsetY)) {
         *logicalX -= offsetX;
         *logicalY -= offsetY;
     }
+}
+
+/* Collect mapped override-redirect top-levels that own an SDL window. The
+ * snapshot compositor uses this to fold popup menus and dialog shells into an
+ * in-process capture. Sourcing from the realized-window mapping list rather
+ * than SCREEN_WINDOW's children array is deliberate: a freshly posted Motif
+ * menu shell is realized and mapped here (with a valid SDL window) before it
+ * appears in the root's children array, so a children-only scan misses exactly
+ * the popup a snapshot is trying to capture. Fills out[0..max) and returns the
+ * count written; entries are in most-recently-realized-first order.
+ */
+size_t collectMappedOverrideRedirectWindows(Window *out, size_t max)
+{
+    size_t written = 0;
+    ensureMappingListLock();
+    lockMappingList();
+    for (WindowSdlIdMapper *m = mappingListStart; m && written < max;
+         m = m->next) {
+        if (!IS_TYPE(m->window, WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(m->window);
+        if (ws && ws->overrideRedirect && ws->mapState == Mapped &&
+            ws->sdlWindow)
+            out[written++] = m->window;
+    }
+    unlockMappingList();
+    return written;
 }
 
 Window getWindowFromId(Uint32 sdlWindowId)

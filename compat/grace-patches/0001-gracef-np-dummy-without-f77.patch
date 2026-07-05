@@ -1,0 +1,19 @@
+Fix the non-Fortran fallback in grace_np/gracef_np.c.
+
+When configure is run with --enable-f77-wrapper=no, config.h never defines
+F77_FNAME, so the "keep the translation unit non-empty" dummy expands to the
+malformed declarator `void F77_FNAME(_gracef_np_c_dummy_func)(void){}`. clang
+16+ rejects this as "function cannot return function type 'void (void)'" and
+the grace_np subdir fails to build. The dummy does not need name mangling; drop
+F77_FNAME so the fallback compiles regardless of the wrapper setting.
+
+--- a/grace_np/gracef_np.c
++++ b/grace_np/gracef_np.c
+@@ -78,6 +78,6 @@
+ #else /* don't include Fortran wrapper */
+
+ /* To make ANSI C happy about non-empty file */
+-void F77_FNAME(_gracef_np_c_dummy_func) (void) {}
++void _gracef_np_c_dummy_func (void) {}
+
+ #endif /* WITH_F77_WRAPPER */

@@ -1,0 +1,15 @@
+# System-X11 and libx11-compat Grace startup differential capture. The xmgrace
+# Motif window plus plot canvas must come up against both stacks, render the
+# fixture (axes, curve, symbol, labels), and stay alive. The shared
+# common-visible assertion (non-empty + not-all-black) catches a blank-window
+# regression on either side; the cross-stack pixel diff is done afterward by
+# scripts/compare-motif-reference.py. Startup-only on purpose: the interaction
+# and resize replays use synthetic pointer input that routes differently through
+# the xdotool (system X server) and internal (compat SDL) backends.
+delay 2000
+wait-window "Grace" 20000
+wait-converge 200 2 50 200 20000
+screenshot startup
+assert-image startup common-visible.json
+assert-image startup grace-canvas-content.json
+assert-exit running

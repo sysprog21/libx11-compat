@@ -1,0 +1,22 @@
+# Grace project file
+# Minimal fixture for libx11-compat GR3 first-run GUI smoke: one graph, one set,
+# three points. Separates GUI bring-up failures from parser/math/export behavior.
+@version 50125
+@page size 792, 612
+@g0 on
+@with g0
+@    world 0, 0, 4, 10
+@    xaxis label "x"
+@    xaxis tick major 1
+@    xaxis tick minor ticks 1
+@    yaxis label "y"
+@    yaxis tick major 2
+@    yaxis tick minor ticks 1
+@    s0 symbol 1
+@    s0 line type 1
+@target G0.S0
+@type xy
+1 1
+2 4
+3 9
+&

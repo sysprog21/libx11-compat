@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
 from differential import (
     check_local_paths,
     execute,
@@ -17,14 +18,18 @@ from differential import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUT_ROOT = ROOT / "build" / "xnedit-differential"
+DEFAULT_OUT_ROOT = ROOT / "build" / "grace-differential"
+# Kept in sync with GRACE_VERSION in mk/grace.mk; the tarball extracts to
+# build/upstream/grace-<version> on both the compat pre-stage and the system
+# untar below.
+GRACE_VERSION = "5.1.25"
 
 
 def remote_script(args, remote_repo):
     clean_remote = ""
     if args.clean:
         clean_remote = (
-            f"rm -rf {q(args.remote_root + '/system-xnedit')} "
+            f"rm -rf {q(args.remote_root + '/system-grace')} "
             f"{q(args.remote_root + '/screens')} "
             f"{q(args.remote_root + '/logs')} "
             f"{q(args.remote_root + '/diff')}\n"
@@ -35,22 +40,21 @@ def remote_script(args, remote_repo):
         install_deps = """
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    # Do not let an unrelated third-party repo with a transient GPG or
-    # signature error abort the whole differential: the metadata refresh
-    # is best-effort, and the install below still fails loudly if a
-    # package we actually need cannot be resolved from the cached lists.
+    # Best-effort metadata refresh: a broken third-party repo must not abort
+    # the differential. The install still fails loudly on a package we need.
     sudo apt-get update || true
     sudo apt-get install -y --no-install-recommends \\
-        autoconf automake build-essential ca-certificates git imagemagick \\
-        libfontconfig1-dev libmotif-dev libx11-dev libxext-dev libxft-dev \\
-        libxrender-dev libxt-dev make patch pkg-config python3 python3-pil \\
-        rsync xauth xvfb xdotool
+        autoconf automake bison build-essential ca-certificates flex git \\
+        imagemagick libmotif-dev libx11-dev libxext-dev libxmu-dev libxpm-dev \\
+        libxt-dev make patch pkg-config python3 python3-pil rsync xauth xvfb \\
+        xdotool
 fi
 """
 
-    # Offset compat-side Xvfb by 1 so the parallel screenshot block
-    # below can run system-side and compat-side captures concurrently.
+    # Offset compat-side Xvfb by 1 so the parallel screenshot block below can
+    # run system-side and compat-side captures concurrently.
     compat_display_num = int(args.display) + 1
+    grace_dir = f"build/upstream/grace-{GRACE_VERSION}"
 
     return f"""
 set -eu
@@ -76,13 +80,15 @@ need xdotool
 
 remote_root={q(args.remote_root)}
 repo={q(remote_repo)}
-system_build="$remote_root/system-xnedit"
+system_build="$remote_root/system-grace"
+system_home="$system_build/runtime"
 system_logs="$remote_root/logs/system"
 compat_logs="$remote_root/logs/compat"
 system_screens="$remote_root/screens/system"
 compat_screens="$remote_root/screens/compat"
 display=:{q(args.display)}
 compat_display=:{compat_display_num}
+fixture="$repo/tests/ui/fixtures/grace/simple.agr"
 
 run_logged() {{
     log=$1
@@ -97,7 +103,11 @@ run_logged() {{
     fi
 }}
 
-capture_xnedit() {{
+# Capture one side. Grace needs a repo-local GRACE_HOME (fonts, templates,
+# examples) and the .agr fixture as an argument, unlike the XEphem model, so
+# both are threaded through here. The system side runs against the real X
+# server via xdotool; the compat side runs through the internal SDL backend.
+capture_grace() {{
     name=$1
     app=$2
     workdir=$3
@@ -106,14 +116,7 @@ capture_xnedit() {{
     log_dir=$6
     screen_dir=$7
     input_backend=$8
-    app_arg=""
-    if [ "$#" -ge 9 ]; then
-        app_arg=$9
-    fi
-    app_arg_flags=""
-    if [ -n "$app_arg" ]; then
-        app_arg_flags="--app-arg=$app_arg"
-    fi
+    grace_home=$9
     replay_out="$remote_root/replay-$name"
     rm -rf "$replay_out" "$remote_root/home-$name"
     mkdir -p "$log_dir" "$screen_dir" "$remote_root/home-$name"
@@ -125,18 +128,12 @@ capture_xnedit() {{
             lib_env="$LD_LIBRARY_PATH"
         fi
     fi
-    # Read display from the current env so the parallel capture
-    # subshells can each target their own Xvfb. Strip the leading
-    # colon and any trailing .screen suffix to recover the numeric
-    # display index that run-ui-replay's --display flag wants.
     display_num=${{DISPLAY#:}}
     display_num=${{display_num%%.*}}
     python3 "$repo/scripts/run-ui-replay.py" \\
         --name "$replay" \\
         --app "$app" \\
-        --app-arg=-svrname --app-arg="$name" \\
-        --app-arg=-geometry --app-arg=120x45+0+0 \\
-        $app_arg_flags \\
+        --app-arg="$fixture" \\
         --workdir "$workdir" \\
         --replay "$repo/tests/ui/replays/$replay.replay" \\
         --out-root "$replay_out" \\
@@ -146,6 +143,7 @@ capture_xnedit() {{
         --screenshot-command import \\
         --screenshot-region {q(args.screenshot_region)} \\
         --env DISPLAY="$DISPLAY" \\
+        --env GRACE_HOME="$grace_home" \\
         --env HOME="$remote_root/home-$name" \\
         --env LD_LIBRARY_PATH="$lib_env"
     python3 - "$replay_out/results.tsv" "$log_dir/results.tsv" "$replay" \\
@@ -188,12 +186,9 @@ PY
 {clean_remote}
 rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
     "$remote_root/report.tsv" "$remote_root/junit.xml" "$remote_root"/replay-*
-mkdir -p "$system_build/source" "$system_logs" "$compat_logs" \\
+mkdir -p "$system_build" "$system_logs" "$compat_logs" \\
     "$system_screens" "$compat_screens" "$remote_root/logs"
 
-# Wrap gcc with ccache so the system-side and compat-side gcc objects
-# hit the ccache populated by the GitHub Actions cache action. Bare
-# `CC=gcc` would skip the cache and recompile cold every CI run.
 if command -v ccache >/dev/null 2>&1; then
     if [ -d /usr/lib/ccache ]; then
         export PATH="/usr/lib/ccache:$PATH"
@@ -202,43 +197,81 @@ if command -v ccache >/dev/null 2>&1; then
 fi
 cc_wrapped="gcc"
 
-# Fetch upstream XNEdit and prime the upstream header/source sync once before
-# the parallel builds: on a cold tree a parallel `make -j xnedit` can start
-# compiling build/upstream/src/*.o before the sync recipe writes those .c/.h
-# files. Pre-building the stamp here closes that race (cf. the xephem script).
-(cd "$repo" && make build/upstream/xnedit/.source-stamp \
+# Extract the pinned Grace tarball once before the parallel builds. Both the
+# compat-side make grace and the system-side untar below read from this
+# single checkout. This also fetches the tarball if the synced cache lacks it.
+# Prime the upstream header/source sync in the same step: on a cold tree a
+# parallel `make -j grace` can start compiling build/upstream/src/*.o before the
+# sync recipe writes those .c/.h files (cf. the xephem script).
+(cd "$repo" && make {grace_dir}/.source-stamp \
     build/upstream/include/.upstream-stamp)
 
-# Run compat-side and system-side builds concurrently. They write into
-# disjoint trees ($repo/build/xnedit vs $system_build/source) and share
-# only the read-only upstream tarball extraction. ccache is
-# process-safe via its own locking.
+# Grace 5.1.25 predates C99; gcc keeps implicit int/decl as warnings (unlike
+# clang), but pass the same flags the in-tree build uses so a strict host does
+# not turn them into errors on the system side. -D_DEFAULT_SOURCE matches
+# mk/grace.mk: it exposes glibc's signgam/caddr_t under -std=c99 via __USE_MISC.
+grace_legacy_cflags="-Wno-implicit-function-declaration -Wno-implicit-int -D_DEFAULT_SOURCE"
+
+# Run compat-side and system-side builds concurrently into disjoint trees. The
+# compat make grace builds the in-tree Motif + libx11-compat stack and stages
+# the runtime; the system side configures Grace against native OpenMotif.
 compat_make_log="$remote_root/logs/compat-make.log"
 : >"$compat_make_log"
 (
     set -e
     cd "$repo"
-    make -j{q(args.jobs)} CC="$cc_wrapped" xnedit
+    make -j{q(args.jobs)} CC="$cc_wrapped" grace
 ) >"$compat_make_log" 2>&1 &
 compat_pid=$!
 
 (
     set -e
-    rm -rf "$system_build/source"
-    mkdir -p "$system_build/source"
-    tar --exclude .git --exclude '*.o' --exclude '*.a' --exclude '*.dSYM' \
-        -cf - -C "$repo/build/upstream/xnedit" . | \
-        tar -xf - -C "$system_build/source"
+    # Keep the native baseline hermetic: strip any inherited toolchain search
+    # paths so configure/link/run cannot pick up the in-tree compat headers or
+    # libs. Dropping --with-extra-* is not enough on a contaminated shell.
+    unset LD_LIBRARY_PATH LIBRARY_PATH CPATH C_INCLUDE_PATH \\
+        CPLUS_INCLUDE_PATH PKG_CONFIG_PATH
+    rm -rf "$system_build/source" "$system_home"
+    mkdir -p "$system_build/source" "$system_home"
+    tar --exclude .git --exclude '*.o' --exclude '*.a' \\
+        -cf - -C "$repo/{grace_dir}" . | tar -xf - -C "$system_build/source"
     : >"$remote_root/logs/system-build.log"
-    # Unset MAKEFLAGS / MFLAGS so the parent build's --no-builtin-rules
-    # (mk/toolchain.mk) does not propagate into XNEdit's recursive make. The
-    # upstream util/ build relies on the built-in %.o:%.c rule for motif.o,
-    # whose object is in Makefile.common's OBJS but has no explicit rule in
-    # Makefile.dependencies. The compat side already does this in
-    # mk/xnedit.mk; mirror it here for the system-side build.
-    run_logged "$remote_root/logs/system-build.log" \
-        env -u MAKEFLAGS -u MFLAGS PKG_CONFIG_PATH="" \
-            make -C "$system_build/source" -j{q(args.jobs)} linux CC="$cc_wrapped"
+    for p in "$repo"/compat/grace-patches/*.patch; do
+        run_logged "$remote_root/logs/system-build.log" \\
+            patch -d "$system_build/source" -p1 -i "$p"
+    done
+    # Configure Grace against the SYSTEM OpenMotif + system X11: no
+    # --with-extra-incpath / --with-extra-ldpath and no lib-aliases farm, so
+    # -lXm and -lX11 resolve to /usr/lib (libmotif-dev), which is the whole
+    # point of the native baseline. Keep the same feature-disable flags the
+    # in-tree build uses so the two binaries render the same fixture.
+    (
+        cd "$system_build/source"
+        run_logged "$remote_root/logs/system-build.log" \\
+            env CC="$cc_wrapped" CFLAGS="$grace_legacy_cflags" \\
+                ./configure --prefix="$system_build/install" \\
+                    --enable-grace-home="$system_home" \\
+                    --with-motif-library=-lXm \\
+                    --with-bundled-t1lib \\
+                    --enable-netcdf=no \\
+                    --enable-jpegdrv=no \\
+                    --enable-pngdrv=no \\
+                    --enable-pdfdrv=no \\
+                    --enable-f77-wrapper=no \\
+                    --enable-editres=no \\
+                    --enable-xmhtml=no \\
+                    --with-fftw=no
+        run_logged "$remote_root/logs/system-build.log" \\
+            env -u MAKEFLAGS -u MFLAGS make
+        # Stage the same runtime tree the compat side stages (mk/grace.mk
+        # GRACE_RUNTIME_SUBDIRS) into the system GRACE_HOME.
+        for d in fonts templates examples; do
+            run_logged "$remote_root/logs/system-build.log" \\
+                env -u MAKEFLAGS -u MFLAGS \\
+                    make -C "$d" install GRACE_HOME="$system_home" DESTDIR=
+        done
+        cp gracerc gracerc.user "$system_home/"
+    )
 ) &
 system_pid=$!
 
@@ -247,9 +280,6 @@ wait "$compat_pid" || compat_status=$?
 system_status=0
 wait "$system_pid" || system_status=$?
 
-# Surface diagnostics for any failed side before exiting; show both
-# tails when both fail so the first-listed exit code does not mask a
-# concurrent failure on the other side.
 if [ "$compat_status" -ne 0 ]; then
     echo "compat-side build failed (exit $compat_status); see $compat_make_log" >&2
     tail -60 "$compat_make_log" >&2 || true
@@ -261,14 +291,11 @@ fi
 [ "$compat_status" -eq 0 ] || exit "$compat_status"
 [ "$system_status" -eq 0 ] || exit "$system_status"
 
-test -x "$system_build/source/source/xnedit" || {{
-    echo "missing system XNEdit binary" >&2
-    exit 1
-}}
-test -x "$repo/build/xnedit/source/source/xnedit" || {{
-    echo "missing compat XNEdit binary" >&2
-    exit 1
-}}
+sys_bin="$system_build/source/src/xmgrace"
+compat_bin="$repo/build/grace/source/src/xmgrace"
+compat_home="$repo/build/grace/runtime"
+test -x "$sys_bin" || {{ echo "missing system xmgrace binary" >&2; exit 1; }}
+test -x "$compat_bin" || {{ echo "missing compat xmgrace binary" >&2; exit 1; }}
 
 rm -f "/tmp/.X{q(args.display)}-lock" "/tmp/.X{compat_display_num}-lock"
 Xvfb "$display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-system.log" 2>&1 &
@@ -277,13 +304,6 @@ Xvfb "$compat_display" -screen 0 {q(args.geometry)} >"$remote_root/xvfb-compat.l
 compat_xvfb_pid=$!
 trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
 
-# Wait for each Xvfb to accept connections instead of sleeping a fixed
-# second. On a loaded headless runner the server can take longer than a
-# second to come up, and the old `sleep 1` then raced the first xnedit
-# launch and xdotool query against a display that was not listening yet,
-# surfacing as a spurious capture timeout. Probe with xdotool (already a
-# hard dependency above; xdpyinfo is not in the differential package set)
-# and fail fast if an Xvfb died, e.g. on a stale display lock.
 wait_for_display() {{
     target=$1
     server_pid=$2
@@ -305,62 +325,42 @@ wait_for_display() {{
 wait_for_display "$display" "$xvfb_pid"
 wait_for_display "$compat_display" "$compat_xvfb_pid"
 
-# Run the startup replay for both sides concurrently on separate Xvfb
-# instances so the capture phase scales with one side rather than both.
-# Only startup is diffed; fixture is intentionally excluded here (see
-# the note on the system capture below) and stays covered compat-side by
-# check-smoke-xnedit.
 system_cap_log="$remote_root/logs/system-capture.log"
 compat_cap_log="$remote_root/logs/compat-capture.log"
 : >"$system_cap_log"
 : >"$compat_cap_log"
-echo "xnedit differential: diffing startup + fixture" >&2
+echo "grace differential: diffing startup" >&2
 
-# Each side runs startup and opened-fixture replays in sequence on its own Xvfb;
-# the two sides run concurrently.
 (
     set -e
+    # Native capture must load only /usr/lib X11/Motif, so clear any inherited
+    # LD_LIBRARY_PATH before capture_grace folds it into the run env.
+    unset LD_LIBRARY_PATH
     export DISPLAY="$display"
-    capture_xnedit system-startup \
-        "$system_build/source/source/xnedit" \
-        "$system_build/source/source" \
-        xnedit-startup-differential \
-        "" \
-        "$system_logs" \
-        "$system_screens" \
-        xdotool
-    capture_xnedit system-fixture \
-        "$system_build/source/source/xnedit" \
-        "$system_build/source/source" \
-        xnedit-fixture-differential \
-        "" \
-        "$system_logs" \
-        "$system_screens" \
-        xdotool \
-        "$repo/tests/ui/fixtures/xnedit-fixture.txt"
+    capture_grace system-startup \\
+        "$sys_bin" \\
+        "$system_build/source/src" \\
+        grace-startup-differential \\
+        "" \\
+        "$system_logs" \\
+        "$system_screens" \\
+        xdotool \\
+        "$system_home"
 ) >"$system_cap_log" 2>&1 &
 system_cap_pid=$!
 
 (
     set -e
     export DISPLAY="$compat_display"
-    capture_xnedit compat-startup \
-        "$repo/build/xnedit/source/source/xnedit" \
-        "$repo/build/xnedit/source/source" \
-        xnedit-startup-differential \
-        "$repo/build:$repo/build/xnedit/lib-aliases" \
-        "$compat_logs" \
-        "$compat_screens" \
-        internal
-    capture_xnedit compat-fixture \
-        "$repo/build/xnedit/source/source/xnedit" \
-        "$repo/build/xnedit/source/source" \
-        xnedit-fixture-differential \
-        "$repo/build:$repo/build/xnedit/lib-aliases" \
-        "$compat_logs" \
-        "$compat_screens" \
-        internal \
-        "$repo/tests/ui/fixtures/xnedit-fixture.txt"
+    capture_grace compat-startup \\
+        "$compat_bin" \\
+        "$repo/build/grace/source/src" \\
+        grace-startup-differential \\
+        "$repo/build" \\
+        "$compat_logs" \\
+        "$compat_screens" \\
+        internal \\
+        "$compat_home"
 ) >"$compat_cap_log" 2>&1 &
 compat_cap_pid=$!
 
@@ -369,8 +369,6 @@ wait "$system_cap_pid" || system_cap_status=$?
 compat_cap_status=0
 wait "$compat_cap_pid" || compat_cap_status=$?
 
-# Stage Xvfb logs and any partial replay traces into $remote_root/logs
-# so the artifact upload picks them up regardless of capture success.
 for replay_dir in "$remote_root"/replay-*; do
     [ -d "$replay_dir" ] || continue
     cp -r "$replay_dir" "$remote_root/logs/$(basename "$replay_dir")" 2>/dev/null || true
@@ -391,9 +389,6 @@ fi
 
 
 def remote_compare_script(args):
-    # In local mode sync_repo runs the build straight from this checkout and
-    # never populates remote_root/repo, so resolve the compare script against
-    # ROOT. Only the SSH path stages a copy under remote_root/repo.
     repo = str(ROOT) if args.local else f"{args.remote_root}/repo"
     return f"""
 set -eu
@@ -448,38 +443,38 @@ def compare(args, system_dir, compat_dir, out_root):
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Build XNEdit on a Linux SSH host against system libX11 and "
-            "libx11-compat, capture representative screenshots, and compare output."
+            "Build Grace (xmgrace) on a Linux SSH host against system OpenMotif "
+            "and libx11-compat, capture the startup screenshot, and compare."
         )
     )
     parser.add_argument(
         "--remote",
-        default=parse_env_default("XNEDIT_DIFF_REMOTE", "node11"),
+        default=parse_env_default("GRACE_DIFF_REMOTE", "node11"),
     )
     parser.add_argument(
         "--remote-root",
         default=None,
         help=(
-            "staging directory. Precedence: CLI flag > XNEDIT_DIFF_REMOTE_ROOT "
+            "staging directory. Precedence: CLI flag > GRACE_DIFF_REMOTE_ROOT "
             "env > local-mode default (out_root/_work) > SSH default "
-            "(/tmp/libx11-compat-xnedit-differential)."
+            "(/tmp/libx11-compat-grace-differential)."
         ),
     )
     parser.add_argument(
         "--display",
-        default=parse_env_default("XNEDIT_DIFF_DISPLAY", "125"),
+        default=parse_env_default("GRACE_DIFF_DISPLAY", "131"),
     )
     parser.add_argument(
         "--geometry",
-        default=parse_env_default("XNEDIT_DIFF_GEOMETRY", "1280x1024x24"),
+        default=parse_env_default("GRACE_DIFF_GEOMETRY", "1280x1024x24"),
     )
     parser.add_argument(
         "--jobs",
-        default=parse_env_default("XNEDIT_DIFF_JOBS", os.environ.get("JOBS", "1")),
+        default=parse_env_default("GRACE_DIFF_JOBS", os.environ.get("JOBS", "1")),
     )
     parser.add_argument(
         "--screenshot-region",
-        default=parse_env_default("XNEDIT_DIFF_SCREENSHOT_REGION", "0,0,1024,768"),
+        default=parse_env_default("GRACE_DIFF_SCREENSHOT_REGION", "0,0,680,700"),
     )
     parser.add_argument("--clean", action="store_true")
     parser.add_argument(
@@ -490,32 +485,31 @@ def main():
     parser.add_argument(
         "--local",
         action="store_true",
-        default=parse_env_bool("XNEDIT_DIFF_LOCAL"),
+        default=parse_env_bool("GRACE_DIFF_LOCAL"),
         help=(
             "run the build / capture / compare pipeline on the local host "
-            "instead of SSHing to --remote. Used by the GitHub Actions "
-            "differential workflow."
+            "instead of SSHing to --remote."
         ),
     )
     parser.add_argument(
         "--mae-threshold",
         type=float,
-        default=float(parse_env_default("XNEDIT_DIFF_MAE_THRESHOLD", "0.18")),
+        default=float(parse_env_default("GRACE_DIFF_MAE_THRESHOLD", "0.10")),
     )
     parser.add_argument(
         "--changed-threshold",
         type=float,
-        default=float(parse_env_default("XNEDIT_DIFF_CHANGED_THRESHOLD", "0.46")),
+        default=float(parse_env_default("GRACE_DIFF_CHANGED_THRESHOLD", "0.25")),
     )
     parser.add_argument(
         "--top",
         type=int,
-        default=int(parse_env_default("XNEDIT_DIFF_TOP", "12")),
+        default=int(parse_env_default("GRACE_DIFF_TOP", "12")),
     )
     parser.add_argument(
         "--out-root",
         type=Path,
-        default=Path(parse_env_default("XNEDIT_DIFF_OUT_ROOT", DEFAULT_OUT_ROOT)),
+        default=Path(parse_env_default("GRACE_DIFF_OUT_ROOT", DEFAULT_OUT_ROOT)),
         help="local artifact directory for synced screenshots, diffs, TSV, and JUnit",
     )
     parser.add_argument(
@@ -534,26 +528,20 @@ def main():
     if not re.fullmatch(r"\d+,\d+,\d+,\d+", args.screenshot_region):
         parser.error("--screenshot-region must use x,y,width,height")
 
-    # Resolve --remote-root precedence: explicit CLI flag wins, then
-    # the XNEDIT_DIFF_REMOTE_ROOT env var, then the local-mode default
-    # (out_root/_work) or the SSH default.
     if args.remote_root is None:
-        env_remote_root = os.environ.get("XNEDIT_DIFF_REMOTE_ROOT")
+        env_remote_root = os.environ.get("GRACE_DIFF_REMOTE_ROOT")
         if env_remote_root:
             args.remote_root = env_remote_root
         elif args.local:
             args.remote_root = str(args.out_root / "_work")
         else:
-            args.remote_root = "/tmp/libx11-compat-xnedit-differential"
+            args.remote_root = "/tmp/libx11-compat-grace-differential"
 
-    # Resolve --compare-location precedence: explicit CLI flag wins,
-    # then the XNEDIT_DIFF_COMPARE_LOCATION env var, then the local-mode
-    # default (local) or the SSH default (remote).
     if args.compare_location is None:
-        env_compare_location = os.environ.get("XNEDIT_DIFF_COMPARE_LOCATION")
+        env_compare_location = os.environ.get("GRACE_DIFF_COMPARE_LOCATION")
         if env_compare_location:
             if env_compare_location not in ("remote", "local"):
-                parser.error("XNEDIT_DIFF_COMPARE_LOCATION must be 'remote' or 'local'")
+                parser.error("GRACE_DIFF_COMPARE_LOCATION must be 'remote' or 'local'")
             args.compare_location = env_compare_location
         elif args.local:
             args.compare_location = "local"
@@ -561,16 +549,12 @@ def main():
             args.compare_location = "remote"
 
     if args.local:
-        # In local mode the shell payload writes under remote_root and
-        # fetch_results then rmtrees the matching out_root subdirs before
-        # syncing back. Reject overlap so a misconfigured remote_root
-        # cannot delete its own source tree.
         try:
             check_local_paths(args.out_root, Path(args.remote_root))
         except ValueError as error:
             parser.error(str(error))
 
-    remote_repo = sync_repo(args)
+    remote_repo = sync_repo(args, extra_excludes=["/.git/", "/externals/"])
     remote_status = 0
     compare_status = 0
     fetch_status = 0

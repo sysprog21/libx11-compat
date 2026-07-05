@@ -4,8 +4,8 @@
 # LLVM apt repo is added so clang-format-20 is available on ubuntu-24.04
 # (which ships clang-format-18 by default).
 #
-# All 11 top-level jobs (lint, build, debug-build, sanitize, motif,
-# osiris, xfig, xwpe, xephem, gimp, sdl3) run in parallel. The sdl3 job builds the
+# All 12 top-level jobs (lint, build, debug-build, sanitize, motif,
+# osiris, xfig, xwpe, xephem, gimp, grace, sdl3) run in parallel. The sdl3 job builds the
 # compat stack against the native SDL3 backend (SDL_BACKEND=sdl3); every
 # other job uses the default SDL2 backend, so the SDL3 translation shim in
 # src/sdl-compat.h is only exercised there. Osiris and Xfig each have no Motif
@@ -69,6 +69,11 @@ env:
   # no system image libs are needed), and runs autoreconf for the bundled Motif
   # (MOTIF_BUILD_PKGS). python3-pil backs the offscreen replay smoke.
   XEPHEM_BUILD_PKGS: "libssl-dev python3-pil"
+  # Grace (xmgrace) builds against the bundled Motif; its configure disables the
+  # netcdf / jpeg / png / pdf drivers and the f77 wrapper and uses the bundled
+  # t1lib, so no image or numeric system libs are pulled in beyond the Motif
+  # chain. python3-pil backs the offscreen replay smoke's image assertions.
+  GRACE_BUILD_PKGS: "python3-pil"
   DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
 
 jobs:
@@ -1239,6 +1244,164 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ui-smoke-gimp
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Grace (Motif 2D plotting) integration and validation ----
+  #
+  # Grace 5.1.25 (xmgrace) builds against the bundled thentenaar/motif plus
+  # libXt-compat, libXmu-compat, and libX11-compat, with the compat/grace-patches/
+  # set applied. `make grace` pulls in the bundled Motif build as a prerequisite,
+  # so this job carries the MOTIF_BUILD_PKGS autoreconf chain and the MOTIF_YACC
+  # override like the motif / gimp / xephem jobs.
+  #
+  # This job builds Grace and validates its runtime with the -hardcopy PostScript
+  # export under Xvfb (Grace calls XOpenDisplay(NULL) directly at startup and does
+  # not come up under SDL's dummy driver on a headless Linux runner, so it needs a
+  # real display). The interactive replay smoke is a local-only tool here (see the
+  # note on the export step). Grace's GUI rendering is gated by the screenshot
+  # differential vs system OpenMotif under Xvfb (grace-differential in
+  # differential.yml).
+  grace:
+    runs-on: ubuntu-24.04
+    env:
+      # Same bison yacc-compat shim the motif / gimp jobs use for the Mrm
+      # parser generation; the bundled Motif is a build prerequisite of Grace.
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # DIFFERENTIAL_PKGS supplies Xvfb, the import screenshot tool, and
+        # python3-pil for the replay smoke's image assertions (GRACE_BUILD_PKGS
+        # also carries python3-pil, kept for parity with the other workload jobs).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.GRACE_BUILD_PKGS }} ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        # Exclude the Grace tarball + extracted tree so the dedicated grace-src
+        # cache below owns them, matching how the other big source trees split out.
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/grace-*
+            !build/upstream/.cache/grace-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        # Grace reuses the in-tree thentenaar/motif as its libXm/libMrm provider,
+        # so cache the same clone+autoreconf the motif job does. Exact-match key
+        # only, matching the motif job's rationale.
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache Grace source tree
+        # Exact-match key only. GRACE_VERSION / GRACE_SHA256 in mk/grace.mk pin
+        # the tarball, and the compat/grace-patches/ set is applied to a throwaway
+        # work tree (build/grace/source), so the extracted tree here stays
+        # pristine. Cache the tarball too so a hit avoids re-download + re-extract.
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream/grace-5.1.25
+            build/upstream/.cache/grace-5.1.25.tar.gz
+          key: grace-src-${{ runner.os }}-${{ hashFiles('mk/grace.mk', 'compat/grace-patches/**') }}
+
+      - name: Cache ccache
+        # Distinct key from motif / gimp so the Grace .o set does not collide
+        # with objects compiled against a different include path.
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-grace-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-grace-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=600M
+          ccache --zero-stats
+          echo "CC=ccache clang" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for Grace)
+        # Prime the upstream stamp serially before fanning out, matching the
+        # xephem / xwpe jobs: on a cold cache a parallel `make -j` can start
+        # compiling build/upstream/src/*.o before the upstream sync recipe has
+        # written those .c files.
+        run: |
+          make build/upstream/include/.upstream-stamp
+          make -j"$(nproc)"
+
+      - name: Build Motif libXm and libMrm (prerequisite for Grace)
+        run: make motif -j"$(nproc)"
+
+      - name: Build Grace against compat stack
+        id: grace
+        # mk/grace.mk fetches grace-5.1.25 from the Debian mirror, applies the
+        # compat/grace-patches/ set, stages the lib-aliases symlink farm and a
+        # merged Motif + compat include sysroot, and runs Grace's own configure
+        # (netcdf / jpeg / png / pdf drivers and the f77 wrapper disabled, bundled
+        # t1lib). The full log lives at build/grace/build.log, uploaded on failure.
+        run: make grace -j"$(nproc)"
+
+      # The interactive replay smoke (check-smoke-grace) is not run here. It
+      # relies on libx11-compat's in-process snapshot mechanism, which needs the
+      # client event loop to service a capture request between frames. Grace's
+      # plot canvas repaints continuously under a live X display (Xvfb on the
+      # runner), starving that request so the snapshot never lands; the same
+      # busy loop is why wait-converge never quiets. It works locally under SDL's
+      # offscreen dummy driver, where Grace idles, so it stays a local tool. On
+      # Linux Grace's runtime is gated by the -hardcopy export below (its full
+      # canvas + font render path) and by the screenshot differential vs system
+      # OpenMotif under Xvfb (grace-differential in differential.yml), which uses
+      # real screen captures rather than in-process snapshots.
+
+      - name: Run Grace PostScript export check
+        # Renders the fixture to PostScript with -hardcopy and asserts a non-empty
+        # file with a valid %!PS header. Run under Xvfb with GRACE_HARDCOPY_ENV
+        # cleared so SDL binds its x11 backend to the Xvfb server (Grace does not
+        # come up under the dummy driver on a headless Linux runner).
+        if: ${{ !cancelled() && steps.grace.outcome == 'success' }}
+        run: xvfb-run -a make check-grace-export GRACE_HARDCOPY_ENV=
+
+      - name: Upload Grace build log on failure
+        if: ${{ failure() && steps.grace.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: grace-build-log
+          path: build/grace/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload UI smoke artifacts on failure
+        # Distinct artifact name so concurrent workload uploads do not overwrite.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-grace
           path: build/ui-smoke
           if-no-files-found: warn
           retention-days: 7

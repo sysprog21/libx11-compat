@@ -192,40 +192,75 @@ static int waitSnapshotResult(int *waitRcOut)
  *
  * Returns a newly allocated surface the caller must free, or NULL when no popup
  * is present, in which case the caller saves the target surface unchanged.
+ * Upper bound on override-redirect popups folded into one snapshot. Menus,
+ * submenus, and dialog shells rarely stack more than a handful deep; the parked
+ * off-screen menu shells Motif keeps around also count but blit-clip away.
  */
+#define UI_SNAPSHOT_MAX_POPUPS 64
+
 static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
 {
     if (SCREEN_WINDOW == None || targetWin == None)
         return NULL;
     WindowStruct *targetStruct = GET_WINDOW_STRUCT(targetWin);
-    Window *children = GET_CHILDREN(SCREEN_WINDOW);
-    size_t count = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+    /* Source the popup list from the realized-window registry, not
+     * SCREEN_WINDOW's children array: a freshly posted Motif menu shell is
+     * realized and mapped (with a valid SDL window) before it is threaded into
+     * the root's children array, so a children-only scan misses exactly the
+     * menu a snapshot is trying to capture. The collector returns newest-first;
+     * blit oldest-first (reverse) so a later submenu lands on top of its
+     * parent. Order tracks realize order, not post-realize
+     * XRaiseWindow/XRestackWindows, which is correct for the menu/submenu case
+     * (a submenu is realized after its parent) and only approximate for
+     * already-realized popups that are later restacked among themselves - not a
+     * case the snapshot smokes hit.
+     */
+    Window popups[UI_SNAPSHOT_MAX_POPUPS];
+    size_t popupCount =
+        collectMappedOverrideRedirectWindows(popups, UI_SNAPSHOT_MAX_POPUPS);
     SDL_Surface *composed = NULL;
-    for (size_t i = 0; i < count; i++) {
-        Window child = children[i];
-        if (child == targetWin)
+    for (size_t i = popupCount; i-- > 0;) {
+        Window child = popups[i];
+        if (child == targetWin || !IS_TYPE(child, WINDOW))
             continue;
         WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
-        if (!childStruct->overrideRedirect || childStruct->mapState != Mapped ||
-            !childStruct->sdlWindow)
+        if (!childStruct)
             continue;
+        /* Read the popup pixels back through its renderer, not
+         * SDL_GetWindowSurface: libx11-compat draws every window through an
+         * SDL_Renderer with a per-window backing texture, so the window surface
+         * is absent (the target capture takes the same renderer-readback path).
+         * getWindowRenderer leaves the shared renderer targeting this window's
+         * texture, so getRenderSurfaceRect reads exactly the popup's content.
+         */
+        SDL_Renderer *childRenderer = getWindowRenderer(child);
+        if (!childRenderer)
+            continue;
+        SDL_Rect childRect = {
+            .x = 0,
+            .y = 0,
+            .w = (int) childStruct->w,
+            .h = (int) childStruct->h,
+        };
         SDL_Surface *childSurface =
-            SDL_GetWindowSurface(childStruct->sdlWindow);
+            getRenderSurfaceRect(childRenderer, &childRect);
         if (!childSurface)
             continue;
         if (!composed) {
             /* SDL_DuplicateSurface is absent from the older SDL2 on the
              * differential runners, so build the copy the way drawing.c does: a
-             * matching-format surface plus a base blit.
+             * matching-format surface plus a base blit. The blit return is not
+             * checked on purpose: SDL2 returns 0 on success while SDL3 returns
+             * true (non-zero), so a != 0 test would misread every SDL3 success
+             * as failure and drop the whole overlay.
              */
             composed = SDL_CreateRGBSurfaceWithFormat(
                 0, target->w, target->h, 32, XC_SURFACE_FMT_ENUM(target));
-            if (!composed)
-                return NULL;
-            if (SDL_BlitSurface(target, NULL, composed, NULL) != 0) {
-                SDL_FreeSurface(composed);
+            if (!composed) {
+                SDL_FreeSurface(childSurface);
                 return NULL;
             }
+            SDL_BlitSurface(target, NULL, composed, NULL);
         }
         /* 1:1 X-logical to surface pixel mapping, correct on the Xvfb CI path.
          * A HiDPI host would need the surface-to-logical scale folded into the
@@ -239,6 +274,7 @@ static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
             .h = childSurface->h,
         };
         SDL_BlitSurface(childSurface, NULL, composed, &dst);
+        SDL_FreeSurface(childSurface);
     }
     return composed;
 }

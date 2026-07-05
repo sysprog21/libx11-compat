@@ -184,6 +184,19 @@ but each exercises behavior that small examples do not reach.
   build/xephem/source/GUI/xephem/xephem  # launch from the repo root
   ```
 
+- [Grace](https://plasma-gate.weizmann.ac.il/Grace/): the Motif 2D plotting and data-analysis tool (`xmgrace`) builds against the bundled Motif plus `libXt-compat`, `libXmu-compat`, and `libX11-compat`.
+  It exercises a large Motif UI over an Xlib drawing canvas: menus and cascade placement, the file-selection dialog (which round-trips filenames through compound strings), axis/tick/curve rendering, and PostScript hardcopy export.
+  Replay smoke checks cover startup, File-menu posting, and canvas resize; a screenshot-based differential check compares startup against native OpenMotif on a remote reference host.
+
+  <a href="assets/grace.png"><img src="assets/grace.png" alt="Grace (xmgrace) running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make grace                             # build Grace (depends on motif)
+  build/grace/source/src/xmgrace         # launch the plotter
+  make check-smoke-grace                 # replay-driven startup + File menu + resize smoke
+  make check-differential-grace          # startup diff vs native OpenMotif (needs remote host)
+  ```
+
 - [xwpe](https://github.com/vejeta/xwpe): the X Window Programming Environment builds against `libX11-compat` and the SDL_ttf-backed `libXft-compat`.
   This editor workload exercises Xrm option parsing, core window/event paths, XIM key lookup, selections, Xft/fontconfig fallback, and an older terminal-style UI rendered through Xlib.
 

@@ -150,6 +150,7 @@ static void test_focus_switch_done_callback(XIM im,
 }
 
 #include <dirent.h>
+#include <locale.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -8935,6 +8936,120 @@ static int run_test(const char *name, int (*test)(Display *))
     return ok;
 }
 
+/* XmbTextPropertyToTextList used to be a stub that returned Success while
+ * leaving its output pointers untouched, so Motif callers (the DataField text
+ * widget, the XmString-to-text-property converter, and the file-selection path)
+ * read garbage - a selected filename like "spectrum.agr" came back as random
+ * bytes and could not be opened. Guard the round-trip: poison the outputs, run
+ * the conversion, and require the real string back, for both an XA_STRING
+ * (Latin-1) and a UTF8_STRING property, single and multi item.
+ */
+static int test_text_property_list(Display *display)
+{
+    Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
+    struct {
+        const char *bytes;
+        unsigned long nitems;
+        Atom encoding;
+        int expect_count;
+        const char *expect0;
+        const char *expect1;
+    } cases[] = {
+        {.bytes = "spectrum.agr",
+         .nitems = 12,
+         .encoding = XA_STRING,
+         .expect_count = 1,
+         .expect0 = "spectrum.agr"},
+        {.bytes = "spectrum.agr",
+         .nitems = 12,
+         .encoding = 0 /* filled below */,
+         .expect_count = 1,
+         .expect0 = "spectrum.agr"},
+        {.bytes = "a.agr\0b.agr",
+         .nitems = 11,
+         .encoding = XA_STRING,
+         .expect_count = 2,
+         .expect0 = "a.agr",
+         .expect1 = "b.agr"},
+    };
+    cases[1].encoding = utf8;
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        XTextProperty tp = {
+            .value = (unsigned char *) cases[i].bytes,
+            .encoding = cases[i].encoding,
+            .format = 8,
+            .nitems = cases[i].nitems,
+        };
+        char **list = (char **) (size_t) 0xdeadbeef;
+        int count = -12345;
+        int rc = XmbTextPropertyToTextList(display, &tp, &list, &count);
+        CHECK(rc == Success, "text_property_list: conversion did not succeed");
+        CHECK(count == cases[i].expect_count,
+              "text_property_list: wrong item count");
+        CHECK(list != NULL && list != (char **) (size_t) 0xdeadbeef,
+              "text_property_list: output list left unset");
+        CHECK(list[0] && !strcmp(list[0], cases[i].expect0),
+              "text_property_list: first string garbled");
+        if (cases[i].expect1)
+            CHECK(list[1] && !strcmp(list[1], cases[i].expect1),
+                  "text_property_list: second string garbled");
+        XFreeStringList(list);
+    }
+
+    const char *currentLocale = setlocale(LC_CTYPE, NULL);
+    char *oldLocale = strdup(currentLocale ? currentLocale : "C");
+    CHECK(oldLocale != NULL, "text_property_list: could not save locale");
+    const char *isoLocales[] = {"fr_FR.ISO8859-1", "en_IE.ISO8859-1",
+                                "pt_PT.ISO8859-1"};
+    const char *isoLocale = NULL;
+    for (size_t i = 0; i < sizeof(isoLocales) / sizeof(isoLocales[0]); i++) {
+        if (setlocale(LC_CTYPE, isoLocales[i])) {
+            isoLocale = isoLocales[i];
+            break;
+        }
+    }
+    if (isoLocale) {
+        unsigned char cafe[] = {'c', 'a', 'f', 0xe9};
+        XTextProperty tp = {
+            .value = cafe,
+            .encoding = XA_STRING,
+            .format = 8,
+            .nitems = sizeof(cafe),
+        };
+        char **list = NULL;
+        int count = 0;
+        int rc = XmbTextPropertyToTextList(display, &tp, &list, &count);
+        int ok = rc == Success && count == 1 && list && list[0] &&
+                 !memcmp(list[0], "caf\xe9", 5);
+        XFreeStringList(list);
+        setlocale(LC_CTYPE, oldLocale);
+        free(oldLocale);
+        CHECK(ok, "text_property_list: Xmb did not return locale bytes");
+    } else {
+        setlocale(LC_CTYPE, oldLocale);
+        free(oldLocale);
+    }
+
+    /* COMPOUND_TEXT is refused (no iconv), but it must fail cleanly with the
+     * outputs cleared, not the old stub's Success-with-garbage.
+     */
+    XTextProperty ct = {
+        .value = (unsigned char *) "spectrum.agr",
+        .encoding = XInternAtom(display, "COMPOUND_TEXT", False),
+        .format = 8,
+        .nitems = 12,
+    };
+    char **ctlist = (char **) (size_t) 0xdeadbeef;
+    int ctcount = -12345;
+    int ctrc = XmbTextPropertyToTextList(display, &ct, &ctlist, &ctcount);
+    CHECK(ctrc != Success,
+          "text_property_list: COMPOUND_TEXT should be refused");
+    CHECK(ctlist == NULL && ctcount == 0,
+          "text_property_list: refused conversion left outputs unset");
+    return 1;
+}
+
 /* End-to-end check that an installed shape mask carves a hole in subsequent
  * draw primitives. The mask is opaque-white except for a BLACK_HOLE rect in the
  * middle, which the spec says should clip the shape; pixels in that hole must
@@ -9758,6 +9873,7 @@ int main(void)
     run_test("extensions", test_extensions);
     run_test("selection", test_selection);
     run_test("properties", test_properties);
+    run_test("text_property_list", test_text_property_list);
     /* ICCCM / EWMH / MWM compliance block. ICCCM covers the WM_* core (hints,
      * transient_for); EWMH covers _NET_WM_* state and root ClientMessage
      * routing; MWM covers Motif-specific _MOTIF_WM_HINTS decoding. Grouped here

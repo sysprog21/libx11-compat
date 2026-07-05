@@ -1,0 +1,16 @@
+# Grace resize smoke: the plot canvas must survive a top-level resize and
+# redraw its axes and curve at the new size, exercising the Motif form/drawing
+# area geometry management plus the libx11-compat ConfigureNotify and backing
+# texture resize path. Fails if the canvas goes blank after the resize.
+delay 1500
+wait-window "Grace" 15000
+# Fixed settle delay rather than wait-converge: Grace's plot canvas repaints
+# continuously under a live X display (Xvfb) and never quiets. See grace-startup.
+delay 3000
+screenshot initial
+resize 900 640
+delay 2000
+screenshot resized
+assert-image resized common-visible.json
+assert-image resized grace-canvas-content.json
+assert-exit running
