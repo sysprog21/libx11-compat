@@ -546,6 +546,14 @@ static Bool parsePositiveIntBounded(const char *text,
         }
         value = value * 10 + digit;
     }
+    /* The in-loop guard uses the value before the current digit, so a final
+     * digit can push the result just past saturationCap (e.g. "21474833"
+     * against a decipoint cap). Clamp on exit so callers can rely on the return
+     * never exceeding the cap, keeping downstream math (decipoints * 100 + 360)
+     * inside int range.
+     */
+    if (value > saturationCap)
+        value = saturationCap;
     *valueReturn = value;
     return True;
 }
@@ -579,30 +587,113 @@ static int wildcardStylePixelSize(const char *name)
     return 0;
 }
 
-static int compactWildcardPointSize(const char *name)
+/* Read the number the compact XEphem/Motif wildcard puts between its 2nd and
+ * 3rd dash, e.g. "10" in "*-lucidatypewriter*medium*-10-*-iso8859-1" or "13" in
+ * "*-fixed-13-*".
+ *
+ * Returns the raw field value; the caller decides whether it is a pixel or a
+ * point size (see xlfdHasWeightToken).
+ */
+static Bool compactWildcardField(const char *name, int *valueReturn)
 {
     if (!name || name[0] == '-')
-        return 0;
+        return False;
     const char *firstDash = strchr(name, '-');
     if (!firstDash)
-        return 0;
+        return False;
     const char *sizeStart = strchr(firstDash + 1, '-');
     if (!sizeStart)
-        return 0;
+        return False;
     sizeStart++;
     const char *sizeEnd = strchr(sizeStart, '-');
     if (!sizeEnd || sizeEnd == sizeStart)
-        return 0;
+        return False;
     size_t len = (size_t) (sizeEnd - sizeStart);
     if (len >= 16)
-        return 0;
+        return False;
     char buffer[16];
-    int points = 0;
     memcpy(buffer, sizeStart, len);
     buffer[len] = '\0';
-    if (!parsePositiveInt(buffer, &points))
-        return 0;
-    return decipointsToPixelSize(points * 10);
+    return parsePositiveInt(buffer, valueReturn);
+}
+
+static Bool isFontNameAlpha(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/* A weight token proves an XLFD carries its foundry/family/weight prefix, so a
+ * trailing compact number sits past the pixel slot and is a POINT size. Its
+ * absence (e.g. "*-fixed-13-*") means the number is a PIXEL size. Match only a
+ * delimited token ("*medium*", "-bold-"), never a bare substring: otherwise a
+ * family like Bookman ("book") or Enlighten ("light") would flip a pixel field
+ * into a point field.
+ */
+static Bool xlfdHasWeightToken(const char *name)
+{
+    static const char *const weights[] = {
+        "medium", "bold",    "demibold", "light", "book",
+        "black",  "regular", "thin",     "heavy",
+    };
+    for (const char *p = name; *p; p++) {
+        for (size_t i = 0; i < ARRAY_LENGTH(weights); i++) {
+            size_t len = strlen(weights[i]);
+            if (strncasecmp(p, weights[i], len) != 0)
+                continue;
+            char before = p == name ? '\0' : p[-1];
+            if (!isFontNameAlpha(before) && !isFontNameAlpha(p[len]))
+                return True;
+        }
+    }
+    return False;
+}
+
+/* Extract the dash-delimited XLFD field at the given logical index (a leading
+ * '-' makes field 0 empty) and parse it as a positive font dimension.
+ *
+ * Returns False for an absent field, a wildcard/empty field, a literal zero, or
+ * any non-numeric text, so a caller can fall through to the next field. The cap
+ * is generous enough for a decipoint POINT_SIZE (e.g. 140); pixel callers clamp
+ * the result with clampFontSize.
+ */
+static Bool xlfdNumericField(const char *name, int index, int *valueReturn)
+{
+    int cap = (INT_MAX - 360) / 100;
+    const char *fieldStart = name;
+    int field = 0;
+    for (const char *p = name;; p++) {
+        if (*p != '-' && *p != '\0')
+            continue;
+        if (field == index) {
+            size_t len = (size_t) (p - fieldStart);
+            if (len == 0 || len >= 16)
+                return False;
+            char buffer[16];
+            int value = 0;
+            memcpy(buffer, fieldStart, len);
+            buffer[len] = '\0';
+            if (!parsePositiveIntBounded(buffer, cap, &value) || value == 0)
+                return False;
+            *valueReturn = value;
+            return True;
+        }
+        if (*p == '\0')
+            return False;
+        field++;
+        fieldStart = p + 1;
+    }
+}
+
+/* Convert an XLFD POINT_SIZE (decipoints) to pixels at the catalog DPI, then
+ * apply the one differential-verified nudge: Helvetica's 12pt (120 decipoints)
+ * baseline renders at 16px, not the 17px the naive conversion yields.
+ */
+static int decipointsToPixelsForName(const char *name, int decipoints)
+{
+    int pixels = decipointsToPixelSize(decipoints);
+    if (pixels == 17 && containsIgnoreCase(name, "helvetica"))
+        return 16;
+    return pixels;
 }
 
 static int requestedFontSize(const char *name)
@@ -635,9 +726,26 @@ static int requestedFontSize(const char *name)
         }
     }
 
+    /* A well-formed XLFD carries PIXEL_SIZE and POINT_SIZE at fixed field
+     * positions (7 and 8 with the leading '-', one less without it). Read them
+     * by position and prefer a real pixel size, falling back to the point size.
+     * A wildcard, empty, or zero pixel field means "unspecified" and defers to
+     * the point size, exactly as a font server resolves a scalable request.
+     * This is the unambiguous path; the shape heuristics below only catch
+     * glob-merged wildcards that are not strictly 14-field.
+     */
+    int pixelField = name[0] == '-' ? 7 : 6;
+    int pointField = name[0] == '-' ? 8 : 7;
+    int pixelSize = 0;
+    if (xlfdNumericField(name, pixelField, &pixelSize))
+        return clampFontSize(pixelSize);
+    int pointSize = 0;
+    if (xlfdNumericField(name, pointField, &pointSize))
+        return decipointsToPixelsForName(name, pointSize);
+
     const char *doubleDash = strstr(name, "--");
     if (doubleDash) {
-        int pixelSize = 0;
+        int dashPixelSize = 0;
         const char *start = doubleDash + 2;
         const char *end = strchr(start, '-');
         if (end && end > start) {
@@ -646,8 +754,8 @@ static int requestedFontSize(const char *name)
             if (len < sizeof(buffer)) {
                 memcpy(buffer, start, len);
                 buffer[len] = '\0';
-                if (parsePositiveInt(buffer, &pixelSize))
-                    return clampFontSize(pixelSize);
+                if (parsePositiveInt(buffer, &dashPixelSize))
+                    return clampFontSize(dashPixelSize);
             }
         }
     }
@@ -656,56 +764,29 @@ static int requestedFontSize(const char *name)
     if (wildcardPixelSize)
         return wildcardPixelSize;
 
-    int compactPointSize = compactWildcardPointSize(name);
-    if (compactPointSize)
-        return compactPointSize;
-
-    const char *fieldStart = name;
-    int field = name[0] == '-' ? 0 : 1;
-    int pointSizeFallback = 0;
-    for (const char *p = name;; p++) {
-        if (*p != '-' && *p != '\0')
-            continue;
-        if (field == 7 || (name[0] != '-' && field == 6)) {
-            size_t len = (size_t) (p - fieldStart);
-            if (len > 0 && len < 16) {
-                char buffer[16];
-                int pixelSize = 0;
-                memcpy(buffer, fieldStart, len);
-                buffer[len] = '\0';
-                if (parsePositiveInt(buffer, &pixelSize))
-                    return clampFontSize(pixelSize);
-            }
-        } else if (field == 8 || (name[0] != '-' && field == 7)) {
-            size_t len = (size_t) (p - fieldStart);
-            if (len > 0 && len < 16) {
-                char buffer[16];
-                int decipoints = 0;
-                memcpy(buffer, fieldStart, len);
-                buffer[len] = '\0';
-                /* Decipoints (e.g. 140 = 14pt) are in a separate unit space
-                 * from pixels and must not be clamped to MAX_FONT_SIZE here.
-                 * Cap the parsed value just below the point where
-                 * decipointsToPixelSize's `decipoints * 100 + 360` could
-                 * overflow, then let clampFontSize cap the pixel result.
-                 */
-                int decipointCap = (INT_MAX - 360) / 100;
-                if (parsePositiveIntBounded(buffer, decipointCap, &decipoints))
-                    pointSizeFallback = decipointsToPixelSize(decipoints);
-            }
-        }
-        if (*p == '\0')
-            break;
-        field++;
-        fieldStart = p + 1;
+    /* Compact XEphem names put a size where a strict XLFD would carry many
+     * fields. Read it as a POINT size only when a weight token proves the field
+     * sits past the pixel slot; otherwise ("*-fixed-13-*") the number is a
+     * pixel size and must not be inflated through the decipoint conversion.
+     */
+    int compactValue = 0;
+    if (compactWildcardField(name, &compactValue)) {
+        if (xlfdHasWeightToken(name))
+            return decipointsToPixelsForName(name, compactValue * 10);
+        return clampFontSize(compactValue);
     }
 
-    if (pointSizeFallback) {
-        if (pointSizeFallback == 17 && containsIgnoreCase(name, "helvetica"))
-            return 16;
-        return pointSizeFallback;
-    }
     return DEFAULT_FONT_SIZE;
+}
+
+/* Test hook: expose the resolved XLFD pixel size so the unit suite can assert
+ * exact resolution for names that never load as a full font (for example the
+ * "*-fixed-13-*" pixel/point ambiguity). The lowercase name keeps it out of the
+ * public X11 symbol audit (tests/check-api-symbols.py).
+ */
+int x11compat_font_pixel_size(const char *name)
+{
+    return requestedFontSize(name);
 }
 
 /* Match only the exact Motif fallback XLFD shape
