@@ -1,5 +1,5 @@
 XWPE_URL := https://github.com/vejeta/xwpe
-XWPE_REVISION := 163ba2ff997f88b54470d477bff2379517c13008
+XWPE_REVISION := e023dcf8af2cae102a97be29fb071b1354d0ba6b
 XWPE_CLONE_FLAGS ?= --filter=blob:none --no-checkout
 XWPE_SRC_DIR := $(OUT)/upstream/xwpe
 XWPE_SOURCE_STAMP := $(XWPE_SRC_DIR)/.source-stamp
@@ -76,7 +76,7 @@ $(XWPE_BIN): $(XWPE_SOURCE_STAMP) $(XWPE_PATCHES) $(PKGCONFIG_FILES) \
 	$(Q)mkdir -p $(XWPE_WORK_DIR)
 	$(Q)tar --exclude .git -cf - -C $(XWPE_SRC_DIR) . | tar -xf - -C $(XWPE_WORK_DIR)
 	$(Q)set -e; for patch in $(XWPE_PATCHES); do \
-	    patch -d $(XWPE_WORK_DIR) -p1 < "$$patch"; \
+	    patch --fuzz=0 --no-backup-if-mismatch -d $(XWPE_WORK_DIR) -p1 < "$$patch"; \
 	done
 	$(Q)printf '%s\n' \
 	    '#!/bin/sh' \
