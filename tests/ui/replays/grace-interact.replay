@@ -1,0 +1,38 @@
+# Grace interaction smoke: exercise the Motif menu popup path and the canvas
+# rubber-band feedback under libx11-compat. Loads the fixture, opens the File
+# menu (popup must map and render), dismisses it with Escape, then drags a
+# zoom rubber-band across the plot canvas. The canvas must stay visible and the
+# process must stay alive throughout. Coordinates are target-window relative so
+# they hold on both macOS SDL and Linux Xvfb.
+delay 1500
+wait-window "Grace" 15000
+# Fixed settle delay rather than wait-converge: Grace's plot canvas repaints
+# continuously under a live X display (Xvfb) and never quiets. See grace-startup.
+delay 3000
+screenshot initial
+# Open the File menu from the menubar, then dismiss it without activating an
+# item by releasing over a neutral canvas area (Motif drops the menu on a
+# release outside its pane).
+target-motion 18 10
+button 1 press
+delay 400
+target-motion 18 40
+delay 600
+screenshot file-menu
+assert-image file-menu common-visible.json
+assert-image file-menu grace-file-menu.json
+target-motion 400 300
+button 1 release
+delay 400
+screenshot dismissed
+# Rubber-band drag across the canvas interior (button 1 press, move, release).
+target-motion 300 300
+button 1 press
+delay 200
+target-motion 460 460
+delay 200
+button 1 release
+delay 1000
+screenshot dragged
+assert-image dragged common-visible.json
+assert-exit running

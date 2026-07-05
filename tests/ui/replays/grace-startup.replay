@@ -1,0 +1,15 @@
+# Grace startup smoke: the xmgrace main window must come up against the
+# libx11-compat + Motif + libXt stack with a fixture loaded, render the plot
+# canvas (axes plus a curve, not a blank drawing area), and stay alive. The
+# shared common-visible assertion (non-empty plus not-all-black) catches a
+# "window mapped but blank canvas" regression without a calibrated baseline.
+delay 1500
+wait-window "Grace" 15000
+# Grace's plot canvas repaints continuously under a live X display (Xvfb), so it
+# never quiets for wait-converge the way a static toolbox does; a fixed settle
+# delay is used instead, matching the xfig startup replay. common-visible is
+# tolerant of a mid-repaint frame (non-empty, not all black).
+delay 3000
+screenshot initial
+assert-image initial common-visible.json
+assert-exit running

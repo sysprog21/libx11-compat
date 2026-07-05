@@ -36,6 +36,7 @@ include mk/gimp-motif.mk
 include mk/xnedit.mk
 include mk/xwpe.mk
 include mk/xephem.mk
+include mk/grace.mk
 include mk/xcircuit.mk
 include mk/gl4es.mk
 include mk/mesa-demos.mk
