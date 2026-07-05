@@ -191,7 +191,7 @@ but each exercises behavior that small examples do not reach.
 
   ```sh
   make xwpe                              # build xwpe (depends on Xft shim)
-  XWPE_LIB=$PWD/build/xwpe/source build/xwpe/source/xwpe   # launch from the build tree
+  build/xwpe/source/xwpe                 # launch from the build tree
   ```
 
 The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.

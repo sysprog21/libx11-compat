@@ -9,13 +9,15 @@ glyph dismisses the dialog. The maximize gadget sits at xe-4 and is checked
 separately, so the widened range does not swallow it.
 
 diff --git a/we_mouse.c b/we_mouse.c
-index 1111111..2222222 100644
+index 5ef78cd..b06fe38 100644
 --- a/we_mouse.c
 +++ b/we_mouse.c
-@@ -186,7 +186,7 @@ static int e_hit_close_button(FENSTER *f)
+@@ -187,7 +187,7 @@ static int e_hit_close_button(FENSTER *f)
  {
   extern struct mouse e_mouse;
   if (e_mouse.y != f->a.y) return 0;
 - return e_mouse.x == f->e.x - 2;
 + return e_mouse.x >= f->e.x - 3 && e_mouse.x <= f->e.x - 1;
  }
+
+ static int e_hit_maximize_button(FENSTER *f)

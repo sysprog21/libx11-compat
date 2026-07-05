@@ -566,16 +566,15 @@ int SDLCALL SDL_PeepEvents(SDL_Event *events,
      * the real queue's count. numevents is per-SDL ignored for counting, so cap
      * the side scan at the ring size.
      */
-    int sideMax = events ? numevents : TEXT_SIDEQ_CAP;
+    int got = cached(events, numevents, action, minType, maxType);
+    int realGot = got >= 0 ? got : 0;
+    int sideMax = events ? numevents - realGot : TEXT_SIDEQ_CAP;
     bool reclaim = action == SDL_GETEVENT && sideQueueDrainShouldReclaim();
-    int taken =
-        sideQueueDrain(events, sideMax, action, minType, maxType, reclaim);
-    int realNum = events ? numevents - taken : numevents;
-    int got = cached(events ? events + taken : NULL, realNum, action, minType,
-                     maxType);
-    if (got < 0)
-        return taken > 0 ? taken : got;
-    return taken + got;
+    int taken = sideQueueDrain(events ? events + realGot : NULL, sideMax,
+                               action, minType, maxType, reclaim);
+    if (got < 0 && taken == 0)
+        return got;
+    return realGot + taken;
 }
 SDL_WRAP(SDL_bool,
          SDL_PixelFormatEnumToMasks,
