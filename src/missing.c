@@ -113,6 +113,65 @@ static char *copyTextPropertyString(const unsigned char *src,
     return out;
 }
 
+static int encodeLocaleCodepoint(wchar_t cp,
+                                 char *out,
+                                 size_t *outLen,
+                                 size_t outCap,
+                                 mbstate_t *state)
+{
+    char bytes[MB_LEN_MAX];
+    size_t n = wcrtomb(bytes, cp, state);
+    if (n == (size_t) -1 || n > outCap || *outLen > outCap - n)
+        return XConverterNotFound;
+    memcpy(out + *outLen, bytes, n);
+    *outLen += n;
+    return Success;
+}
+
+static char *copyTextPropertyStringLocale(const unsigned char *src,
+                                          size_t len,
+                                          Bool latin1,
+                                          int *status)
+{
+    *status = XNoMemory;
+    size_t maxChar = MB_CUR_MAX ? MB_CUR_MAX : 1;
+    if (len > (SIZE_MAX / maxChar) - 1)
+        return NULL;
+    size_t outCap = (len + 1) * maxChar;
+    char *out = malloc(outCap);
+    if (!out)
+        return NULL;
+
+    mbstate_t state;
+    memset(&state, 0, sizeof(state));
+    size_t outLen = 0;
+    size_t i = 0;
+    while (i < len) {
+        wchar_t cp;
+        int used;
+        if (latin1) {
+            cp = src[i];
+            used = 1;
+        } else {
+            used = decodeUtf8Codepoint(src + i, len - i, &cp);
+        }
+        if (used <= 0 || encodeLocaleCodepoint(cp, out, &outLen, outCap,
+                                               &state) != Success) {
+            free(out);
+            *status = XConverterNotFound;
+            return NULL;
+        }
+        i += (size_t) used;
+    }
+    if (encodeLocaleCodepoint(L'\0', out, &outLen, outCap, &state) != Success) {
+        free(out);
+        *status = XConverterNotFound;
+        return NULL;
+    }
+    *status = Success;
+    return out;
+}
+
 /* Compatibility stub triage:
  * - Build/smoke coverage: return stable Xlib-compatible defaults where callers
  *   commonly probe capability before choosing another path.
@@ -394,19 +453,31 @@ Bool XSupportsLocale(void)
     return True;
 }
 
-int XmbTextPropertyToTextList(Display *dpy,
-                              const XTextProperty *text_prop,
-                              char ***list_ret,
-                              int *count_ret)
+/* Adapt copyTextPropertyString (no status out, NULL means out of memory) to the
+ * segment-converter signature the shared parser calls. UTF-8 output never hits
+ * a locale encoding error, so the only failure is allocation.
+ */
+static char *convertSegmentUtf8(const unsigned char *src,
+                                size_t len,
+                                Bool latin1,
+                                int *status)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    char *s = copyTextPropertyString(src, len, latin1);
+    *status = s ? Success : XNoMemory;
+    return s;
 }
 
-int Xutf8TextPropertyToTextList(Display *dpy,
-                                const XTextProperty *text_prop,
-                                char ***list_ret,
-                                int *count_ret)
+/* Shared body of Xmb/Xutf8 TextPropertyToTextList: identical property
+ * validation, null-separated splitting, list allocation, and error unwinding;
+ * only the per-segment byte conversion differs, passed in as convert. Keeping
+ * one parser means the two entry points cannot drift apart.
+ */
+static int textPropertyToTextList(
+    Display *dpy,
+    const XTextProperty *text_prop,
+    char ***list_ret,
+    int *count_ret,
+    char *(*convert)(const unsigned char *, size_t, Bool, int *) )
 {
     if (!text_prop || !list_ret || !count_ret) {
         if (count_ret)
@@ -428,8 +499,8 @@ int Xutf8TextPropertyToTextList(Display *dpy,
         return XNoMemory;
     /* Only accept encodings whose 8-bit payload is already UTF-8 (the
      * UTF8_STRING atom) or Latin-1 (XA_STRING, the ICCCM "8-bit string"
-     * representation). COMPOUND_TEXT requires real iconv work and is routed via
-     * XmbTextPropertyToTextList instead.
+     * representation). COMPOUND_TEXT requires real iconv work and is refused
+     * here rather than mis-decoded.
      */
     Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
     if (text_prop->encoding != utf8 && text_prop->encoding != XA_STRING)
@@ -457,10 +528,11 @@ int Xutf8TextPropertyToTextList(Display *dpy,
             continue;
         size_t len = (size_t) (i - start);
         const unsigned char *src = value ? value + start : (unsigned char *) "";
-        list[item] = copyTextPropertyString(src, len, latin1);
+        int status = Success;
+        list[item] = convert(src, len, latin1, &status);
         if (!list[item]) {
             freeTextList(list, item);
-            return XNoMemory;
+            return status;
         }
         item++;
         start = i + 1;
@@ -468,6 +540,28 @@ int Xutf8TextPropertyToTextList(Display *dpy,
     *list_ret = list;
     *count_ret = count;
     return Success;
+}
+
+int XmbTextPropertyToTextList(Display *dpy,
+                              const XTextProperty *text_prop,
+                              char ***list_ret,
+                              int *count_ret)
+{
+    /* Xmb owes its callers the process locale's multibyte encoding, so segments
+     * are re-encoded via wcrtomb (copyTextPropertyStringLocale).
+     */
+    return textPropertyToTextList(dpy, text_prop, list_ret, count_ret,
+                                  copyTextPropertyStringLocale);
+}
+
+int Xutf8TextPropertyToTextList(Display *dpy,
+                                const XTextProperty *text_prop,
+                                char ***list_ret,
+                                int *count_ret)
+{
+    /* Xutf8 always yields UTF-8, independent of the process locale. */
+    return textPropertyToTextList(dpy, text_prop, list_ret, count_ret,
+                                  convertSegmentUtf8);
 }
 
 int XmbTextListToTextProperty(Display *dpy,

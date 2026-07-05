@@ -22,6 +22,7 @@ void initWindowStruct(WindowStruct *windowStruct,
                       Pixmap backgroundPixmap);
 Bool initScreenWindow(Display *display);
 Window getWindowFromId(Uint32 sdlWindowId);
+size_t collectMappedOverrideRedirectWindows(Window *out, size_t max);
 void destroyScreenWindow(Display *display);
 void destroyWindow(Display *display, Window window, Bool freeParentData);
 Window getContainingWindow(Window window, int x, int y);
