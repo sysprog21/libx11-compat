@@ -1,0 +1,132 @@
+Limit Xft refresh copies to dirty cells.
+
+The Xft renderer already paints into a backing Pixmap cell-by-cell, but its
+refresh path copied the whole text grid to the window after every incremental
+refresh. Cursor-only movement therefore presented the entire editor area for a
+two-cell update, which makes arrow-key movement visibly lag on slower present
+paths.
+
+Track the dirty cell bounding box while repainting changed text cells and copy
+only that region. The cursor is painted after the text refresh, so copy the
+old/new cursor cell bounds from fk_show_cursor() as well.
+
+diff --git a/we_xterm.c b/we_xterm.c
+index 96ec675..1ba96f8 100644
+--- a/we_xterm.c
++++ b/we_xterm.c
+@@ -336,6 +336,7 @@ static int e_x_map_char_utf8(int sc, char *buf);
+ static int e_x_wchar_to_utf8(int wc, char *buf);
+ static XftFont *e_xft_fallback_font(int codepoint);
+ static void e_xft_draw_acs(int sc, int px, int py, int fg_idx);
++static void e_xft_copy_cell_area(int x1, int y1, int x2, int y2);
+ 
+ static void e_x_render_cell(int sc, int px, int py, int cw,
+                             int fg_idx, int bg_idx)
+@@ -423,9 +424,24 @@ int fk_show_cursor()
+ #ifdef HAVE_XFT
+  if (WpeXInfo.xftfont)
+  {
++  if (cur_x < 0 || cur_x >= MAXSCOL || cur_y < 0 || cur_y >= MAXSLNS)
++   return 1;
++  int x1 = cur_x, y1 = cur_y, x2, y2 = cur_y + 1;
++  x2 = cur_x + ((schirm[cur_y * MAXSCOL + cur_x].flags & CELL_WIDE) ? 2 : 1);
+   if (old_cursor_x > 0 || old_cursor_y > 0)
++  {
++   int on = old_cursor_y * MAXSCOL + old_cursor_x;
++   int ocw = (old_cursor_x >= 0 && old_cursor_x < MAXSCOL &&
++              old_cursor_y >= 0 && old_cursor_y < MAXSLNS &&
++              (schirm[on].flags & CELL_WIDE)) ? 2 : 1;
+    e_xft_paint_cursor_cell(old_cursor_x, old_cursor_y, 0);  /* restore */
++   if (old_cursor_x < x1) x1 = old_cursor_x;
++   if (old_cursor_y < y1) y1 = old_cursor_y;
++   if (old_cursor_x + ocw > x2) x2 = old_cursor_x + ocw;
++   if (old_cursor_y + 1 > y2) y2 = old_cursor_y + 1;
++  }
+   e_xft_paint_cursor_cell(cur_x, cur_y, 1);                 /* draw inverted */
++  e_xft_copy_cell_area(x1, y1, x2, y2);
+  }
+  else
+ #endif /* HAVE_XFT */
+@@ -817,9 +829,25 @@ static XftFont *e_xft_fallback_font(int rune)
+    redraws only cells that differ from altschirm[] (the incremental refresh);
+    force=1 redraws every cell (a full repaint).  CELL_WIDE_SPACER cells are
+    never drawn -- the wide glyph to their left already covered them. */
+-static void e_x_render_dirty_cells(int force)
++static void e_xft_copy_cell_area(int x1, int y1, int x2, int y2)
++{
++ if (x1 < 0) x1 = 0;
++ if (y1 < 0) y1 = 0;
++ if (x2 > MAXSCOL) x2 = MAXSCOL;
++ if (y2 > MAXSLNS) y2 = MAXSLNS;
++ if (x2 <= x1 || y2 <= y1)
++  return;
++ XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
++   WpeXInfo.gc, WpeXInfo.font_width * x1, WpeXInfo.font_height * y1,
++   WpeXInfo.font_width * (x2 - x1), WpeXInfo.font_height * (y2 - y1),
++   WpeXInfo.font_width * x1, WpeXInfo.font_height * y1);
++}
++
++static int e_x_render_dirty_cells(int force, int *x1, int *y1, int *x2, int *y2)
+ {
+  int i, j;
++ int have_dirty = 0;
++ int dx1 = MAXSCOL, dy1 = MAXSLNS, dx2 = 0, dy2 = 0;
+  for (i = 0; i < MAXSLNS; i++)
+  for (j = 0; j < MAXSCOL; j++)
+  {
+@@ -837,21 +865,34 @@ static void e_x_render_dirty_cells(int force)
+   if (force || sc != altschirm[_n].ch || sa != altschirm[_n].attr
+       || schirm[_n].flags != altschirm[_n].flags)
+   {
++   int cw = (schirm[_n].flags & CELL_WIDE) ? 2 : 1;
+    e_x_render_cell(sc, WpeXInfo.font_width * j, WpeXInfo.font_height * i,
+-     (schirm[_n].flags & CELL_WIDE) ? 2 : 1,
++     cw,
+      ATTR_IS_TC(sa) ? 16 + ATTR_TC_SLOT(sa) : ATTR_BASE(sa) % 16,
+      ATTR_BASE(sa) / 16);
+    altschirm[_n] = schirm[_n];
++   if (j < dx1) dx1 = j;
++   if (i < dy1) dy1 = i;
++   if (j + cw > dx2) dx2 = j + cw;
++   if (i + 1 > dy2) dy2 = i + 1;
++   have_dirty = 1;
+   }
+  }
++ if (have_dirty && x1 && y1 && x2 && y2)
++ {
++  *x1 = dx1;
++  *y1 = dy1;
++  *x2 = dx2;
++  *y2 = dy2;
++ }
++ return have_dirty;
+ }
+ 
+ static void e_x_refresh_xft(void)
+ {
+- e_x_render_dirty_cells(0);
+- XCopyArea(WpeXInfo.display, WpeXInfo.backbuf, WpeXInfo.window,
+-   WpeXInfo.gc, 0, 0,
+-   WpeXInfo.font_width * MAXSCOL, WpeXInfo.font_height * MAXSLNS, 0, 0);
++ int x1, y1, x2, y2;
++ if (e_x_render_dirty_cells(0, &x1, &y1, &x2, &y2))
++  e_xft_copy_cell_area(x1, y1, x2, y2);
+ }
+ 
+ /* The Cairo refresh path calls wpe_render_chrome(), which lives in
+@@ -860,13 +901,13 @@ static void e_x_refresh_xft(void)
+ #ifdef HAVE_CAIRO
+ static void e_x_refresh_cairo(void)
+ {
+- e_x_render_dirty_cells(0);
++ e_x_render_dirty_cells(0, NULL, NULL, NULL, NULL);
+  wpe_render_chrome();
+ }
+ 
+ static void e_x_refresh_cairo_full(void)
+ {
+- e_x_render_dirty_cells(1);
++ e_x_render_dirty_cells(1, NULL, NULL, NULL, NULL);
+  wpe_render_chrome();
+ }
+ #endif /* HAVE_CAIRO */
