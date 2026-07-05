@@ -213,12 +213,18 @@ void inputMethodConsumePendingText(unsigned long commitId)
 
 Bool inputMethodHasFocusedIC(void)
 {
-    return focusedInputConnection != NULL;
+    return !!focusedInputConnection;
 }
 
 Bool inputMethodHasActiveTextInput(void)
 {
-    return focusedInputConnection != NULL && focusedTextInputActive;
+    return focusedInputConnection && focusedTextInputActive;
+}
+
+Bool inputMethodHasActivePreedit(void)
+{
+    return focusedInputConnection &&
+           GET_XIC_STRUCT(focusedInputConnection)->preeditActive;
 }
 
 void inputMethodNoteTextInputStopped(void)
@@ -239,7 +245,7 @@ void inputMethodUnsetFocus(XIC inputConnection)
     if (inputConnection && focusedInputConnection != inputConnection)
         return;
     if (focusedInputConnection)
-        inputMethodHandlePreedit("");
+        inputMethodHandlePreedit("", 0);
     /* The clear above can fire a done callback that re-focuses another IC; do
      * not clobber that. Only finish the unset when this IC still holds focus.
      */
@@ -382,7 +388,7 @@ static void applyTextInputRectForIC(_XIC *ic)
     SDL_SetTextInputRect(&rect);
 }
 
-static void handlePreeditImpl(const char *text)
+static void handlePreeditImpl(const char *text, int caret)
 {
     if (!focusedInputConnection)
         return;
@@ -395,6 +401,13 @@ static void handlePreeditImpl(const char *text)
     const char *s = text ? text : "";
     int len = (int) strlen(s);
     int charLen = countUtf8Chars(s);
+    /* The host reports where the insertion point sits inside the composition;
+     * clamp it into the preedit so a bogus backend value cannot drive the caret
+     * past the text. A negative value means "unreported", so trail at the end
+     * where a fresh composition normally sits.
+     */
+    if (caret < 0 || caret > charLen)
+        caret = charLen;
     if ((ic->style & XIMPreeditCallbacks) == 0)
         drawInternalPreedit(ic, s, len);
 
@@ -433,7 +446,7 @@ static void handlePreeditImpl(const char *text)
             .string.multi_byte = (char *) s,
         };
         XIMPreeditDrawCallbackStruct draw = {
-            .caret = charLen,
+            .caret = caret,
             .chg_first = 0,
             .chg_length = ic->preeditLength,
             .text = &ximText,
@@ -444,14 +457,14 @@ static void handlePreeditImpl(const char *text)
             return;
         if (!ic->destroying && ic->hasPreeditCaretCallback &&
             ic->preeditCaretCallback.callback) {
-            XIMPreeditCaretCallbackStruct caret = {
-                .position = charLen,
+            XIMPreeditCaretCallbackStruct caretCb = {
+                .position = caret,
                 .direction = XIMAbsolutePosition,
                 .style = XIMIsPrimary,
             };
             ic->preeditCaretCallback.callback(
                 (XIM) self, ic->preeditCaretCallback.client_data,
-                (XPointer) &caret);
+                (XPointer) &caretCb);
             if (focusedInputConnection != self)
                 return;
         }
@@ -469,10 +482,10 @@ static void handlePreeditImpl(const char *text)
     }
 }
 
-void inputMethodHandlePreedit(const char *text)
+void inputMethodHandlePreedit(const char *text, int caret)
 {
     /* A preedit callback may unfocus or XDestroyIC its IC, and both route back
-     * through inputMethodUnsetFocus -> inputMethodHandlePreedit(""), which
+     * through inputMethodUnsetFocus -> inputMethodHandlePreedit("", 0), which
      * would re-fire the callbacks and recurse. Run the body at most one level
      * deep; the nested clear is redundant because teardown already drops focus.
      */
@@ -480,7 +493,7 @@ void inputMethodHandlePreedit(const char *text)
     if (reentered)
         return;
     reentered = True;
-    handlePreeditImpl(text);
+    handlePreeditImpl(text, caret);
     reentered = False;
 }
 
@@ -1044,6 +1057,8 @@ XIC XCreateIC(XIM inputMethod, ...)
         XDestroyIC(inputConnection);
         return NULL;
     }
+    if (!focusedInputConnection)
+        XSetICFocus(inputConnection);
     return inputConnection;
 }
 
@@ -1136,7 +1151,7 @@ void XSetICFocus(XIC inputConnection)
      */
     if (focusedInputConnection && focusedInputConnection != inputConnection) {
         pendingFocusTarget = inputConnection;
-        inputMethodHandlePreedit("");
+        inputMethodHandlePreedit("", 0);
         Bool targetAlive = pendingFocusTarget == inputConnection;
         pendingFocusTarget = NULL;
         if (!targetAlive)

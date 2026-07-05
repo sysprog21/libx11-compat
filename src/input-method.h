@@ -85,9 +85,13 @@ unsigned long inputMethodSetCurrentText(char *text);
 void inputMethodReset(void);
 Bool inputMethodHasFocusedIC(void);
 Bool inputMethodHasActiveTextInput(void);
+Bool inputMethodHasActivePreedit(void);
 void inputMethodNoteTextInputStopped(void);
 void inputMethodUnsetFocus(XIC inputConnection);
-void inputMethodHandlePreedit(const char *text);
+/* caret is the insertion index within the preedit, in UTF-8 characters, as
+ * reported by SDL_TextEditingEvent.start. It is clamped to the preedit length.
+ */
+void inputMethodHandlePreedit(const char *text, int caret);
 char *inputMethodPendingText(unsigned long commitId);
 void inputMethodConsumePendingText(unsigned long commitId);
 KeySym getKeySymForChar(char c);

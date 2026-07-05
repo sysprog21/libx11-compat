@@ -44,6 +44,7 @@ static int preeditDrawCount;
 static int preeditStartCount;
 static int preeditDoneCount;
 static int preeditCaretCount;
+static int preeditCaretLastPos = -1;
 static char preeditDrawText[32];
 
 static void test_preedit_start_done_callback(XIM im,
@@ -81,8 +82,17 @@ static void test_preedit_caret_callback(XIM im,
     (void) client_data;
     XIMPreeditCaretCallbackStruct *caret =
         (XIMPreeditCaretCallbackStruct *) call_data;
-    if (caret && caret->position == 2)
+    if (caret) {
         preeditCaretCount++;
+        preeditCaretLastPos = caret->position;
+    }
+}
+
+static void set_text_input_event(SDL_Event *event, const char *text)
+{
+    SDL_zero(*event);
+    event->type = SDL_TEXTINPUT;
+    XC_SET_TEXT_EVENT(*event, text);
 }
 
 static XIC reentrantIC;
@@ -417,9 +427,9 @@ static int test_keyboard(Display *display)
           "XKeysymToKeycode(?) did not resolve to the '/' key");
 
     /* XKeysymToKeycode must not alias a scancode key (XK_Execute is
-     * SDLK_EXECUTE 0x40000074, whose low byte is the 't' keycode) onto an
-     * ASCII letter; otherwise Motif binds osfActivate onto 't'. Every keycode
-     * it returns must round-trip back to the requested keysym.
+     * SDLK_EXECUTE 0x40000074, whose low byte is the 't' keycode) onto an ASCII
+     * letter; otherwise Motif binds osfActivate onto 't'. Every keycode it
+     * returns must round-trip back to the requested keysym.
      */
     KeyCode tCode = XKeysymToKeycode(display, XK_t);
     KeyCode execCode = XKeysymToKeycode(display, XK_Execute);
@@ -489,18 +499,37 @@ static int test_keyboard(Display *display)
     keyEvent.xkey.display = display;
     keyEvent.xkey.window = probeWindow;
     keyEvent.xkey.keycode = XKeysymToKeycode(display, XK_a);
+    /* XFilterEvent must never swallow a real key, regardless of X focus state.
+     * The host input method consumes composition at the SDL layer, so anything
+     * that reaches a client here is a real key or a committed-IM delivery that
+     * the client must process. An earlier build dropped keys whenever
+     * getKeyboardFocus() was None, which made Enter and IM commits vanish in a
+     * single-window client that never sets X focus.
+     */
     syncKeyboardFocusFromHost(None);
-    CHECK(XFilterEvent(&keyEvent, probeWindow),
-          "XFilterEvent should drop keys with no host focus");
+    CHECK(!XFilterEvent(&keyEvent, probeWindow),
+          "XFilterEvent dropped a real key with no host focus");
+    keyEvent.xkey.type = KeyRelease;
+    CHECK(!XFilterEvent(&keyEvent, probeWindow),
+          "XFilterEvent dropped a KeyRelease with no host focus");
+    keyEvent.xkey.type = KeyPress;
     syncKeyboardFocusFromHost(probeWindow);
     CHECK(!XFilterEvent(&keyEvent, probeWindow),
-          "host focus sync did not unblock key filtering");
-    syncKeyboardFocusFromHost((Window) 0x7ffffffeUL);
-    CHECK(XFilterEvent(&keyEvent, probeWindow),
-          "invalid host focus target should restore key filtering");
+          "XFilterEvent dropped a real key with host focus set");
+    /* A committed-IM KeyPress rides a synthetic event with keycode 0 and the
+     * commit id in subwindow; it must pass through too so the client can pull
+     * the text with XmbLookupString.
+     */
+    XEvent imCommitEvent;
+    memset(&imCommitEvent, 0, sizeof(imCommitEvent));
+    imCommitEvent.xkey.type = KeyPress;
+    imCommitEvent.xkey.display = display;
+    imCommitEvent.xkey.window = probeWindow;
+    imCommitEvent.xkey.keycode = 0;
+    imCommitEvent.xkey.subwindow = (Window) 1;
     syncKeyboardFocusFromHost(None);
-    CHECK(XFilterEvent(&keyEvent, probeWindow),
-          "host focus loss did not restore key filtering");
+    CHECK(!XFilterEvent(&imCommitEvent, probeWindow),
+          "XFilterEvent dropped a committed IM KeyPress with no host focus");
     XSetInputFocus(display, probeWindow, RevertToParent, CurrentTime);
     Window focused = None;
     int revert = 0;
@@ -735,6 +764,18 @@ static int test_keyboard(Display *display)
               "Xutf8LookupString returned wrong control keysym");
         CHECK(lookupStatus == XLookupBoth,
               "Xutf8LookupString status should be XLookupBoth for controls");
+
+        memset(buf, 0, sizeof(buf));
+        lookedUp = NoSymbol;
+        lookupStatus = 0;
+        n = XmbLookupString(NULL, &ev, buf, sizeof(buf), &lookedUp,
+                            &lookupStatus);
+        CHECK(n == 1 && buf[0] == controls[i].byte,
+              "XmbLookupString did not return control byte");
+        CHECK(lookedUp == controls[i].keysym,
+              "XmbLookupString returned wrong control keysym");
+        CHECK(lookupStatus == XLookupBoth,
+              "XmbLookupString status should be XLookupBoth for controls");
     }
     return 1;
 }
@@ -1459,10 +1500,10 @@ static int exercise_fixed_font_program(Display *display)
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(pixmap, renderer);
 
-    /* Verify each text API in isolation: clear to white, draw once, and
-     * confirm that draw alone put black pixels down. Sharing one pixmap across
-     * all three draws would let a dead XDrawImageString or XDrawText ride on
-     * the pixels left by XDrawString and still pass.
+    /* Verify each text API in isolation: clear to white, draw once, and confirm
+     * that draw alone put black pixels down. Sharing one pixmap across all
+     * three draws would let a dead XDrawImageString or XDrawText ride on the
+     * pixels left by XDrawString and still pass.
      */
     CHECK(XSetForeground(display, gc, 0x00FFFFFF),
           "fixed-font program white setup failed");
@@ -2668,15 +2709,14 @@ static int test_drawing_coverage(Display *display)
     return 1;
 }
 
-/* GXxor must be self-inverse: drawing the same primitive twice through a
- * GXxor GC with the same foreground must restore the original pixels
- * bit-for-bit. xfig's rubber-band relies on this for the drag preview:
- * each mouse-move XOR-erases the previous frame and XOR-draws the new
- * one. If the read / modify / write round-trip through SDL is not
- * bit-exact (e.g. because SDL_RenderCopy of the staging texture goes
- * through a shader pipeline with float conversion / premultiplied alpha
- * / sRGB), the second XOR fails to cancel and we leak a trail of stale
- * rubber-band outlines on screen.
+/* GXxor must be self-inverse: drawing the same primitive twice through a GXxor
+ * GC with the same foreground must restore the original pixels bit-for-bit.
+ * xfig's rubber-band relies on this for the drag preview: each mouse-move
+ * XOR-erases the previous frame and XOR-draws the new one. If the read / modify
+ * / write round-trip through SDL is not bit-exact (e.g. because SDL_RenderCopy
+ * of the staging texture goes through a shader pipeline with float conversion /
+ * premultiplied alpha / sRGB), the second XOR fails to cancel and we leak a
+ * trail of stale rubber-band outlines on screen.
  */
 static int test_gxxor_self_inverse(Display *display)
 {
@@ -3633,9 +3673,7 @@ static int test_events(Display *display)
           "uninstall ColormapNotify state was incorrect");
 
     SDL_Event textEvent;
-    SDL_zero(textEvent);
-    textEvent.type = SDL_TEXTINPUT;
-    XC_SET_TEXT_EVENT(textEvent, "a");
+    set_text_input_event(&textEvent, "a");
     int queuedBeforeText = XEventsQueued(display, QueuedAlready);
     SDL_PushEvent(&textEvent);
     CHECK(XEventsQueued(display, QueuedAlready) == queuedBeforeText + 1,
@@ -3677,8 +3715,8 @@ static int test_events(Display *display)
 
     /* Wheel up -> ButtonPress + matching ButtonRelease for Button4. Real X11
      * always pairs wheel button events, so the conversion layer queues both;
-     * the test must drain both so leftover Releases do not pollute the
-     * put-back queue ahead of the crossing assertions further down.
+     * the test must drain both so leftover Releases do not pollute the put-back
+     * queue ahead of the crossing assertions further down.
      */
     SDL_Event wheelEvent;
     XSelectInput(display, window, ButtonPressMask | ButtonReleaseMask);
@@ -4866,12 +4904,11 @@ static int test_properties(Display *display)
         XDestroyWindow(display, titleWin);
     }
 
-    /* Xutf8TextPropertyToTextList must reject attacker-controlled nitems
-     * BEFORE the calloc/memcpy or the +1 NUL terminator wraps SIZE_MAX
-     * and the subsequent memcpy writes ULONG_MAX bytes off the heap.
-     * Additionally, only UTF8_STRING / XA_STRING encodings are decoded
-     * verbatim; COMPOUND_TEXT and unknown atoms must return
-     * XConverterNotFound, not silently mis-decode.
+    /* Xutf8TextPropertyToTextList must reject attacker-controlled nitems BEFORE
+     * the calloc/memcpy or the +1 NUL terminator wraps SIZE_MAX and the
+     * subsequent memcpy writes ULONG_MAX bytes off the heap. Additionally, only
+     * UTF8_STRING / XA_STRING encodings are decoded verbatim; COMPOUND_TEXT and
+     * unknown atoms must return XConverterNotFound, not silently mis-decode.
      */
     {
         XTextProperty tp;
@@ -4961,10 +4998,10 @@ static int test_properties(Display *display)
               "NULL text_prop must reject");
     }
 
-    /* XwcTextPropertyToTextList shares the NUL-splitting contract with
-     * the UTF-8 path. ICCCM list properties (WM_COMMAND, etc.) round
-     * through the wide-char surface inside libXaw text widgets, so a
-     * collapsed list there cuts off every argv entry past the first.
+    /* XwcTextPropertyToTextList shares the NUL-splitting contract with the
+     * UTF-8 path. ICCCM list properties (WM_COMMAND, etc.) round through the
+     * wide-char surface inside libXaw text widgets, so a collapsed list there
+     * cuts off every argv entry past the first.
      */
     {
         XTextProperty tp;
@@ -5013,8 +5050,7 @@ static int test_properties(Display *display)
 
     /* Wide-char text properties must label bytes with the encoding actually
      * emitted. Non-UTF-8 styles use the same 8-bit Latin-1 path that
-     * XwcTextPropertyToTextList decodes for XA_STRING, TEXT, and
-     * COMPOUND_TEXT.
+     * XwcTextPropertyToTextList decodes for XA_STRING, TEXT, and COMPOUND_TEXT.
      */
     {
         wchar_t cafe[] = {L'c', L'a', L'f', (wchar_t) 0xe9, 0};
@@ -6855,13 +6891,12 @@ static int test_fonts(Display *display)
               "XDrawString treated X11 black pixel as transparent");
 
         /* Text-stamp invalidation regression. The stamp cache only tracks
-         * window drawables, and only a TTF (non-fixed) font records a stamp,
-         * so draw with a helvetica GC on a mapped window. An identical redraw
-         * of a stamped cell is skipped to keep anti-aliased text from
-         * accumulating; overwriting the cell must drop the stamp so the redraw
-         * actually repaints. A stale stamp would skip the redraw and leave the
-         * overwrite showing, which is the missing-text failure mode of the
-         * cache.
+         * window drawables, and only a TTF (non-fixed) font records a stamp, so
+         * draw with a helvetica GC on a mapped window. An identical redraw of a
+         * stamped cell is skipped to keep anti-aliased text from accumulating;
+         * overwriting the cell must drop the stamp so the redraw actually
+         * repaints. A stale stamp would skip the redraw and leave the overwrite
+         * showing, which is the missing-text failure mode of the cache.
          */
         Window stampDrawWindow =
             XCreateSimpleWindow(display, root, 0, 0, 96, 32, 0, 0, 0x00FFFFFF);
@@ -7015,8 +7050,9 @@ static int test_fonts(Display *display)
                 XCreateGC(display, DefaultRootWindow(display), 0, NULL);
             CHECK(measureGc != NULL,
                   "XQueryTextExtents GC metric GC creation failed");
-            /* A GC with no font set must still measure via a temporary
-             * fallback font, and must not retain that font afterward. */
+            /* A GC with no font set must still measure via a temporary fallback
+             * font, and must not retain that font afterward.
+             */
             memset(&overall, 0, sizeof(overall));
             st = XQueryTextExtents(display, XGContextFromGC(measureGc), "hello",
                                    5, &dir, &ascent, &descent, &overall);
@@ -7703,6 +7739,27 @@ static int test_input_methods(Display *display)
     CHECK(filterEvents == (KeyPressMask | KeyReleaseMask),
           "XGetICValues returned wrong filter events");
 
+    {
+        /* xwpe creates an IC and immediately calls XmbLookupString without an
+         * explicit XSetICFocus. Treat the first IC as focused so SDL text input
+         * is live for that legacy pattern.
+         */
+        SDL_Event textEvent;
+        set_text_input_event(&textEvent, "u");
+        XEvent out;
+        CHECK(convertEvent(display, &textEvent, &out, True) == 0 &&
+                  out.type == KeyPress && out.xkey.keycode == 0,
+              "first XCreateIC did not enable IM text input");
+        char buf[4] = {0};
+        KeySym keysym = NoSymbol;
+        Status status = XLookupNone;
+        int n =
+            XmbLookupString(ic, &out.xkey, buf, sizeof(buf), &keysym, &status);
+        CHECK(
+            n == 1 && buf[0] == 'u' && keysym == XK_u && status == XLookupBoth,
+            "first XCreateIC auto-focus did not expose committed text");
+    }
+
     GC preeditGc = XCreateGC(display, client, 0, NULL);
     CHECK(preeditGc, "preedit visibility GC creation failed");
     CHECK(XSetForeground(display, preeditGc, 0xffffffff),
@@ -7781,11 +7838,16 @@ static int test_input_methods(Display *display)
     preeditDoneCount = 0;
     preeditDrawCount = 0;
     preeditCaretCount = 0;
+    preeditCaretLastPos = -1;
     preeditDrawText[0] = '\0';
     SDL_Event editingEvent;
     SDL_zero(editingEvent);
     editingEvent.type = SDL_TEXTEDITING;
     XC_SET_EDITING_EVENT(editingEvent, "zh");
+    /* Caret sits between the two composed characters; it must be reported as
+     * such, not snapped to the end of the preedit.
+     */
+    editingEvent.edit.start = 1;
     XEvent ignored;
     CHECK(convertEvent(display, &editingEvent, &ignored, True) == -1,
           "SDL_TEXTEDITING should not produce a committed X event");
@@ -7794,6 +7856,8 @@ static int test_input_methods(Display *display)
     CHECK(preeditStartCount == 1 && preeditDoneCount == 0 &&
               preeditCaretCount == 1,
           "SDL_TEXTEDITING did not deliver preedit lifecycle callbacks");
+    CHECK(preeditCaretLastPos == 1,
+          "SDL_TEXTEDITING caret position not threaded from edit.start");
     XImage *preeditImage =
         XGetImage(display, client, area.x, area.y, area.width, area.height,
                   AllPlanes, ZPixmap);
@@ -7807,6 +7871,34 @@ static int test_input_methods(Display *display)
     }
     XDestroyImage(preeditImage);
     CHECK(darkPixels > 0, "area-style preedit was not visibly drawn");
+    {
+        SDL_Event returnDuringPreedit;
+        SDL_zero(returnDuringPreedit);
+        returnDuringPreedit.type = SDL_KEYDOWN;
+        returnDuringPreedit.key.windowID =
+            SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
+        XC_EVENT_SET_KEYSYM(&returnDuringPreedit, SDLK_RETURN);
+        XC_EVENT_SET_KEYMOD(&returnDuringPreedit, 0);
+        CHECK(convertEvent(display, &returnDuringPreedit, &ignored, True) == -1,
+              "Return keydown escaped while preedit was active");
+
+        SDL_Event commitAfterReturn;
+        set_text_input_event(&commitAfterReturn, "z");
+        XEvent committed;
+        CHECK(
+            convertEvent(display, &commitAfterReturn, &committed, True) == 0 &&
+                committed.type == KeyPress && committed.xkey.keycode == 0,
+            "preedit Return commit did not produce IM KeyPress");
+        char commitBuf[4] = {0};
+        KeySym commitKeysym = NoSymbol;
+        Status commitStatus = XLookupNone;
+        int commitLen =
+            XmbLookupString(ic, &committed.xkey, commitBuf, sizeof(commitBuf),
+                            &commitKeysym, &commitStatus);
+        CHECK(commitLen == 1 && commitBuf[0] == 'z' && commitKeysym == XK_z &&
+                  commitStatus == XLookupBoth,
+              "preedit Return commit was not readable through XmbLookupString");
+    }
 
     XIC switchIC =
         XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
@@ -7841,11 +7933,13 @@ static int test_input_methods(Display *display)
                       XNClientWindow, client, XNFocusWindow, focus, NULL);
         CHECK(ic2, "XCreateIC failed for second IC");
         /* Modifying a non-focused IC must not disable text input for the
-         * currently focused IC */
+         * currently focused IC
+         */
         CHECK(!XSetICValues(ic2, XNClientWindow, replacementClient, NULL),
               "XSetICValues failed for second IC client window");
-        /* Verify that key suppression still works on the focused IC (it has
-         * active text input) */
+        /* Verify that text input still works on the focused IC: ASCII keydown
+         * is delivered raw, and the paired SDL_TEXTINPUT is suppressed.
+         */
         SDL_Event keyEvent;
         SDL_zero(keyEvent);
         keyEvent.type = SDL_KEYDOWN;
@@ -7853,9 +7947,13 @@ static int test_input_methods(Display *display)
             SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
         XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_a);
         XC_EVENT_SET_KEYMOD(&keyEvent, 0);
-        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == 0,
               "setting client window on a non-focused IC disabled active IM "
               "text input");
+        SDL_Event duplicateText;
+        set_text_input_event(&duplicateText, "a");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == -1,
+              "duplicate ASCII SDL_TEXTINPUT survived non-focused IC change");
         XDestroyIC(ic2);
     }
     {
@@ -7866,8 +7964,47 @@ static int test_input_methods(Display *display)
             SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
         XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_a);
         XC_EVENT_SET_KEYMOD(&keyEvent, 0);
-        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
-              "plain SDL_KEYDOWN under IC focus produced duplicate KeyPress");
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == 0 &&
+                  ignored.type == KeyPress && ignored.xkey.keycode == SDLK_a,
+              "plain ASCII SDL_KEYDOWN under IC focus was not delivered raw");
+        SDL_Event duplicateText;
+        set_text_input_event(&duplicateText, "a");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == -1,
+              "duplicate ASCII SDL_TEXTINPUT was not suppressed after raw key");
+        set_text_input_event(&duplicateText, "a");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == 0 &&
+                  ignored.type == KeyPress && ignored.xkey.keycode == 0,
+              "repeated ASCII SDL_TEXTINPUT was suppressed after duplicate");
+        char repeatedBuf[4] = {0};
+        KeySym repeatedKeysym = NoSymbol;
+        Status repeatedStatus = XLookupNone;
+        CHECK(
+            XmbLookupString(ic, &ignored.xkey, repeatedBuf, sizeof(repeatedBuf),
+                            &repeatedKeysym, &repeatedStatus) == 1 &&
+                repeatedBuf[0] == 'a' && repeatedKeysym == XK_a &&
+                repeatedStatus == XLookupBoth,
+            "repeated ASCII SDL_TEXTINPUT did not commit text");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_1);
+        XC_EVENT_SET_KEYMOD(&keyEvent, KMOD_SHIFT);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == 0 &&
+                  ignored.type == KeyPress && ignored.xkey.keycode == SDLK_1,
+              "shifted ASCII SDL_KEYDOWN under IC focus was not delivered raw");
+        set_text_input_event(&duplicateText, "!");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == -1,
+              "duplicate shifted ASCII SDL_TEXTINPUT was not suppressed");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_a);
+        XC_EVENT_SET_KEYMOD(&keyEvent, KMOD_CAPS);
+        CHECK(
+            convertEvent(display, &keyEvent, &ignored, True) == 0 &&
+                ignored.type == KeyPress && ignored.xkey.keycode == SDLK_a,
+            "CapsLock ASCII SDL_KEYDOWN under IC focus was not delivered raw");
+        set_text_input_event(&duplicateText, "A");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == -1,
+              "duplicate CapsLock ASCII SDL_TEXTINPUT was not suppressed");
+
+        XC_EVENT_SET_KEYMOD(&keyEvent, 0);
 
         XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_KP_1);
         CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
@@ -7876,6 +8013,16 @@ static int test_input_methods(Display *display)
         XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_KP_LEFTPAREN);
         CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
               "keypad punctuation under IC focus produced duplicate KeyPress");
+
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_a);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == 0,
+              "ASCII keydown before suppressed key was not delivered raw");
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_KP_1);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "keypad key after raw ASCII was not suppressed");
+        set_text_input_event(&duplicateText, "a");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == -1,
+              "raw ASCII duplicate marker was suppressed from the ring");
 
         /* Non-ASCII printable keys also arrive as SDL_TEXTINPUT, so their raw
          * keydown must be suppressed too (Latin-1 and arbitrary Unicode).
@@ -7905,15 +8052,19 @@ static int test_input_methods(Display *display)
             SDL_GetWindowID(GET_WINDOW_STRUCT(client)->sdlWindow);
         XC_EVENT_SET_KEYSYM(&selectedKeyEvent, SDLK_a);
         XC_EVENT_SET_KEYMOD(&selectedKeyEvent, 0);
-        CHECK(convertEvent(display, &selectedKeyEvent, &ignored, True) == -1,
+        CHECK(convertEvent(display, &selectedKeyEvent, &ignored, True) == 0,
               "XSelectInput disabled active IM text input");
+        SDL_Event duplicateText;
+        set_text_input_event(&duplicateText, "a");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == -1,
+              "XSelectInput left duplicate ASCII text input active");
     }
     XSetICFocus(ic);
+    while (XCheckTypedEvent(display, KeyRelease, &ignored))
+        ;
     for (int i = 0; i < 4; i++) {
         SDL_Event textEvent;
-        SDL_zero(textEvent);
-        textEvent.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(textEvent, "a");
+        set_text_input_event(&textEvent, "z");
         SDL_PushEvent(&textEvent);
         XEvent out;
         XNextEvent(display, &out);
@@ -7940,21 +8091,21 @@ static int test_input_methods(Display *display)
             char buf[4] = {0};
             int n = Xutf8LookupString(ic, &out.xkey, buf, sizeof(buf), &keysym,
                                       &lookupStatus);
-            CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a &&
+            CHECK(n == 1 && buf[0] == 'z' && keysym == XK_z &&
                       lookupStatus == XLookupBoth,
                   "Xutf8LookupString did not return focused SDL text");
         } else if (i == 1) {
             char buf[4] = {0};
             int n = XmbLookupString(ic, &out.xkey, buf, sizeof(buf), &keysym,
                                     &lookupStatus);
-            CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a &&
+            CHECK(n == 1 && buf[0] == 'z' && keysym == XK_z &&
                       lookupStatus == XLookupBoth,
                   "XmbLookupString did not return focused SDL text");
         } else if (i == 2) {
             wchar_t buf[4] = {0};
             int n =
                 XwcLookupString(ic, &out.xkey, buf, 4, &keysym, &lookupStatus);
-            CHECK(n == 1 && buf[0] == L'a' && keysym == XK_a &&
+            CHECK(n == 1 && buf[0] == L'z' && keysym == XK_z &&
                       lookupStatus == XLookupBoth,
                   "XwcLookupString did not return focused SDL text");
         } else {
@@ -7963,7 +8114,7 @@ static int test_input_methods(Display *display)
              */
             char buf[4] = {0};
             int n = XLookupString(&out.xkey, buf, sizeof(buf), &keysym, NULL);
-            CHECK(n == 1 && buf[0] == 'a' && keysym == XK_a,
+            CHECK(n == 1 && buf[0] == 'z' && keysym == XK_z,
                   "XLookupString did not return focused SDL text");
         }
     }
@@ -7973,9 +8124,7 @@ static int test_input_methods(Display *display)
          * the whole text instead of dropping the remainder.
          */
         SDL_Event textEvent;
-        SDL_zero(textEvent);
-        textEvent.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(textEvent, "ab");
+        set_text_input_event(&textEvent, "ab");
         SDL_PushEvent(&textEvent);
         XEvent out;
         XNextEvent(display, &out);
@@ -7993,9 +8142,7 @@ static int test_input_methods(Display *display)
     }
     {
         SDL_Event textEvent;
-        SDL_zero(textEvent);
-        textEvent.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(textEvent, "\xe4\xb8\xad");
+        set_text_input_event(&textEvent, "\xe4\xb8\xad");
         SDL_PushEvent(&textEvent);
         XEvent out;
         XNextEvent(display, &out);
@@ -8017,9 +8164,7 @@ static int test_input_methods(Display *display)
     }
     for (int i = 0; i < 2; i++) {
         SDL_Event textEvent;
-        SDL_zero(textEvent);
-        textEvent.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(textEvent, "\xe4\xb8\xad");
+        set_text_input_event(&textEvent, "\xe4\xb8\xad");
         SDL_PushEvent(&textEvent);
         XEvent out;
         XNextEvent(display, &out);
@@ -8050,12 +8195,8 @@ static int test_input_methods(Display *display)
          * commit; reproduce that batch conversion here.
          */
         SDL_Event firstText, secondText;
-        SDL_zero(firstText);
-        firstText.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(firstText, "a");
-        SDL_zero(secondText);
-        secondText.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(secondText, "b");
+        set_text_input_event(&firstText, "a");
+        set_text_input_event(&secondText, "b");
         XEvent firstOut, secondOut;
         CHECK(convertEvent(display, &firstText, &firstOut, True) == 0 &&
                   convertEvent(display, &secondText, &secondOut, True) == 0,
@@ -8080,12 +8221,8 @@ static int test_input_methods(Display *display)
          * a plain FIFO would return them swapped.
          */
         SDL_Event firstText, secondText;
-        SDL_zero(firstText);
-        firstText.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(firstText, "p");
-        SDL_zero(secondText);
-        secondText.type = SDL_TEXTINPUT;
-        XC_SET_TEXT_EVENT(secondText, "q");
+        set_text_input_event(&firstText, "p");
+        set_text_input_event(&secondText, "q");
         XEvent firstOut, secondOut;
         CHECK(convertEvent(display, &firstText, &firstOut, True) == 0 &&
                   convertEvent(display, &secondText, &secondOut, True) == 0,
@@ -8124,9 +8261,7 @@ static int test_input_methods(Display *display)
               preeditCaretCount == 1 && strcmp(preeditDrawText, "xy") == 0,
           "callback-style IC did not receive visible preedit callbacks");
     SDL_Event commitEvent;
-    SDL_zero(commitEvent);
-    commitEvent.type = SDL_TEXTINPUT;
-    XC_SET_TEXT_EVENT(commitEvent, "x");
+    set_text_input_event(&commitEvent, "x");
     CHECK(convertEvent(display, &commitEvent, &ignored, True) != -1 &&
               ignored.type == KeyPress,
           "callback-style SDL_TEXTINPUT did not commit through XIM");
@@ -8145,9 +8280,7 @@ static int test_input_methods(Display *display)
      */
     int drawBeforePlainCommit = preeditDrawCount;
     SDL_Event plainCommit;
-    SDL_zero(plainCommit);
-    plainCommit.type = SDL_TEXTINPUT;
-    XC_SET_TEXT_EVENT(plainCommit, "y");
+    set_text_input_event(&plainCommit, "y");
     CHECK(convertEvent(display, &plainCommit, &ignored, True) != -1 &&
               ignored.type == KeyPress,
           "plain callback-style SDL_TEXTINPUT did not commit through XIM");
@@ -8164,10 +8297,10 @@ static int test_input_methods(Display *display)
     XDestroyIC(callbackIC);
 
     {
-        /* A preedit callback that destroys its own IC must not recurse,
-         * double free, or fire later callbacks. With the reentrancy and focus
-         * guards the draw callback runs exactly once and the caret callback,
-         * which would deref the freed IC, never runs.
+        /* A preedit callback that destroys its own IC must not recurse, double
+         * free, or fire later callbacks. With the reentrancy and focus guards
+         * the draw callback runs exactly once and the caret callback, which
+         * would deref the freed IC, never runs.
          */
         reentrantDrawCount = 0;
         reentrantCaretCount = 0;
@@ -8698,8 +8831,8 @@ static int test_icccm_wm_hints(Display *display)
 
 /* An active grab is released when its grab window becomes unviewable. Without
  * this a Motif menu's pointer grab outlives the unmapped menu shell and
- * swallows all later input (the Help-menu freeze). Exercise unmap, destroy,
- * the ancestor-unmap path, and reparent-under-an-unmapped-parent.
+ * swallows all later input (the Help-menu freeze). Exercise unmap, destroy, the
+ * ancestor-unmap path, and reparent-under-an-unmapped-parent.
  */
 static int test_grab_release_on_unviewable(Display *display)
 {
@@ -9534,7 +9667,8 @@ static int test_overlap_pointer_routing(Display *display)
     CHECK(XMapWindow(display, lower), "overlap lower-window map failed");
 
     /* Created after lower and covering the same point, so it sits above lower
-     * in the model and getContainingWindow alone would pick it. */
+     * in the model and getContainingWindow alone would pick it.
+     */
     Window upper = XCreateSimpleWindow(display, root, 0, 0, 120, 120, 0, 0, 0);
     CHECK(upper != None, "overlap upper-window creation failed");
     XSetWindowAttributes upperAttrs;

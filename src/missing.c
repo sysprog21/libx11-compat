@@ -275,12 +275,35 @@ void XUnsetICFocus(XIC ic)
 static int keysym_to_utf8(KeySym keysym, char *buffer, int nbytes)
 {
     unsigned long codepoint = 0;
-    if ((keysym >= 0x0020 && keysym <= 0x007e) ||
-        (keysym >= 0x00a0 && keysym <= 0x00ff)) {
+    switch (keysym) {
+    case XK_BackSpace:
+        codepoint = '\b';
+        break;
+    case XK_Tab:
+        codepoint = '\t';
+        break;
+    case XK_Linefeed:
+        codepoint = '\n';
+        break;
+    case XK_Return:
+    case XK_KP_Enter:
+        codepoint = '\r';
+        break;
+    case XK_Escape:
+        codepoint = 0x1b;
+        break;
+    case XK_Delete:
+        codepoint = 0x7f;
+        break;
+    default:
+        break;
+    }
+    if (codepoint == 0 && ((keysym >= 0x0020 && keysym <= 0x007e) ||
+                           (keysym >= 0x00a0 && keysym <= 0x00ff))) {
         codepoint = keysym;
-    } else if ((keysym & 0xff000000UL) == 0x01000000UL) {
+    } else if (codepoint == 0 && (keysym & 0xff000000UL) == 0x01000000UL) {
         codepoint = keysym & 0x00ffffffUL;
-    } else {
+    } else if (codepoint == 0) {
         return 0;
     }
     if (codepoint < 0x80) {

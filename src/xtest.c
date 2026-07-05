@@ -20,6 +20,7 @@
 #include <string.h>
 #include <X11/Xlib.h>
 #include <X11/Xlibint.h>
+#include "X11/XKBlib.h"
 #include <X11/extensions/XTest.h>
 #include "sdl-compat.h"
 #include "extension.h"
@@ -253,9 +254,9 @@ static void pushFakeTextForKey(Display *display,
         return;
     if (fakeHeldMods & (KMOD_CTRL | KMOD_ALT | KMOD_GUI))
         return;
-    unsigned int cp = keycode;
-    if ((fakeHeldMods & KMOD_SHIFT) && cp >= 'a' && cp <= 'z')
-        cp -= 0x20;
+    KeySym cp = NoSymbol;
+    XkbLookupKeySym(display, (KeyCode) keycode,
+                    convertModifierState(fakeHeldMods), NULL, &cp);
     if (!((cp >= 0x20 && cp <= 0x7e) || (cp >= 0xa0 && cp <= 0xff)))
         return;
     enum { TEXT_RING_SLOTS = 64 };

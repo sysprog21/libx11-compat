@@ -1,4 +1,5 @@
-/* In-tree regression for the XTest fake-event path in src/xtest.c.
+/*
+ * In-tree regression for the XTest fake-event path in src/xtest.c.
  *
  * Opens a display, maps a top-level window with mouse + key event masks, then
  * drives synthetic events via XTestFakeMotionEvent / XTestFakeButtonEvent /
@@ -91,6 +92,13 @@ static void *async_fake_click(void *opaque)
     args->press_ok = XTestFakeButtonEvent(args->dpy, Button1, True, 0);
     args->release_ok = XTestFakeButtonEvent(args->dpy, Button1, False, 0);
     return NULL;
+}
+
+static Bool match_im_commit(Display *dpy, XEvent *ev, char *arg)
+{
+    (void) dpy;
+    (void) arg;
+    return ev->type == KeyPress && ev->xkey.keycode == 0;
 }
 
 int main(void)
@@ -259,10 +267,20 @@ int main(void)
     int keys = drain_until(dpy, KeyPress, 32);
     CHECK(keys > 0, "KeyPress arrived");
 
-    /* With an IC focused, the bare keydown is suppressed in favor of the IM
-     * commit. XTest must still deliver the character: it emits a companion
-     * text event that becomes a keycode==0 commit, which even the simple 8-bit
-     * XLookupString resolves (the path Mosaic's URL field uses).
+    /* Drain any leftover events (such as the auto-generated TEXTINPUT) from the
+     * first test */
+    SDL_StartTextInput();
+    SDL_Delay(20);
+    XEvent discard;
+    while (XCheckIfEvent(dpy, &discard, match_im_commit, NULL)) {
+        /* discard */
+    }
+
+
+
+    /* With an IC focused, printable ASCII keydown is delivered raw and the
+     * companion text event is suppressed as a duplicate. XTest should match
+     * that real-key path instead of producing an IM commit.
      */
     XIM im = XOpenIM(dpy, NULL, NULL, NULL);
     CHECK(im != NULL, "XOpenIM");
@@ -270,29 +288,53 @@ int main(void)
                        XNClientWindow, win, XNFocusWindow, win, NULL);
     CHECK(ic != NULL, "XCreateIC");
     XSetICFocus(ic);
-    while (XPending(dpy) > 0) {
-        XEvent drain;
-        XNextEvent(dpy, &drain);
+
+    /* Drain any stale IM commits generated during initialization before we
+     * start typing */
+    SDL_Delay(20);
+    while (XCheckIfEvent(dpy, &discard, match_im_commit, NULL)) {
+        /* discard */
     }
+
     CHECK(XTestFakeKeyEvent(dpy, 'a', True, 0) == 1, "XTest key press with IC");
     CHECK(XTestFakeKeyEvent(dpy, 'a', False, 0) == 1,
           "XTest key release with IC");
     XSync(dpy, False);
-    Bool gotCommit = False;
+    Bool gotRawKey = False;
     for (int i = 0; i < 32 && XPending(dpy) > 0; i++) {
         XEvent ev;
         XNextEvent(dpy, &ev);
         if (ev.type == KeyPress && ev.xkey.keycode == 0) {
-            char buf[8] = {0};
-            KeySym ks = NoSymbol;
-            int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-            CHECK(n == 1 && buf[0] == 'a',
-                  "XLookupString resolved the XTest IM commit");
-            gotCommit = True;
-            break;
+            CHECK(0, "XTest typing under a focused IC produced an IM commit");
+        }
+        if (ev.type == KeyPress && ev.xkey.keycode == 'a') {
+            gotRawKey = True;
         }
     }
-    CHECK(gotCommit, "XTest typing under a focused IC produced an IM commit");
+    CHECK(gotRawKey, "XTest typing under a focused IC delivered raw KeyPress");
+
+    CHECK(XTestFakeKeyEvent(dpy, 0xE1, True, 0) == 1, "XTest Shift press");
+    CHECK(XTestFakeKeyEvent(dpy, '1', True, 0) == 1,
+          "XTest shifted key press with IC");
+    CHECK(XTestFakeKeyEvent(dpy, '1', False, 0) == 1,
+          "XTest shifted key release with IC");
+    CHECK(XTestFakeKeyEvent(dpy, 0xE1, False, 0) == 1, "XTest Shift release");
+    XSync(dpy, False);
+    Bool gotShiftedRawKey = False;
+    for (int i = 0; i < 32 && XPending(dpy) > 0; i++) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+        if (ev.type == KeyPress && ev.xkey.keycode == 0) {
+            CHECK(0,
+                  "shifted XTest typing under a focused IC produced an IM "
+                  "commit");
+        }
+        if (ev.type == KeyPress && ev.xkey.keycode == '1') {
+            gotShiftedRawKey = True;
+        }
+    }
+    CHECK(gotShiftedRawKey,
+          "shifted XTest typing under a focused IC delivered raw KeyPress");
     XUnsetICFocus(ic);
     XDestroyIC(ic);
     XCloseIM(im);

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
+#include "X11/XKBlib.h"
 #include "sdl-compat.h"
 #include "events.h"
 #include "events-ewmh.h"
@@ -1614,10 +1615,56 @@ static long motionMaskForButtonState(unsigned int buttonState)
     return mask;
 }
 
-static Bool shouldSuppressIMTextKeydown(const SDL_Event *event)
+static char pendingAsciiRing[4];
+static unsigned pendingAsciiHead, pendingAsciiTail;
+
+static void clearPendingAsciiRing(void)
+{
+    pendingAsciiHead = pendingAsciiTail = 0;
+}
+
+static void pushPendingAsciiChar(char c)
+{
+    unsigned next = (pendingAsciiTail + 1) % 4;
+    if (next != pendingAsciiHead) {
+        pendingAsciiRing[pendingAsciiTail] = c;
+        pendingAsciiTail = next;
+    }
+}
+
+static Bool popMatchingPendingAsciiChar(char c)
+{
+    if (pendingAsciiHead == pendingAsciiTail || !c)
+        return False;
+    if (pendingAsciiRing[pendingAsciiHead] != c)
+        return False;
+    pendingAsciiHead = (pendingAsciiHead + 1) % 4;
+    return True;
+}
+
+static char asciiTextForKeydown(Display *display, const SDL_Event *event)
+{
+    SDL_Keycode keycode = XC_EVENT_KEYSYM(event);
+    unsigned int state = convertModifierState(XC_EVENT_KEYMOD(event));
+    if (keycode >= SDLK_a && keycode <= SDLK_z) {
+        Bool upper = !!(state & ShiftMask) != !!(state & LockMask);
+        return upper ? (char) ('A' + keycode - SDLK_a) : (char) keycode;
+    }
+    KeySym keysym = NoSymbol;
+    if (XkbLookupKeySym(display, (KeyCode) keycode, state, NULL, &keysym) &&
+        keysym >= XK_space && keysym <= XK_asciitilde)
+        return (char) keysym;
+    return '\0';
+}
+
+static Bool shouldSuppressIMTextKeydown(Display *display,
+                                        const SDL_Event *event)
 {
     SDL_Keycode keycode = XC_EVENT_KEYSYM(event);
     SDL_Keymod modifiers = XC_EVENT_KEYMOD(event);
+    if (inputMethodHasActivePreedit() &&
+        (keycode == SDLK_RETURN || keycode == SDLK_KP_ENTER))
+        return True;
     /* Any printable character key also arrives as SDL_TEXTINPUT, so suppressing
      * only ASCII would let a non-ASCII layout key (Latin-1 or any Unicode
      * codepoint) emit both a raw KeyPress and the IM commit. SDL keycodes for
@@ -1670,9 +1717,17 @@ static Bool shouldSuppressIMTextKeydown(const SDL_Event *event)
         textKey = True;
         break;
     }
-    return inputMethodHasActiveTextInput() && textKey &&
-           !(modifiers & (KMOD_CTRL | KMOD_ALT | KMOD_GUI));
+    if (!inputMethodHasActiveTextInput() ||
+        (modifiers & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) || !textKey)
+        return False;
+    if (keycode < XK_space || keycode > XK_asciitilde)
+        return True;
+    char ascii = asciiTextForKeydown(display, event);
+    if (ascii)
+        pushPendingAsciiChar(ascii);
+    return ascii == '\0';
 }
+
 
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
@@ -1693,7 +1748,7 @@ int convertEvent(Display *display,
     xEvent->eventStruct.display = display
     switch (sdlEvent->type) {
     case SDL_KEYDOWN:
-        if (shouldSuppressIMTextKeydown(sdlEvent))
+        if (shouldSuppressIMTextKeydown(display, sdlEvent))
             return -1;
         type = KeyPress;
         LOG("SDL_KEYDOWN for winId %d\n", sdlEvent->key.windowID);
@@ -2236,13 +2291,32 @@ int convertEvent(Display *display,
 #endif
     case SDL_TEXTEDITING: /**< Keyboard text editing (composition) */
         LOG("SDL_TEXTEDITING\n");
-        inputMethodHandlePreedit(XC_EDITING_EVENT_TEXT(sdlEvent));
+        clearPendingAsciiRing();
+        inputMethodHandlePreedit(XC_EDITING_EVENT_TEXT(sdlEvent),
+                                 sdlEvent->edit.start);
         return -1;
+#if !defined(LIBX11_COMPAT_SDL3) && SDL_VERSION_ATLEAST(2, 0, 22)
+    case SDL_TEXTEDITING_EXT: /**< Long composition that overflows the inline
+                                 SDL_TEXTEDITING buffer; text is a heap char*
+                                 SDL hands us to free. */
+        LOG("SDL_TEXTEDITING_EXT\n");
+        clearPendingAsciiRing();
+        inputMethodHandlePreedit(
+            sdlEvent->editExt.text ? sdlEvent->editExt.text : "",
+            sdlEvent->editExt.start);
+        SDL_free(sdlEvent->editExt.text);
+        return -1;
+#endif
     case SDL_TEXTINPUT: /**< Keyboard text input */
         LOG("SDL_TEXTINPUT\n");
         {
             if (!inputMethodHasActiveTextInput())
                 return -1;
+            const char *incomingText = XC_TEXT_EVENT_TEXT(sdlEvent);
+            if (!incomingText[1] &&
+                popMatchingPendingAsciiChar(incomingText[0]))
+                return -1;
+            clearPendingAsciiRing();
             type = KeyPress;
             FILL_STANDARD_VALUES(xkey);
             /* Route the commit like a real key: an active keyboard grab wins
@@ -2254,10 +2328,10 @@ int convertEvent(Display *display,
                 imGrabWindow != None ? imGrabWindow : getKeyboardFocus();
             if (eventWindow == None)
                 eventWindow = SCREEN_WINDOW;
-            char *text = strdup(XC_TEXT_EVENT_TEXT(sdlEvent));
+            char *text = strdup(incomingText);
             if (!text)
                 return -1;
-            inputMethodHandlePreedit("");
+            inputMethodHandlePreedit("", 0);
             unsigned long commitId = inputMethodSetCurrentText(text);
             /* No id means the commit was not queued (OOM, or a preedit-done
              * callback above cleared focus), so do not deliver a phantom IM
@@ -2961,11 +3035,23 @@ Status XSendEvent(Display *display,
 Bool XFilterEvent(XEvent *event, Window w)
 {
     // http://www.x.org/archive/X11R7.6/doc/man/man3/XFilterEvent.3.xhtml
-    if (event->type == KeyPress || event->type == KeyRelease) {
-        // filter event if there is no keyboard focus
-        return getKeyboardFocus() == None;
-    }
-    // We don't get an event from sdl, if an IM gets it before us.
+    (void) event;
+    (void) w;
+    /* The host input method consumes composition at the SDL layer before
+     * convertEvent ever runs: preedit keystrokes arrive as SDL_TEXTEDITING and
+     * are dropped with return -1, while committed text arrives as SDL_TEXTINPUT
+     * and is delivered as a synthetic KeyPress the client decodes with
+     * XmbLookupString. So no X event that reaches a client still needs input
+     * method filtering, and this must never swallow one.
+     *
+     * An earlier version returned True for every KeyPress/KeyRelease whenever
+     * getKeyboardFocus() was None. That was wrong: host text-input focus can be
+     * live while the in-process WM has not assigned an X focus window (a
+     * single-window client like xwpe never calls XSetInputFocus), so clients
+     * that gate on XFilterEvent saw Enter, every other real key, and IM commits
+     * silently vanish. Key routing is decided in convertEvent; filtering is not
+     * this function's job here.
+     */
     return False;
 }
 
