@@ -50,7 +50,7 @@ typedef enum _eTokenType {
     TK_TEXTCOMMENT
 } eTokenType;
 
-#define MAXSTR 500
+#define MAXSTR 8192
 
 typedef struct _uToken {
     eTokenType type;
@@ -570,8 +570,14 @@ char *preproc(const char *code,
                                 status = 390;
                                 {
                                     int l = p - oldp;
-                                    if (l > MAXSTR - 1)
+                                    if (l > MAXSTR - 1) {
+                                        fprintf(stderr,
+                                                "libx11-compat: warning: "
+                                                "preprocessor line truncated "
+                                                "from %d to %d bytes\n",
+                                                l, MAXSTR - 1);
                                         l = MAXSTR - 1;
+                                    }
                                     memcpy(tok.str, oldp, l);
                                     tok.str[l] = '\0';
                                     oldp = 0;
@@ -691,8 +697,13 @@ char *preproc(const char *code,
             case 399:
                 if (oldp) {
                     int l = p - oldp;
-                    if (l > MAXSTR - 1)
+                    if (l > MAXSTR - 1) {
+                        fprintf(stderr,
+                                "libx11-compat: warning: preprocessor line "
+                                "truncated from %d to %d bytes\n",
+                                l, MAXSTR - 1);
                         l = MAXSTR - 1;
+                    }
                     memcpy(tok.str, oldp, l);
                     tok.str[l] = '\0';
                     oldp = NULL;
@@ -788,6 +799,13 @@ char *preproc(const char *code,
                 } else if (tok.type == TK_NEWLINE) {
                     {
                         int l = p - oldp;
+                        if (l > MAXSTR - 1) {
+                            fprintf(stderr,
+                                    "libx11-compat: warning: preprocessor line "
+                                    "truncated from %d to %d bytes\n",
+                                    l, MAXSTR - 1);
+                            l = MAXSTR - 1;
+                        }
                         memcpy(tok.str, oldp, l);
                         tok.str[l] = '\0';
                         oldp = 0;
@@ -805,6 +823,13 @@ char *preproc(const char *code,
                     kh_value(defines, k) = defval;
                     {
                         int l = p - oldp;
+                        if (l > MAXSTR - 1) {
+                            fprintf(stderr,
+                                    "libx11-compat: warning: preprocessor line "
+                                    "truncated from %d to %d bytes\n",
+                                    l, MAXSTR - 1);
+                            l = MAXSTR - 1;
+                        }
                         memcpy(tok.str, oldp, l);
                         tok.str[l] = '\0';
                         oldp = 0;
