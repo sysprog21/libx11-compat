@@ -202,8 +202,12 @@ if command -v ccache >/dev/null 2>&1; then
 fi
 cc_wrapped="gcc"
 
-# Fetch upstream XNEdit once before the parallel builds.
-(cd "$repo" && make build/upstream/xnedit/.source-stamp)
+# Fetch upstream XNEdit and prime the upstream header/source sync once before
+# the parallel builds: on a cold tree a parallel `make -j xnedit` can start
+# compiling build/upstream/src/*.o before the sync recipe writes those .c/.h
+# files. Pre-building the stamp here closes that race (cf. the xephem script).
+(cd "$repo" && make build/upstream/xnedit/.source-stamp \
+    build/upstream/include/.upstream-stamp)
 
 # Run compat-side and system-side builds concurrently. They write into
 # disjoint trees ($repo/build/xnedit vs $system_build/source) and share
