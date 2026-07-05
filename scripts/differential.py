@@ -58,6 +58,34 @@ def q(value):
     return shlex.quote(str(value))
 
 
+# Xvfb readiness probe shared by the drivers that stand up two servers and
+# capture from both. A fixed sleep races the first client launch and the
+# xdotool query against a display that is not yet listening, surfacing as a
+# spurious capture timeout; probe with xdotool (already a hard dependency in
+# the capture package set, unlike xdpyinfo) and fail fast if an Xvfb died on a
+# stale display lock. Injected into a driver f-string remote script via
+# {WAIT_FOR_DISPLAY_SH}, so it carries single braces rather than the doubled
+# f-string form.
+WAIT_FOR_DISPLAY_SH = """wait_for_display() {
+    target=$1
+    server_pid=$2
+    waited=0
+    while [ "$waited" -lt 100 ]; do
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            echo "Xvfb for $target exited before accepting connections" >&2
+            return 1
+        fi
+        if DISPLAY="$target" xdotool getdisplaygeometry >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    echo "Xvfb for $target did not become ready within 10s" >&2
+    return 1
+}"""
+
+
 def parse_env_default(name, default):
     value = os.environ.get(name)
     if value is None or value == "":

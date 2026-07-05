@@ -38,6 +38,12 @@ int convertEvent(Display *display,
                  Bool freeInternalEvents);
 extern Bool mouseFrozen;
 
+/* Test hook: resolve an XLFD/wildcard name to its pixel size without loading a
+ * font, so the table below can pin names that never resolve to a loadable face
+ * (e.g. the "*-fixed-13-*" pixel/point ambiguity).
+ */
+extern int x11compat_font_pixel_size(const char *name);
+
 #include <stdio.h>
 
 static int preeditDrawCount;
@@ -6843,6 +6849,43 @@ static int test_fonts(Display *display)
               "Motif Times bold menu wildcard fell back to the default font "
               "size");
         XFreeFont(display, timesBoldMenu);
+
+        /* One XLFD field tokenizer resolves the pixel size for every name
+         * shape, so pin the resolution of representative XLFD / wildcard /
+         * compact names. The "*-fixed-13-*" row is the ambiguity the old
+         * compact heuristic got wrong (it read 13 as a point size -> 18px); the
+         * number is a pixel field with no weight token, so it must stay
+         * 13. Point-size rows exercise the decipoint conversion and the
+         * Helvetica 120-decipoint -> 16px baseline nudge.
+         */
+        struct {
+            const char *name;
+            int expected;
+        } xlfdSizeTable[] = {
+            {"-misc-fixed-medium-r-*-*-14-*-*-*-*-*-*-*", 14},
+            {"-adobe-helvetica-medium-r-*-*-14-*-*-*-p-*-*-*", 14},
+            {"-*-helvetica-medium-r-normal--12-*-*-*-p-*-iso8859-1", 12},
+            {"-adobe-helvetica-bold-r-normal--24-*-*-*-p-*-iso8859-1", 24},
+            {"-*-helvetica-medium-r-*-*-*-140-*-*-*-*-*-*", 19},
+            {"-*-helvetica-medium-r-normal-*-*-120-*-*-*-*-iso8859-1", 16},
+            {"*-lucidatypewriter*medium*-10-*-iso8859-1", 14},
+            {"*helv*bold*-r-*-12-*", 12},
+            {"-*times*medium*-r-*--14-*", 14},
+            {"*-fixed-13-*", 13},
+            {"6x13", 13},
+            {"9x15", 15},
+        };
+        for (size_t t = 0; t < sizeof(xlfdSizeTable) / sizeof(xlfdSizeTable[0]);
+             t++) {
+            int resolved = x11compat_font_pixel_size(xlfdSizeTable[t].name);
+            if (resolved != xlfdSizeTable[t].expected) {
+                fprintf(stderr, "XLFD size '%s': expected %d, got %d\n",
+                        xlfdSizeTable[t].name, xlfdSizeTable[t].expected,
+                        resolved);
+            }
+            CHECK(resolved == xlfdSizeTable[t].expected,
+                  "XLFD pixel-size resolution regressed for a table entry");
+        }
 
         Window root = RootWindow(display, DefaultScreen(display));
         Pixmap pixmap =
