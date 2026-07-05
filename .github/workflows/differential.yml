@@ -1,7 +1,7 @@
 # Differential gates for the SDL2-based libx11-compat stack.
 #
 # Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, XCircuit,
-# GIMP, XNEdit) is built twice on the same GitHub-hosted runner: once against the
+# GIMP, XNEdit, XEphem, Grace) is built twice on the same GitHub-hosted runner: once against the
 # system libX11 stack from apt and once against libx11-compat. The
 # resulting screenshots are compared under Xvfb. This is the local
 # counterpart to the SSH-driven path in scripts/run-*-differential-tests.py
@@ -933,6 +933,120 @@ jobs:
             build/xephem-differential/diff
             build/xephem-differential/system
             build/xephem-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Grace (Motif 2D plotting) startup screenshot differential ----
+  #
+  # Grace mixes Motif chrome with a custom-drawn plot canvas (axes, ticks,
+  # curve, symbols, labels). It is built twice on the runner: once against
+  # system libX11 + OpenMotif (libmotif-dev, the same 2.3.x toolkit) and once
+  # against libx11-compat + the bundled thentenaar/motif. Both render the startup
+  # plot under Xvfb and the screen is compared. Because the canvas is mostly
+  # white background, the replay also asserts region_non_background over the plot
+  # rect on both sides so the axes/curve cannot silently blank while the whole-
+  # frame diff stays under threshold. Validated on node11 (OpenMotif 2.3.8): the
+  # startup capture measures MAE 0.038, changed 0.123, under the 0.10 / 0.25
+  # thresholds. The compat side builds the bundled Motif, so this job carries the
+  # MOTIF_BUILD_PKGS autoreconf chain and the MOTIF_YACC override.
+  grace-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build + system X11 dependencies
+        # libmotif-dev supplies the system OpenMotif baseline; Grace's configure
+        # disables the netcdf / jpeg / png / pdf drivers and the f77 wrapper and
+        # uses the bundled t1lib, so no image or numeric system libs are needed.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            libmotif-dev
+
+      - name: Cache upstream tarballs and extracted source/headers
+        # Exclude the Grace tarball + extracted tree so its dedicated cache below
+        # owns them, matching how the other big source trees are split out.
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/grace-*
+            !build/upstream/.cache/grace-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        # The compat side reuses the in-tree thentenaar/motif as libXm / libMrm,
+        # so share the motif job's clone+autoreconf cache key.
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache Grace source tree
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream/grace-5.1.25
+            build/upstream/.cache/grace-5.1.25.tar.gz
+          key: grace-src-${{ runner.os }}-${{ hashFiles('mk/grace.mk', 'compat/grace-patches/**') }}
+
+      - name: Cache ccache
+        # Grace builds the bundled Motif on the compat side, so it shares the
+        # ccache-motifstack-diff-v3-* restore-keys prefix with motif / violawww /
+        # mosaic to prime the Motif gcc object cache; the save key stays distinct
+        # so this job persists its own snapshot.
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-motifstack-diff-v3-${{ runner.os }}-${{ github.sha }}-grace
+          restore-keys: |
+            ccache-motifstack-diff-v3-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run Grace differential
+        env:
+          GRACE_DIFF_LOCAL: "1"
+          GRACE_DIFF_COMPARE_LOCATION: local
+          GRACE_DIFF_JOBS: "2"
+        run: make check-differential-grace
+
+      - name: Upload Grace differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: grace-differential
+          path: |
+            build/grace-differential/report.tsv
+            build/grace-differential/junit.xml
+            build/grace-differential/logs
+            build/grace-differential/diff
+            build/grace-differential/system
+            build/grace-differential/compat
           if-no-files-found: warn
           retention-days: 7
 
