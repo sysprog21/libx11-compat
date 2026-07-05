@@ -35,6 +35,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
@@ -463,16 +464,35 @@ def download(url: str, expected_sha: str) -> Path:
     os.close(tmp_fd)
     tmp_path = Path(tmp_name)
     try:
-        try:
-            with urllib.request.urlopen(url, timeout=120) as response:
-                with tmp_path.open("wb") as handle:
-                    shutil.copyfileobj(response, handle)
-        except urllib.error.URLError as exc:
+        # xorg.freedesktop.org intermittently times out from CI runners, and a
+        # single-attempt fetch turns that transient blip into a hard build
+        # failure. Retry a few times with exponential backoff before giving up;
+        # a sha256 mismatch is never retried since that is not transient.
+        attempts = 4
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=120) as response:
+                    with tmp_path.open("wb") as handle:
+                        shutil.copyfileobj(response, handle)
+                last_exc = None
+                break
+            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    delay = 2**attempt
+                    print(
+                        f"  RETRY   {url} ({attempt}/{attempts - 1}) after "
+                        f"{type(exc).__name__}; sleeping {delay}s",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+        if last_exc is not None:
             raise SystemExit(
-                f"failed to download {url}: {exc}\n"
+                f"failed to download {url} after {attempts} attempts: {last_exc}\n"
                 f"  pre-seed the cache at {CACHE_DIR}/{dest.name} "
                 f"to build offline"
-            ) from exc
+            ) from last_exc
         actual = sha256_of(tmp_path)
         if actual != expected_sha:
             raise SystemExit(

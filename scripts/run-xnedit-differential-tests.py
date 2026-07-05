@@ -14,6 +14,7 @@ from differential import (
     q,
     run,
     sync_repo,
+    WAIT_FOR_DISPLAY_SH,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -284,24 +285,7 @@ trap 'kill "$xvfb_pid" "$compat_xvfb_pid" >/dev/null 2>&1 || true' EXIT
 # surfacing as a spurious capture timeout. Probe with xdotool (already a
 # hard dependency above; xdpyinfo is not in the differential package set)
 # and fail fast if an Xvfb died, e.g. on a stale display lock.
-wait_for_display() {{
-    target=$1
-    server_pid=$2
-    waited=0
-    while [ "$waited" -lt 100 ]; do
-        if ! kill -0 "$server_pid" 2>/dev/null; then
-            echo "Xvfb for $target exited before accepting connections" >&2
-            return 1
-        fi
-        if DISPLAY="$target" xdotool getdisplaygeometry >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 0.1
-        waited=$((waited + 1))
-    done
-    echo "Xvfb for $target did not become ready within 10s" >&2
-    return 1
-}}
+{WAIT_FOR_DISPLAY_SH}
 wait_for_display "$display" "$xvfb_pid"
 wait_for_display "$compat_display" "$compat_xvfb_pid"
 
