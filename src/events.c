@@ -120,28 +120,29 @@ void releaseMainEventThread(void)
 /* The pump-wake timer (xtWakeTimerCallback) writes a single byte to the event
  * pipe to unblock a client blocked in poll(ConnectionNumber) so the main thread
  * can pump SDL/Cocoa events. That byte is tracked by pumpWakePending,
- * independently of the SDL event queue and the qlen accounting; consume it here,
- * on the main thread once the pump has run, so poll() blocks again instead of
- * spinning.
+ * independently of the SDL event queue and the qlen accounting; consume it
+ * here, on the main thread once the pump has run, so poll() blocks again
+ * instead of spinning.
  *
  * Ordering is deliberate: the timer sets pumpWakePending (0 to 1) before it
  * writes the byte, so read the byte first and only clear the flag when the read
- * actually removed it. Clearing the flag before reading would leave an untracked
- * byte behind in this interleaving: the consumer clears the flag and sees an
- * empty non-blocking pipe (EAGAIN) in the window after the timer set the flag
- * but before it wrote, then the timer's write lands with the flag already 0, so
- * the byte is never drained and keeps ConnectionNumber permanently readable (a
- * busy-spin). A failed read leaves the flag set so a later call drains the byte
- * once the write lands. This is safe because the timer is the only producer and
- * the main thread the only consumer, and the timer cannot re-arm (CAS 0 to 1)
- * while the flag is still 1.
+ * actually removed it. Clearing the flag before reading would leave an
+ * untracked byte behind in this interleaving: the consumer clears the flag and
+ * sees an empty non-blocking pipe (EAGAIN) in the window after the timer set
+ * the flag but before it wrote, then the timer's write lands with the flag
+ * already 0, so the byte is never drained and keeps ConnectionNumber
+ * permanently readable (a busy-spin). A failed read leaves the flag set so a
+ * later call drains the byte once the write lands. This is safe because the
+ * timer is the only producer and the main thread the only consumer, and the
+ * timer cannot re-arm (CAS 0 to 1) while the flag is still 1.
  */
 static void consumePumpWakeByte(void)
 {
     if (READ_EVENT_FD < 0 || !SDL_AtomicGet(&pumpWakePending))
         return;
     char buffer;
-    if (read(READ_EVENT_FD, &buffer, sizeof(buffer)) == (ssize_t) sizeof(buffer))
+    if (read(READ_EVENT_FD, &buffer, sizeof(buffer)) ==
+        (ssize_t) sizeof(buffer))
         SDL_AtomicSet(&pumpWakePending, 0);
 }
 
@@ -172,12 +173,12 @@ static Uint32 xtWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
      *
      * The wake byte is tracked with pumpWakePending rather than routed through
      * the SDL event queue. Pushing an SDL user event and gating on SDL_HasEvent
-     * proved unreliable on sdl2-compat/SDL3: a pushed user event can be reported
-     * by SDL_HasEvent and SDL_PeepEvents(PEEK) yet never removed by a full-range
-     * SDL_PeepEvents(GETEVENT), which permanently throttled this timer and
-     * starved the Cocoa run loop (the app showed as "Not Responding" while
-     * otherwise rendering correctly). A dedicated pipe byte keeps the wake
-     * independent of SDL's queue accounting; pumpEventsSafe() consumes it.
+     * proved unreliable on sdl2-compat/SDL3: a pushed user event can be
+     * reported by SDL_HasEvent and SDL_PeepEvents(PEEK) yet never removed by a
+     * full-range SDL_PeepEvents(GETEVENT), which permanently throttled this
+     * timer and starved the Cocoa run loop (the app showed as "Not Responding"
+     * while otherwise rendering correctly). A dedicated pipe byte keeps the
+     * wake independent of SDL's queue accounting; pumpEventsSafe() consumes it.
      */
     if (WRITE_EVENT_FD < 0)
         return interval;
@@ -2339,7 +2340,8 @@ int convertEvent(Display *display,
 #if !defined(LIBX11_COMPAT_SDL3) && SDL_VERSION_ATLEAST(2, 0, 22)
     case SDL_TEXTEDITING_EXT: /**< Long composition that overflows the inline
                                  SDL_TEXTEDITING buffer; text is a heap char*
-                                 SDL hands us to free. */
+                                 SDL hands us to free.
+                                 */
         LOG("SDL_TEXTEDITING_EXT\n");
         clearPendingAsciiRing();
         inputMethodHandlePreedit(
@@ -2520,7 +2522,8 @@ int convertEvent(Display *display,
         LOG("SDL_JOYBUTTONUP\n");
         return -1;
     case SDL_JOYDEVICEADDED: /**< A new joystick has been inserted into the
-                                system */
+                                system
+                                */
         LOG("SDL_JOYDEVICEADDED\n");
         return -1;
     case SDL_JOYDEVICEREMOVED: /**< An opened joystick has been removed */
@@ -2536,11 +2539,13 @@ int convertEvent(Display *display,
         LOG("SDL_CONTROLLERBUTTONUP\n");
         return -1;
     case SDL_CONTROLLERDEVICEADDED: /**< A new Game controller has been inserted
-                                       into the system */
+                                       into the system
+                                       */
         LOG("SDL_CONTROLLERDEVICEADDED\n");
         return -1;
     case SDL_CONTROLLERDEVICEREMOVED: /**< An opened Game controller has been
-                                         removed */
+                                         removed
+                                         */
         LOG("SDL_CONTROLLERDEVICEREMOVED\n");
         return -1;
     case SDL_CONTROLLERDEVICEREMAPPED: /**< The controller mapping was updated
