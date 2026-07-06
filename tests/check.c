@@ -2975,17 +2975,83 @@ static int test_pixmap_readback_uncached(Display *display)
     unsigned long before = x11compat_pixmap_readback_reads;
     XImage *img = XGetImage(display, pm, 8, 8, 12, 12, AllPlanes, ZPixmap);
     CHECK(img != NULL, "XGetImage on large (uncached) pixmap failed");
-    /* XGetPixel returns 0xRRGGBBAA here, so shift off the alpha byte to compare
-     * RGB. Patch (10,10) maps to (2,2) in a read that starts at (8,8).
+    /* XGetImage returns the compat's canonical XColor (0xAARRGGBB), so mask off
+     * the alpha byte to compare RGB. Patch (10,10) maps to (2,2) in a read that
+     * starts at (8,8).
      */
-    CHECK((XGetPixel(img, 2, 2) >> 8) == 0,
+    CHECK((XGetPixel(img, 2, 2) & 0x00FFFFFFul) == 0,
           "uncached readback returned the wrong pixel for the drawn patch");
-    CHECK((XGetPixel(img, 0, 0) >> 8) != 0,
+    CHECK((XGetPixel(img, 0, 0) & 0x00FFFFFFul) != 0,
           "uncached readback lost the background pixel");
     XDestroyImage(img);
     CHECK(
         x11compat_pixmap_readback_reads == before,
         "large pixmap read went through the cache instead of the direct path");
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, pm);
+    return 1;
+}
+
+/* A colour read back from a Pixmap must round-trip through XPutImage and
+ * through the compat's GET_*_FROM_COLOR accessors unchanged. Regression guard
+ * for the XGetImage/XPutImage channel-order bug: XGetImage used to hand back
+ * RGBA8888 words while XPutImage and the Xft glyph blend read them as canonical
+ * 0xAARRGGBB, so a saturated non-grey fill (cyan) came back a byte-shifted
+ * lavender and swallowed white glyphs drawn on it (issue #33). Grey hid the
+ * shift, which is why the existing readback tests missed it - so fill with
+ * cyan.
+ */
+static int test_xgetimage_color_roundtrip(Display *display)
+{
+    int screen = DefaultScreen(display);
+    Window root = RootWindow(display, screen);
+    Colormap cmap = DefaultColormap(display, screen);
+    enum { W = 8, H = 8 };
+    /* Compare RGB only; the pixmap has no meaningful alpha and the bug was a
+     * channel shift, not an alpha change. RGB occupies the low 24 bits of the
+     * compat's XColor.
+     */
+    const unsigned long RGB = 0x00FFFFFFul;
+    Pixmap pm = XCreatePixmap(display, root, W, H,
+                              (unsigned int) DefaultDepth(display, screen));
+    CHECK(pm != None, "XCreatePixmap for colour round-trip test failed");
+
+    /* Turquoise3 (xwpe's File-Manager button face): a saturated non-grey colour
+     * so a byte-shifted read is visible. Grey hid the bug from other tests.
+     */
+    XColor col;
+    col.red = 0;
+    col.green = 197 * 257;
+    col.blue = 205 * 257;
+    col.flags = DoRed | DoGreen | DoBlue;
+    CHECK(XAllocColor(display, cmap, &col), "XAllocColor(cyan) failed");
+
+    GC gc = XCreateGC(display, pm, 0, NULL);
+    XSetForeground(display, gc, col.pixel);
+    XFillRectangle(display, pm, gc, 0, 0, W, H);
+
+    XImage *img = XGetImage(display, pm, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(img != NULL, "XGetImage for colour round-trip failed");
+    CHECK((XGetPixel(img, 4, 4) & RGB) == (col.pixel & RGB),
+          "XGetImage shifted the channels of a cyan Pixmap fill");
+
+    /* The XGetImage->XPutImage software-copy path apps rely on must survive
+     * too. Overwrite the Pixmap with black first so the readback below reports
+     * cyan only if XPutImage actually wrote the image back, not the
+     * pre-existing fill, and check XPutImage's own status so a rejected put
+     * fails the test.
+     */
+    XSetForeground(display, gc, BlackPixel(display, screen));
+    XFillRectangle(display, pm, gc, 0, 0, W, H);
+    CHECK(XPutImage(display, pm, gc, img, 0, 0, 0, 0, W, H),
+          "XPutImage of the read-back cyan image failed");
+    XDestroyImage(img);
+    XImage *again = XGetImage(display, pm, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(again != NULL, "second XGetImage for colour round-trip failed");
+    CHECK((XGetPixel(again, 4, 4) & RGB) == (col.pixel & RGB),
+          "XGetImage->XPutImage round-trip corrupted a cyan fill");
+    XDestroyImage(again);
 
     XFreeGC(display, gc);
     XFreePixmap(display, pm);
@@ -8030,7 +8096,7 @@ static int test_input_methods(Display *display)
                       AllPlanes, ZPixmap);
         CHECK(blackImage, "black preedit XGetImage failed");
         unsigned long blackPixel = XGetPixel(blackImage, 1, 1);
-        CHECK((blackPixel & 0xffffff00) == 0,
+        CHECK((blackPixel & 0x00ffffff) == 0,
               "black preedit background pixel was not honored");
         XDestroyImage(blackImage);
         XUnsetICFocus(blackBgIC);
@@ -9383,9 +9449,8 @@ static int test_shape_mask(Display *display)
           "shape: small bounding extents ignored mask offset");
     XShapeCombineMask(display, window, ShapeBounding, 0, 0, mask, ShapeSet);
 
-    /* Capture the post-install state. XGetImage uses SDL's RGBA8888 packing
-     * rather than X11 ARGB, so compare against the stored baseline
-     * byte-for-byte instead of guessing the channel layout.
+    /* Capture the post-install state and compare later readbacks against this
+     * stored baseline byte-for-byte instead of guessing a channel layout.
      */
     XImage *baseline =
         XGetImage(display, window, 0, 0, W, H, AllPlanes, ZPixmap);
@@ -10066,6 +10131,7 @@ int main(void)
     run_test("gxxor_self_inverse", test_gxxor_self_inverse);
     run_test("pixmap_readback_cache", test_pixmap_readback_cache);
     run_test("pixmap_readback_uncached", test_pixmap_readback_uncached);
+    run_test("xgetimage_color_roundtrip", test_xgetimage_color_roundtrip);
     run_test("images", test_images);
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);
