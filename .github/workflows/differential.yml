@@ -832,6 +832,101 @@ jobs:
         if: ${{ !cancelled() }}
         run: ccache --show-stats
 
+  # ---- xwpe (Athena/Xft programming editor) File-Manager differential ----
+  #
+  # xwpe is built twice on the runner: once against system libX11 + libXft
+  # and once against libx11-compat. Both sides hide cairo/vterm from
+  # pkg-config so the same patched Xlib chrome render path is used, then
+  # render the File-Manager the X11 frontend opens at startup under Xvfb and
+  # the startup screen is compared. The native Xft and compat SDL_ttf text
+  # paths pick slightly different line heights, so the thresholds in
+  # mk/xwpe.mk are wide enough to absorb that structural gap while still
+  # failing on gross rendering regressions.
+  xwpe-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build + system X11 dependencies
+        # libxft-dev / libfontconfig1-dev back the system-side Xft text path;
+        # libncurses-dev is the terminal frontend xwpe always links;
+        # autoconf/automake/libtool run the native side's autoreconf.
+        # fonts-dejavu-core gives fontconfig a scalable family so the system
+        # side renders real glyphs rather than tofu under Xvfb.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} \
+            autoconf automake libtool libncurses-dev libjson-c-dev \
+            libfontconfig1-dev libxft-dev fonts-dejavu-core
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/xwpe
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache xwpe source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/xwpe
+          key: xwpe-src-${{ runner.os }}-${{ hashFiles('mk/xwpe.mk', 'compat/xwpe-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xwpe-diff-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xwpe-diff-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run xwpe differential
+        env:
+          XWPE_DIFF_LOCAL: "1"
+          XWPE_DIFF_COMPARE_LOCATION: local
+          XWPE_DIFF_JOBS: "2"
+        run: make check-differential-xwpe
+
+      - name: Upload xwpe differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xwpe-differential
+          path: |
+            build/xwpe-differential/report.tsv
+            build/xwpe-differential/junit.xml
+            build/xwpe-differential/logs
+            build/xwpe-differential/diff
+            build/xwpe-differential/system
+            build/xwpe-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
   # ---- XEphem (Motif astronomy ephemeris) screenshot differential ----
   #
   # XEphem is a heavy Motif client whose control window mixes Motif chrome
