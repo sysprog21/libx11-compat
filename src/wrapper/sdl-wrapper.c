@@ -660,6 +660,13 @@ SDL_WRAP(int,
          SDL_RenderSetClipRect,
          (SDL_Renderer * renderer, const SDL_Rect *rect),
          (renderer, rect))
+SDL_WRAP(SDL_bool,
+         SDL_RenderIsClipEnabled,
+         (SDL_Renderer * renderer),
+         (renderer))
+SDL_WRAP_VOID(SDL_RenderGetClipRect,
+              (SDL_Renderer * renderer, SDL_Rect *rect),
+              (renderer, rect))
 SDL_WRAP(int,
          SDL_RenderSetViewport,
          (SDL_Renderer * renderer, const SDL_Rect *rect),
@@ -687,6 +694,10 @@ SDL_WRAP(int,
          SDL_SetRenderTarget,
          (SDL_Renderer * renderer, SDL_Texture *texture),
          (renderer, texture))
+SDL_WRAP(int,
+         SDL_SetSurfaceBlendMode,
+         (SDL_Surface * surface, SDL_BlendMode blendMode),
+         (surface, blendMode))
 #if SDL_VERSION_ATLEAST(2, 0, 22)
 SDL_WRAP_VOID(SDL_SetTextInputRect, (const SDL_Rect *rect), (rect))
 #else

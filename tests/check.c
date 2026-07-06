@@ -162,6 +162,7 @@ static void test_focus_switch_done_callback(XIM im,
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef M_PI
@@ -305,6 +306,21 @@ static int ignored_io_error(Display *display)
 
 static int test_smoke(Display *display)
 {
+    pid_t pid = fork();
+    CHECK(pid >= 0, "fork for default error handler check failed");
+    if (pid == 0) {
+        XSetErrorHandler(NULL);
+        XCreatePixmap(display, RootWindow(display, DefaultScreen(display)), 1,
+                      1, 7);
+        _exit(0);
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid,
+          "waitpid for default error handler check failed");
+    CHECK(
+        (WIFEXITED(status) && WEXITSTATUS(status) != 0) || WIFSIGNALED(status),
+        "default error handler did not terminate on protocol error");
+
     int minKeycode = 0;
     int maxKeycode = 0;
     XDisplayKeycodes(display, &minKeycode, &maxKeycode);
@@ -2830,6 +2846,149 @@ static int test_gxxor_self_inverse(Display *display)
     XDestroyWindow(display, win);
     CHECK(hoverLeaks == 0,
           "GXcopy hover rectangle was not erased by the following GXxor draw");
+    return 1;
+}
+
+/* The lazy readback cache must collapse a run of XGetImage calls on an
+ * unchanged Pixmap into a single SDL_RenderReadPixels, and a draw between reads
+ * must invalidate the cache so the next read reflects the new pixels.
+ */
+static int test_pixmap_readback_cache(Display *display)
+{
+    int screen = DefaultScreen(display);
+    Window root = RootWindow(display, screen);
+    enum { TEST_W = 32, TEST_H = 24, LOOPS = 8 };
+    Pixmap pm = XCreatePixmap(display, root, TEST_W, TEST_H,
+                              (unsigned int) DefaultDepth(display, screen));
+    CHECK(pm != None, "XCreatePixmap for readback-cache test failed");
+
+    GC gc = XCreateGC(display, pm, 0, NULL);
+    XSetForeground(display, gc, WhitePixel(display, screen));
+    XFillRectangle(display, pm, gc, 0, 0, TEST_W, TEST_H);
+
+    unsigned long before = x11compat_pixmap_readback_reads;
+    unsigned long whiteVal = 0;
+    for (int i = 0; i < LOOPS; i++) {
+        XImage *img =
+            XGetImage(display, pm, 0, 0, TEST_W, TEST_H, AllPlanes, ZPixmap);
+        CHECK(img != NULL, "XGetImage in readback-cache loop failed");
+        unsigned long px = XGetPixel(img, 1, 1);
+        if (i == 0)
+            whiteVal = px;
+        CHECK(px == whiteVal, "cached readback returned inconsistent pixels");
+        XDestroyImage(img);
+    }
+    unsigned long reads = x11compat_pixmap_readback_reads - before;
+    CHECK(reads == 1,
+          "N XGetImage calls on an unchanged Pixmap issued more than one "
+          "SDL_RenderReadPixels");
+
+    /* A draw between reads must dirty the cache: the next read reflects it. */
+    XSetForeground(display, gc, BlackPixel(display, screen));
+    XFillRectangle(display, pm, gc, 0, 0, TEST_W, TEST_H);
+    XImage *afterDraw =
+        XGetImage(display, pm, 0, 0, TEST_W, TEST_H, AllPlanes, ZPixmap);
+    CHECK(afterDraw != NULL, "XGetImage after invalidating draw failed");
+    CHECK(XGetPixel(afterDraw, 1, 1) != whiteVal,
+          "draw did not invalidate the pixmap readback cache");
+    CHECK(x11compat_pixmap_readback_reads - before == 2,
+          "a draw between reads did not force exactly one cache refresh");
+    XDestroyImage(afterDraw);
+
+    /* Test that an active clip rect on the shared renderer from a previous draw
+     * does not clip or corrupt the pixmap readback cache when it gets
+     * refreshed.
+     */
+    Window win = XCreateSimpleWindow(display, root, 0, 0, 100, 100, 0, 0, 0);
+    GC winGC = XCreateGC(display, win, 0, NULL);
+
+    Pixmap pm2 = XCreatePixmap(display, root, TEST_W, TEST_H,
+                               (unsigned int) DefaultDepth(display, screen));
+    GC gc2 = XCreateGC(display, pm2, 0, NULL);
+    XSetForeground(display, gc2, WhitePixel(display, screen));
+    XFillRectangle(display, pm2, gc2, 0, 0, TEST_W, TEST_H);
+
+    /* Populate the cache once. */
+    XImage *imgCheck =
+        XGetImage(display, pm2, 0, 0, TEST_W, TEST_H, AllPlanes, ZPixmap);
+    CHECK(imgCheck != NULL, "initial XGetImage failed");
+    XDestroyImage(imgCheck);
+
+    /* Force the cache to be dirty again. */
+    markPixmapReadbackDirty(pm2);
+
+    /* Set a clip rect on the window and draw to it. The renderer now has a clip
+     * rect.
+     */
+    XRectangle clipRect = {10, 10, 5, 5};
+    XSetClipRectangles(display, winGC, 0, 0, &clipRect, 1, Unsorted);
+    XSetForeground(display, winGC, BlackPixel(display, screen));
+    XFillRectangle(display, win, winGC, 0, 0, 100, 100);
+
+    /* Get the image of the pixmap again. The cache will refresh. If the clip
+     * rect from the window GC is still active, it will corrupt/restrict the
+     * read.
+     */
+    XImage *imgCheck2 =
+        XGetImage(display, pm2, 0, 0, TEST_W, TEST_H, AllPlanes, ZPixmap);
+    CHECK(imgCheck2 != NULL, "XGetImage after window draw failed");
+    unsigned long px0_0 = XGetPixel(imgCheck2, 0, 0);
+    XDestroyImage(imgCheck2);
+
+    XFreeGC(display, gc2);
+    XFreePixmap(display, pm2);
+    XFreeGC(display, winGC);
+    XDestroyWindow(display, win);
+    CHECK(px0_0 == whiteVal,
+          "active clip rect corrupted cached pixmap readback");
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, pm);
+    return 1;
+}
+
+/* A pixmap larger than the cache pixel cap must read through the uncached
+ * direct path (readPixmapRectUncached), returning correct pixels without
+ * populating the persistent cache. The readback counter stays flat because that
+ * path bypasses ensurePixmapReadback, which is how the test proves the size
+ * guard routed here.
+ */
+static int test_pixmap_readback_uncached(Display *display)
+{
+    int screen = DefaultScreen(display);
+    Window root = RootWindow(display, screen);
+    /* BIG * BIG must exceed MAX_CACHED_PIXMAP_PIXELS (2048 * 2048); both sides
+     * stay well under common max-texture limits.
+     */
+    enum { BIG = 2050 };
+    Pixmap pm = XCreatePixmap(display, root, BIG, BIG,
+                              (unsigned int) DefaultDepth(display, screen));
+    CHECK(pm != None, "XCreatePixmap for uncached readback test failed");
+
+    GC gc = XCreateGC(display, pm, 0, NULL);
+    XSetForeground(display, gc, WhitePixel(display, screen));
+    XFillRectangle(display, pm, gc, 0, 0, BIG, BIG);
+    /* A distinct patch so the sub-rect read returns real drawn content. */
+    XSetForeground(display, gc, BlackPixel(display, screen));
+    XFillRectangle(display, pm, gc, 10, 10, 8, 8);
+
+    unsigned long before = x11compat_pixmap_readback_reads;
+    XImage *img = XGetImage(display, pm, 8, 8, 12, 12, AllPlanes, ZPixmap);
+    CHECK(img != NULL, "XGetImage on large (uncached) pixmap failed");
+    /* XGetPixel returns 0xRRGGBBAA here, so shift off the alpha byte to compare
+     * RGB. Patch (10,10) maps to (2,2) in a read that starts at (8,8).
+     */
+    CHECK((XGetPixel(img, 2, 2) >> 8) == 0,
+          "uncached readback returned the wrong pixel for the drawn patch");
+    CHECK((XGetPixel(img, 0, 0) >> 8) != 0,
+          "uncached readback lost the background pixel");
+    XDestroyImage(img);
+    CHECK(
+        x11compat_pixmap_readback_reads == before,
+        "large pixmap read went through the cache instead of the direct path");
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, pm);
     return 1;
 }
 
@@ -9905,6 +10064,8 @@ int main(void)
     run_test("drawables_and_gcs", test_drawables_and_gcs);
     run_test("drawing_coverage", test_drawing_coverage);
     run_test("gxxor_self_inverse", test_gxxor_self_inverse);
+    run_test("pixmap_readback_cache", test_pixmap_readback_cache);
+    run_test("pixmap_readback_uncached", test_pixmap_readback_uncached);
     run_test("images", test_images);
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);

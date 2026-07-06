@@ -257,6 +257,16 @@ Status XGetGCValues(Display *display,
 {
     // https://tronche.com/gui/x/xlib/GC/XGetGCValues.html
     GraphicContext *graphicContext = GET_GC(gc);
+    /* A GC id can resolve to NULL (freed or stale, for example a GC retired
+     * when the client closed and reopened its display).
+     *
+     * Return a zero Status rather than faulting inside Xt's GC-cache Matches
+     * probe; Xt reads the result and treats the GC as non-matching. This is
+     * deliberately quieter than raising a protocol error, which would spam
+     * every cache probe of a stale GC.
+     */
+    if (!graphicContext)
+        return 0;
     if (HAS_VALUE(valuemask, GCFunction))
         values_return->function = graphicContext->function;
     if (HAS_VALUE(valuemask, GCPlaneMask))

@@ -25,6 +25,16 @@ typedef struct {
     unsigned int width;
     unsigned int height;
     unsigned int depth;
+    /* Lazy readback cache. Pixmaps are texture-only, so without this a run of
+     * XGetImage calls on an unchanged pixmap issues one SDL_RenderReadPixels (a
+     * GPU-to-CPU stall) per call. readback holds the whole pixmap surface,
+     * populated on demand; readbackDirty is raised whenever a draw op binds the
+     * pixmap as a render target (see GET_RENDERER), forcing the next read to
+     * refresh. Windows keep their own pixman dirty tracking and are not cached
+     * here.
+     */
+    SDL_Surface *readback;
+    Bool readbackDirty;
 } PixmapStruct;
 
 #define LOCK_SURFACE(surface)  \
@@ -42,6 +52,7 @@ typedef struct {
     if (IS_TYPE(drawable, WINDOW)) {                                           \
         renderer = getWindowRenderer(drawable);                                \
     } else if (IS_TYPE(drawable, PIXMAP)) {                                    \
+        markPixmapReadbackDirty(drawable);                                     \
         renderer = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;              \
         if (SDL_SetRenderTarget(renderer, GET_PIXMAP_TEXTURE(drawable)) !=     \
             0) {                                                               \
@@ -77,6 +88,17 @@ void glxCompositeToWindow(Window window,
 SDL_Surface *getRenderSurface(SDL_Renderer *renderer);
 SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
                                   const SDL_Rect *source);
+/* Read a rect from a Pixmap through its lazy readback cache.
+ *
+ * Returns a freshly allocated RGBA8888 surface (caller frees) matching
+ * getRenderSurfaceRect's contract, but at most one SDL_RenderReadPixels per
+ * dirty cycle.
+ */
+SDL_Surface *getPixmapSurfaceRect(Pixmap pixmap, const SDL_Rect *source);
+void markPixmapReadbackDirty(Drawable drawable);
+void freePixmapReadback(PixmapStruct *pixmap);
+/* Test hook: count of SDL_RenderReadPixels issued to refresh pixmap caches. */
+extern unsigned long x11compat_pixmap_readback_reads;
 /* Number of clip iterations to perform when drawing into "d" through "gc". Each
  * iteration is one (gc clip rect) x (visible-region rect) pair.
  *

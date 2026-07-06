@@ -227,7 +227,7 @@ int defaultErrorHandler(Display *display, XErrorEvent *event)
     }
     fflush(stdout);
     fflush(stderr);
-    abort();
+    exit(1);
 }
 
 inline void handleOutOfMemory(int type,

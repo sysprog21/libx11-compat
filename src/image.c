@@ -886,16 +886,26 @@ XImage *XGetImage(Display *display,
         free(data);
         return NULL;
     }
-    SDL_Renderer *renderer = NULL;
-    GET_RENDERER(drawable, renderer);
-    if (!renderer) {
-        LOG("Failed to create renderer in %s: %s\n", __func__, SDL_GetError());
-        handleError(0, display, drawable, 0, BadDrawable, 0);
-        XDestroyImage(image);
-        return NULL;
-    }
     SDL_Rect srcRect = {x, y, (int) width, (int) height};
-    SDL_Surface *drawableSurface = getRenderSurfaceRect(renderer, &srcRect);
+    SDL_Surface *drawableSurface;
+    /* Pixmaps read through their lazy cache so repeated XGetImage on unchanged
+     * contents does not stall on SDL_RenderReadPixels each call. Routing around
+     * GET_RENDERER also keeps the read from re-marking the pixmap dirty.
+     */
+    if (IS_TYPE(drawable, PIXMAP)) {
+        drawableSurface = getPixmapSurfaceRect(drawable, &srcRect);
+    } else {
+        SDL_Renderer *renderer = NULL;
+        GET_RENDERER(drawable, renderer);
+        if (!renderer) {
+            LOG("Failed to create renderer in %s: %s\n", __func__,
+                SDL_GetError());
+            handleError(0, display, drawable, 0, BadDrawable, 0);
+            XDestroyImage(image);
+            return NULL;
+        }
+        drawableSurface = getRenderSurfaceRect(renderer, &srcRect);
+    }
     if (!drawableSurface) {
         XDestroyImage(image);
         return NULL;

@@ -1226,6 +1226,203 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
     return surface;
 }
 
+unsigned long x11compat_pixmap_readback_reads = 0;
+
+/* GET_RENDERER binds a pixmap as a render target for both draws and source
+ * readbacks (XCopyArea, XShape), so this over-approximates: a source read of a
+ * pixmap also dirties its cache. That never returns stale pixels, it only drops
+ * the cache after read-only use. Routing those source reads through
+ * getPixmapSurfaceRect would recover the caching, but the win is confined to
+ * apps that interleave XCopyArea-from-pixmap with XGetImage-of-the-same-pixmap,
+ * so it is left out until a workload asks for it. Access is unguarded, matching
+ * the single-threaded SDL renderer path the rest of the drawing code assumes.
+ */
+void markPixmapReadbackDirty(Drawable drawable)
+{
+    PixmapStruct *pixmap = GET_PIXMAP_STRUCT(drawable);
+    if (pixmap)
+        pixmap->readbackDirty = True;
+}
+
+void freePixmapReadback(PixmapStruct *pixmap)
+{
+    if (!pixmap || !pixmap->readback)
+        return;
+    SDL_FreeSurface(pixmap->readback);
+    pixmap->readback = NULL;
+    pixmap->readbackDirty = True;
+}
+
+/* Saved shared-renderer state for a pixmap readback: the target it was pointing
+ * at plus its viewport and clip, so the readback can bind the pixmap texture
+ * and then put everything back.
+ */
+typedef struct {
+    SDL_Texture *target;
+    SDL_Rect viewport;
+    SDL_bool clipEnabled;
+    SDL_Rect clip;
+} SavedRendererState;
+
+/* Bind pixmap texture as the render target for a readback, saving the shared
+ * renderer's target/viewport/clip into "saved". Viewport and clip are cleared
+ * only after the target bind succeeds, so a failed bind leaves the renderer
+ * untouched (nothing to undo).
+ *
+ * Returns False on bind failure.
+ */
+static Bool bindPixmapTarget(SDL_Renderer *renderer,
+                             SDL_Texture *texture,
+                             SavedRendererState *saved)
+{
+    saved->target = SDL_GetRenderTarget(renderer);
+    SDL_RenderGetViewport(renderer, &saved->viewport);
+    saved->clipEnabled = SDL_RenderIsClipEnabled(renderer);
+    if (saved->clipEnabled)
+        SDL_RenderGetClipRect(renderer, &saved->clip);
+    if (SDL_SetRenderTarget(renderer, texture) != 0) {
+        LOG("SDL_SetRenderTarget failed in %s: %s\n", __func__, SDL_GetError());
+        return False;
+    }
+    SDL_RenderSetViewport(renderer, NULL);
+    SDL_RenderSetClipRect(renderer, NULL);
+    return True;
+}
+
+/* Undo bindPixmapTarget. Restore the viewport and clip only once the target is
+ * back: if the target restore fails the renderer is already wedged, and aiming
+ * viewport/clip at the wrong target would only compound it.
+ */
+static void restorePixmapTarget(SDL_Renderer *renderer,
+                                const SavedRendererState *saved)
+{
+    if (SDL_SetRenderTarget(renderer, saved->target) != 0) {
+        LOG("SDL_SetRenderTarget restore failed in %s: %s\n", __func__,
+            SDL_GetError());
+        return;
+    }
+    SDL_RenderSetViewport(renderer, &saved->viewport);
+    SDL_RenderSetClipRect(renderer, saved->clipEnabled ? &saved->clip : NULL);
+}
+
+/* Refresh pixmap->readback with the full pixmap contents when dirty. Binds the
+ * pixmap texture directly rather than through GET_RENDERER so the read does not
+ * re-mark itself dirty.
+ *
+ * Returns the cached surface (borrowed) or NULL on error.
+ */
+static SDL_Surface *ensurePixmapReadback(PixmapStruct *pixmap)
+{
+    if (pixmap->readback && !pixmap->readbackDirty)
+        return pixmap->readback;
+
+    SDL_Renderer *renderer = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
+    if (!renderer || !pixmap->texture)
+        return NULL;
+
+    if (!pixmap->readback) {
+        /* Request RGBA8888 explicitly so the surface layout matches the
+         * SDL_RenderReadPixels format below byte for byte on every platform,
+         * rather than relying on the DEFAULT_* masks resolving to it.
+         */
+        pixmap->readback = SDL_CreateRGBSurfaceWithFormat(
+            0, (int) pixmap->width, (int) pixmap->height, SDL_SURFACE_DEPTH,
+            SDL_PIXELFORMAT_RGBA8888);
+        if (!pixmap->readback) {
+            LOG("SDL_CreateRGBSurfaceWithFormat failed in %s: %s\n", __func__,
+                SDL_GetError());
+            return NULL;
+        }
+        SDL_SetSurfaceBlendMode(pixmap->readback, SDL_BLENDMODE_NONE);
+    }
+
+    SavedRendererState saved;
+    if (!bindPixmapTarget(renderer, pixmap->texture, &saved))
+        return NULL;
+    SDL_Rect fullRect = {0, 0, (int) pixmap->width, (int) pixmap->height};
+    int rc =
+        SDL_RenderReadPixels(renderer, &fullRect, SDL_PIXELFORMAT_RGBA8888,
+                             pixmap->readback->pixels, pixmap->readback->pitch);
+    restorePixmapTarget(renderer, &saved);
+    if (rc != 0) {
+        LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
+            SDL_GetError());
+        return NULL;
+    }
+    x11compat_pixmap_readback_reads++;
+    pixmap->readbackDirty = False;
+    return pixmap->readback;
+}
+
+/* Above this many pixels a full-pixmap readback cache is not worth keeping
+ * resident (a 2048x2048 RGBA surface is 16 MB). Larger pixmaps read just the
+ * requested rect directly instead, matching the pre-cache memory profile. The
+ * ceiling is a flat pixel count; a smarter eviction policy can replace it if a
+ * real workload needs one.
+ */
+#define MAX_CACHED_PIXMAP_PIXELS (2048u * 2048u)
+
+/* Read a single rect straight from the pixmap texture, bypassing the cache.
+ * Binds the target directly (not via GET_RENDERER) so the read does not mark
+ * the pixmap dirty, and restores the shared renderer's target, viewport and
+ * clip so an in-progress draw on the previous target is not disturbed.
+ */
+static SDL_Surface *readPixmapRectUncached(PixmapStruct *pixmap,
+                                           const SDL_Rect *source)
+{
+    SDL_Renderer *renderer = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
+    if (!renderer || !pixmap->texture)
+        return NULL;
+    SavedRendererState saved;
+    if (!bindPixmapTarget(renderer, pixmap->texture, &saved))
+        return NULL;
+    SDL_Surface *out = getRenderSurfaceRect(renderer, source);
+    restorePixmapTarget(renderer, &saved);
+    return out;
+}
+
+SDL_Surface *getPixmapSurfaceRect(Pixmap pixmap, const SDL_Rect *source)
+{
+    PixmapStruct *pixmapStruct = GET_PIXMAP_STRUCT(pixmap);
+    if (!pixmapStruct || !source || source->w <= 0 || source->h <= 0)
+        return NULL;
+
+    if ((uint64_t) pixmapStruct->width * (uint64_t) pixmapStruct->height >
+        MAX_CACHED_PIXMAP_PIXELS)
+        return readPixmapRectUncached(pixmapStruct, source);
+
+    SDL_Surface *cache = ensurePixmapReadback(pixmapStruct);
+    if (!cache)
+        return NULL;
+
+    SDL_Surface *out = SDL_CreateRGBSurfaceWithFormat(
+        0, source->w, source->h, SDL_SURFACE_DEPTH, SDL_PIXELFORMAT_RGBA8888);
+    if (!out) {
+        LOG("SDL_CreateRGBSurfaceWithFormat failed in %s: %s\n", __func__,
+            SDL_GetError());
+        return NULL;
+    }
+
+    SDL_Rect cacheBounds = {0, 0, (int) pixmapStruct->width,
+                            (int) pixmapStruct->height};
+    SDL_Rect clipped;
+    Bool anyInBounds = SDL_IntersectRect(source, &cacheBounds, &clipped);
+    /* Zero-pad only the part of the request that runs past the pixmap edge, the
+     * same contract getRenderSurfaceRect gives for out-of-bounds reads. When
+     * the request lies fully inside the pixmap (the common case) the blit
+     * covers every byte, so skip the full-surface fill.
+     */
+    if (!anyInBounds || clipped.w != source->w || clipped.h != source->h)
+        SDL_FillRect(out, NULL, 0);
+
+    if (anyInBounds) {
+        SDL_Rect dst = {clipped.x - source->x, clipped.y - source->y, clipped.w,
+                        clipped.h};
+        SDL_BlitSurface(cache, &clipped, out, &dst);
+    }
+    return out;
+}
+
 /* Clip a caller-supplied draw rect to the window's own bounds before
  * snapshotting. Pathological coordinates would otherwise ask the SDL renderer
  * to read back far outside the visible surface; the underlying

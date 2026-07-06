@@ -122,6 +122,8 @@ static char *getFontXLFDName(TTF_Font *font)
      * PIXEL_SIZE - POINT_SIZE - RESOLUTION_X - RESOLUTION_Y - SPACING -
      * AVERAGE_WIDTH - CHARSET_REGISTRY - CHARSET_ENCODING
      */
+    if (!font)
+        return NULL;
     int fontStyle = TTF_GetFontStyle(font);
     static const char *const emptyValue = "";
     const char *foundry = emptyValue;
@@ -2001,11 +2003,19 @@ static int getTextWidthForChars(XFontStruct *font_struct,
         return product > INT_MAX ? INT_MAX : (int) product;
     }
     int width, height;
-    if (TTF_SizeUTF8(GET_FONT(font_struct->fid), string, &width, &height) !=
-        0) {
-        LOG("Failed to calculate the text with in XTextWidth[16]: %s! "
-            "Returning max width of font.\n",
-            TTF_GetError());
+    /* A font id can resolve to a NULL face (for example after the client closed
+     * and reopened its display, retiring the old font table, as Motif fileview
+     * does after its language dialog). SDL_ttf dereferences the font pointer,
+     * so a NULL here must not reach TTF_SizeUTF8. Fall back to the fixed-width
+     * estimate, matching how real Xlib keeps measuring with a default font
+     * rather than crashing the client.
+     */
+    TTF_Font *ttfFont = GET_FONT(font_struct->fid);
+    if (!ttfFont || TTF_SizeUTF8(ttfFont, string, &width, &height) != 0) {
+        if (ttfFont)
+            LOG("Failed to calculate the text width in XTextWidth[16]: %s! "
+                "Returning max width of font.\n",
+                TTF_GetError());
         int64_t product = (int64_t) font_struct->max_bounds.rbearing *
                           (int64_t) fixedCharCount;
         return product > INT_MAX ? INT_MAX : (int) product;
@@ -2502,6 +2512,19 @@ static Bool renderText(Display *display,
         }
     }
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
+    /* A font id with no loaded face (NULL ttf, for example after the client
+     * closed and reopened its display) must not reach SDL_ttf: TTF_Render* and
+     * TTF_FontAscent below dereference the font pointer. Prefer the
+     * fixed-bitmap fallback; otherwise skip the draw rather than crash,
+     * matching Xlib's tolerance of a missing font.
+     */
+    if (!GET_FONT(gContext->font)) {
+        if (fontResource && fontResource->useFixedBitmap &&
+            renderFixedBitmapTextAndInvalidate(drawable, renderer, gc, x, y,
+                                               string, length, drawnBounds))
+            return True;
+        return False;
+    }
     Bool stringHasEmbeddedNul = strlen(string) != length;
     if (stringHasEmbeddedNul && fontResource && fontResource->useFixedBitmap &&
         renderFixedBitmapTextAndInvalidate(drawable, renderer, gc, x, y, string,
@@ -2702,14 +2725,23 @@ static int drawImageString(Display *display,
         ascent = fontResource->coreAscent;
         descent = fontResource->coreDescent;
     } else {
+        /* A NULL face (font id no longer backed by a loaded font) must not
+         * reach SDL_ttf, which dereferences it. Take width, ascent and descent
+         * from XQueryFont instead, so the image-string background box below
+         * keeps its height rather than collapsing to zero and skipping the
+         * background clear XDrawImageString owes its caller.
+         */
         TTF_Font *font = GET_FONT(gContext->font);
-        if (TTF_SizeUTF8(font, text, &width, &height) != 0) {
+        if (!font || TTF_SizeUTF8(font, text, &width, &height) != 0) {
             XFontStruct *metrics = XQueryFont(display, gContext->font);
             width = metrics ? getTextWidth(metrics, text) : 0;
+            ascent = metrics ? metrics->ascent : 0;
+            descent = metrics ? metrics->descent : 0;
             freeFontStruct(metrics);
+        } else {
+            ascent = TTF_FontAscent(font);
+            descent = abs(TTF_FontDescent(font));
         }
-        ascent = TTF_FontAscent(font);
-        descent = abs(TTF_FontDescent(font));
     }
     SDL_Rect background = {x, y - ascent, width, ascent + descent};
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE, gContext->background);
