@@ -39,7 +39,13 @@ static SDL_mutex *eventQueueLengthLock = NULL;
 static SDL_mutex *putBackEventsLock = NULL;
 static SDL_mutex *trackedDisplaysLock = NULL;
 static SDL_mutex *activePointerWindowLock = NULL;
-static Uint32 xtWakeEventType = (Uint32) -1;
+/* Tracks whether the pump-wake timer has an outstanding, not-yet-consumed byte
+ * in the event pipe. See xtWakeTimerCallback and consumePumpWakeByte. Kept
+ * separate from the SDL event queue so the periodic Cocoa/SDL pump wake never
+ * depends on SDL_HasEvent/SDL_PeepEvents queue semantics (which sdl2-compat and
+ * SDL3 do not honor for user events pushed from a timer thread).
+ */
+static SDL_atomic_t pumpWakePending = {0};
 static SDL_TimerID xtWakeTimer = 0;
 static Array trackedDisplays = {NULL, 0, 0};
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -111,6 +117,34 @@ void releaseMainEventThread(void)
     mainEventThreadId = 0;
 }
 
+/* The pump-wake timer (xtWakeTimerCallback) writes a single byte to the event
+ * pipe to unblock a client blocked in poll(ConnectionNumber) so the main thread
+ * can pump SDL/Cocoa events. That byte is tracked by pumpWakePending,
+ * independently of the SDL event queue and the qlen accounting; consume it here,
+ * on the main thread once the pump has run, so poll() blocks again instead of
+ * spinning.
+ *
+ * Ordering is deliberate: the timer sets pumpWakePending (0 to 1) before it
+ * writes the byte, so read the byte first and only clear the flag when the read
+ * actually removed it. Clearing the flag before reading would leave an untracked
+ * byte behind in this interleaving: the consumer clears the flag and sees an
+ * empty non-blocking pipe (EAGAIN) in the window after the timer set the flag
+ * but before it wrote, then the timer's write lands with the flag already 0, so
+ * the byte is never drained and keeps ConnectionNumber permanently readable (a
+ * busy-spin). A failed read leaves the flag set so a later call drains the byte
+ * once the write lands. This is safe because the timer is the only producer and
+ * the main thread the only consumer, and the timer cannot re-arm (CAS 0 to 1)
+ * while the flag is still 1.
+ */
+static void consumePumpWakeByte(void)
+{
+    if (READ_EVENT_FD < 0 || !SDL_AtomicGet(&pumpWakePending))
+        return;
+    char buffer;
+    if (read(READ_EVENT_FD, &buffer, sizeof(buffer)) == (ssize_t) sizeof(buffer))
+        SDL_AtomicSet(&pumpWakePending, 0);
+}
+
 void pumpEventsSafe(void)
 {
     if (!mainEventThreadCaptured) {
@@ -124,28 +158,34 @@ void pumpEventsSafe(void)
         return;
     }
     SDL_PumpEvents();
+    consumePumpWakeByte();
 }
 
 static Uint32 xtWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
 {
     (void) param;
-    if (xtWakeEventType == (Uint32) -1)
-        return interval;
-
-    /* Rate-limit: if the consumer hasn't drained the previous wake event, don't
-     * queue another. Otherwise an idle (or slow-dispatching) client accumulates
-     * wake events in SDL's queue and the corresponding pipe bytes via
-     * onSdlEvent's accounting, both of which would surface as phantom "events
-     * pending" to XEventsQueued and to external select(ConnectionNumber)
-     * consumers.
+    /* macOS/Cocoa (and every SDL video backend) requires the event loop to be
+     * serviced on the main thread via SDL_PumpEvents, which libx11-compat only
+     * runs when the client re-enters an Xlib API. This timer periodically wakes
+     * a client blocked in poll(ConnectionNumber) by writing one byte to the
+     * event pipe, so the main thread returns from poll() and pumps.
+     *
+     * The wake byte is tracked with pumpWakePending rather than routed through
+     * the SDL event queue. Pushing an SDL user event and gating on SDL_HasEvent
+     * proved unreliable on sdl2-compat/SDL3: a pushed user event can be reported
+     * by SDL_HasEvent and SDL_PeepEvents(PEEK) yet never removed by a full-range
+     * SDL_PeepEvents(GETEVENT), which permanently throttled this timer and
+     * starved the Cocoa run loop (the app showed as "Not Responding" while
+     * otherwise rendering correctly). A dedicated pipe byte keeps the wake
+     * independent of SDL's queue accounting; pumpEventsSafe() consumes it.
      */
-    if (SDL_HasEvent(xtWakeEventType))
+    if (WRITE_EVENT_FD < 0)
         return interval;
-
-    SDL_Event event;
-    SDL_zero(event);
-    event.type = xtWakeEventType;
-    SDL_PushEvent(&event);
+    if (SDL_AtomicCAS(&pumpWakePending, 0, 1)) {
+        char buffer = 'e';
+        if (write(WRITE_EVENT_FD, &buffer, sizeof(buffer)) != sizeof(buffer))
+            SDL_AtomicSet(&pumpWakePending, 0);
+    }
     return interval;
 }
 
@@ -253,6 +293,11 @@ static void resetEventWakeups(Display *display, int qlen)
     char buffer[64];
     memset(buffer, 'e', sizeof(buffer));
     discardPipeWakeups();
+    /* discardPipeWakeups() emptied the pipe, so any outstanding pump-wake byte
+     * is gone too; clear its flag so the timer can re-arm and pumpEventsSafe()
+     * does not later read a real-event byte in its place.
+     */
+    SDL_AtomicSet(&pumpWakePending, 0);
     int remaining = qlen;
     while (remaining > 0) {
         size_t chunk = (size_t) remaining;
@@ -1241,10 +1286,8 @@ int initEventPipe(Display *display)
     SDL_SetEventFilter(onSdlEvent, display);
     trackDisplay(display);
     if (isFirstDisplay && xtWakeTimer == 0 && shouldStartXtWakeTimer()) {
-        if (xtWakeEventType == (Uint32) -1)
-            xtWakeEventType = SDL_RegisterEvents(1);
-        if (xtWakeEventType != (Uint32) -1)
-            xtWakeTimer = SDL_AddTimer(33, xtWakeTimerCallback, NULL);
+        SDL_AtomicSet(&pumpWakePending, 0);
+        xtWakeTimer = SDL_AddTimer(33, xtWakeTimerCallback, NULL);
     }
     SDL_AtomicUnlock(&eventPipeGlobalLock);
     return READ_EVENT_FD;
@@ -1295,6 +1338,7 @@ void closeEventPipe(Display *display)
             SDL_RemoveTimer(xtWakeTimer);
             xtWakeTimer = 0;
         }
+        SDL_AtomicSet(&pumpWakePending, 0);
         destroyMutexSlot(&eventQueueLengthLock);
         destroyMutexSlot(&putBackEventsLock);
         destroyMutexSlot(&trackedDisplaysLock);
@@ -1734,9 +1778,6 @@ int convertEvent(Display *display,
                  XEvent *xEvent,
                  Bool freeInternalEvents)
 {
-    if (sdlEvent->type == xtWakeEventType)
-        return -1;
-
     Bool sendEvent = False;
     Window eventWindow = None;
     int type = -1;
