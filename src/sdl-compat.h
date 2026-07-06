@@ -301,6 +301,16 @@ static inline int xc_RenderSetClipRect(SDL_Renderer *renderer,
     return SDL_SetRenderClipRect(renderer, rect) ? 0 : -1;
 }
 
+static inline SDL_bool xc_RenderIsClipEnabled(SDL_Renderer *renderer)
+{
+    return SDL_RenderClipEnabled(renderer) ? SDL_TRUE : SDL_FALSE;
+}
+
+static inline void xc_RenderGetClipRect(SDL_Renderer *renderer, SDL_Rect *rect)
+{
+    SDL_GetRenderClipRect(renderer, rect);
+}
+
 static inline int xc_RenderSetViewport(SDL_Renderer *renderer,
                                        const SDL_Rect *rect)
 {
@@ -450,6 +460,10 @@ static inline int xc_QueryTexture(SDL_Texture *texture,
 #define SDL_RenderDrawPoint xc_RenderDrawPoint
 #undef SDL_RenderSetClipRect
 #define SDL_RenderSetClipRect xc_RenderSetClipRect
+#undef SDL_RenderIsClipEnabled
+#define SDL_RenderIsClipEnabled xc_RenderIsClipEnabled
+#undef SDL_RenderGetClipRect
+#define SDL_RenderGetClipRect xc_RenderGetClipRect
 #undef SDL_RenderSetViewport
 #define SDL_RenderSetViewport xc_RenderSetViewport
 

@@ -152,6 +152,8 @@ Pixmap XCreatePixmap(Display *display,
     pixmapStruct->width = width;
     pixmapStruct->height = height;
     pixmapStruct->depth = depth;
+    pixmapStruct->readback = NULL;
+    pixmapStruct->readbackDirty = True;
     SET_XID_TYPE(pixmap, PIXMAP);
     SET_XID_VALUE(pixmap, pixmapStruct);
 
@@ -168,6 +170,7 @@ int XFreePixmap(Display *display, Pixmap pixmap)
     SET_X_SERVER_REQUEST(display, X_FreePixmap);
     TYPE_CHECK(pixmap, PIXMAP, display, 0);
     PixmapStruct *pixmapStruct = GET_PIXMAP_STRUCT(pixmap);
+    freePixmapReadback(pixmapStruct);
     SDL_DestroyTexture(pixmapStruct->texture);
     free(pixmapStruct);
     SET_XID_VALUE(pixmap, NULL);
