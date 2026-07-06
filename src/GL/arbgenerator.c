@@ -49,11 +49,11 @@ void generateVariablePre(sCurStatus *curStatusPtr,
             varPtr->size = varPtr->init.strings_count;
         }
         char buf[11];  // Assume 32-bits array address, should never overflow...
-        sprintf(buf, "%d", varPtr->size);
+        snprintf(buf, sizeof(buf), "%d", varPtr->size);
         APPEND_OUTPUT2(buf)
         APPEND_OUTPUT("];\n", 3)
         if (varPtr->init.strings_count <= 10) {
-            // Single-digit array, optimize by removing the sprintf
+            // Single-digit array, optimize by removing the snprintf
             for (size_t i = 0; i < varPtr->init.strings_count; ++i) {
                 APPEND_OUTPUT("\t", 1)
                 APPEND_OUTPUT2(varPtr->names[0])
@@ -65,7 +65,7 @@ void generateVariablePre(sCurStatus *curStatusPtr,
             }
         } else {
             for (size_t i = 0; i < varPtr->init.strings_count; ++i) {
-                sprintf(buf, "%zd", i);
+                snprintf(buf, sizeof(buf), "%zd", i);
                 APPEND_OUTPUT("\t", 1)
                 APPEND_OUTPUT2(varPtr->names[0])
                 APPEND_OUTPUT("[", 1)
