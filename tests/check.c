@@ -4912,18 +4912,84 @@ static int test_events(Display *display)
         childBeforeGravity.y + (44 - parentBeforeGravity.height) / 2;
     CHECK(movedAttrs.x == expectedGravityX && movedAttrs.y == expectedGravityY,
           "window gravity did not move child before GravityNotify");
+    /* A gravity-driven move generates GravityNotify only, never a
+     * ConfigureNotify: the child's parent-relative geometry changed but it was
+     * not reconfigured.
+     */
+    CHECK(!XCheckTypedWindowEvent(display, gravityChild, ConfigureNotify, &out),
+          "gravity-moved child got spurious ConfigureNotify");
+
+    Window gravityGrandchild =
+        XCreateSimpleWindow(display, gravityChild, 1, 1, 4, 4, 0, 0, 0);
+    CHECK(gravityGrandchild != None, "gravity grandchild creation failed");
+    XSelectInput(display, gravityGrandchild,
+                 StructureNotifyMask | ExposureMask);
+    CHECK(XMapWindow(display, gravityGrandchild),
+          "XMapWindow gravity grandchild failed");
+    while (XCheckWindowEvent(display, gravityGrandchild,
+                             StructureNotifyMask | ExposureMask, &out)) {
+    }
+    CHECK(XResizeWindow(display, window, 60, 44), "third parent resize failed");
+    CHECK(XCheckTypedWindowEvent(display, gravityChild, GravityNotify, &out),
+          "second parent resize did not move gravity child");
+    /* The grandchild's geometry relative to its parent is unchanged, so it gets
+     * neither GravityNotify nor ConfigureNotify. It is still exposed because a
+     * top-level resize repaints the whole subtree.
+     */
+    CHECK(!XCheckTypedWindowEvent(display, gravityGrandchild, ConfigureNotify,
+                                  &out),
+          "unmoved grandchild got spurious ConfigureNotify");
+    CHECK(!XCheckTypedWindowEvent(display, gravityGrandchild, GravityNotify,
+                                  &out),
+          "unmoved grandchild got spurious GravityNotify");
+    CHECK(XCheckTypedWindowEvent(display, gravityGrandchild, Expose, &out),
+          "top-level resize did not expose grandchild");
 
     Window stableChild =
         XCreateSimpleWindow(display, window, 2, 3, 8, 8, 0, 0, 0);
     CHECK(stableChild != None, "stable gravity child creation failed");
     XSelectInput(display, stableChild, StructureNotifyMask);
     CHECK(XMapWindow(display, stableChild), "XMapWindow stable child failed");
-    while (XCheckTypedWindowEvent(display, stableChild, GravityNotify, &out)) {
+    while (XCheckWindowEvent(display, stableChild, StructureNotifyMask, &out)) {
     }
     CHECK(XResizeWindow(display, window, 64, 48),
           "second parent resize failed");
+    CHECK(!XCheckTypedWindowEvent(display, stableChild, ConfigureNotify, &out),
+          "NorthWestGravity child got spurious ConfigureNotify");
     CHECK(!XCheckTypedWindowEvent(display, stableChild, GravityNotify, &out),
           "NorthWestGravity child got spurious GravityNotify");
+    while (XCheckTypedEvent(display, Expose, &out)) {
+    }
+
+    /* The XResizeWindow (configureWindow) path must also unmap UnmapGravity
+     * children, with UnmapNotify.from_configure == True.
+     */
+    Window unmapGravityChild =
+        XCreateSimpleWindow(display, window, 4, 4, 6, 6, 0, 0, 0);
+    CHECK(unmapGravityChild != None, "unmap gravity child creation failed");
+    XSetWindowAttributes unmapGravAttrs;
+    memset(&unmapGravAttrs, 0, sizeof(unmapGravAttrs));
+    unmapGravAttrs.win_gravity = UnmapGravity;
+    CHECK(XChangeWindowAttributes(display, unmapGravityChild, CWWinGravity,
+                                  &unmapGravAttrs),
+          "unmap gravity CWWinGravity failed");
+    XSelectInput(display, unmapGravityChild, StructureNotifyMask);
+    CHECK(XMapWindow(display, unmapGravityChild),
+          "XMapWindow unmap gravity child failed");
+    while (XCheckWindowEvent(display, unmapGravityChild, StructureNotifyMask,
+                             &out)) {
+    }
+    CHECK(XResizeWindow(display, window, 68, 48),
+          "configure-path parent resize failed");
+    CHECK(XCheckTypedWindowEvent(display, unmapGravityChild, UnmapNotify, &out),
+          "XResizeWindow did not unmap UnmapGravity child");
+    CHECK(out.xunmap.from_configure,
+          "configure-path UnmapNotify.from_configure was not True");
+    XWindowAttributes ugAttrs;
+    CHECK(XGetWindowAttributes(display, unmapGravityChild, &ugAttrs),
+          "unmap gravity child attrs failed");
+    CHECK(ugAttrs.map_state == IsUnmapped,
+          "UnmapGravity child still mapped after XResizeWindow");
     while (XCheckTypedEvent(display, Expose, &out)) {
     }
 
@@ -4948,6 +5014,83 @@ static int test_events(Display *display)
           "moving clipped child expose did not cover newly visible area");
     while (XCheckTypedEvent(display, Expose, &out)) {
     }
+
+    /* Host-driven resize (the SDL RESIZED path, entered here through
+     * postSyntheticWindowResize) must honor child win_gravity: the gravity
+     * child gets GravityNotify only, and an unmoved child gets neither
+     * GravityNotify nor ConfigureNotify. GravityNotify is never generated at
+     * map time, so it cleanly attributes to this resize.
+     */
+    Window hostResizeWin =
+        XCreateSimpleWindow(display, root, 0, 0, 40, 40, 0, 0, 0);
+    CHECK(hostResizeWin != None, "host resize window creation failed");
+    XSelectInput(display, hostResizeWin, StructureNotifyMask);
+    CHECK(XMapWindow(display, hostResizeWin), "host resize window map failed");
+    Window hostStillChild =
+        XCreateSimpleWindow(display, hostResizeWin, 1, 1, 10, 10, 0, 0, 0);
+    CHECK(hostStillChild != None, "host resize still child creation failed");
+    XSelectInput(display, hostStillChild, StructureNotifyMask);
+    CHECK(XMapWindow(display, hostStillChild),
+          "host resize still child map failed");
+    Window hostGravityChild =
+        XCreateSimpleWindow(display, hostResizeWin, 2, 2, 6, 6, 0, 0, 0);
+    CHECK(hostGravityChild != None,
+          "host resize gravity child creation failed");
+    XSetWindowAttributes hostGravAttrs;
+    memset(&hostGravAttrs, 0, sizeof(hostGravAttrs));
+    hostGravAttrs.win_gravity = EastGravity;
+    CHECK(XChangeWindowAttributes(display, hostGravityChild, CWWinGravity,
+                                  &hostGravAttrs),
+          "host resize gravity CWWinGravity failed");
+    XSelectInput(display, hostGravityChild, StructureNotifyMask);
+    CHECK(XMapWindow(display, hostGravityChild),
+          "host resize gravity child map failed");
+    Window hostUnmapChild =
+        XCreateSimpleWindow(display, hostResizeWin, 3, 3, 5, 5, 0, 0, 0);
+    CHECK(hostUnmapChild != None, "host resize unmap child creation failed");
+    XSetWindowAttributes hostUnmapAttrs;
+    memset(&hostUnmapAttrs, 0, sizeof(hostUnmapAttrs));
+    hostUnmapAttrs.win_gravity = UnmapGravity;
+    CHECK(XChangeWindowAttributes(display, hostUnmapChild, CWWinGravity,
+                                  &hostUnmapAttrs),
+          "host resize unmap CWWinGravity failed");
+    XSelectInput(display, hostUnmapChild, StructureNotifyMask);
+    CHECK(XMapWindow(display, hostUnmapChild),
+          "host resize unmap child map failed");
+    while (XCheckWindowEvent(display, hostGravityChild, StructureNotifyMask,
+                             &out)) {
+    }
+    while (
+        XCheckWindowEvent(display, hostStillChild, StructureNotifyMask, &out)) {
+    }
+    while (
+        XCheckWindowEvent(display, hostUnmapChild, StructureNotifyMask, &out)) {
+    }
+    postSyntheticWindowResize(display, hostResizeWin, 60, 40);
+    CHECK(
+        XCheckTypedWindowEvent(display, hostGravityChild, GravityNotify, &out),
+        "host resize did not move gravity child");
+    CHECK(!XCheckTypedWindowEvent(display, hostGravityChild, ConfigureNotify,
+                                  &out),
+          "host resize gravity child got spurious ConfigureNotify");
+    CHECK(!XCheckTypedWindowEvent(display, hostStillChild, GravityNotify, &out),
+          "host resize gave unmoved child a spurious GravityNotify");
+    CHECK(
+        !XCheckTypedWindowEvent(display, hostStillChild, ConfigureNotify, &out),
+        "host resize gave unmoved child a spurious ConfigureNotify");
+    /* UnmapGravity children are unmapped by the resize, with an UnmapNotify
+     * whose from_configure is True (the unmap is a side effect of the resize).
+     */
+    CHECK(XCheckTypedWindowEvent(display, hostUnmapChild, UnmapNotify, &out),
+          "host resize did not unmap UnmapGravity child");
+    CHECK(out.xunmap.from_configure,
+          "host resize UnmapNotify.from_configure was not True");
+    XWindowAttributes unmapChildAttrs;
+    CHECK(XGetWindowAttributes(display, hostUnmapChild, &unmapChildAttrs),
+          "host resize unmap child attrs failed");
+    CHECK(unmapChildAttrs.map_state == IsUnmapped,
+          "UnmapGravity child still mapped after parent resize");
+    XDestroyWindow(display, hostResizeWin);
 
     XDestroyWindow(display, window);
     XDestroyWindow(display, resetWindow);

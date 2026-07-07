@@ -52,11 +52,18 @@ void postSyntheticWindowResize(Display *display,
         height <= 0) {
         return;
     }
+    int oldWidth = 0, oldHeight = 0;
+    GET_WINDOW_DIMS(eventWindow, oldWidth, oldHeight);
     GET_WINDOW_STRUCT(eventWindow)->w = (unsigned int) width;
     GET_WINDOW_STRUCT(eventWindow)->h = (unsigned int) height;
     resizeWindowTexture(eventWindow);
     clearWindowTreeWithoutExpose(display, eventWindow);
     postEvent(display, eventWindow, ConfigureNotify);
+    postResizeConfigureForMappedChildren(display, eventWindow, oldWidth,
+                                         oldHeight, width, height);
+    /* The clear above wiped the whole subtree to background; re-expose all of
+     * it so every mapped descendant repaints.
+     */
     postFullWindowExpose(display, eventWindow);
 }
 
