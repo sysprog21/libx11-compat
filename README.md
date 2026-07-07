@@ -51,6 +51,7 @@ switch backends.
 
 `make check` runs the in-tree C tests, exported-symbol coverage, Motif link and demo checks, replay-driven UI smoke tests, and system-X11 differential checks.
 For faster local loops, use `make check-unit`, `make check-smoke`, or `make check-differential` depending on the subsystem being changed.
+See [`docs/UI-REPLAY.md`](docs/UI-REPLAY.md) for the replay grammar, the runner CLI, and the state / image / timeline assertion schemas behind the UI smoke tests.
 
 Verbose diagnostics for unimplemented or fall-back paths are gated behind a build flag:
 
@@ -81,8 +82,7 @@ They are still compatibility workloads rather than daily-use application ports,
 but each exercises behavior that small examples do not reach.
 
 - [Motif](https://en.wikipedia.org/wiki/Motif_(software)): upstream Motif and its demo suite build against the compatibility libraries.
-  Menu posting, pointer grabs, focus changes, text rendering, resource lookups, and selected demo workflows are covered by local replay smoke tests.
-  Screenshot-based differential checks compare selected paths against native X11/Motif and continue to flag visible layout or repaint regressions.
+  Menu posting, pointer grabs, focus changes, text rendering, resource lookups, and selected demo workflows all work.
   Some widget paths still expose layout artifacts or map/expose propagation gaps that require further work.
 
   Motif's GLw OpenGL-widget path runs too: the classic `paperplane` demo drives a `GLwDrawingArea` through the in-tree GLX-over-EGL layer, so live Motif menus and an animated 3D scene render together with no X server and no desktop-GL driver (desktop GL 1.x/2.x is translated by the bundled [gl4es](https://github.com/ptitSeb/gl4es) to [ANGLE](https://github.com/google/angle)'s GLES on Metal, with surfaceless Mesa as the Linux provider). See [GLX and OpenGL](#glx-and-opengl) for the capability and its limits.
@@ -91,7 +91,7 @@ but each exercises behavior that small examples do not reach.
 - [ViolaWWW](https://en.wikipedia.org/wiki/ViolaWWW): the 1992-era Motif web browser builds and runs out of the consolidated `build/` tree,
   loads HTTP pages over the network,
   renders inline XPM images through `libXpm-compat`,
-  and is covered by replay checks for scrolling, resize redraw, and the Help menu.
+  and handles scrolling, resize redraw, and the Help menu.
   Recent fixes corrected stale glyphs after wheel scrolling, scrollbar dragging, and resize reflow.
   HTTPS, complex modern HTML, and several interactive flows are known limitations of the application itself rather than the compatibility layer.
 
@@ -100,12 +100,10 @@ but each exercises behavior that small examples do not reach.
   ```sh
   make violawww                          # build ViolaWWW (depends on motif)
   build/violawww/source/src/vw/vw        # launch the browser
-  make check-smoke-violawww              # replay-driven smoke checks (scroll + Help menu)
-  make check-differential-violawww       # screenshot diff vs system libX11 (needs remote host)
   ```
 
 - [NCSA Mosaic](https://en.wikipedia.org/wiki/Mosaic_(web_browser)): the maintained [thentenaar/mosaic-ng](https://github.com/thentenaar/mosaic-ng) fork of the seminal 1993 graphical browser builds against the compat stack plus the bundled Motif.
-  It loads HTTP pages, lays out inline images and tables, and is covered by replay smoke checks for initial paint, scrolling, hyperlink navigation, and URL-field editing.
+  It loads HTTP pages, lays out inline images and tables, and handles initial paint, scrolling, hyperlink navigation, and URL-field editing.
   HTTPS and modern HTML/CSS remain application-level limitations.
 
   <a href="assets/mosaic.png"><img src="assets/mosaic.png" alt="NCSA Mosaic running through libx11-compat" width="420"></a>
@@ -113,8 +111,6 @@ but each exercises behavior that small examples do not reach.
   ```sh
   make mosaic                            # build Mosaic (depends on motif)
   build/mosaic/source/src/Mosaic         # launch the browser
-  make check-smoke-mosaic                # replay-driven smoke checks (paint + scroll + navigation)
-  make check-differential-mosaic         # screenshot diff vs system libX11 (needs remote host)
   ```
 
 - [Osiris](https://centre.libranext.com/libranext/osiris): a maintained Qt 2.3.2 fork builds against `libX11-compat`, `libXext-compat`, `libXmu-compat`, and the link-only `libICE-compat` / `libSM-compat` shims.
@@ -128,8 +124,6 @@ but each exercises behavior that small examples do not reach.
   make osiris                            # fetch, patch, configure, and build Osiris
   build/osiris/build/designer            # launch Qt Designer
   make check-demos-osiris                # launch built tutorials/examples long enough to catch crashes
-  make check-smoke-osiris                # replay-driven t1 and Designer menu smoke checks
-  make check-differential-osiris         # screenshot diff vs system libX11 (needs remote host)
   ```
 
 - [Xfig](https://mcj.sourceforge.net/): the classic Athena-based vector drawing program builds against the compat stack and the bundled libXaw.
@@ -141,7 +135,6 @@ but each exercises behavior that small examples do not reach.
   ```sh
   make xfig                              # build Xfig (depends on libXaw)
   build/xfig/source/src/xfig tests/data/mindmap.fig
-  make check-smoke-xfig                  # replay-driven startup smoke check
   ```
 
 - [XCircuit](http://opencircuitdesign.com/xcircuit/): the PostScript-oriented schematic capture and drawing tool builds against the compat stack and exercises menu redraw, file dialogs, font rendering, pixmap-backed icon/tool rendering, and larger PostScript example imports.
@@ -150,28 +143,23 @@ but each exercises behavior that small examples do not reach.
 
 - [GIMP 0.54](https://en.wikipedia.org/wiki/GIMP): the 1996 release, the last GIMP built on the Motif toolkit before the project moved to GTK, builds against the compat stack plus the bundled Motif.
   It is a full image editor that drives `XCreateImage` / `XPutImage` / `XGetImage`, the MIT-SHM canvas path (`src/xshm.c`), TrueColor 32bpp visual and colormap handling, large Motif dialog and menu trees, and forked image-format plug-ins (PNG / JPEG) that talk to the core over pipes and SysV shared-memory tiles.
-  A replay smoke check covers toolbox startup; the patch set under `compat/gimp-patches/` is the GNOME-hosted balooii rework that fixes the 1996 source for a modern LP64 toolchain.
+  The patch set under `compat/gimp-patches/` is the GNOME-hosted balooii rework that fixes the 1996 source for a modern LP64 toolchain.
 
   <a href="assets/gimp.png"><img src="assets/gimp.png" alt="GIMP 0.54 running through libx11-compat on macOS" width="420"></a>
 
   ```sh
   make gimp-motif                        # build GIMP 0.54.1 (depends on motif)
   build/gimp-motif/source/app/gimp       # launch the editor
-  make check-smoke-gimp-motif            # replay-driven startup smoke check
-  make check-differential-gimp-motif     # toolbox diff vs system OpenMotif (needs remote host)
   ```
 
 - [XNEdit](https://github.com/unixwork/xnedit): the Motif NEdit fork that renders editor text through Xft/fontconfig builds against the bundled Motif, `libXt-compat`, and the SDL_ttf-backed `libXft-compat`.
   It validates Unicode text rendering in an interactive Motif editor, including Latin-1, Greek, and CJK glyph fallback through the Xft path.
-  Replay smoke checks cover startup and opening a controlled UTF-8 fixture; screenshot-based differential checks compare the same states against native libX11/OpenMotif/Xft on a remote reference host.
 
   <a href="assets/xnedit.png"><img src="assets/xnedit.png" alt="XNEdit running through libx11-compat on macOS" width="420"></a>
 
   ```sh
   make xnedit                            # build XNEdit (depends on motif + Xft shim)
   build/xnedit/source/source/xnedit tests/ui/fixtures/xnedit-fixture.txt
-  make check-smoke-xnedit                # replay-driven startup + Unicode fixture smoke
-  make check-differential-xnedit         # startup + fixture diff vs native X11/Xft (needs remote host)
   ```
 
 - [XEphem](https://github.com/XEphem/XEphem): the Motif astronomy application builds against the bundled Motif plus `libXt-compat`, `libXext-compat`, `libXmu-compat`, and `libX11-compat`.
@@ -186,15 +174,12 @@ but each exercises behavior that small examples do not reach.
 
 - [Grace](https://plasma-gate.weizmann.ac.il/Grace/): the Motif 2D plotting and data-analysis tool (`xmgrace`) builds against the bundled Motif plus `libXt-compat`, `libXmu-compat`, and `libX11-compat`.
   It exercises a large Motif UI over an Xlib drawing canvas: menus and cascade placement, the file-selection dialog (which round-trips filenames through compound strings), axis/tick/curve rendering, and PostScript hardcopy export.
-  Replay smoke checks cover startup, File-menu posting, and canvas resize; a screenshot-based differential check compares startup against native OpenMotif on a remote reference host.
 
   <a href="assets/grace.png"><img src="assets/grace.png" alt="Grace (xmgrace) running through libx11-compat on macOS" width="420"></a>
 
   ```sh
   make grace                             # build Grace (depends on motif)
   build/grace/source/src/xmgrace         # launch the plotter
-  make check-smoke-grace                 # replay-driven startup + File menu + resize smoke
-  make check-differential-grace          # startup diff vs native OpenMotif (needs remote host)
   ```
 
 - [xwpe](https://github.com/vejeta/xwpe): the X Window Programming Environment builds against `libX11-compat` and the SDL_ttf-backed `libXft-compat`.
@@ -207,14 +192,7 @@ but each exercises behavior that small examples do not reach.
   build/xwpe/source/xwpe                 # launch from the build tree
   ```
 
-The `check-smoke-*` targets use deterministic replay files and in-process snapshots, with artifacts written under `build/ui-smoke/`.
-`make profile-ui` runs the Motif, ViolaWWW, and Mosaic replay smokes with timing capture and prints the generated `metrics.tsv` and `render-stats.tsv` paths; the Osiris and Xfig smokes are still invoked individually via `make check-smoke-osiris` / `make check-smoke-xfig`.
-They do not require a remote reference host, `xdotool`, or a native X11 reference run.
-Set `UI_REPLAY_XVFB=--xvfb` only when a local Xvfb display is useful for the host environment.
-
-See [`docs/UI-REPLAY.md`](docs/UI-REPLAY.md) for the replay grammar, the runner CLI, the state / image / timeline assertion schemas, and the artifact layout.
-
-The value of these targets is not that they replace a real X11, Motif, or Qt2 install today,
+The value of these ports is not that they replace a real X11, Motif, or Qt2 install today,
 but that they keep legacy Xlib clients building and running on platforms where no X server is available while migration is in progress.
 
 These ports rely on community input.

@@ -1,6 +1,6 @@
 # libX11 API Coverage
 
-The library exports 615 public Xlib symbols, listed in [`tests/api-symbols.txt`](../tests/api-symbols.txt).
+The library exports 680 public API symbols (647 core Xlib entry points plus 33 GLX symbols compiled in when `GLX=1`), listed in [`tests/api-symbols.txt`](../tests/api-symbols.txt).
 The exported manifest is enforced by `make symbol-coverage`;
 per-subsystem behavior is checked by `make check`.
 End-to-end behavior of real Xlib workloads is exercised through the replay harness documented in [`UI-REPLAY.md`](UI-REPLAY.md).
@@ -22,7 +22,7 @@ The status column uses three buckets:
 | Events                   | Functional | Expose, key, button, motion, configure, enter/leave, focus, client message, mapping notify. |
 | Input                    | Functional | Keyboard and pointer state, keysym mapping, modifier translation. |
 | Atoms                    | Functional | Stable per-display identity for `XInternAtom`, predefined atoms, `XGetAtomName`. |
-| Properties               | Partial    | `XChangeProperty`, `XGetWindowProperty`, ICCCM and `_NET_WM_*` hints used by GTK probes. `XSetWMProtocols` works; `XGetWMProtocols` is a stub. |
+| Properties               | Partial    | `XChangeProperty`, `XGetWindowProperty`, ICCCM and `_NET_WM_*` hints used by GTK probes. `XSetWMProtocols` and `XGetWMProtocols` round-trip the `WM_PROTOCOLS` property. |
 | Colors                   | Functional | `XAllocColor`, `XAllocNamedColor`, standard color database, colormap defaults. |
 | Fonts and text           | Functional | `XLoadQueryFont`, text width queries, `XDrawString` / `XDrawString16`, SDL2_ttf backing. |
 | Cursors                  | Functional | Standard cursor shapes, pixmap cursors. |

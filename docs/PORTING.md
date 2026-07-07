@@ -90,7 +90,7 @@ XSetWMProtocols(display, window, &wm_delete, 1);
 `ClientMessage` events with `data.l[0] == wm_delete` then signal a clean exit.
 This is standard ICCCM behavior;
 no platform-specific code is needed.
-Note that `XGetWMProtocols` is currently a stub, so clients that need to read back the protocols they set must track them locally.
+`XGetWMProtocols` reads the protocols back from the `WM_PROTOCOLS` property, so a client can query what it registered.
 
 ## 7. Choose between visible and headless modes at runtime
 

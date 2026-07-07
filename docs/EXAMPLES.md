@@ -20,6 +20,7 @@ SDL_VIDEODRIVER=dummy build/examples/2048   # omit env var for a visible window
 | `processing` | [`examples/processing.c`](../examples/processing.c) | Standalone Processing-like showcase (MIT, in-tree). Exercises Xlib polygons, arcs, lines, strings, pointer input, key input, and timed redraws. |
 | `clipboard` | [`examples/clipboard.c`](../examples/clipboard.c) | Interactive selection conversion probe. Lets the user seed SDL clipboard text, request `TARGETS`, read `UTF8_STRING`, and quit from a small Xlib window. Pass `--once` for a headless `TARGETS` printout. |
 | `x11perf` | [`examples/x11perf/`](../examples/x11perf/README.md) | Upstream X.Org `x11perf` benchmark. Imported from `0c3597b6` with only local build glue (a `config.h` shim and one cosmetic output tweak). Self-contained performance harness for the SDL2-backed paths. |
+| `glxgears` | [`examples/glxgears.c`](../examples/glxgears.c) | GLX-over-EGL/ANGLE showcase: an in-tree port of Mesa's three-gear `glxgears` scene to GLES2, driven through the in-process GLX layer (`glXCreateContext` / `glXMakeCurrent` / `glXSwapBuffers`). Built and run separately from `make examples`: `make glxgears` for an on-screen window, `make glxgears-headless` for a bounded offscreen readback. Requires the ANGLE provider (`make build-angle` on macOS); see the GLX and OpenGL section of the top-level README. |
 
 The short regression loop used during performance work:
 
