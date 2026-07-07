@@ -460,6 +460,14 @@ static int test_keyboard(Display *display)
           "XKeysymToKeycode(XK_t) does not round-trip");
     CHECK(execCode == 0 || execCode != tCode,
           "XKeysymToKeycode(XK_Execute) aliases onto the 't' keycode");
+    /* Forward direction: an ASCII/canonical key must win over a 0x4000xxxx
+     * scancode key that truncates onto the same 8-bit keycode. The raw keycode
+     * 13 that a Return key event carries is shared with SDLK_AC_HOME
+     * (0x4000010d); it must resolve to XK_Return, not XK_Home, so Enter reaches
+     * clients (e.g. opening a file in xwpe) instead of being swallowed.
+     */
+    CHECK(XkbKeycodeToKeysym(display, (KeyCode) 13, 0, 0) == XK_Return,
+          "keycode 13 did not resolve to XK_Return (shadowed by XK_Home)");
     CHECK(XkbKeysymToModifiers(display, XK_A) == ShiftMask,
           "XkbKeysymToModifiers did not report ShiftMask for XK_A");
     CHECK(XkbKeysymToModifiers(display, XK_Control_L) == ControlMask,
