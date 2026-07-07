@@ -146,6 +146,22 @@ static unsigned long oneBitPixelFromRgba(Uint32 pixel)
     return (pixel & 0xFFFFFF00u) != 0 ? 1 : 0;
 }
 
+/* Inverse of xColorToRgba8888: the readback surfaces this file consumes are
+ * RGBA8888 (0xRRGGBBAA), but a 32-bit ZPixmap's words are the compat's
+ * canonical XColor (0xAARRGGBB via RED_SHIFT/etc), the same form XPutImage and
+ * the Xft glyph blend expect. Convert on the way out of XGetImage so a client
+ * that reads a colour back and either inspects it with GET_*_FROM_COLOR or
+ * hands it straight back to XPutImage round-trips the pixel unchanged instead
+ * of shifting every channel by a byte.
+ */
+static inline unsigned long rgba8888ToXColor(Uint32 rgba)
+{
+    return ((unsigned long) ((rgba >> 24) & 0xFF) << RED_SHIFT) |
+           ((unsigned long) ((rgba >> 16) & 0xFF) << GREEN_SHIFT) |
+           ((unsigned long) ((rgba >> 8) & 0xFF) << BLUE_SHIFT) |
+           ((unsigned long) (rgba & 0xFF) << ALPHA_SHIFT);
+}
+
 void invalidatePutImageStagingTexture(SDL_Renderer *renderer)
 {
     SDL_mutex *lock = lockPutImageScratch();
@@ -919,10 +935,12 @@ XImage *XGetImage(Display *display,
             Uint32 *dst =
                 (Uint32 *) (image->data + currY * image->bytes_per_line);
             if (plane_mask == (unsigned long) ~0) {
-                memcpy(dst, src, width * sizeof(Uint32));
+                for (unsigned int currX = 0; currX < width; currX++)
+                    dst[currX] = (Uint32) rgba8888ToXColor(src[currX]);
             } else {
                 for (unsigned int currX = 0; currX < width; currX++)
-                    dst[currX] = (Uint32) (plane_mask & src[currX]);
+                    dst[currX] =
+                        (Uint32) (plane_mask & rgba8888ToXColor(src[currX]));
             }
         }
     } else {

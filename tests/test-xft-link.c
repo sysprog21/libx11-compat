@@ -24,9 +24,10 @@ static int has_neutral_dark_pixel(XImage *image)
     for (int y = 0; y < image->height; y++) {
         for (int x = 0; x < image->width; x++) {
             unsigned long pixel = XGetPixel(image, x, y);
-            unsigned r = (unsigned) ((pixel >> 24) & 0xffu);
-            unsigned g = (unsigned) ((pixel >> 16) & 0xffu);
-            unsigned b = (unsigned) ((pixel >> 8) & 0xffu);
+            /* XGetImage returns the compat's canonical XColor (0xAARRGGBB). */
+            unsigned r = (unsigned) ((pixel >> 16) & 0xffu);
+            unsigned g = (unsigned) ((pixel >> 8) & 0xffu);
+            unsigned b = (unsigned) (pixel & 0xffu);
             unsigned maxC = r > g ? r : g;
             if (b > maxC)
                 maxC = b;
@@ -53,9 +54,10 @@ static int has_dark_pixel_in_rect(XImage *image, int x0, int y0, int w, int h)
     for (int y = y0; y < y0 + h && y < image->height; y++) {
         for (int x = x0; x < x0 + w && x < image->width; x++) {
             unsigned long pixel = XGetPixel(image, x, y);
-            unsigned r = (unsigned) ((pixel >> 24) & 0xffu);
-            unsigned g = (unsigned) ((pixel >> 16) & 0xffu);
-            unsigned b = (unsigned) ((pixel >> 8) & 0xffu);
+            /* XGetImage returns the compat's canonical XColor (0xAARRGGBB). */
+            unsigned r = (unsigned) ((pixel >> 16) & 0xffu);
+            unsigned g = (unsigned) ((pixel >> 8) & 0xffu);
+            unsigned b = (unsigned) (pixel & 0xffu);
             if (r < 0x80 && g < 0x80 && b < 0x80)
                 return 1;
         }
@@ -205,9 +207,9 @@ cleanup:
 }
 
 /* Detect whether the host can render a CJK glyph at all, by asking the
- * charset-aware fallback for a font that covers just 0x4e00. Minimal CI
- * images and the bundled font set carry no CJK font, so the mixed-charset
- * test below only enforces CJK coverage where it is actually achievable.
+ * charset-aware fallback for a font that covers just 0x4e00. Minimal CI images
+ * and the bundled font set carry no CJK font, so the mixed-charset test below
+ * only enforces CJK coverage where it is actually achievable.
  */
 static int host_provides_cjk(Display *display)
 {
@@ -226,8 +228,8 @@ static int host_provides_cjk(Display *display)
         goto cleanup;
     font = XftFontOpenPattern(display, pattern);
     /* XftFontOpenPattern only takes ownership of the pattern on success; on
-     * failure the caller still owns it, so clear the local handle only once
-     * the font opened to avoid leaking the pattern down the cleanup path.
+     * failure the caller still owns it, so clear the local handle only once the
+     * font opened to avoid leaking the pattern down the cleanup path.
      */
     if (font)
         pattern = NULL;
@@ -275,9 +277,9 @@ static int exercise_mixed_charset(Display *display)
         goto cleanup;
     }
     /* When the host actually has a CJK font, the charset-aware fallback must
-     * have selected one that covers the requested Han glyph. Where no CJK
-     * font exists, XftFontOpenPattern still returns a usable base font and
-     * the glyph resolves per draw call, so do not fail the link smoke test.
+     * have selected one that covers the requested Han glyph. Where no CJK font
+     * exists, XftFontOpenPattern still returns a usable base font and the glyph
+     * resolves per draw call, so do not fail the link smoke test.
      */
     if (host_provides_cjk(display) && !XftCharExists(display, font, 0x4e00)) {
         fprintf(stderr,

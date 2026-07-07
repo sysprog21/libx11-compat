@@ -807,20 +807,45 @@ void FcFontSetDestroy(FcFontSet *set)
     free(set);
 }
 
+static double patternDoubleField(FcPattern *pattern, const char *field)
+{
+    double d;
+    int i;
+    if (FcPatternGetDouble(pattern, field, 0, &d) == FcResultMatch)
+        return d;
+    if (FcPatternGetInteger(pattern, field, 0, &i) == FcResultMatch)
+        return (double) i;
+    return -1.0;
+}
+
+/* Resolve a font's pixel size the way fontconfig does. An explicit pixelsize is
+ * already in device pixels and wins outright. A bare size is in points and must
+ * be scaled by the pattern DPI (pixels = points * dpi / 72); passing the point
+ * value straight to SDL_ttf as pixels is what made every Xft client here render
+ * a font a third too small. XftDefaultSubstitute stamps FC_DPI from the screen
+ * resolution, so a client that runs the normal match path lands on the same
+ * pixel size a native X server would. Fall back to 96 DPI, the value the compat
+ * screen advertises, when no DPI is present.
+ */
 static int patternSize(FcPattern *pattern)
 {
-    int i = 0;
-    double d = 0;
-    if (FcPatternGetInteger(pattern, FC_PIXEL_SIZE, 0, &i) == FcResultMatch ||
-        FcPatternGetInteger(pattern, FC_SIZE, 0, &i) == FcResultMatch) {
-        if (i > 0 && i <= 256)
-            return i;
+    double pixel = patternDoubleField(pattern, FC_PIXEL_SIZE);
+    if (pixel > 0 && pixel <= 256) {
+        int px = (int) (pixel + 0.5);
+        return px < 1 ? 1 : px;
     }
-    if (FcPatternGetDouble(pattern, FC_SIZE, 0, &d) == FcResultMatch) {
-        if (d > 0 && d <= 256)
-            return (int) (d + 0.5);
-    }
-    return 12;
+    double point = patternDoubleField(pattern, FC_SIZE);
+    if (!(point > 0 && point <= 256))
+        point = 12;
+    double dpi = patternDoubleField(pattern, FC_DPI);
+    if (!(dpi > 0 && dpi <= 2000))
+        dpi = 96.0;
+    int px = (int) (point * dpi / 72.0 + 0.5);
+    if (px < 1)
+        px = 1;
+    if (px > 256)
+        px = 256;
+    return px;
 }
 
 static const FcCharSet *patternCharSet(FcPattern *pattern)
@@ -965,8 +990,21 @@ Bool XftDefaultHasRender(Display *dpy)
 
 void XftDefaultSubstitute(Display *dpy, int screen, FcPattern *pattern)
 {
-    (void) dpy;
-    (void) screen;
+    /* Real Xft seeds FC_DPI from the screen resolution before matching so the
+     * point-to-pixel conversion in patternSize uses the same DPI a native
+     * server would. Only add it when the client has not pinned one already.
+     */
+    if (dpy && pattern && screen >= 0 && screen < ScreenCount(dpy) &&
+        FcPatternGetDouble(pattern, FC_DPI, 0, NULL) == FcResultNoMatch &&
+        FcPatternGetInteger(pattern, FC_DPI, 0, NULL) == FcResultNoMatch) {
+        int hmm = DisplayHeightMM(dpy, screen);
+        int hpx = DisplayHeight(dpy, screen);
+        if (hmm > 0 && hpx > 0) {
+            double dpi = (double) hpx * 25.4 / (double) hmm;
+            if (dpi > 0 && dpi <= 2000)
+                FcPatternAddDouble(pattern, FC_DPI, dpi);
+        }
+    }
     FcDefaultSubstitute(pattern);
 }
 

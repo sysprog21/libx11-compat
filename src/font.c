@@ -816,59 +816,42 @@ static Bool coreFontMetricsForName(const char *name,
 {
     if (!name)
         return False;
-    /* Xvfb's built-in "fixed" resolves to a 6x13 bitmap font: ascent=11,
-     * descent=2, width=6. Motif uses this alias in fallback fontLists;
-     * reporting smaller TTF metrics lets widgets pack too many text rows
-     * compared with native libX11. Only advertise bitmap-font metrics when the
-     * BDF actually loaded; otherwise the renderer falls back to TTF and the
-     * layout engine would lay out at 11/2 while glyphs draw at TTF size,
+    /* Legacy misc-fixed bitmap fonts. The name spells width x pixel-height, but
+     * the ascent/descent split is font-specific, so keep it in an explicit
+     * table rather than deriving it from the height. Reporting these instead of
+     * the smaller TTF metrics stops Motif/Xt widgets packing too many text rows
+     * compared with native libX11. Only advertise them when the bundled BDF
+     * actually loaded; otherwise the renderer falls back to TTF and the layout
+     * engine would lay out at the bitmap metrics while glyphs draw at TTF size,
      * overlapping adjacent lines.
      */
-    Bool haveBitmap = loadFixedBitmapFont();
-    if (haveBitmap &&
-        (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
-         !strcasecmp(name, "6x13"))) {
-        *ascent = 11;
-        *descent = 2;
-        *width = 6;
-        return True;
-    }
-    if (haveBitmap &&
-        (!strcasecmp(name, "7x13") || !strcasecmp(name, "7x13bold"))) {
-        *ascent = 11;
-        *descent = 2;
-        *width = 7;
-        return True;
-    }
-    if (haveBitmap && !strcasecmp(name, "7x14")) {
-        *ascent = 12;
-        *descent = 2;
-        *width = 7;
-        return True;
-    }
-    if (haveBitmap && !strcasecmp(name, "9x18")) {
-        *ascent = 14;
-        *descent = 4;
-        *width = 9;
-        return True;
-    }
-    if (haveBitmap && !strcasecmp(name, "12x24")) {
-        *ascent = 22;
-        *descent = 2;
-        *width = 12;
-        return True;
-    }
-    /* thentenaar/motif's hellomotifi18n demo asks Mrm for
-     * -*-times-medium-r-normal--14-*-iso8859-1. The native Xvfb differential
-     * baseline does not have that font and Motif falls back to the default core
-     * font. Match that geometry only when the BDF can actually render to it;
-     * without BDF, the answer would lie to the layout engine.
-     */
-    if (haveBitmap && isMotifTimesIso14Fallback(name)) {
-        *ascent = 11;
-        *descent = 2;
-        *width = 6;
-        return True;
+    static const struct {
+        const char *name;
+        short ascent, descent, width;
+    } fixedFonts[] = {
+        {"6x13", 11, 2, 6}, {"7x13", 11, 2, 7}, {"7x13bold", 11, 2, 7},
+        {"8x13", 11, 2, 8}, {"9x13", 11, 2, 9}, {"7x14", 12, 2, 7},
+        {"9x15", 12, 3, 9}, {"9x18", 14, 4, 9}, {"12x24", 22, 2, 12},
+    };
+    if (loadFixedBitmapFont()) {
+        /* "fixed"/"cursor" and thentenaar/motif's hellomotifi18n Mrm request
+         * for -*-times-medium-r-normal--14-*-iso8859-1 both fall back to the
+         * 6x13 geometry on the native Xvfb baseline, so resolve them to that
+         * entry.
+         */
+        const char *lookup = name;
+        if (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
+            isMotifTimesIso14Fallback(name))
+            lookup = "6x13";
+        for (size_t i = 0; i < sizeof(fixedFonts) / sizeof(fixedFonts[0]);
+             i++) {
+            if (!strcasecmp(lookup, fixedFonts[i].name)) {
+                *ascent = fixedFonts[i].ascent;
+                *descent = fixedFonts[i].descent;
+                *width = fixedFonts[i].width;
+                return True;
+            }
+        }
     }
     /* XLFD family names are case-insensitive per the X11 spec, so "-Helvetica-"
      * / "-HELVETICA-" must take the same override path as the lowercase form.

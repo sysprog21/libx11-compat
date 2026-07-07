@@ -65,7 +65,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 	$(Q)touch $@
 
-.PHONY: xwpe check-smoke-xwpe xwpe-clean
+.PHONY: xwpe check-smoke-xwpe check-differential-xwpe xwpe-clean
 ## Build xwpe against the libx11-compat + Xft compatibility stack
 xwpe: $(XWPE_BIN)
 
@@ -208,6 +208,51 @@ $(UI_SMOKE_OUT_ROOT)/xwpe-keyboard-edit/.stamp: FORCE $(XWPE_BIN)
 	    --offscreen \
 	    $(xwpe_ui_env)
 	$(Q)touch $@
+
+XWPE_DIFF_REMOTE ?= node11
+XWPE_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-xwpe-differential
+XWPE_DIFF_DISPLAY ?= 127
+XWPE_DIFF_JOBS ?= 1
+XWPE_DIFF_INSTALL_DEPS ?= 0
+XWPE_DIFF_LOCAL ?= 0
+# Both sides drive the same patched Xlib chrome render path, but the native
+# Xft text path and the compat SDL_ttf path pick slightly different line
+# heights, so the File-Manager dialog centers a bit differently and every
+# text row carries an antialiasing fringe. That puts the baseline mean
+# error near 0.14 and the changed-pixel ratio near 0.24 (measured on
+# node11); the thresholds leave headroom for that structural gap plus
+# runner-to-runner font variance while still failing on a gross regression
+# (a blank pane, an unpainted background, or inverted colors all push the
+# error well past these).
+XWPE_DIFF_MAE_THRESHOLD ?= 0.24
+XWPE_DIFF_CHANGED_THRESHOLD ?= 0.45
+XWPE_DIFF_GEOMETRY ?= 1280x1024x24
+XWPE_DIFF_TOP ?= 12
+XWPE_DIFF_COMPARE_LOCATION ?= $(if $(filter 1 yes true,$(XWPE_DIFF_LOCAL)),local,remote)
+XWPE_DIFF_OUT_ROOT ?= $(OUT)/xwpe-differential
+XWPE_DIFF_SCREENSHOT_REGION ?= 0,0,660,780
+
+xwpe_diff_env = \
+    XWPE_DIFF_REMOTE='$(XWPE_DIFF_REMOTE)' \
+    XWPE_DIFF_REMOTE_ROOT='$(XWPE_DIFF_REMOTE_ROOT)' \
+    XWPE_DIFF_DISPLAY='$(XWPE_DIFF_DISPLAY)' \
+    XWPE_DIFF_JOBS='$(XWPE_DIFF_JOBS)' \
+    XWPE_DIFF_MAE_THRESHOLD='$(XWPE_DIFF_MAE_THRESHOLD)' \
+    XWPE_DIFF_CHANGED_THRESHOLD='$(XWPE_DIFF_CHANGED_THRESHOLD)' \
+    XWPE_DIFF_GEOMETRY='$(XWPE_DIFF_GEOMETRY)' \
+    XWPE_DIFF_TOP='$(XWPE_DIFF_TOP)' \
+    XWPE_DIFF_COMPARE_LOCATION='$(XWPE_DIFF_COMPARE_LOCATION)' \
+    XWPE_DIFF_OUT_ROOT='$(abspath $(XWPE_DIFF_OUT_ROOT))' \
+    XWPE_DIFF_SCREENSHOT_REGION='$(XWPE_DIFF_SCREENSHOT_REGION)'
+
+## Build xwpe against system libX11 and libx11-compat, capture the
+## File-Manager startup on each, and diff. XWPE_DIFF_LOCAL=1 runs the
+## build / capture / compare pipeline on the local host (the CI path);
+## otherwise the script SSHes to XWPE_DIFF_REMOTE.
+check-differential-xwpe:
+	$(Q)$(xwpe_diff_env) $(PYTHON) scripts/run-xwpe-differential-tests.py \
+	    $(if $(filter 1 yes true,$(XWPE_DIFF_INSTALL_DEPS)),--install-deps) \
+	    $(if $(filter 1 yes true,$(XWPE_DIFF_LOCAL)),--local)
 
 xwpe-clean:
 	@echo "  CLEAN   xwpe"
