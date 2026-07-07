@@ -369,6 +369,20 @@ KeySym XkbKeycodeToKeysym(Display *display,
         return XK_0 + (keycode - SDLK_0);
     if (keycode >= SDLK_a && keycode <= SDLK_z)
         return XK_a + (keycode - SDLK_a);
+    /* Several SDL keycodes can share a low byte: an ASCII key (< 0x80, whose
+     * keycode is its own low byte) and a 0x4000xxxx scancode key that truncates
+     * onto it (e.g. SDLK_RETURN 0x0d and SDLK_AC_HOME 0x4000010d both hit
+     * keycode 13). Prefer the ASCII key so its canonical keysym wins; otherwise
+     * a plain-reverse scan would return the scancode key's keysym (XK_Home for
+     * Return) and swallow it. This mirrors the round-trip guard
+     * XKeysymToKeycode uses in the reverse direction. Fall back to the reverse
+     * scan for keycodes that only a scancode key provides.
+     */
+    for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
+        if (SDLKeycodeToKeySym[i].keycode < 0x80 &&
+            (SDLKeycodeToKeySym[i].keycode & 0xFF) == keycode)
+            return SDLKeycodeToKeySym[i].keysym;
+    }
     for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
         if ((SDLKeycodeToKeySym[i].keycode & 0xFF) == keycode)
             return SDLKeycodeToKeySym[i].keysym;
