@@ -180,6 +180,47 @@ static int failures = 0;
         }                                                                  \
     } while (0)
 
+/* Fetch the next queued event of a given type, skipping unrelated events that a
+ * process-global SDL event queue can leave ahead of a freshly pushed one (stale
+ * StructureNotify, focus changes, in-process WM housekeeping). A bare
+ * XNextEvent returns whichever event is at the head of the queue, so a
+ * push-then-assert sequence is flaky whenever an earlier async event has not
+ * been drained. XCheckTypedEvent scans the whole queue for the wanted type and
+ * puts the rest back; the bounded pump covers events SDL has not surfaced yet,
+ * and the trailing check picks up an event produced by the final pump. Matching
+ * by type only (not window) mirrors the bare XNextEvent this replaces, so it
+ * cannot regress when the host reports keyboard focus on a different window.
+ *
+ * Returns True and fills event on match, False if none arrived.
+ */
+static Bool next_typed_event(Display *display, int type, XEvent *event)
+{
+    for (int spins = 0; spins < 500; spins++) {
+        if (XCheckTypedEvent(display, type, event))
+            return True;
+        SDL_PumpEvents();
+        SDL_Delay(1);
+    }
+    return XCheckTypedEvent(display, type, event);
+}
+
+/* Wait for an SDL window flag to reach the wanted state. SDL applies window
+ * state changes such as fullscreen asynchronously on real video drivers, so a
+ * flag read immediately after the request can miss it. Poll briefly with an
+ * event pump; a state that genuinely never lands still times out and fails.
+ * Returns True once the flag matches wantSet, False on timeout.
+ */
+static Bool wait_window_flag(SDL_Window *w, Uint32 mask, Bool wantSet)
+{
+    for (int spins = 0; spins < 500; spins++) {
+        if (((SDL_GetWindowFlags(w) & mask) != 0) == (wantSet != False))
+            return True;
+        SDL_PumpEvents();
+        SDL_Delay(1);
+    }
+    return ((SDL_GetWindowFlags(w) & mask) != 0) == (wantSet != False);
+}
+
 static XEvent make_event(int type, Window window)
 {
     XEvent event;
@@ -3547,6 +3588,13 @@ static int test_events(Display *display)
           "restack lower child destroy failed");
     while (XCheckTypedEvent(display, Expose, &out)) {
     }
+    /* Drain any other events the window setup left queued (async map/configure
+     * notifications from the shared SDL queue) so the ordering assertion below
+     * sees exactly the send-event followed by the generated Expose, not a stale
+     * event that happens to sit at the head.
+     */
+    while (XPending(display) > 0)
+        XNextEvent(display, &out);
 
     /* XSendEvent's contract is sizeof(XEvent), so the buffer must be full-union
      * sized; passing a bare XClientMessageEvent triggers a
@@ -5536,15 +5584,13 @@ static int test_ewmh_wm_state_initial_property(Display *display)
     CHECK(XMapWindow(display, window), "ewmh-initial: window map failed");
     SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
     CHECK(sdlWindow != NULL, "ewmh-initial: window has no SDL backing");
-    Uint32 flags = SDL_GetWindowFlags(sdlWindow);
-    CHECK((flags & SDL_WINDOW_FULLSCREEN) != 0,
+    CHECK(wait_window_flag(sdlWindow, SDL_WINDOW_FULLSCREEN, True),
           "ewmh-initial: initial FULLSCREEN was not applied on map");
 
     CHECK(XChangeProperty(display, window, netWmState, XA_ATOM, 32,
                           PropModeReplace, NULL, 0),
           "ewmh-initial: empty _NET_WM_STATE rewrite failed");
-    flags = SDL_GetWindowFlags(sdlWindow);
-    CHECK((flags & SDL_WINDOW_FULLSCREEN) == 0,
+    CHECK(wait_window_flag(sdlWindow, SDL_WINDOW_FULLSCREEN, False),
           "ewmh-initial: direct _NET_WM_STATE rewrite did not clear SDL state");
 
     XDestroyWindow(display, window);
@@ -5695,11 +5741,30 @@ static int test_ewmh_close_window_clientmessage(Display *display)
     XC_SET_WINDOW_SUBEVENT(&closeEvent, SDL_WINDOWEVENT_CLOSE);
     CHECK(SDL_PushEvent(&closeEvent) == 1,
           "ewmh-close: SDL close event was filtered before conversion");
-    XNextEvent(display, &delivered);
-    CHECK(delivered.type == ClientMessage &&
-              delivered.xclient.window == window &&
-              delivered.xclient.message_type == wmProtocols &&
-              (Atom) delivered.xclient.data.l[0] == wmDeleteWindow,
+    /* The window selects StructureNotifyMask, so map/configure notifications
+     * can sit in the queue ahead of the WM_DELETE_WINDOW ClientMessage the SDL
+     * close generates. Drain ClientMessages for this window and keep the one
+     * that matches WM_PROTOCOLS / WM_DELETE_WINDOW, so a stale same-window
+     * ClientMessage cannot make the assertion stop on the wrong event. Pump
+     * before each drain so an event surfaced by the final pump is still seen.
+     */
+    sawWmDelete = False;
+    for (int spins = 0; spins <= 500 && !sawWmDelete; spins++) {
+        if (spins > 0) {
+            SDL_PumpEvents();
+            SDL_Delay(1);
+        }
+        while (XCheckTypedWindowEvent(display, window, ClientMessage,
+                                      &delivered)) {
+            if (delivered.xclient.window == window &&
+                delivered.xclient.message_type == wmProtocols &&
+                (Atom) delivered.xclient.data.l[0] == wmDeleteWindow) {
+                sawWmDelete = True;
+                break;
+            }
+        }
+    }
+    CHECK(sawWmDelete,
           "ewmh-close: XNextEvent did not deliver SDL close WM_DELETE_WINDOW");
     CHECK(
         GET_WINDOW_STRUCT(window)->mapState == Mapped,
@@ -8344,9 +8409,9 @@ static int test_input_methods(Display *display)
         set_text_input_event(&textEvent, "z");
         SDL_PushEvent(&textEvent);
         XEvent out;
-        XNextEvent(display, &out);
-        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
-              "SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
+        CHECK(
+            next_typed_event(display, KeyPress, &out) && out.xkey.keycode == 0,
+            "SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
         if (i == 0) {
             XImage *cleared =
                 XGetImage(display, client, area.x, area.y, area.width,
@@ -8404,9 +8469,9 @@ static int test_input_methods(Display *display)
         set_text_input_event(&textEvent, "ab");
         SDL_PushEvent(&textEvent);
         XEvent out;
-        XNextEvent(display, &out);
-        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
-              "two-char SDL_TEXTINPUT did not produce IM KeyPress");
+        CHECK(
+            next_typed_event(display, KeyPress, &out) && out.xkey.keycode == 0,
+            "two-char SDL_TEXTINPUT did not produce IM KeyPress");
         char small[1];
         KeySym ks = NoSymbol;
         int n = XLookupString(&out.xkey, small, 1, &ks, NULL);
@@ -8422,9 +8487,9 @@ static int test_input_methods(Display *display)
         set_text_input_event(&textEvent, "\xe4\xb8\xad");
         SDL_PushEvent(&textEvent);
         XEvent out;
-        XNextEvent(display, &out);
-        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
-              "wide-overflow SDL_TEXTINPUT did not produce IM KeyPress");
+        CHECK(
+            next_typed_event(display, KeyPress, &out) && out.xkey.keycode == 0,
+            "wide-overflow SDL_TEXTINPUT did not produce IM KeyPress");
         wchar_t small[1] = {0};
         Status overflowStatus = XLookupNone;
         KeySym overflowKeysym = NoSymbol;
@@ -8444,9 +8509,9 @@ static int test_input_methods(Display *display)
         set_text_input_event(&textEvent, "\xe4\xb8\xad");
         SDL_PushEvent(&textEvent);
         XEvent out;
-        XNextEvent(display, &out);
-        CHECK(out.type == KeyPress && out.xkey.keycode == 0,
-              "CJK SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
+        CHECK(
+            next_typed_event(display, KeyPress, &out) && out.xkey.keycode == 0,
+            "CJK SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
         Status lookupStatus = XLookupNone;
         KeySym keysym = NoSymbol;
         if (i == 0) {
