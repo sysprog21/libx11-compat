@@ -43,6 +43,13 @@ Bool moveChildToIndexAndExpose(Display *display,
 void removeChildFromParent(Window child);
 Bool windowsOverlap(Window a, Window b);
 void resizeWindowTexture(Window window);
+void postResizeConfigureForMappedChildren(Display *display,
+                                          Window window,
+                                          int oldWidth,
+                                          int oldHeight,
+                                          int newWidth,
+                                          int newHeight);
+void unmapWindowInternal(Display *display, Window window, Bool fromConfigure);
 void deleteWindowMapping(Window window);
 void registerWindowMapping(Window window, Uint32 sdlWindowId);
 void topLevelWindowHostPosition(Window window,

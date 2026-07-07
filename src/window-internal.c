@@ -314,8 +314,7 @@ void translateWindowPoint(Window sourceWindow,
  * its cascade button, which lies inside its owning window, so matching by
  * containment applies that specific window's offset, and the nearest window is
  * used for the rare menu whose origin lands just outside every rectangle.
- */
-/* Squared distance from a point to a rectangle, 0 when inside. int64 throughout
+ * Squared distance from a point to a rectangle, 0 when inside. int64 throughout
  * to match this file's overflow discipline for hostile geometry.
  */
 static int64_t rectDistanceSq(int px, int py, int rx, int ry, int rw, int rh)
@@ -515,6 +514,49 @@ static void applyChildResizeGravity(Window child,
 
     childStruct->x += *dx;
     childStruct->y += *dy;
+}
+
+/* When a parent is resized, children are repositioned according to their
+ * win_gravity. The X protocol reports these implicit moves with GravityNotify
+ * only: the child's geometry relative to its parent changed, but it was not
+ * reconfigured, so no ConfigureNotify is generated. Descendants deeper than the
+ * moved child keep their parent-relative geometry and receive nothing. Contents
+ * move with the window, so no Expose is owed here either; callers that wiped
+ * the subtree first are responsible for re-exposing it.
+ *
+ * UnmapGravity children (win_gravity value 0) are unmapped on parent resize;
+ * unmapWindowInternal drives the normal UnmapNotify (from_configure=True) and
+ * parent-exposure flow without bumping the request counter, and the client is
+ * expected to remap.
+ */
+void postResizeConfigureForMappedChildren(Display *display,
+                                          Window window,
+                                          int oldWidth,
+                                          int oldHeight,
+                                          int newWidth,
+                                          int newHeight)
+{
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    Window *children = GET_CHILDREN(window);
+    for (size_t i = 0; i < windowStruct->children.length; i++) {
+        Window child = children[i];
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+        if (childStruct->mapState != Mapped)
+            continue;
+
+        if (childStruct->winGravity == UnmapGravity) {
+            unmapWindowInternal(display, child, True);
+            continue;
+        }
+
+        int dx = 0, dy = 0;
+        applyChildResizeGravity(child, oldWidth, oldHeight, newWidth, newHeight,
+                                &dx, &dy);
+        if (dx == 0 && dy == 0)
+            continue;
+
+        postEvent(display, child, GravityNotify);
+    }
 }
 
 Window getContainingWindow(Window window, int x, int y)
@@ -1535,6 +1577,8 @@ Bool configureWindow(Display *display,
     int oldX, oldY, oldWidth, oldHeight;
     GET_WINDOW_POS(window, oldX, oldY);
     GET_WINDOW_DIMS(window, oldWidth, oldHeight);
+    Bool resizedWindow = False;
+    int resizedWidth = oldWidth, resizedHeight = oldHeight;
     if (!restackWindow(display, window, value_mask, values))
         return False;
     if (HAS_VALUE(value_mask, CWStackMode))
@@ -1599,20 +1643,9 @@ Bool configureWindow(Display *display,
             if (windowStruct->sdlTexture)
                 resizeWindowTexture(window);
             hasChanged = True;
-            Window *children = GET_CHILDREN(window);
-            for (size_t i = 0; i < windowStruct->children.length; i++) {
-                Window child = children[i];
-                WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
-                if (childStruct->mapState == Mapped &&
-                    childStruct->winGravity != ForgetGravity) {
-                    int dx, dy;
-                    applyChildResizeGravity(child, oldWidth, oldHeight, width,
-                                            height, &dx, &dy);
-                    if (dx == 0 && dy == 0)
-                        continue;
-                    postEvent(display, child, GravityNotify);
-                }
-            }
+            resizedWindow = True;
+            resizedWidth = width;
+            resizedHeight = height;
         }
     }
 
@@ -1628,6 +1661,9 @@ Bool configureWindow(Display *display,
     invalidateVisibleRegionForTopLevel(window);
     if (!postEvent(display, window, ConfigureNotify))
         return False;
+    if (resizedWindow)
+        postResizeConfigureForMappedChildren(
+            display, window, oldWidth, oldHeight, resizedWidth, resizedHeight);
 
     timelineTapConfigure(window, windowStruct->x, windowStruct->y,
                          windowStruct->w, windowStruct->h);

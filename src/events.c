@@ -2147,6 +2147,8 @@ int convertEvent(Display *display,
                 xEvent->xconfigure.width = sdlEvent->window.data1;
                 xEvent->xconfigure.height = sdlEvent->window.data2;
                 if (eventWindow != None) {
+                    int oldWidth = 0, oldHeight = 0;
+                    GET_WINDOW_DIMS(eventWindow, oldWidth, oldHeight);
                     GET_WINDOW_STRUCT(eventWindow)->w =
                         (unsigned int) sdlEvent->window.data1;
                     GET_WINDOW_STRUCT(eventWindow)->h =
@@ -2158,6 +2160,12 @@ int convertEvent(Display *display,
                      */
                     invalidateVisibleRegionForTopLevel(eventWindow);
                     clearWindowTreeWithoutExpose(display, eventWindow);
+                    postResizeConfigureForMappedChildren(
+                        display, eventWindow, oldWidth, oldHeight,
+                        sdlEvent->window.data1, sdlEvent->window.data2);
+                    /* The clear above wiped the whole subtree to background;
+                     * re-expose all of it so every mapped descendant repaints.
+                     */
                     postFullWindowExpose(display, eventWindow);
                 }
             } else {

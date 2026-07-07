@@ -585,18 +585,18 @@ int XMapWindow(Display *display, Window window)
     return 1;
 }
 
-int XUnmapWindow(Display *display, Window window)
+/* Core unmap bookkeeping shared by XUnmapWindow and the
+ * win_gravity=UnmapGravity path. fromConfigure stamps UnmapNotify: true when
+ * the unmap is a side effect of a parent resize (UnmapGravity), false for a
+ * direct client unmap. This does not touch the request counter, so gravity
+ * unmaps generated inside a configure do not masquerade as a separate client
+ * X_UnmapWindow request.
+ */
+void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
 {
-    // https://tronche.com/gui/x/xlib/window/XUnmapWindow.html
-    SET_X_SERVER_REQUEST(display, X_UnmapWindow);
-    TYPE_CHECK(window, WINDOW, display, 0);
-    if (window == SCREEN_WINDOW) {
-        handleError(0, display, window, 0, BadWindow, 0);
-        return 0;
-    }
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (windowStruct->mapState == UnMapped)
-        return 1;
+        return;
 
     windowStruct->mapState = UnMapped;
     flushTextStampsForWindow(window);
@@ -621,11 +621,23 @@ int XUnmapWindow(Display *display, Window window)
         }
         unrealizeTopLevelWindow(window);
     } else if (GET_WINDOW_STRUCT(GET_PARENT(window))->mapState != UnMapped) {
-        postEvent(display, window, UnmapNotify, False);
+        postEvent(display, window, UnmapNotify, fromConfigure);
         SDL_Rect exposeRect = {windowStruct->x, windowStruct->y,
                                windowStruct->w, windowStruct->h};
         postExposeEvent(display, GET_PARENT(window), &exposeRect, 1);
     }
+}
+
+int XUnmapWindow(Display *display, Window window)
+{
+    // https://tronche.com/gui/x/xlib/window/XUnmapWindow.html
+    SET_X_SERVER_REQUEST(display, X_UnmapWindow);
+    TYPE_CHECK(window, WINDOW, display, 0);
+    if (window == SCREEN_WINDOW) {
+        handleError(0, display, window, 0, BadWindow, 0);
+        return 0;
+    }
+    unmapWindowInternal(display, window, False);
     return 1;
 }
 
