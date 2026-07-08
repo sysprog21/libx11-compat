@@ -123,6 +123,29 @@ enum {
  */
 void applyMotifWmHintsFromProperty(Window window);
 
+/* Returns True when the window has a stored _MOTIF_WM_HINTS property that
+ * declares MWM_HINTS_FUNCTIONS. When set, the client owns the resizable
+ * decision through the Motif path, so the WM_NORMAL_HINTS default below must
+ * defer to it.
+ */
+Bool topLevelHasMotifFunctionHints(Window window);
+
+/* Decode the stored WM_NORMAL_HINTS (XSizeHints) and set the SDL window's
+ * resizable flag the way a real window manager would: resizable unless the
+ * client pinned a fixed size (both PMinSize and PMaxSize present with
+ * min == max). No-op until the top-level is realized and mapped, when no
+ * WM_NORMAL_HINTS is stored, or when _MOTIF_WM_HINTS already governs functions.
+ */
+void applyNormalHintsResizableFromProperty(Window window);
+
+/* Pure decoder behind applyNormalHintsResizableFromProperty: returns whether
+ * the stored WM_NORMAL_HINTS mark the top-level as resizable (resizable unless
+ * a fixed size is pinned), deferring to _MOTIF_WM_HINTS when that governs
+ * functions. Does not touch SDL, so it is observable independent of the video
+ * driver. Returns False when no usable WM_NORMAL_HINTS is stored.
+ */
+Bool topLevelResizableFromNormalHints(Window window);
+
 /* Returns True when the window's stored hints declare it modal, either via
  * _NET_WM_STATE_MODAL or MWM_INPUT_FULL_APPLICATION_MODAL.
  */

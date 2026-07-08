@@ -76,6 +76,21 @@ static Bool netWmStateHasAtom(WindowStruct *windowStruct, Atom stateAtom)
     return False;
 }
 
+Bool topLevelHasMotifFunctionHints(Window window)
+{
+    if (!IS_TYPE(window, WINDOW))
+        return False;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    WindowProperty *prop =
+        findProperty(&windowStruct->properties, _MOTIF_WM_HINTS, NULL);
+    if (!prop || prop->dataFormat != 32 || prop->dataLength < 2)
+        return False;
+
+    long *values = (long *) prop->data;
+    return (values[0] & MWM_HINTS_FUNCTIONS) != 0;
+}
+
 void applyMotifWmHintsFromProperty(Window window)
 {
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
