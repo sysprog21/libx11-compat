@@ -6245,6 +6245,27 @@ static int test_normal_hints_resizable(Display *display)
         CHECK((flags & SDL_WINDOW_RESIZABLE) == 0,
               "normal-hints: fixed size hints did not stay non-resizable");
     }
+
+    /* Transition fixed -> ranged: dropping PMaxSize must re-enable resize and
+     * clear the stale SDL maximum, otherwise the window stays effectively fixed
+     * even once resize is on. The decoder decision is the driver-independent
+     * observable; the max-clearing is applied in XSetWMNormalHints.
+     */
+    XSizeHints rangedHints;
+    memset(&rangedHints, 0, sizeof(rangedHints));
+    rangedHints.flags = PMinSize | PResizeInc;
+    rangedHints.min_width = 100;
+    rangedHints.min_height = 60;
+    rangedHints.width_inc = 8;
+    rangedHints.height_inc = 8;
+    XSetWMNormalHints(display, fixed, &rangedHints);
+    CHECK(topLevelResizableFromNormalHints(fixed),
+          "normal-hints: fixed->ranged not decoded as resizable");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(fixedSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) != 0,
+              "normal-hints: fixed->ranged did not re-enable resize");
+    }
     XDestroyWindow(display, fixed);
 
     /* Motif precedence: a client that cleared MWM_FUNC_RESIZE owns the

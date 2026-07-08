@@ -679,13 +679,22 @@ void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
         return;
 
     SDL_Window *sdlWindow = GET_WINDOW_STRUCT(w)->sdlWindow;
+    /* Clear stale constraints when a flag disappears: passing 0 tells SDL there
+     * is no bound. Otherwise a window that switches from fixed-size hints
+     * (PMaxSize with max == min) to ranged hints (no PMaxSize) would keep the
+     * old maximum and stay effectively fixed even after resize is enabled.
+     */
     if (hints->flags & PMinSize) {
         SDL_SetWindowMinimumSize(sdlWindow, hints->min_width,
                                  hints->min_height);
+    } else {
+        SDL_SetWindowMinimumSize(sdlWindow, 0, 0);
     }
     if (hints->flags & PMaxSize) {
         SDL_SetWindowMaximumSize(sdlWindow, hints->max_width,
                                  hints->max_height);
+    } else {
+        SDL_SetWindowMaximumSize(sdlWindow, 0, 0);
     }
     applyNormalHintsResizableFromProperty(w);
 }
