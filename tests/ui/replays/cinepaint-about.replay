@@ -1,0 +1,4 @@
+delay 15000
+state-snapshot about-open
+assert-state about-open tests/ui/assertions/cinepaint-about-open.json
+assert-exit running

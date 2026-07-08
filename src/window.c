@@ -43,6 +43,21 @@ static Bool moveChildToBottom(Display *display, Window window)
     return moveChildToIndexAndExpose(display, window, 0);
 }
 
+static void offerReplayTargetForWindow(Window window)
+{
+    for (Window current = window; current != None;
+         current = GET_PARENT(current)) {
+        WindowStruct *ws = GET_WINDOW_STRUCT(current);
+        if (!ws || !ws->sdlWindow)
+            continue;
+        int wid = 0, hgt = 0;
+        SDL_GetWindowSize(ws->sdlWindow, &wid, &hgt);
+        replayTargetOfferWindow(SDL_GetWindowID(ws->sdlWindow), ws->x, ws->y,
+                                wid, hgt);
+        return;
+    }
+}
+
 static void postVisibilityForWindowAndSiblings(Display *display, Window window)
 {
     Window parent = GET_PARENT(window);
@@ -508,12 +523,7 @@ int XMapWindow(Display *display, Window window)
          * thread, so XTest's off-thread injection has a stable target without
          * scanning the live window tree. Then arm the replay engine.
          */
-        if (windowStruct->sdlWindow) {
-            int wid = 0, hgt = 0;
-            SDL_GetWindowSize(windowStruct->sdlWindow, &wid, &hgt);
-            replayTargetOfferWindow(SDL_GetWindowID(windowStruct->sdlWindow),
-                                    windowStruct->x, windowStruct->y, wid, hgt);
-        }
+        offerReplayTargetForWindow(window);
         replayStartIfRequested(display);
     } else { /* Mapping a window that is not a top level window  */
         Window parent = GET_PARENT(window);
@@ -528,6 +538,7 @@ int XMapWindow(Display *display, Window window)
             if (!windowStruct->inputOnly)
                 XClearArea(display, window, 0, 0, 0, 0, False);
             windowStruct->contentsMergedToParent = False;
+            replayStartIfRequested(display);
         } else { /* Parent not mapped */
             GET_WINDOW_STRUCT(window)->mapState = MapRequested;
             return 1;
@@ -625,6 +636,9 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
         postEvent(display, window, UnmapNotify, fromConfigure);
         SDL_Rect exposeRect = {windowStruct->x, windowStruct->y,
                                windowStruct->w, windowStruct->h};
+        XClearArea(display, GET_PARENT(window), exposeRect.x, exposeRect.y,
+                   (unsigned int) exposeRect.w, (unsigned int) exposeRect.h,
+                   False);
         postExposeEvent(display, GET_PARENT(window), &exposeRect, 1);
     }
 }

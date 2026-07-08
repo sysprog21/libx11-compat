@@ -1,0 +1,11 @@
+--- a/hollywood/app/progress_bar.h
++++ b/hollywood/app/progress_bar.h
+@@ -7,7 +7,7 @@
+ #include <gtk/gtkwidget.h>
+ #include <gdk/gdkcolor.h>
+ #include <gtk/gtkprogressbar.h>
+-#include "dll_api.h"
++#include "../dll_api.h"
+ 
+ void progress_start ();
+ void progress_update (const char* msg,float);

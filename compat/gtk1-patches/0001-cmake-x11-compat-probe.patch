@@ -1,0 +1,1262 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 27bb9a1..4ca46c4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -34,20 +34,25 @@ if(WIN32)
+ 	add_definitions(/we4133 /we4013 /we4022 /we4047 /we4113)
+ 	add_definitions(-DDLL_EXPORTS)
+ endif(WIN32)
+-if(NOT WIN32 AND NOT APPLE)
++option(GTK1_FORCE_X11_BACKEND "Build the X11 GDK backend on Apple too" OFF)
++if(NOT WIN32 AND (NOT APPLE OR GTK1_FORCE_X11_BACKEND))
+ 	message("Building for Linux...")
+ 	add_definitions(-DGDK_WINDOWING_X11 -DG_OS_UNIX -D_UNIX )
+ 	include_directories(x11)
+ 	set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+-	set(OS unix)
++	set(OS x11)
+-	link_libraries(rt pthread X11 Xext Xi m) # Xmu ?
+-endif(NOT WIN32 AND NOT APPLE)
+-if(APPLE)
++	if(APPLE)
++		link_libraries(pthread X11 Xext iconv m) # Xmu ?
++	else(APPLE)
++		link_libraries(rt pthread X11 Xext m) # Xmu ?
++	endif(APPLE)
++endif(NOT WIN32 AND (NOT APPLE OR GTK1_FORCE_X11_BACKEND))
++if(APPLE AND NOT GTK1_FORCE_X11_BACKEND)
+ 	message("Building for MacOS...")
+ 	add_definitions(-DG_OS_UNIX -DMAC_CARBON_EVENTS -D_APPLE)
+ 	include_directories(macos)
+ 	set(OS macos)
+-endif(APPLE)
++endif(APPLE AND NOT GTK1_FORCE_X11_BACKEND)
+ 
+ add_definitions(-DLITTLE_ENDIAN)
+ if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+diff --git a/glib/CMakeLists.txt b/glib/CMakeLists.txt
+index 50a55e4..3bf36eb 100644
+--- a/glib/CMakeLists.txt
++++ b/glib/CMakeLists.txt
+@@ -34,6 +34,13 @@ add_library(${PROJECT_NAME} OBJECT ${SOURCES})
+ if(WIN32)
+ 	link_libraries(Ws2_32)
+ else(WIN32)
++if(APPLE)
++	link_libraries(pthread)
++else(APPLE)
+ 	link_libraries(rt pthread)
++endif(APPLE)
+ endif(WIN32)
+-add_subdirectory(glib_test)
++option(GTK1_BUILD_GLIB_TESTS "Build bundled GLib tests" OFF)
++if(GTK1_BUILD_GLIB_TESTS)
++	add_subdirectory(glib_test)
++endif()
+diff --git a/glib/glib-config.h b/glib/glib-config.h
+index 8112958..9a24733 100644
+--- a/glib/glib-config.h
++++ b/glib/glib-config.h
+@@ -19,7 +19,7 @@
+ 
+ /* glib-config.h defines G_BYTE_ORDER which expands to one of
+ * the below macros.
+-* /
++*/
+ #define G_LITTLE_ENDIAN 1234
+ #define G_BIG_ENDIAN    4321
+ #define G_PDP_ENDIAN    3412		/* unused, need specific PDP check */	
+diff --git a/gdk/CMakeLists.txt b/gdk/CMakeLists.txt
+index b7de019..d31cc55 100644
+--- a/gdk/CMakeLists.txt
++++ b/gdk/CMakeLists.txt
+@@ -8,9 +8,13 @@ message("Configuring ${PROJECT_NAME}...")
+ enable_testing()
+ file(STRINGS sources.cmake SOURCES)
+ file(STRINGS ${OS}/sources.cmake OS_SOURCES)
++set(PREFIXED_OS_SOURCES)
++foreach(src ${OS_SOURCES})
++	list(APPEND PREFIXED_OS_SOURCES ${OS}/${src})
++endforeach()
+ 
+ add_definitions(-DDLL_EXPORT)
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/${OS})
+ #add_subdirectory(${OS})
+-add_library(${PROJECT_NAME} OBJECT ${SOURCES} ${OS_SOURCES})
++add_library(${PROJECT_NAME} OBJECT ${SOURCES} ${PREFIXED_OS_SOURCES})
+diff --git a/glib/gmain.h b/glib/gmain.h
+index 2df2e35..c4659d4 100644
+--- a/glib/gmain.h
++++ b/glib/gmain.h
+@@ -26,6 +26,10 @@
+ #include <glib/gmacros.h>
+ #include <glib/ghook.h>
+ 
++#ifndef _WIN32
++typedef int SOCKET;
++#endif
++
+ #define GTK_OLD_VERSION
+ 
+ G_BEGIN_DECLS
+diff --git a/gdk/x11/gdkprivate.h b/gdk/x11/gdkprivate.h
+index 0b6f713..cb84855 100644
+--- a/gdk/x11/gdkprivate.h
++++ b/gdk/x11/gdkprivate.h
+@@ -30,6 +30,8 @@
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
+-#include <linux/limits.h>
++#include <limits.h>
++#include <glib/garray.h>
++#include <glib/gslist.h>
+ #include "gdktypes.h"
+ #include "gdkdrawable.h"
+ #include "gdkimage.h"
+@@ -54,6 +56,6 @@ extern "C" {
+ #endif /* __cplusplus */
+ 
+-#if 0
++#if 0
+ typedef struct _GdkDrawablePrivate     GdkDrawablePrivate;
+ typedef struct _GdkWindowPrivate       GdkWindowPrivate;
+ typedef struct _GdkWindowPrivate       GdkPixmapPrivate;
+@@ -123,6 +125,7 @@ typedef struct GdkWindowPrivate
+   GdkColormap *colormap;
+   GList *children;
+ } GdkWindowPrivate;
++typedef GdkWindowPrivate GdkPixmapPrivate;
+ 
+ typedef struct GdkImagePrivate
+ {
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4ca46c4..b957715 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -59,4 +64,5 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/glib)
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/glib/glib)
++include_directories(${CMAKE_CURRENT_SOURCE_DIR}/gdk)
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/glib/glib/${OS})
+ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/gdk/${OS})
+diff --git a/glib/gasyncqueue.c b/glib/gasyncqueue.c
+index 6dbdf7a..d2b8edb 100644
+--- a/glib/gasyncqueue.c
++++ b/glib/gasyncqueue.c
+@@ -216,7 +216,7 @@ g_async_queue_push_unlocked (GAsyncQueue* queue, gpointer data)
+ 
+ static gpointer
+ g_async_queue_pop_intern_unlocked (GAsyncQueue* queue, gboolean try, 
+-				   GTimeVal end_time)
++				   GTimeVal *end_time)
+ {
+   gpointer retval;
+ 
+@@ -353,7 +353,7 @@ g_async_queue_try_pop_unlocked (GAsyncQueue* queue)
+  * received before @end_time.
+  **/
+ gpointer
+-g_async_queue_timed_pop (GAsyncQueue* queue, GTimeVal end_time)
++g_async_queue_timed_pop (GAsyncQueue* queue, GTimeVal *end_time)
+ {
+   gpointer retval;
+ 
+@@ -383,7 +383,7 @@ g_async_queue_timed_pop (GAsyncQueue* queue, GTimeVal end_time)
+  * received before @end_time.
+  **/
+ gpointer
+-g_async_queue_timed_pop_unlocked (GAsyncQueue* queue, GTimeVal end_time)
++g_async_queue_timed_pop_unlocked (GAsyncQueue* queue, GTimeVal *end_time)
+ {
+   g_return_val_if_fail (queue, NULL);
+   g_return_val_if_fail (queue->ref_count > 0, NULL);
+diff --git a/glib/config.h b/glib/config.h
+new file mode 100644
+index 0000000..7b997de
+--- /dev/null
++++ b/glib/config.h
+@@ -0,0 +1,3 @@
++#include "glib-config.h"
++#define HAVE_STRERROR 1
++#define NO_SYS_SIGLIST 1
+diff --git a/gtk/gtkcalendar.c b/gtk/gtkcalendar.c
+index 06dc84e..b3120b6 100644
+--- a/gtk/gtkcalendar.c
++++ b/gtk/gtkcalendar.c
+@@ -48,6 +48,7 @@ typedef	 unsigned   int	    N_int;
+ typedef	 unsigned   long    N_long;
+ typedef	 signed	    long    Z_long;
+ //typedef enum { false = FALSE , true = TRUE } boolean;
++typedef bool boolean;
+ 
+ #define and	    &&	    /* logical (boolean) operators: lower case */
+ #define or	    ||
+diff --git a/gdk/gdkevents.h b/gdk/gdkevents.h
+index 2f4c7d8..bb0c84a 100644
+--- a/gdk/gdkevents.h
++++ b/gdk/gdkevents.h
+@@ -370,6 +370,7 @@ typedef struct GdkEventDND {
+   GdkWindow *window;
+   gint8 send_event;
+   GdkDragContext *context;
++  guint32 time;
+   guint32 drag_time;
+   gshort x_root, y_root;
+ } GdkEventDND;
+diff --git a/gtk/gtkfilesel.c b/gtk/gtkfilesel.c
+index 1c188d3..c7e1e1f 100644
+--- a/gtk/gtkfilesel.c
++++ b/gtk/gtkfilesel.c
+@@ -33,7 +33,9 @@
+ #ifdef HAVE_SYS_PARAM_H
+ #include <sys/param.h>
+ #endif
++#ifdef _WIN32
+ #include <direct.h>
++#endif
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <string.h>
+diff --git a/gtk/gtkarg.h b/gtk/gtkarg.h
+index 386c50b..b025d63 100644
+--- a/gtk/gtkarg.h
++++ b/gtk/gtkarg.h
+@@ -27,6 +27,7 @@
+ #ifndef __GTK_ARG_H__
+ #define __GTK_ARG_H__
+ 
++#include <stdarg.h>
+ #include "glib/gtypes.h"
+ #include "glib/ghash.h"
+ #include "glib/gslist.h"
+diff --git a/gtk/gtkmain.c b/gtk/gtkmain.c
+index eadfacf..4bd909a 100644
+--- a/gtk/gtkmain.c
++++ b/gtk/gtkmain.c
+@@ -487,47 +487,19 @@ _gtk_get_data_prefix (void)
+ const gchar *
+ _gtk_get_sysconfdir (void)
+ {
+-  static const gchar *cache = NULL;
+-#if 0
+-  if (cache == NULL)
+-    cache = g_win32_get_package_installation_subdirectory
+-      ("gtk+", dll_name, "etc");
+-#else
+-    puts("ERROR: _gtk_get_sysconfdir");
+-#endif
+-  return cache;
++  return ".";
+ }
+ 
+ const gchar *
+ _gtk_get_exe_prefix (void)
+ {
+-#if 0
+-  static const gchar *cache = NULL;
+-  if (cache == NULL)
+-    cache = g_win32_get_package_installation_subdirectory
+-      ("gtk+", dll_name, "");
+-
+-  return cache;
+-#else
+-    puts("ERROR: _gtk_get_exe_prefix");
+-    return 0;
+-#endif
++  return ".";
+ }
+ 
+ const gchar *
+ _gtk_get_data_prefix (void)
+ {
+-#if 0
+-  static const gchar *cache = NULL;
+-  if (cache == NULL)
+-    cache = g_win32_get_package_installation_subdirectory
+-      ("gtk+", dll_name, "");
+-
+-  return cache;
+-#else
+-    puts("ERROR: _gtk_get_data_prefix");
+-    return 0;
+-#endif
++  return ".";
+ }
+ #endif /* G_PLATFORM_WIN32 */
+ 
+@@ -1826,7 +1826,7 @@ gtk_print (gchar *str)
+  * 
+  * Return value: the newly-created #GSource.
+  **/
+-#if 1
++#if 0
+ GSource *
+ g_source_new (GSourceFuncs *source_funcs,
+ 	      guint         struct_size)
+@@ -1861,7 +1861,7 @@ g_source_new (GSourceFuncs *source_funcs,
+  *
+  * Return value: the ID for the source within the #GMainContext
+  **/
+-#if 1
++#if 0
+ guint
+ g_source_attach (GSource      *source,
+ 		 GMainContext *context)
+@@ -2041,7 +2041,7 @@ GPollFunc g_main_context_get_poll_func (GMainContext *context)
+ }
+ 
+ #endif
+-#if 1
++#if 0
+ /* g_source_unref() but possible to call within context lock
+  */
+ static void
+@@ -2174,7 +2174,7 @@ static GSourceCallbackFuncs g_source_callback_funcs = {
+  * Typically, you won't use this function. Instead use functions specific
+  * to the type of source you are using.
+  **/
+-#if 1
++#if 0
+ void
+ g_source_set_callback (GSource        *source,
+ 		       GSourceFunc     func,
+diff --git a/glib/gstring.c b/glib/gstring.c
+index ccd6e4e..a3a2dc6 100644
+--- a/glib/gstring.c
++++ b/glib/gstring.c
+@@ -381,9 +381,9 @@ g_string_maybe_expand (GString* string,
+ 
+ GString*
+ g_string_insert_len (GString     *string,
+-    gsize       pos,
++    gssize      pos,
+ 		     const gchar *val,
+-    gsize       len)
++    gssize      len)
+ {
+   g_return_val_if_fail (string != NULL, NULL);
+   g_return_val_if_fail (val != NULL, string);
+@@ -430,7 +430,7 @@ g_string_append (GString     *string,
+ GString*
+ g_string_append_len (GString	 *string,
+                      const gchar *val,
+-                     gsize       len)    
++                     gssize      len)
+ {
+   g_return_val_if_fail (string != NULL, NULL);
+   g_return_val_if_fail (val != NULL, string);
+@@ -479,7 +479,7 @@ g_string_prepend (GString     *string,
+ GString*
+ g_string_prepend_len (GString	  *string,
+                       const gchar *val,
+-                      gsize       len)    
++                      gssize      len)
+ {
+   g_return_val_if_fail (string != NULL, NULL);
+   g_return_val_if_fail (val != NULL, string);
+@@ -517,7 +517,7 @@ g_string_prepend_unichar (GString  *string,
+ 
+ GString*
+ g_string_insert (GString     *string,
+-		 gsize       pos,    
++		 gssize      pos,
+ 		 const gchar *val)
+ {
+   g_return_val_if_fail (string != NULL, NULL);
+@@ -530,7 +530,7 @@ g_string_insert (GString     *string,
+ 
+ GString*
+ g_string_insert_c (GString *string,
+-		   gsize   pos,    
++		   gssize  pos,
+ 		   gchar    c)
+ {
+   g_return_val_if_fail (string != NULL, NULL);
+@@ -569,7 +569,7 @@ g_string_insert_c (GString *string,
+  **/
+ GString*
+ g_string_insert_unichar (GString *string,
+-			 gsize   pos,    
++			 gssize  pos,
+ 			 gunichar wc)
+ {  
+   gchar buf[6];
+@@ -587,8 +587,8 @@ g_string_insert_unichar (GString *string,
+ 
+ GString*
+ g_string_erase (GString *string,
+-		gsize   pos,
+-		gsize   len)
++		gssize  pos,
++		gssize  len)
+ {
+   g_return_val_if_fail (string != NULL, NULL);
+   g_return_val_if_fail (pos >= 0, string);
+diff --git a/glib/gstring.h b/glib/gstring.h
+index 953ac62..d978760 100644
+--- a/glib/gstring.h
++++ b/glib/gstring.h
+@@ -73 +73 @@ GLIB_VAR GString*     g_string_insert_len        (GString         *string,
+-                                         gsize           pos,   
++                                         gssize          pos,
+@@ -75 +75 @@ GLIB_VAR GString*     g_string_insert_len        (GString         *string,
+-	gsize           len);
++					 gssize          len);
+@@ -80 +80 @@ GLIB_VAR GString*     g_string_append_len        (GString	 *string,
+-                                         gsize           len);  
++                                         gssize          len);
+@@ -93 +93 @@ GLIB_VAR GString*     g_string_prepend_len       (GString	 *string,
+-                                         gsize           len);  
++                                         gssize          len);
+@@ -95 +95 @@ GLIB_VAR GString*     g_string_insert            (GString	 *string,
+-					 gsize		  pos,    
++					 gssize		  pos,
+@@ -98 +98 @@ GLIB_VAR GString*     g_string_insert_c          (GString	 *string,
+-					 gsize		  pos,    
++					 gssize		  pos,
+@@ -101 +101 @@ GLIB_VAR GString*     g_string_insert_unichar    (GString	 *string,
+-					 gsize		  pos,    
++					 gssize		  pos,
+@@ -104,2 +104,2 @@ GLIB_VAR GString*     g_string_erase	        (GString	 *string,
+-					 gsize		  pos,
+-					 gsize		  len);
++					 gssize		  pos,
++					 gssize		  len);
+diff --git a/glib/gtypes.h b/glib/gtypes.h
+index 188a9a1..0f8b34c 100644
+--- a/glib/gtypes.h
++++ b/glib/gtypes.h
+@@ -388,7 +388,7 @@ union GDoubleIEEE754
+ #error unknown ENDIAN type
+ #endif /* !G_LITTLE_ENDIAN && !G_BIG_ENDIAN */
+ 
+-#if 1
++#if 0
+ typedef gint64 GTimeVal;
+ #else
+ typedef struct GTimeVal                GTimeVal;
+diff --git a/glib/sources.cmake b/glib/sources.cmake
+index 942ebd7..b01a66f 100644
+--- a/glib/sources.cmake
++++ b/glib/sources.cmake
+@@ -68,7 +68,7 @@ ghash.c
+ ghook.c
+ giochannel.c
+ glist.c
+-gmain.c
++gmain-bak.c
+ gmarkup.c
+ gmem.c
+ gmessages.c
+diff --git a/glib/gmain.c b/glib/gmain.c
+index 26a6b9d..fecc246 100644
+--- a/glib/gmain.c
++++ b/glib/gmain.c
+@@ -3481,7 +3481,7 @@ g_source_set_ready_time(GSource* source, gint64 ready_time)
+     if (context)
+         LOCK_CONTEXT(context);
+ 
+-    if (source->priv->ready_time == ready_time)
++    if (source->priv.ready_time == ready_time)
+     {
+         if (context)
+             UNLOCK_CONTEXT(context);
+@@ -3490,7 +3490,7 @@ g_source_set_ready_time(GSource* source, gint64 ready_time)
+         return;
+     }
+ 
+-    source->priv->ready_time = ready_time;
++    source->priv.ready_time = ready_time;
+ 
+     TRACE(GLIB_SOURCE_SET_READY_TIME(source, ready_time));
+ 
+@@ -3520,5 +3520,5 @@ g_source_get_ready_time(GSource* source)
+     g_return_val_if_fail(source != NULL, -1);
+     g_return_val_if_fail(g_atomic_int_get(&source->ref_count) > 0, -1);
+ 
+-    return source->priv->ready_time;
++    return source->priv.ready_time;
+ }
+diff --git a/glib/gmain-bak.c b/glib/gmain-bak.c
+index c16add4..c601f0e 100644
+--- a/glib/gmain-bak.c
++++ b/glib/gmain-bak.c
+@@ -54,28 +54,21 @@
+ #ifdef _WIN32
+ #include "gwin32.h"
+ #endif
++#define g_poll g_main_bak_poll
++#define g_main_context_add_poll_unlocked g_main_bak_context_add_poll_unlocked
++#define g_main_context_remove_poll_unlocked g_main_bak_context_remove_poll_unlocked
++#define g_main_context_wakeup_unlocked g_main_bak_context_wakeup_unlocked
++#define g_main_context_init_pipe g_main_bak_context_init_pipe
++#define g_source_list_add g_main_bak_source_list_add
++#define g_source_list_remove g_main_bak_source_list_remove
++#define g_timeout_prepare g_main_bak_timeout_prepare
++#define g_timeout_check g_main_bak_timeout_check
++#define g_timeout_dispatch g_main_bak_timeout_dispatch
++#define g_idle_prepare g_main_bak_idle_prepare
++#define g_idle_check g_main_bak_idle_check
++#define g_idle_dispatch g_main_bak_idle_dispatch
+ 
+ static GHookList source_list = { 0 };
+-
+-typedef struct _GTimeoutSource GTimeoutSource;
+-typedef struct _GPollRec GPollRec;
+-typedef struct _GSourceCallback GSourceCallback;
+-
+-typedef enum
+-{
+-  G_SOURCE_READY = 1 << G_HOOK_FLAG_USER_SHIFT,
+-  G_SOURCE_CAN_RECURSE = 1 << (G_HOOK_FLAG_USER_SHIFT + 1)
+-} GSourceFlags;
+-
+-#ifdef G_THREADS_ENABLED
+-typedef struct _GMainWaiter GMainWaiter;
+-
+-struct _GMainWaiter
+-{
+-  GCond *cond;
+-  GMutex *mutex;
+-};
+-#endif  
+ 
+ struct _GMainContext
+ {
+@@ -128,7 +109,7 @@ struct _GMainContext
+   gboolean time_is_current;
+ };
+ 
+-struct _GSourceCallback
++struct GSourceCallback
+ {
+   guint ref_count;
+   GSourceFunc func;
+@@ -143,14 +124,14 @@ struct _GMainLoop
+   guint ref_count;
+ };
+ 
+-struct _GTimeoutSource
++struct GTimeoutSource
+ {
+   GSource     source;
+   GTimeVal    expiration;
+   guint       interval;
+ };
+ 
+-struct _GPollRec
++struct GPollRec
+ {
+   gint priority;
+   GPollFD *fd;
+   GPollRec *next;
+ };
+diff --git a/glib/gmain-bak.c b/glib/gmain-bak.c
+index c601f0e..4218440 100644
+--- a/glib/gmain-bak.c
++++ b/glib/gmain-bak.c
+@@ -121,6 +121,7 @@ struct _GMainContext
+   gboolean time_is_current;
+ };
+ 
++#if 0
+ struct GSourceCallback
+ {
+   guint ref_count;
+@@ -147,6 +148,7 @@ struct GPollRec
+   GPollFD *fd;
+   GPollRec *next;
+ };
++#endif
+ 
+ #ifdef G_THREADS_ENABLED
+ #define LOCK_CONTEXT(context) g_static_mutex_lock (&context->mutex)
+@@ -1299,8 +1301,8 @@ g_source_unref_internal (GSource      *source,
+       else if (context)
+ 	g_source_list_remove (source, context);
+ 
+-      if (source->source_funcs->finalize)
+-	source->source_funcs->finalize (source);
++      if (source->source_funcs->destroy)
++	source->source_funcs->destroy (source);
+       
+       g_slist_free (source->poll_fds);
+       source->poll_fds = NULL;
+@@ -1597,69 +1599,17 @@ g_source_add (gint           priority,
+ 	      gpointer       user_data,
+ 	      GDestroyNotify notify)
+ {
+-  guint return_val;
+   GSource *source;
++  guint id;
+ 
+-  G_LOCK (main_loop);
+-
+-  if (!source_list.is_setup)
+-    {
+-      g_hook_list_init (&source_list, sizeof (GSource));
+-
+-      source_list.hook_destroy = G_HOOK_DEFERRED_DESTROY;
+-      source_list.hook_free = g_source_destroy_func;
+-    }
+-
+-  source = (GSource*) g_hook_alloc (&source_list);
++  source = g_source_new (funcs, sizeof (GSource));
+   source->priority = priority;
+-  source->source_data = source_data;
+-  source->hook.func = funcs;
+-  source->hook.data = user_data;
+-  source->hook.destroy = notify;
+-  
+-  g_hook_insert_sorted (&source_list, 
+-			(GHook *)source, 
+-			g_source_compare);
+-
+   if (can_recurse)
+-    source->hook.flags |= G_SOURCE_CAN_RECURSE;
+-
+-  return_val = source->hook.hook_id;
+-  
+-#ifdef MAC_CARBON_EVENTS  
+-  /* low-level glib source events (not idle or timeout type), handle with a single Mac timer */
+-  if (g_main_iteration_timer_ref != NULL) 
+-  {
+-#ifdef	G_MAIN_MAC_DEBUG
+-    printf ("GLIB incrementing timer for source\n");
+-#endif
+-    g_main_iteration_timer_use_count++;
+-  }
+-  else
+-  {
+-    /* install a native Mac idle timer to handle these low-level glib sources */
+-    if (g_main_iteration_timer_upp == NULL)
+-    {
+-      g_main_iteration_timer_upp = NewEventLoopTimerUPP (mac_handle_g_main_iteration_action);
+-    }
+-
+-#ifdef	G_MAIN_MAC_DEBUG    
+-    printf ("GLIB Creating timer for source\n");
+-#endif
+-    InstallEventLoopTimer (GetMainEventLoop(), g_mac_main_iteration_interval,
+-                            g_mac_main_iteration_interval, g_main_iteration_timer_upp,
+-                            NULL, &g_main_iteration_timer_ref);
+-    
+-    g_main_iteration_timer_use_count++;
+-  }
+-#endif
++    source->flags |= G_SOURCE_CAN_RECURSE;
++  if (user_data || notify)
++    g_source_set_callback (source, NULL, user_data, notify);
++  id = g_source_attach (source, NULL);
++  g_source_unref (source);
+ 
+-#ifdef G_THREADS_ENABLED
+-  /* Now wake up the main loop if it is waiting in the poll() */
+-  g_main_wakeup ();
+-#endif
+-
+-  G_UNLOCK (main_loop);
+-  
+-  return return_val;
++  return id;
+ }
+ 
+ 
+diff --git a/glib/gmain-bak.c b/glib/gmain-bak.c
+index 4218440..e22212d 100644
+--- a/glib/gmain-bak.c
++++ b/glib/gmain-bak.c
+@@ -3455,6 +3418,83 @@ g_idle_remove_by_data (gpointer data)
+ }
+ 
++#undef g_main_context_add_poll_unlocked
++#undef g_main_context_remove_poll_unlocked
++#undef g_main_context_wakeup_unlocked
++#undef g_source_list_remove
++
++GMainLoop*
++g_main_new (gboolean is_running)
++{
++  return g_main_loop_new (NULL, is_running);
++}
++
++gboolean
++g_main_pending (void)
++{
++  return g_main_context_pending (NULL);
++}
++
++gboolean
++g_main_iteration (gboolean block)
++{
++  return g_main_context_iteration (NULL, block);
++}
++
++void
++g_main_context_add_poll_unlocked (GMainContext *context,
++				  gint          priority,
++				  GPollFD      *fd)
++{
++  g_main_bak_context_add_poll_unlocked (context, priority, fd);
++}
++
++void
++g_main_context_remove_poll_unlocked (GMainContext *context,
++				     GPollFD      *fd)
++{
++  g_main_bak_context_remove_poll_unlocked (context, fd);
++}
++
++void
++g_main_context_wakeup_unlocked (GMainContext *context)
++{
++  g_main_bak_context_wakeup_unlocked (context);
++}
++
++void
++g_source_list_remove (GSource      *source,
++		      GMainContext *context)
++{
++  g_main_bak_source_list_remove (source, context);
++}
++
++void
++g_main_add_poll (GPollFD *fd,
++		 gint     priority)
++{
++  g_main_context_add_poll (NULL, fd, priority);
++}
++
++gboolean
++g_source_remove_by_funcs_user_data (GSourceFuncs *funcs,
++				    gpointer      user_data)
++{
++  GSource *source;
++
++  g_return_val_if_fail (funcs != NULL, FALSE);
++
++  source = g_main_context_find_source_by_funcs_user_data (NULL, funcs, user_data);
++  if (source)
++    {
++      g_source_destroy (source);
++      return TRUE;
++    }
++  else
++    return FALSE;
++}
++
+ /* HOLDS: main_loop_lock */
++#if 0
+ static void 
+ g_main_add_poll_unlocked (gint     priority,
+ 			  GPollFD *fd)
+@@ -3527,4 +3491,5 @@ g_main_add_poll_unlocked (gint     priority,
+   g_main_wakeup ();
+ #endif
+ }
++#endif
+ 
+diff --git a/glib/gstrfuncs.c b/glib/gstrfuncs.c
+index db7f012..8760ad9 100644
+--- a/glib/gstrfuncs.c
++++ b/glib/gstrfuncs.c
+@@ -37,6 +37,8 @@
+ #include <ctype.h>		/* For tolower() */
+ #include <signal.h>
+ #include "glib-config.h"
++#define HAVE_STRERROR 1
++#define NO_SYS_SIGLIST 1
+ #include "glib.h"
+ #include "gprintf.h"
+ #include "gstrfuncs.h"
+@@ -1195,8 +1195,13 @@ g_strerror (gint errnum)
+ #endif
+     }
+ #else /* NO_SYS_ERRLIST */
++#ifdef __APPLE__
++  extern const int sys_nerr;
++  extern const char *const sys_errlist[];
++#else
+   extern int sys_nerr;
+   extern char *sys_errlist[];
++#endif
+ 
+   if ((errnum > 0) && (errnum <= sys_nerr))
+     return sys_errlist [errnum];
+diff --git a/glib/gthread.c b/glib/gthread.c
+index 3ef1e19..4b21cdb 100644
+--- a/glib/gthread.c
++++ b/glib/gthread.c
+@@ -41,9 +41,14 @@
+ #endif /* G_THREAD_USE_PID_SURROGATE */
+ 
+ #include <unistd.h>
++#include <ctype.h>
++#include <stdlib.h>
+ #include <string.h>
+ #include "glib.h"
+ #include "gslist.h"
++#define TRACE(probe)
++#define GLIB_SLICE_ALLOC(mem, size)
++#define GLIB_MEM_FREE(mem)
+ 
+ static GMutex g_once_mutex;
+ 
+@@ -985,6 +985,6 @@ g_thread_new_internal(const gchar* name,
+ 
+  //   g_trace_mark(G_TRACE_CURRENT_TIME, 0, "GLib", "GThread created", "%s", name ? name : "(unnamed)");
+-    return (GThread*)g_system_thread_new(proxy, (gulong) stack_size, name, func, data, error);
++    return g_thread_create_full(func, data, stack_size, TRUE, FALSE, G_THREAD_PRIORITY_NORMAL, error);
+ }
+ 
+ /**
+@@ -1131,6 +1131,7 @@ void
+ 
++#if 0
+ #ifdef _WIN32
+ 
+ typedef struct GThreadWin32
+ {
+     GRealThread thread;
+@@ -1371,6 +1372,7 @@ g_system_thread_new(GThreadFunc proxy,
+ 
+     return (GRealThread*)thread;
+ }
+ #endif
++#endif
+ 
+ /**
+@@ -1396,6 +1398,7 @@ gpointer
+ }
+ #endif
+ 
++#if 0
+ guint __stdcall g_thread_win32_proxy(gpointer data)
+ {
+     GThreadWin32* self = data;
+@@ -1531,6 +1534,7 @@ void g_system_thread_exit(void)
+ {
+     _endthreadex(0);
+ }
++#endif
+ 
+ /**
+  * g_mem_gc_friendly:
+diff --git a/glib/gtimer.c b/glib/gtimer.c
+index 4c7dfe1..3da1bd2 100644
+--- a/glib/gtimer.c
++++ b/glib/gtimer.c
+@@ -33,12 +33,15 @@
+ #include "glib-config.h"
+ #include <unistd.h>
+ #ifndef G_OS_WIN32
+-//#include <sys/time.h>
++#include <sys/time.h>
+ #include <time.h>
+ #include <errno.h>
+ #endif /* G_OS_WIN32 */
+ #include "glib.h"
+ 
++#define TRACE(probe)
++#define GLIB_TIMEOUT_ADD(source, context, id, priority, interval, function, data)
++
+ 
+ struct GTimer
+ {
+@@ -372,7 +375,7 @@ timeout_add_full(gint           priority,
+ 
+     g_return_val_if_fail(function != NULL, 0);
+ 
+-    source = timeout_source_new(interval, seconds, one_shot);
++    source = g_timeout_source_new(interval);
+ 
+     if (priority != G_PRIORITY_DEFAULT)
+         g_source_set_priority(source, priority);
+diff --git a/glib/gutils.c b/glib/gutils.c
+index e3ab3d8..f6721cb 100644
+--- a/glib/gutils.c
++++ b/glib/gutils.c
+@@ -34,5 +34,14 @@
+  * MT safe for the unix part, FIXME: make the win32 part MT safe as well.
+  */
+ 
++#define GLIB_MAJOR_VERSION 1
++#define GLIB_MINOR_VERSION 2
++#define GLIB_MICRO_VERSION 0
++#define GLIB_INTERFACE_AGE 0
++#define GLIB_BINARY_AGE 0
++#ifndef HAVE_ATEXIT
++#define HAVE_ATEXIT 1
++#endif
++
+ #include <unistd.h>
+ #include <stdarg.h>
+@@ -76,6 +84,16 @@
+ #include <libintl.h>
+ #endif
+ 
++#define GLIB_MAJOR_VERSION 1
++#define GLIB_MINOR_VERSION 2
++#define GLIB_MICRO_VERSION 0
++#define GLIB_INTERFACE_AGE 0
++#define GLIB_BINARY_AGE 0
++#ifndef HAVE_MEMMOVE
++#define HAVE_MEMMOVE 1
++#endif
++#define HAVE_ATEXIT 1
++
+ const guint glib_major_version = GLIB_MAJOR_VERSION;
+ const guint glib_minor_version = GLIB_MINOR_VERSION;
+ const guint glib_micro_version = GLIB_MICRO_VERSION;
+diff --git a/gdk/gdkrgb.c b/gdk/gdkrgb.c
+index 7013981..ca20ca0 100644
+--- a/gdk/gdkrgb.c
++++ b/gdk/gdkrgb.c
+@@ -35,6 +35,9 @@
+ #include <stdlib.h>
+ #include <unistd.h>
+ 
++#define bzero1(value) memset(&(value), 0, sizeof(value))
++#define bzero2(value) memset(&(value), 0, sizeof(value))
++
+ #define ENABLE_GRAYSCALE
+ 
+ #ifdef GDK_RGB_STANDALONE
+diff --git a/gdk/x11/gdkdnd.c b/gdk/x11/gdkdnd.c
+index 97900e7..61cae71 100644
+--- a/gdk/x11/gdkdnd.c
++++ b/gdk/x11/gdkdnd.c
+@@ -29,6 +29,7 @@
+ #include "gdktypes.h"
+ #include "gdkx.h"
+ #include "gdkprivate.h"
++#include "glib/gdataset.h"
+ #include "gdk.h"
+ #include "gprintf.h"
+ #include "gdkwindow.h"
+diff --git a/gdk/x11/gdkevents.c b/gdk/x11/gdkevents.c
+index 57747bb..a576f27 100644
+--- a/gdk/x11/gdkevents.c
++++ b/gdk/x11/gdkevents.c
+@@ -30,6 +30,8 @@
+ #include "gdkprivate.h"
+ #include "gdkkeysyms.h"
+ #include "glib/gmain.h"
++#include "glib/giochannel.h"
++#include "glib/gstrfuncs.h"
+ 
+ #if HAVE_CONFIG_H
+ #  include <config.h>
+diff --git a/gdk/x11/gdkglobals.c b/gdk/x11/gdkglobals.c
+index 1982b2e..816807c 100644
+--- a/gdk/x11/gdkglobals.c
++++ b/gdk/x11/gdkglobals.c
+@@ -29,6 +29,7 @@
+ #include "gdktypes.h"
+ #include "gdkprivate.h"
+ #include "glib/glib-config.h"
++#include "glib/gthread.h"
+ 
+ guint             gdk_debug_flags = 0;
+ gint              gdk_use_xshm = TRUE;
+diff --git a/gdk/x11/gdkinput.c b/gdk/x11/gdkinput.c
+index 2d19111..5b3eb52 100644
+--- a/gdk/x11/gdkinput.c
++++ b/gdk/x11/gdkinput.c
+@@ -71,6 +71,6 @@ static const GdkDeviceInfo gdk_input_core_info =
+   TRUE,
+   2,
+-  gdk_input_core_axes,
+   0,
+-  0
++  0,
++  gdk_input_core_axes
+ };
+@@ -81,3 +81,3 @@
+-GdkInputVTable    gdk_input_vtable;
++extern GdkInputVTable    gdk_input_vtable;
+ /* information about network port and host for gxid daemon */
+ gchar            *gdk_input_gxid_host;
+diff --git a/gdk/x11/gdkwindow.c b/gdk/x11/gdkwindow.c
+index 0a697de..1d32a90 100644
+--- a/gdk/x11/gdkwindow.c
++++ b/gdk/x11/gdkwindow.c
+@@ -31,6 +31,8 @@
+ #include "glib-config.h"
+ #include "gdkinput.h"
+ #include "gdkprivate.h"
++#include "glib/gdataset.h"
++#include "glib/gutils.h"
+ #include "MwmUtil.h"
+ 
+ #include <stdlib.h>
+diff --git a/gdk/x11/gdkpixmap.c b/gdk/x11/gdkpixmap.c
+index 841c33a..14fa063 100644
+--- a/gdk/x11/gdkpixmap.c
++++ b/gdk/x11/gdkpixmap.c
+@@ -36,6 +36,8 @@
+ #include "gdktypes.h"
+ #include "gdkdrawable.h"
+ #include "gdkprivate.h"
++#include "glib/gdataset.h"
++#include "glib/gstrfuncs.h"
+ 
+ typedef struct
+ {
+diff --git a/gdk/x11/sources.cmake b/gdk/x11/sources.cmake
+index 7ee5fcb..8fd05f6 100644
+--- a/gdk/x11/sources.cmake
++++ b/gdk/x11/sources.cmake
+@@ -27,6 +27,5 @@ gdkvisual.c
+ gdkwindow.c
+ gdkxid.c
+-gxid.c
+ gxid_lib.c
+ gxid_lib.h
+ gxid_proto.h
+diff --git a/gdk/x11/gdkproperty.c b/gdk/x11/gdkproperty.c
+index 9d2e1c4..528834c 100644
+--- a/gdk/x11/gdkproperty.c
++++ b/gdk/x11/gdkproperty.c
+@@ -29,6 +29,7 @@
+ #include <X11/Xatom.h>
+ #include <string.h>
+ #include "gdk.h"
+ #include "gdkprivate.h"
++#include "glib/gstrfuncs.h"
+ 
+ GdkAtom
+ gdk_atom_intern (const gchar *atom_name,
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -37,7 +37,7 @@
+ option(GTK1_FORCE_X11_BACKEND "Build the X11 GDK backend on Apple too" OFF)
+ if(NOT WIN32 AND (NOT APPLE OR GTK1_FORCE_X11_BACKEND))
+ 	message("Building for Linux...")
+-	add_definitions(-DGDK_WINDOWING_X11 -DG_OS_UNIX -D_UNIX )
++	add_definitions(-DGDK_WINDOWING_X11 -DG_OS_UNIX -D_UNIX -DXINPUT_NONE )
+ 	include_directories(x11)
+ 	set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+ 	set(OS x11)
+--- a/gdk/CMakeLists.txt
++++ b/gdk/CMakeLists.txt
+@@ -8,6 +8,9 @@
+ enable_testing()
+ file(STRINGS sources.cmake SOURCES)
+ file(STRINGS ${OS}/sources.cmake OS_SOURCES)
++if(OS STREQUAL "x11")
++	list(REMOVE_ITEM SOURCES gdkdraw.c gdkevents.c)
++endif()
+ set(PREFIXED_OS_SOURCES)
+ foreach(src ${OS_SOURCES})
+ 	list(APPEND PREFIXED_OS_SOURCES ${OS}/${src})
+--- a/gdk/x11/gdkdraw.c
++++ b/gdk/x11/gdkdraw.c
+@@ -30,7 +30,7 @@
+ #include "gdkprivate.h"
+ #include "gdk/gdkdrawable.h"
+ 
+-#if 0
++#if 1
+ 
+ void
+ gdk_draw_point (GdkDrawable *drawable,
+@@ -364,15 +364,15 @@
+ }
+ 
+ void
+-gdk_draw_pixmap (GdkDrawable *drawable,
+-		 GdkGC       *gc,
+-		 GdkPixmap   *src,
+-		 gint         xsrc,
+-		 gint         ysrc,
+-		 gint         xdest,
+-		 gint         ydest,
+-		 gint         width,
+-		 gint         height)
++gdk_draw_drawable (GdkDrawable *drawable,
++		   GdkGC       *gc,
++		   GdkPixmap   *src,
++		   gint         xsrc,
++		   gint         ysrc,
++		   gint         xdest,
++		   gint         ydest,
++		   gint         width,
++		   gint         height)
+ {
+   GdkWindowPrivate *drawable_private;
+   GdkWindowPrivate *src_private;
+@@ -533,4 +533,4 @@
+     }
+   
+   return NULL;
+-}
+\ No newline at end of file
++}
+--- a/gdk/x11/gdkevents.c
++++ b/gdk/x11/gdkevents.c
+@@ -93,20 +93,9 @@
+ 
+ void      gdk_events_queue       (void);
+ GdkEvent* gdk_event_unqueue      (void);
+-#if 0
+-static gboolean gdk_event_prepare(GSource *source,gint *timeout);
+-static gboolean gdk_event_check(GSource *source);
+-static gboolean gdk_event_dispatch(GSource *source,GSourceFunc callback,gpointer user_data);
+-#else
+-static gboolean  gdk_event_prepare      (gpointer   source_data, 
+-				 	 GTimeVal  *current_time,
+-					 gint      *timeout,
+-					 gpointer   user_data);
+-static gboolean gdk_event_check(gpointer source_data,GTimeVal *current_time,gpointer user_data);
+-static gboolean  gdk_event_dispatch     (gpointer   source_data,
+-					 GTimeVal  *current_time,
+-					 gpointer   user_data);
+-#endif
++static gboolean gdk_event_prepare(GSource *source);
++static gboolean gdk_event_check(GSource *source);
++static gboolean gdk_event_dispatch(GSource *source);
+ static void	 gdk_synthesize_click	(GdkEvent  *event, 
+ 					 gint	    nclicks);
+ 
+@@ -2109,16 +2100,7 @@
+ 	}
+     }
+ }
+-#if 1
+-static gboolean  
+-gdk_event_prepare (gpointer  source_data, 
+-		   GTimeVal *current_time,
+-		   gint     *timeout,
+-		   gpointer  user_data)
+-
+-#else
+-static gboolean gdk_event_prepare(GSource *source,gint *timeout)
+-#endif
++static gboolean gdk_event_prepare(GSource *source)
+ {
+   gboolean retval;
+   
+@@ -2127,7 +2109,5 @@
+ 
+-  *timeout = -1;
+-
+   retval = (gdk_event_queue_find_first () != NULL) || XPending (gdk_display);
+ 
+   GDK_THREADS_LEAVE ();
+ 
+@@ -2133,8 +2115,8 @@
+   return retval;
+ }
+ 
+-static gboolean  
+-gdk_event_check (gpointer  source_data,GTimeVal *current_time,gpointer  user_data)
++static gboolean
++gdk_event_check (GSource *source)
+ {
+   gboolean retval;
+   
+@@ -2169,10 +2151,8 @@
+ }
+ #endif
+ 
+-static gboolean  
+-gdk_event_dispatch (gpointer  source_data,
+-		    GTimeVal *current_time,
+-		    gpointer  user_data)
++static gboolean
++gdk_event_dispatch (GSource *source)
+ {
+   GdkEvent *event;
+  
+@@ -2339,4 +2321,3 @@
+   XSync (gdk_display, False);
+ }
+ 
+-
+--- a/gdk/x11/gdkinput.c
++++ b/gdk/x11/gdkinput.c
+@@ -369,8 +369,3 @@
+ 				  xtilt, ytilt, mask);
+ }
+ 
+-
+-void 
+-gdk_input_init (void)
+-{	puts("ERROR: gdk_input_init");
+-}
+\ No newline at end of file
+--- a/glib/gmessages.c
++++ b/glib/gmessages.c
+@@ -418,7 +418,7 @@
+   gchar buffer[1025];
+   gboolean was_fatal = (log_level & G_LOG_FLAG_FATAL) != 0;
+   gboolean was_recursion = (log_level & G_LOG_FLAG_RECURSION) != 0;
+-  gsize i;
++  gint i;
+ 
+   log_level &= G_LOG_LEVEL_MASK;
+   if (!log_level)
+--- a/gdk/x11/gdkevents.c
++++ b/gdk/x11/gdkevents.c
+@@ -177,7 +177,7 @@ GPollFD event_poll_fd;
+  *   results:
+  *     Pointer to the list node for that event, or NULL
+  *************************************************************/
+-#if 0
++#if 1
+ GList*
+ gdk_event_queue_find_first (void)
+ {
+@@ -569,6 +569,6 @@ gdk_compress_exposures (XEvent    *xevent,
+  *   results:
+  *************************************************************/
+-#if 0
++#if 1
+ void 
+ gdk_event_handler_set (GdkEventFunc   func,
+ 		       gpointer       data,
+@@ -690,7 +690,7 @@ static GMemChunk *event_chunk = NULL;
+   return (GdkEvent*) new_event;
+ }
+ 
+-#if 0
++#if 1
+ GdkEvent*
+ gdk_event_copy (GdkEvent *event)
+ {
+@@ -749,5 +749,5 @@ gdk_event_copy (GdkEvent *event)
+  *-------------------------------------------------------------- */
+-#if 0
++#if 1
+ void
+ gdk_event_free (GdkEvent *event)
+ {
+@@ -862,6 +862,6 @@ gdk_event_get_time (GdkEvent *event)
+  *--------------------------------------------------------------
+  */
+-#if 0
++#if 1
+ void
+ gdk_set_show_events (gboolean show_events)
+ {
+@@ -915,7 +915,7 @@ gdk_io_invoke (GIOChannel   *source,
+ 
+   return TRUE;
+ }
+-#if 0
++#if 1
+ gsize gdk_input_add_full	  (gint		     source,
+ 			   GdkInputCondition condition,
+ 			   GdkInputFunction  function,
+@@ -2130,7 +2130,7 @@ gdk_event_check (GSource *source)
+ 
+   return retval;
+ }
+-#if 0
++#if 1
+ GdkEvent*
+ gdk_event_unqueue (void)
+ {

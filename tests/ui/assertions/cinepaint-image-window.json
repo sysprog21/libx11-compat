@@ -1,0 +1,5 @@
+{
+  "assertions": [
+    {"type": "wm_class_present", "wm_class": "image_window"}
+  ]
+}

@@ -1,0 +1,14 @@
+--- a/hollywood/app/fileops.c
++++ b/hollywood/app/fileops.c
+@@ -1439,7 +1439,10 @@ file_save_ok_callback (GtkWidget *w,
+ 
+ static void
+ file_dialog_show (GtkWidget *filesel)
+-{   menus_set_sensitive ("<Toolbox>/File/Open/File", FALSE);
++{   if (filesel == fileload)
++    {   gtk_file_selection_set_filename (GTK_FILE_SELECTION(filesel), "./");
++    }
++    menus_set_sensitive ("<Toolbox>/File/Open/File", FALSE);
+     menus_set_sensitive ("<Image>/File/Open/File", FALSE);
+     menus_set_sensitive ("<Image>/File/Save/File", FALSE);
+     menus_set_sensitive ("<Image>/File/Save as/File", FALSE);

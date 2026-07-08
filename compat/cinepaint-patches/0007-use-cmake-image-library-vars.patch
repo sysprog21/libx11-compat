@@ -1,0 +1,27 @@
+--- a/hollywood/plugin/jpeg/CMakeLists.txt
++++ b/hollywood/plugin/jpeg/CMakeLists.txt
+@@ -13,6 +13,7 @@
+ add_library(${PROJECT_NAME} SHARED ${SOURCES})
+ # apt-get install libjpeg-dev
+ find_package(JPEG REQUIRED)
++target_include_directories(${PROJECT_NAME} PRIVATE ${JPEG_INCLUDE_DIR})
+ target_link_directories(${PROJECT_NAME} PRIVATE ${JPEG_LIB_PATH})
+ target_link_libraries(${PROJECT_NAME} ${JPEG_LIBRARY})
+ # /d/code/gitlab/cmakelib/build/Win32/Release/turbojpeg-static.lib
+--- a/hollywood/plugin/png/CMakeLists.txt
++++ b/hollywood/plugin/png/CMakeLists.txt
+@@ -9,12 +9,12 @@
+ find_package(PNG REQUIRED)
+ set(SOURCES png.c)
+ add_library(${PROJECT_NAME} SHARED ${SOURCES})
+-include_directories(${PNG_INC_PATH})
++target_include_directories(${PROJECT_NAME} PRIVATE ${PNG_INCLUDE_DIRS})
+ target_link_directories(${PROJECT_NAME} PRIVATE ${PNG_LIB_PATH})
+ if(WIN32)
+ 	target_link_libraries(${PROJECT_NAME} libpng16_static zlibstatic) 
+ else(WIN32)
+-	target_link_libraries(${PROJECT_NAME} png z)
++	target_link_libraries(${PROJECT_NAME} ${PNG_LIBRARIES})
+ endif(WIN32)
+ 
+ #CMAKELIB_ROOT = /code/gitlab/cmakelib/build/x64

@@ -1,0 +1,40 @@
+--- a/hollywood/app/splash.c
++++ b/hollywood/app/splash.c
+@@ -162,6 +162,12 @@ void destroy_initialization_status_window(void)
+     }
+     gtk_widget_destroy(win_initstatus);
+  //   gtk_widget_unref(win_initstatus);
++    Logo* logo = GetLogo();
++    logo->logo_area = NULL;
++    logo->label1 = NULL;
++    logo->label2 = NULL;
++    logo->pbar = NULL;
++    app->win_initstatus = NULL;
+     //   gtk_widget_unref(win_initstatus);
+     //   gtk_widget_ref_sink(G_OBJECT(gadget))    //        g_object_unref(G_OBJECT(win_initstatus)); // decrease ref count to 0
+     //gtk_close_window(win_initstatus);
+@@ -298,13 +304,16 @@ static Logo* logo;
+ Logo* GetLogo()
+ {   if(logo)
+-    {   return logo;
++    {   if (logo->logo_area)
++        {   return logo;
++        }
++    } else {
++        logo = (Logo*)malloc(sizeof(Logo));
++        if (!logo)
++        {   return 0;
++        }
++        memset(logo, 0, sizeof(Logo));
+     }
+-    logo = (Logo*)malloc(sizeof(Logo));
+-    if (!logo)
+-    {   return 0;
+-    }
+-    memset(logo, 0, sizeof(Logo));
+     logo->logo_area = gtk_drawing_area_new();
+     gtk_widget_set_name (logo->logo_area, "logo area");
+     logo->logo_area_width = (logo->logo_width > LOGO_WIDTH_MIN) ? logo->logo_width : LOGO_WIDTH_MIN;
+     logo->logo_area_height = (logo->logo_height > LOGO_HEIGHT_MIN) ? logo->logo_height : LOGO_HEIGHT_MIN;
+     return logo;
+ }

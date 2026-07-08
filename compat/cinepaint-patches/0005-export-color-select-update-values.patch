@@ -1,0 +1,20 @@
+--- a/hollywood/depth/color_select.c
++++ b/hollywood/depth/color_select.c
+@@ -37,7 +37,7 @@
+ #include "../app/palette_bar.h"
+ 
+ void color_select_update_caller(ColorSelectP);
+-static void color_select_update_values(ColorSelectP);
++void color_select_update_values(ColorSelectP);
+ static void color_select_update_rgb_values(ColorSelectP);
+ static void color_select_update_hsv_values(ColorSelectP);
+ static void color_select_update_pos(ColorSelectP);
+@@ -448,7 +448,7 @@ color_select_update_caller (ColorSelectP csp)
+     }
+ }
+ 
+-static void
++void
+ color_select_update_values (ColorSelectP csp)
+ {
+   if (csp)

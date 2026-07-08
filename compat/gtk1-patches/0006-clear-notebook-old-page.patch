@@ -1,0 +1,21 @@
+diff --git a/gtk/gtknotebook.c b/gtk/gtknotebook.c
+--- a/gtk/gtknotebook.c
++++ b/gtk/gtknotebook.c
+@@ -3296,7 +3296,16 @@ gtk_notebook_real_switch_page (GtkNotebook     *notebook,
+     return;
+ 
+   if (notebook->cur_page && GTK_WIDGET_MAPPED (notebook->cur_page->child))
+-    gtk_widget_unmap (notebook->cur_page->child);
++    {
++      GtkWidget *old_child = notebook->cur_page->child;
++
++      gtk_widget_unmap (old_child);
++      gdk_window_clear_area (GTK_WIDGET (notebook)->window,
++			     old_child->allocation.x,
++			     old_child->allocation.y,
++			     old_child->allocation.width,
++			     old_child->allocation.height);
++    }
+   
+   notebook->cur_page = page;
+ 

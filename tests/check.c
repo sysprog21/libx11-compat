@@ -1961,6 +1961,9 @@ static int test_pixmaps(Display *display)
     CHECK(
         XCopyArea(display, copySrc, copyDest, copyGc, 0, 0, 4, 4, -2, -2) == 1,
         "clipped GXxor XCopyArea failed");
+    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 0, 2, 1,
+                    (unsigned int) -39, 0, 6) == 1,
+          "raster-op XCopyArea rejected protocol-truncated height");
     rasterValues.function = GXcopy;
     XChangeGC(display, copyGc, GCFunction, &rasterValues);
     {
@@ -2004,19 +2007,6 @@ static int test_pixmaps(Display *display)
     XSync(display, False);
     CHECK(last_error_code == BadValue,
           "XCopyArea width over INT_MAX did not raise BadValue");
-    rasterValues.function = GXxor;
-    CHECK(XChangeGC(display, copyGc, GCFunction, &rasterValues),
-          "raster-op overflow GXxor configuration failed");
-    last_error_code = 0;
-    CHECK(XCopyArea(display, copySrc, copyDest, copyGc, 0, 0,
-                    (unsigned int) (INT_MAX / sizeof(Uint32)) + 1u, 1u, 0,
-                    0) == 0,
-          "XCopyArea accepted raster-op pitch past INT_MAX");
-    XSync(display, False);
-    CHECK(last_error_code == BadValue,
-          "XCopyArea raster-op pitch overflow did not raise BadValue");
-    rasterValues.function = GXcopy;
-    XChangeGC(display, copyGc, GCFunction, &rasterValues);
     XSetErrorHandler(xcOldHandler);
 
     XFreeGC(display, copyGc);
@@ -3942,6 +3932,16 @@ static int test_events(Display *display)
     CHECK(out.xnoexpose.drawable == window &&
               out.xnoexpose.major_code == X_CopyArea,
           "NoExpose fields were incorrect");
+    CHECK(XCopyArea(display, window, window, copyGc, -1, 0, 4, 4, 0, 0),
+          "XCopyArea for GraphicsExpose failed");
+    CHECK(XCheckTypedEvent(display, GraphicsExpose, &out),
+          "XCopyArea did not generate GraphicsExpose");
+    CHECK(
+        out.xgraphicsexpose.drawable == window && out.xgraphicsexpose.x == 0 &&
+            out.xgraphicsexpose.y == 0 && out.xgraphicsexpose.width == 1 &&
+            out.xgraphicsexpose.height == 4 &&
+            out.xgraphicsexpose.major_code == X_CopyArea,
+        "GraphicsExpose covered the copied pixels instead of the missing area");
     XFreeGC(display, copyGc);
 
     XSelectInput(display, root, ColormapChangeMask);

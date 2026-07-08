@@ -1,0 +1,35 @@
+--- a/hollywood/depth/commands.c
++++ b/hollywood/depth/commands.c
+@@ -152,6 +152,7 @@
+ static void file_prefs_preview_size_callback (GtkWidget *, gpointer);
+ static gint file_prefs_gamut_alarm_callback(GtkWidget *, GdkEvent *);
+ static void file_prefs_gamut_alarm_select_callback (PixelRow *, ColorSelectState, void *);
++static gint file_prefs_show_idle (gpointer);
+ 
+ 
+ 
+@@ -1408,6 +1409,14 @@
+   }      
+ }
+ 
++static gint
++file_prefs_show_idle (gpointer data)
++{
++  gtk_widget_show (GTK_WIDGET (data));
++  initialising = 0;
++  return FALSE;
++}
++
+ void
+ file_pref_cmd_callback (GtkWidget *widget,
+ 			gpointer   client_data)
+@@ -2756,8 +2765,7 @@
+       }
+     }
+ 
+-  gtk_widget_show (prefs_dlg);      
+-  initialising = 0;
++  gtk_idle_add ((GtkFunction) file_prefs_show_idle, prefs_dlg);
+ }
+ 
+ void

@@ -152,6 +152,17 @@ but each exercises behavior that small examples do not reach.
   build/gimp-motif/source/app/gimp       # launch the editor
   ```
 
+- [CinePaint](https://en.wikipedia.org/wiki/CinePaint): the deep-paint, high-bit-depth image editor descended from Film Gimp (itself a fork of GIMP) is the toolkit's first GTK+ 1.2 workload.
+  GTK1 is ported alongside it: the [robinrowe/gtk1](https://gitlab.com/robinrowe/gtk1) fork builds against the compat stack with two small patches under `compat/gtk1-patches/` (a CMake libx11-compat probe and an X11 font-list implementation) and is exercised on its own by a `gtk1-hello` application.
+  CinePaint then drives the full GTK1 stack through `libX11-compat`: the splash and startup widget tree, the About dialog, the main image window and drawing canvas, palette PNG load and render, the forked PNG plug-in path, and first-run `cinepaintrc` creation.
+
+  <a href="assets/cinepaint.png"><img src="assets/cinepaint.png" alt="CinePaint on GTK1 running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make cinepaint                         # build GTK1 + CinePaint against libx11-compat
+  build/cinepaint/cmake/cinepaint        # launch the editor
+  ```
+
 - [XNEdit](https://github.com/unixwork/xnedit): the Motif NEdit fork that renders editor text through Xft/fontconfig builds against the bundled Motif, `libXt-compat`, and the SDL_ttf-backed `libXft-compat`.
   It validates Unicode text rendering in an interactive Motif editor, including Latin-1, Greek, and CJK glyph fallback through the Xft path.
 

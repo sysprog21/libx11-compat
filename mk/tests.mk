@@ -55,7 +55,7 @@ endif
 check-unit: $(CHECK_BINS)
 	@set -e; for test_bin in $(CHECK_BINS); do \
 		printf "$(BLUE)RUN$(RESET) %s\n" "$$test_bin"; \
-		$(TEST_RUNTIME_ENV) SDL_VIDEODRIVER=dummy $$test_bin; \
+		$(TEST_RUNTIME_ENV) SDL_VIDEODRIVER=dummy LIBX11_COMPAT_STATE_SNAPSHOT_TIMEOUT_SEC=2 $$test_bin; \
 	done
 	@printf "$(BLUE)RUN$(RESET) tests/check-api-symbols.py\n"
 	$(Q)LIBX11_COMPAT_GLX=$(GLX) $(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt

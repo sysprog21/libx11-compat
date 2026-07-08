@@ -17,6 +17,8 @@ void replayTargetOfferWindow(Uint32 sdlWindowId,
 void replayTargetForgetWindow(Uint32 sdlWindowId);
 Uint32 replayTargetWindowId(void);
 Uint32 replayTargetLatestWindowId(void);
+Bool replayTargetSelectFirst(void);
+Bool replayTargetSelectLatest(void);
 void replayTargetRootToLocal(int rootX, int rootY, int *localX, int *localY);
 /* Coherent snapshot of the (target id, target root) triple.
  *

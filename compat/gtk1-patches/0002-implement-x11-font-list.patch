@@ -1,0 +1,47 @@
+--- a/gdk/x11/gdkfont.c
++++ b/gdk/x11/gdkfont.c
+@@ -906,9 +906,41 @@ gdk_text_property_to_text_list (GdkAtom       encoding,
+     }
+ }
+ 
+-gchar ** gdk_font_list_new (const gchar *font_pattern,gint *n_returned)
+-{   puts("gdk_font_list_new not implemented, see Linux fc-list source code");
+-    return 0;
++gchar **
++gdk_font_list_new (const gchar *font_pattern,
++		   gint        *n_returned)
++{
++  gint count = 0;
++  char **xfonts;
++  gchar **fonts;
++  gint i;
++
++  xfonts = XListFonts (gdk_display, font_pattern ? font_pattern : "*",
++		       10000, &count);
++  if ((!xfonts || count <= 0) && font_pattern && strcmp (font_pattern, "-*"))
++    {
++      if (xfonts)
++	XFreeFontNames (xfonts);
++      xfonts = XListFonts (gdk_display, "-*", 10000, &count);
++    }
++  if (n_returned)
++    *n_returned = count;
++  if (!xfonts || count <= 0)
++    return NULL;
++
++  fonts = g_new0 (gchar *, count + 1);
++  if (!fonts)
++    {
++      XFreeFontNames (xfonts);
++      if (n_returned)
++	*n_returned = 0;
++      return NULL;
++    }
++
++  for (i = 0; i < count; i++)
++    fonts[i] = g_strdup (xfonts[i]);
++  XFreeFontNames (xfonts);
++  return fonts;
+ }
+ 
+ gint

@@ -1,0 +1,9 @@
+# GTK1 hello/button smoke against libx11-compat.
+delay 2000
+wait-window "GTK1 Smoke" 500
+screenshot initial
+assert-image initial common-visible.json
+target-motion 110 45
+button 1 click
+delay 200
+assert-exit running

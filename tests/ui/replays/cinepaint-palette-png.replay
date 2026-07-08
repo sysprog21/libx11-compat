@@ -1,0 +1,7 @@
+delay 10000
+state-snapshot after-load
+assert-state after-load tests/ui/assertions/cinepaint-image-window.json
+screenshot rendered
+assert-image rendered common-visible.json
+assert-image rendered cinepaint-palette-rendered.json
+assert-exit running

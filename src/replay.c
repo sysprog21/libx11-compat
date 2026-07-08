@@ -39,6 +39,7 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
 #include "sdl-compat.h"
+#include "events.h"
 #include "replay.h"
 #include "replay-target.h"
 #include "snapshot.h"
@@ -185,7 +186,6 @@ static void runScript(const char *path)
         char *args = p + consumed;
         while (*args == ' ' || *args == '\t')
             args++;
-
         if (!strcmp(cmd, "delay")) {
             /* Sleep in small chunks so replayStop() (joined from XCloseDisplay
              * before SDL_Quit) interrupts a long delay within at most one chunk
@@ -259,6 +259,12 @@ static void runScript(const char *path)
                 fprintf(stderr, "replay: line %d: close has no target window\n",
                         lineno);
             } else {
+                /* Push a plain SDL close and let convertEvent, on the main
+                 * thread, decide between a WM_DELETE ClientMessage and an IO
+                 * error. Walking the target's WM_PROTOCOLS from this replay
+                 * thread would race the main thread's window/property
+                 * mutations.
+                 */
                 SDL_Event ev;
                 SDL_zero(ev);
                 XC_INIT_WINDOW_EVENT(&ev);
@@ -267,7 +273,22 @@ static void runScript(const char *path)
                 if (SDL_PushEvent(&ev) != 1)
                     fprintf(stderr, "replay: line %d: close push failed: %s\n",
                             lineno, SDL_GetError());
+                else
+                    wakeEventPipeForExternalEvent(replayDisplay);
                 replayLastInputAnchorMs = replayNowMs();
+            }
+        } else if (!strcmp(cmd, "target")) {
+            if (!strcmp(args, "first")) {
+                if (!replayTargetSelectFirst())
+                    fprintf(stderr, "replay: line %d: target first failed\n",
+                            lineno);
+            } else if (!strcmp(args, "latest")) {
+                if (!replayTargetSelectLatest())
+                    fprintf(stderr, "replay: line %d: target latest failed\n",
+                            lineno);
+            } else {
+                fprintf(stderr, "replay: line %d: target bad argument '%s'\n",
+                        lineno, args);
             }
         } else if (!strcmp(cmd, "key")) {
             unsigned int code = 0;

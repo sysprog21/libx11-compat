@@ -136,8 +136,11 @@ capture_vw() {{
         --geometry {q(args.geometry)} \\
         --input-backend "$input_backend" \\
         --screenshot-command import \\
+        $([ "$input_backend" = internal ] && printf %s --in-process-snapshots) \\
         --env DISPLAY="$DISPLAY" \\
         --env HOME="$remote_root/home-$name" \\
+        --env VIOLA_PATH="$workdir/res/objs" \\
+        --env VIOLA_SGML="$workdir/res" \\
         --env WWW_HOME="file:$fixture" \\
         --env LD_LIBRARY_PATH="$libpath${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
     cp "$replay_out"/screens/*.png "$screen_dir"/

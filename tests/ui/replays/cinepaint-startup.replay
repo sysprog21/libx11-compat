@@ -1,0 +1,6 @@
+delay 20000
+screenshot toolbox
+assert-image toolbox common-visible.json
+close
+delay 30000
+assert-exit any

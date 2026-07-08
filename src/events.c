@@ -215,6 +215,8 @@ static void updateWindowRenderTargets(Display *display);
 static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event);
 static Bool getEventQueueLength(int *qlen);
 static int countPutBackEvents(Display *display);
+static Bool enqueuePutBackEvent(Display *display, const XEvent *event);
+static Bool appendPutBackEvent(Display *display, const XEvent *event);
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
                  XEvent *xEvent,
@@ -410,9 +412,22 @@ Bool postWmDeleteIfHandled(Display *display, Window window, Time time)
 
     for (size_t i = 0; i < windowProperty->dataLength; i++) {
         if (((Atom *) windowProperty->data)[i] == wmDeleteWindowAtom) {
-            postEvent(display, window, ClientMessage, 32, wmProtocolsAtom,
-                      wmDeleteWindowAtom, time);
-            return True;
+            XEvent event;
+            memset(&event, 0, sizeof(event));
+            event.xclient.type = ClientMessage;
+            event.xclient.serial = lastEventSerial;
+            event.xclient.send_event = True;
+            event.xclient.display = display;
+            event.xclient.window = window;
+            event.xclient.message_type = wmProtocolsAtom;
+            event.xclient.format = 32;
+            event.xclient.data.l[0] = wmDeleteWindowAtom;
+            event.xclient.data.l[1] = time;
+            /* Append, not prepend: this is a freshly synthesized event, so it
+             * must land behind whatever is already queued rather than jump to
+             * the head the way a put-back re-read would.
+             */
+            return appendPutBackEvent(display, &event);
         }
     }
     return False;
@@ -2269,14 +2284,17 @@ int convertEvent(Display *display,
             break;
         case SDL_WINDOWEVENT_CLOSE:
             LOG("Window %d closed\n", sdlEvent->window.windowID);
+            Bool handledClose =
+                eventWindow != None
+                    ? postWmDeleteIfHandled(
+                          display, eventWindow,
+                          (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp))
+                    : False;
             /* Real X11 kills the client connection here. Route through the IO
              * error hook so a client that installed one can intercept;
              * otherwise it terminates.
              */
-            if (eventWindow == None ||
-                !postWmDeleteIfHandled(
-                    display, eventWindow,
-                    (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp)))
+            if (!handledClose)
                 triggerIOError(display);
             return -1;
             break;
@@ -3080,7 +3098,10 @@ Status XSendEvent(Display *display,
         sdlEvent.user.data1 = copy;
         sdlEvent.user.data2 = (void *) eventWindow;
         LOG("SEND event\n");
-        SDL_PushEvent(&sdlEvent);
+        if (SDL_PushEvent(&sdlEvent) != 1) {
+            free(copy);
+            return 0;
+        }
         return 1;
     }
     return 0;
@@ -3116,14 +3137,17 @@ int XEventsQueued(Display *display, int mode)
     if (mode == QueuedAlready)
         return displayEventQueueLength(display);
     if (mode == QueuedAfterFlush) {
+        pumpEventsSafe();
+        int sdlQueued = 0;
+        if (getEventQueueLength(&sdlQueued) && sdlQueued > 0)
+            return drainSdlEventsToPutBack(display);
+        int putBackCount = countPutBackEvents(display);
+        if (putBackCount > 0)
+            return putBackCount;
         XFlush(display);
     } else {
         pumpEventsSafe();
     }
-    int putBackCount = countPutBackEvents(display);
-    int queued = displayEventQueueLength(display);
-    if (queued <= putBackCount)
-        return putBackCount;
     return drainSdlEventsToPutBack(display);
 }
 

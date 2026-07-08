@@ -1,0 +1,91 @@
+--- a/hollywood/CMakeLists.txt
++++ b/hollywood/CMakeLists.txt
+@@ -24,26 +24,44 @@
+ #find_package(GTK REQUIRED PATHS ${CMAKE_SOURCE_DIR} NO_DEFAULT_PATH)
+ #set(GTK_INCLUDE_DIRS "/code/github/vcpkg/installed/x64-windows/include")
+ #/code/gitlab/gtk1/gtk1win
+-set(GTK_INCLUDE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/gtk1)
++option(CINEPAINT_EXTERNAL_GTK1 "Use an externally built GTK1 library" OFF)
++option(CINEPAINT_FORCE_X11_BACKEND "Use GTK1/GDK X11 headers on Apple too" OFF)
++option(CINEPAINT_BUILD_PLUGINS "Build CinePaint plug-ins" ON)
++
++if(CINEPAINT_EXTERNAL_GTK1)
++	if(NOT CINEPAINT_GTK1_SOURCE_DIR)
++		message(FATAL_ERROR "CINEPAINT_GTK1_SOURCE_DIR is required")
++	endif()
++	if(NOT CINEPAINT_GTK1_LIBRARY)
++		message(FATAL_ERROR "CINEPAINT_GTK1_LIBRARY is required")
++	endif()
++	set(GTK_INCLUDE_PATH ${CINEPAINT_GTK1_SOURCE_DIR})
++	add_library(Gtk1 SHARED IMPORTED GLOBAL)
++	set_target_properties(Gtk1 PROPERTIES IMPORTED_LOCATION ${CINEPAINT_GTK1_LIBRARY})
++else()
++	set(GTK_INCLUDE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/gtk1)
++endif()
+ 
+-set(GTK_INCLUDE_DIRS 
++set(GTK_INCLUDE_DIRS
+ 	${GTK_INCLUDE_PATH}
+-	${GTK_INCLUDE_PATH}/glib 
++	${GTK_INCLUDE_PATH}/gtk
++	${GTK_INCLUDE_PATH}/glib
++	${GTK_INCLUDE_PATH}/glib/glib
+ 	${GTK_INCLUDE_PATH}/gdk
+ 	)
+ if(WIN32)
+ 	message("Building for Windows...")
+ 	set(GTK_INCLUDE_DIRS ${GTK_INCLUDE_DIRS} ${GTK_INCLUDE_PATH}/win32)
+ endif(WIN32)
+-if(NOT WIN32 AND NOT APPLE)
+-	message("Building for Linux...")
+-	set(GTK_INCLUDE_DIRS ${GTK_INCLUDE_DIRS} ${GTK_INCLUDE_PATH}/x11)
++if(NOT WIN32 AND (NOT APPLE OR CINEPAINT_FORCE_X11_BACKEND))
++	message("Building for X11...")
++	set(GTK_INCLUDE_DIRS ${GTK_INCLUDE_DIRS} ${GTK_INCLUDE_PATH}/x11 ${GTK_INCLUDE_PATH}/gdk/x11)
+ 	set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+-endif(NOT WIN32 AND NOT APPLE)
+-if(APPLE)
++endif(NOT WIN32 AND (NOT APPLE OR CINEPAINT_FORCE_X11_BACKEND))
++if(APPLE AND NOT CINEPAINT_FORCE_X11_BACKEND)
+ 	message("Building for MacOS...")
+ 	set(GTK_INCLUDE_DIRS ${GTK_INCLUDE_DIRS} ${GTK_INCLUDE_PATH}/macos)
+-endif(APPLE)
++endif(APPLE AND NOT CINEPAINT_FORCE_X11_BACKEND)
+ 
+ include_directories(${GTK_INCLUDE_DIRS})
+ message("GTK_INCLUDE_DIRS = ${GTK_INCLUDE_DIRS}")
+@@ -66,10 +84,10 @@
+ 
+ set(BUILD_GTK1 TRUE)
+ 
+-if(BUILD_GTK1)
++if(BUILD_GTK1 AND NOT CINEPAINT_EXTERNAL_GTK1)
+ message("Building GTK1, too...")
+ add_subdirectory(gtk1)
+-endif(BUILD_GTK1)
++endif()
+ add_subdirectory(cinenotes)
+ add_subdirectory(app)
+ add_subdirectory(depth)
+@@ -77,7 +95,9 @@
+ add_subdirectory(wire)
+ add_subdirectory(libhalf)
+ add_subdirectory(liblcms)
++if(CINEPAINT_BUILD_PLUGINS)
+ add_subdirectory(plugin)
++endif()
+ 
+ add_library(appcinepaint SHARED 
+ 	$<TARGET_OBJECTS:app>
+--- a/hollywood/plugin/CMakeLists.txt
++++ b/hollywood/plugin/CMakeLists.txt
+@@ -36,6 +36,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+ #message("CMAKE_MODULE_PATH = ${CMAKE_MODULE_PATH}")
+ 
+ file(STRINGS plugins.cmake DIRS)
++if(CINEPAINT_PLUGIN_DIRS)
++	set(DIRS ${CINEPAINT_PLUGIN_DIRS})
++endif()
+ foreach(dir IN LISTS DIRS)
+ 	if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${dir})
+ 		# message("plugin: ${dir}")

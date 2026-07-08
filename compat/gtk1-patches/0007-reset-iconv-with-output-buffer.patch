@@ -1,0 +1,23 @@
+--- a/glib/gconvert.c
++++ b/glib/gconvert.c
+@@ -181 +181,13 @@ g_iconv (GIConv   converter,
+-  return iconv (cd, inbuf, inbytes_left, outbuf, outbytes_left);
++  if (!inbuf || !*inbuf)
++    {
++      gchar outbuf_storage[8];
++      gchar *reset_outbuf = outbuf_storage;
++      gsize reset_outbytes_left = sizeof (outbuf_storage);
++      return iconv (cd, NULL, NULL, &reset_outbuf, &reset_outbytes_left);
++    }
++  if (!outbuf || !*outbuf)
++    {
++      errno = EINVAL;
++      return (size_t) -1;
++    }
++  return iconv (cd, inbuf, inbytes_left, outbuf, outbytes_left);
+@@ -380,2 +380,3 @@ open_converter (const gchar *to_codeset,
+-	  gchar *outbuf = NULL;
+-	  gsize outbytes_left = 0;
++	  gchar outbuf_storage[8];
++	  gchar *outbuf = outbuf_storage;
++	  gsize outbytes_left = sizeof (outbuf_storage);

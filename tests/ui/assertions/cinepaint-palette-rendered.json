@@ -1,0 +1,11 @@
+{
+  "assertions": [
+    {
+      "type": "region_max_dark_ratio",
+      "display_rect": [20, 45, 310, 290],
+      "display_size": [609, 381],
+      "dark_threshold": 32,
+      "max_dark_ratio": 0.35
+    }
+  ]
+}

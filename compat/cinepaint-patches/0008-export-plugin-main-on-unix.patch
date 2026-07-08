@@ -1,0 +1,31 @@
+--- a/hollywood/plugin/dll.c
++++ b/hollywood/plugin/dll.c
+@@ -4,25 +4,24 @@
+ // License MIT (http://opensource.org/licenses/mit-license.php)
+ */
+ 
+ #ifdef _WIN32
+-
+ #define WIN32_LEAN_AND_MEAN
+-
+ #include <windows.h>
++#endif
+ #include "../pdb/plugin_main.h"
+ #include "../wire/wire.h"
+ #include "../pdb/plugin.h"
+ 
+ extern GPlugInInfo plugin_info;
+ 
++#ifdef _WIN32
+ BOOL APIENTRY 
+ DllMain(HANDLE hModule,DWORD ul_reason_for_call,LPVOID lpReserved)
+ {    return TRUE;
+ }
++#endif
+ 
+ int plugin_main(PluginLoader* plugin) 
+ {	plugin->plugin_info=&plugin_info; // Points us to plugin functions to load
+ 	return cine_main(plugin);
+ }
+-
+-#endif

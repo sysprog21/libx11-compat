@@ -1,0 +1,13 @@
+# Open a tiny image, draw a rectangle on the image window, and assert pixels
+# changed in the canvas area.
+delay 30000
+screenshot initial
+target-motion 326 63
+button 1 press
+target-motion 360 63
+button 1 release
+delay 1000
+screenshot drawn
+assert-image drawn common-visible.json
+assert-image drawn cinepaint-canvas-changed.json
+assert-exit running

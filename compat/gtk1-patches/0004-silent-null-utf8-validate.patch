@@ -1,0 +1,12 @@
+--- a/glib/gutf8.c
++++ b/glib/gutf8.c
+@@ -1531,7 +1531,8 @@ g_utf8_validate (const gchar  *str,
+ 
+   const gchar *p;
+ 
+-  g_return_val_if_fail (str != NULL, FALSE);
++  if (!str)
++    return FALSE;
+   
+   if (end)
+     *end = str;

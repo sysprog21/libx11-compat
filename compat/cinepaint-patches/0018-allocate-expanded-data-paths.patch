@@ -1,0 +1,25 @@
+--- a/hollywood/app/datadir.c
++++ b/hollywood/app/datadir.c
+@@ -108,15 +108,15 @@
+ }
+ 
+ char* StrDupPath(const char* ext,int is_data)
+-{   char* s = strdup(app.arg0);
+-    if(is_data)
+-    {   s[app.data_offset] = 0;
+-    }
+-    else
+-    {   s[app.exe_offset] = 0;
++{   size_t prefix_len = is_data ? app.data_offset : app.exe_offset;
++    char* s = (char*) malloc(prefix_len + (ext ? strlen(ext) : 0) + 1);
++    if(!s)
++    {   return 0;
+     }
++    memcpy(s, app.arg0, prefix_len);
++    s[prefix_len] = 0;
+     if(ext)
+-    {    strcat(s,ext);
++    {   strcat(s,ext);
+     }
+     return s;
+ }
