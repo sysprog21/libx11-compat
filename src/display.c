@@ -679,14 +679,84 @@ void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
         return;
 
     SDL_Window *sdlWindow = GET_WINDOW_STRUCT(w)->sdlWindow;
+    /* Clear stale constraints when a flag disappears: passing 0 tells SDL there
+     * is no bound. Otherwise a window that switches from fixed-size hints
+     * (PMaxSize with max == min) to ranged hints (no PMaxSize) would keep the
+     * old maximum and stay effectively fixed even after resize is enabled.
+     */
     if (hints->flags & PMinSize) {
         SDL_SetWindowMinimumSize(sdlWindow, hints->min_width,
                                  hints->min_height);
+    } else {
+        SDL_SetWindowMinimumSize(sdlWindow, 0, 0);
     }
     if (hints->flags & PMaxSize) {
         SDL_SetWindowMaximumSize(sdlWindow, hints->max_width,
                                  hints->max_height);
+    } else {
+        SDL_SetWindowMaximumSize(sdlWindow, 0, 0);
     }
+    applyNormalHintsResizableFromProperty(w);
+}
+
+Bool topLevelResizableFromNormalHints(Window window)
+{
+    if (!IS_TYPE(window, WINDOW))
+        return False;
+
+    /* A client that speaks Motif owns the resizable decision through
+     * _MOTIF_WM_HINTS (MWM_FUNC_RESIZE). Only speak for the WM_NORMAL_HINTS
+     * default when it has not, so the two paths compose instead of fighting.
+     */
+    if (topLevelHasMotifFunctionHints(window))
+        return False;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    WindowProperty *prop =
+        findProperty(&windowStruct->properties, XA_WM_NORMAL_HINTS, NULL);
+    if (!prop || prop->dataFormat != 32 || prop->type != XA_WM_SIZE_HINTS ||
+        prop->dataLength < OldNumPropSizeElements || !prop->data)
+        return False;
+
+    xPropSizeHints *sizeHints = (xPropSizeHints *) prop->data;
+    /* Mirror a real WM: a top-level is resizable unless the client pinned it to
+     * a fixed size (both PMinSize and PMaxSize present with min == max). xwpe
+     * advertises PMinSize/PResizeInc/PBaseSize without capping max, so it stays
+     * resizable; fixed-size dialogs (min == max) do not.
+     */
+    Bool fixedSize = (sizeHints->flags & PMinSize) &&
+                     (sizeHints->flags & PMaxSize) &&
+                     sizeHints->minWidth == sizeHints->maxWidth &&
+                     sizeHints->minHeight == sizeHints->maxHeight;
+    return fixedSize ? False : True;
+}
+
+void applyNormalHintsResizableFromProperty(Window window)
+{
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+
+    /* Defer to Motif when it governs functions: the decoder returns False for
+     * that case, but so does a genuinely non-resizable window, so gate the SDL
+     * call on the Motif check here to avoid forcing non-resizable over Motif.
+     */
+    if (topLevelHasMotifFunctionHints(window))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    WindowProperty *prop =
+        findProperty(&windowStruct->properties, XA_WM_NORMAL_HINTS, NULL);
+    if (!prop || prop->dataFormat != 32 || prop->type != XA_WM_SIZE_HINTS ||
+        prop->dataLength < OldNumPropSizeElements || !prop->data)
+        return;
+
+    Bool resizable = topLevelResizableFromNormalHints(window);
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    SDL_SetWindowResizable(windowStruct->sdlWindow,
+                           resizable ? SDL_TRUE : SDL_FALSE);
+#else
+    (void) resizable;
+#endif
 }
 
 Status XGetWMSizeHints(Display *dpy,

@@ -308,6 +308,14 @@ int XChangeProperty(Display *display,
      */
     if (property == _MOTIF_WM_HINTS && format == 32)
         applyMotifWmHintsFromProperty(window);
+    /* WM_NORMAL_HINTS (XSizeHints) decides resizability the way a real WM does
+     * for clients that never speak Motif: resizable unless the client pinned a
+     * fixed size. Clients that write it directly via XChangeProperty (rather
+     * than XSetWMNormalHints) still get the resizable mirror here; the apply
+     * defers to _MOTIF_WM_HINTS when that governs functions.
+     */
+    if (property == XA_WM_NORMAL_HINTS && format == 32)
+        applyNormalHintsResizableFromProperty(window);
     /* WM_TRANSIENT_FOR establishes a parent / popup link (ICCCM 4.1.2.6). Plain
      * transient_for does NOT make the child modal; SDL's modal hook is only
      * safe when the child is actually marked modal via _NET_WM_STATE_MODAL or

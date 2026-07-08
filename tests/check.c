@@ -6163,6 +6163,145 @@ static int test_mwm_hints_apply(Display *display)
     return 1;
 }
 
+/* WM_NORMAL_HINTS (XSizeHints) resizability, mirroring a real WM: a top-level
+ * is resizable unless the client pinned a fixed size (PMinSize and PMaxSize
+ * present with min == max). A Motif client that declares MWM_HINTS_FUNCTIONS
+ * keeps the resizable decision, so WM_NORMAL_HINTS must defer to it. Like
+ * test_mwm_hints_apply, the SDL dummy driver ignores SDL_SetWindowResizable, so
+ * the flag assertions are gated on a driver-capability probe.
+ */
+static int test_normal_hints_resizable(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    Window probe = XCreateSimpleWindow(display, root, 0, 0, 96, 64, 0, 0, 0);
+    CHECK(probe != None, "normal-hints: probe window creation failed");
+    CHECK(XMapWindow(display, probe), "normal-hints: probe map failed");
+    SDL_Window *probeSdl = GET_WINDOW_STRUCT(probe)->sdlWindow;
+    CHECK(probeSdl != NULL, "normal-hints: probe has no SDL backing");
+    Uint32 flagsBefore = SDL_GetWindowFlags(probeSdl);
+    SDL_SetWindowResizable(probeSdl, SDL_FALSE);
+    Uint32 flagsAfter = SDL_GetWindowFlags(probeSdl);
+    SDL_SetWindowResizable(probeSdl, SDL_TRUE);
+    Bool driverHonorsResizable = (flagsAfter & SDL_WINDOW_RESIZABLE) !=
+                                 (flagsBefore & SDL_WINDOW_RESIZABLE);
+    XDestroyWindow(display, probe);
+#else
+    Bool driverHonorsResizable = False;
+#endif
+
+    /* xwpe-like: PMinSize + PResizeInc + PBaseSize, no PMaxSize cap. A real WM
+     * treats this as resizable; this is exactly the case that left xwpe stuck
+     * fixed-size before the fix.
+     */
+    Window resizable =
+        XCreateSimpleWindow(display, root, 0, 0, 640, 400, 0, 0, 0);
+    CHECK(resizable != None, "normal-hints: resizable window creation failed");
+    CHECK(XMapWindow(display, resizable), "normal-hints: resizable map failed");
+    SDL_Window *resizableSdl = GET_WINDOW_STRUCT(resizable)->sdlWindow;
+    CHECK(resizableSdl != NULL, "normal-hints: resizable has no SDL backing");
+    XSizeHints openHints;
+    memset(&openHints, 0, sizeof(openHints));
+    openHints.flags = PMinSize | PResizeInc | PBaseSize;
+    openHints.min_width = 80;
+    openHints.min_height = 40;
+    openHints.width_inc = 8;
+    openHints.height_inc = 16;
+    openHints.base_width = 80;
+    openHints.base_height = 40;
+    XSetWMNormalHints(display, resizable, &openHints);
+    /* Driver-independent observable: the pure decoder must say resizable. This
+     * is what fails without the fix, even under SDL_VIDEODRIVER=dummy.
+     */
+    CHECK(topLevelResizableFromNormalHints(resizable),
+          "normal-hints: ranged size hints not decoded as resizable");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(resizableSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) != 0,
+              "normal-hints: ranged size hints did not enable resize");
+    }
+    XDestroyWindow(display, resizable);
+
+    /* Fixed-size dialog: PMinSize == PMaxSize. Stays non-resizable. */
+    Window fixed = XCreateSimpleWindow(display, root, 0, 0, 200, 120, 0, 0, 0);
+    CHECK(fixed != None, "normal-hints: fixed window creation failed");
+    CHECK(XMapWindow(display, fixed), "normal-hints: fixed map failed");
+    SDL_Window *fixedSdl = GET_WINDOW_STRUCT(fixed)->sdlWindow;
+    CHECK(fixedSdl != NULL, "normal-hints: fixed has no SDL backing");
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    SDL_SetWindowResizable(fixedSdl, SDL_TRUE); /* start resizable to observe */
+#endif
+    XSizeHints fixedHints;
+    memset(&fixedHints, 0, sizeof(fixedHints));
+    fixedHints.flags = PMinSize | PMaxSize;
+    fixedHints.min_width = fixedHints.max_width = 200;
+    fixedHints.min_height = fixedHints.max_height = 120;
+    XSetWMNormalHints(display, fixed, &fixedHints);
+    CHECK(!topLevelResizableFromNormalHints(fixed),
+          "normal-hints: fixed size hints decoded as resizable");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(fixedSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) == 0,
+              "normal-hints: fixed size hints did not stay non-resizable");
+    }
+
+    /* Transition fixed -> ranged: dropping PMaxSize must re-enable resize and
+     * clear the stale SDL maximum, otherwise the window stays effectively fixed
+     * even once resize is on. The decoder decision is the driver-independent
+     * observable; the max-clearing is applied in XSetWMNormalHints.
+     */
+    XSizeHints rangedHints;
+    memset(&rangedHints, 0, sizeof(rangedHints));
+    rangedHints.flags = PMinSize | PResizeInc;
+    rangedHints.min_width = 100;
+    rangedHints.min_height = 60;
+    rangedHints.width_inc = 8;
+    rangedHints.height_inc = 8;
+    XSetWMNormalHints(display, fixed, &rangedHints);
+    CHECK(topLevelResizableFromNormalHints(fixed),
+          "normal-hints: fixed->ranged not decoded as resizable");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(fixedSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) != 0,
+              "normal-hints: fixed->ranged did not re-enable resize");
+    }
+    XDestroyWindow(display, fixed);
+
+    /* Motif precedence: a client that cleared MWM_FUNC_RESIZE owns the
+     * decision. A later ranged WM_NORMAL_HINTS must NOT override it back to
+     * resizable.
+     */
+    Atom motif = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    CHECK(motif != None, "normal-hints: motif atom intern failed");
+    Window motifOwned =
+        XCreateSimpleWindow(display, root, 0, 0, 300, 200, 0, 0, 0);
+    CHECK(motifOwned != None, "normal-hints: motif window creation failed");
+    long noResize[5] = {
+        0x1 /* MWM_HINTS_FUNCTIONS */,
+        0x4 /* MWM_FUNC_MOVE, no RESIZE */,
+        0,
+        0,
+        0,
+    };
+    CHECK(XChangeProperty(display, motifOwned, motif, motif, 32,
+                          PropModeReplace, (unsigned char *) noResize, 5),
+          "normal-hints: motif write failed");
+    CHECK(XMapWindow(display, motifOwned), "normal-hints: motif map failed");
+    SDL_Window *motifSdl = GET_WINDOW_STRUCT(motifOwned)->sdlWindow;
+    CHECK(motifSdl != NULL, "normal-hints: motif window has no SDL backing");
+    XSetWMNormalHints(display, motifOwned, &openHints);
+    CHECK(!topLevelResizableFromNormalHints(motifOwned),
+          "normal-hints: decoder did not defer to Motif functions");
+    if (driverHonorsResizable) {
+        Uint32 flags = SDL_GetWindowFlags(motifSdl);
+        CHECK((flags & SDL_WINDOW_RESIZABLE) == 0,
+              "normal-hints: WM_NORMAL_HINTS overrode Motif no-resize");
+    }
+    XDestroyWindow(display, motifOwned);
+    return 1;
+}
+
 /* ICCCM WM_TRANSIENT_FOR + modal hint must wire SDL_SetWindowModalFor; without
  * the modal hint, transient_for alone is a no-op for the modal call.
  */
@@ -10375,6 +10514,7 @@ int main(void)
     run_test("ewmh_close_window_clientmessage",
              test_ewmh_close_window_clientmessage);
     run_test("mwm_hints_apply", test_mwm_hints_apply);
+    run_test("normal_hints_resizable", test_normal_hints_resizable);
     run_test("xrm", test_xrm);
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);

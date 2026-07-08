@@ -145,6 +145,7 @@ static void replayDeferredWmProperties(Display *display, Window window)
      * both realized and mapped.
      */
     applyMotifWmHintsFromProperty(window);
+    applyNormalHintsResizableFromProperty(window);
     applyNetWmStateFromProperty(window);
     applyTransientForRelationship(display, window);
 
