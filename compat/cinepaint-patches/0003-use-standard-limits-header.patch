@@ -1,0 +1,21 @@
+--- a/hollywood/app/datadir.c
++++ b/hollywood/app/datadir.c
+@@ -5,7 +5,7 @@
+ */
+ 
+ #include <stdio.h>
+-#include <linux/limits.h>
++#include <limits.h>
+ #include "datadir.h"
+ #include "../wire/iodebug.h"
+ #include "version.h"
+--- a/hollywood/app/user_install.c
++++ b/hollywood/app/user_install.c
+@@ -22,7 +22,7 @@
+ #include <stdlib.h>
+ #include <stdio.h>
+ //#define _POSIX_C_SOURCE 1
+-#include <linux/limits.h>
++#include <limits.h>
+ #include "../app/datadir.h"
+ #include "user_install.h"

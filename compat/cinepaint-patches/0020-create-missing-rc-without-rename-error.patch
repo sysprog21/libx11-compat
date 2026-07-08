@@ -1,0 +1,31 @@
+--- a/hollywood/app/rc.c
++++ b/hollywood/app/rc.c
+@@ -2051,13 +2051,21 @@
+ #endif
+   if (rename (filename, oldfilename) < 0)
+     {
+-		e_printf("rename %s %s errno #%i\n",filename,oldfilename,errno);
+-      g_free (oldfilename);
+-      if (errno == EACCES)
+-        return "Can't rename " RC_FILENAME " to " RC_FILENAME ".old; permission problems";
+-      if (errno == EISDIR)
+-        return "Can't rename " RC_FILENAME " to " RC_FILENAME ".old; " RC_FILENAME ".old is a directory";
+-      return "Can't rename " RC_FILENAME " to " RC_FILENAME ".old, reason unknown";
++      if (errno == ENOENT)
++        {
++          FILE *empty = fopen (oldfilename, "wt");
++          if (empty)
++            fclose (empty);
++        }
++      else
++        {
++          g_free (oldfilename);
++          if (errno == EACCES)
++            return "Can't rename " RC_FILENAME " to " RC_FILENAME ".old; permission problems";
++          if (errno == EISDIR)
++            return "Can't rename " RC_FILENAME " to " RC_FILENAME ".old; " RC_FILENAME ".old is a directory";
++          return "Can't rename " RC_FILENAME " to " RC_FILENAME ".old, reason unknown";
++        }
+     }
+ 
+   if ((*fp_old = fopen (oldfilename, "rt")) == NULL)

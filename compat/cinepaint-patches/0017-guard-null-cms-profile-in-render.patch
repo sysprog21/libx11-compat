@@ -1,0 +1,12 @@
+--- a/hollywood/depth/image_render.c
++++ b/hollywood/depth/image_render.c
+@@ -1241,7 +1241,8 @@ image_render_set_visible_channels(GImage *gimage,
+     }
+ 
+     if (tag_alpha (projection_tag) == ALPHA_YES &&
+-        !strstr("Cmyk", cms_get_profile_cspace( gimage->cms_profile )))
++        (!gimage->cms_profile ||
++         !strstr("Cmyk", cms_get_profile_cspace( gimage->cms_profile ))))
+       num_inten--;
+ 
+     for(i = 0; i < num_inten; i++)

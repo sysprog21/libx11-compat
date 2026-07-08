@@ -1,0 +1,109 @@
+--- a/glib/gconvert.c
++++ b/glib/gconvert.c
+@@ -929,6 +929,34 @@ strdup_len (const gchar *string,
+ 
+ #endif
+ 
++static gchar *
++filename_fallback_dup (const gchar *string,
++		       gsize       len,
++		       gsize       *bytes_read,
++		       gsize       *bytes_written,
++		       GError      **error)
++{
++  gsize real_len;
++
++  g_clear_error (error);
++
++  if (len == (gsize)-1)
++    real_len = strlen (string);
++  else
++    {
++      real_len = 0;
++      while (real_len < len && string[real_len])
++	real_len++;
++    }
++
++  if (bytes_read)
++    *bytes_read = real_len;
++  if (bytes_written)
++    *bytes_written = real_len;
++
++  return g_strndup (string, real_len);
++}
++
+ /**
+  * g_locale_to_utf8:
+  * @opsysstring:   a string in the encoding of the current locale
+@@ -1277,17 +1305,28 @@ g_filename_to_utf8 (const gchar *opsysstring,
+ 		    GError     **error)
+ {
+ #ifdef G_PLATFORM_WIN32
+-  return g_locale_to_utf8 (opsysstring, len,
+-			   bytes_read, bytes_written,
+-			   error);
+-#else  /* !G_PLATFORM_WIN32 */
+-      
+-  if (have_broken_filenames ())
+-    return g_locale_to_utf8 (opsysstring, len,
++  gchar *result;
++  if (!opsysstring)
++    return g_strdup ("");
++  result = g_locale_to_utf8 (opsysstring, len,
+ 			     bytes_read, bytes_written,
+ 			     error);
++  return result ? result : filename_fallback_dup (opsysstring, len,
++						  bytes_read, bytes_written,
++						  error);
++#else  /* !G_PLATFORM_WIN32 */
++  gchar *result;
++  if (!opsysstring)
++    return g_strdup ("");
++  if (have_broken_filenames ())
++    result = g_locale_to_utf8 (opsysstring, len,
++			       bytes_read, bytes_written,
++			       error);
+   else
+-    return strdup_len (opsysstring, len, bytes_read, bytes_written, error);
++    result = strdup_len (opsysstring, len, bytes_read, bytes_written, error);
++  return result ? result : filename_fallback_dup (opsysstring, len,
++						  bytes_read, bytes_written,
++						  error);
+ #endif /* !G_PLATFORM_WIN32 */
+ }
+ 
+@@ -1321,16 +1360,28 @@ g_filename_from_utf8 (const gchar *utf8string,
+ 		      GError     **error)
+ {
+ #ifdef G_PLATFORM_WIN32
+-  return g_locale_from_utf8 (utf8string, len,
+-			     bytes_read, bytes_written,
+-			     error);
+-#else  /* !G_PLATFORM_WIN32 */
+-  if (have_broken_filenames ())
+-    return g_locale_from_utf8 (utf8string, len,
++  gchar *result;
++  if (!utf8string)
++    return g_strdup ("");
++  result = g_locale_from_utf8 (utf8string, len,
+ 			       bytes_read, bytes_written,
+ 			       error);
++  return result ? result : filename_fallback_dup (utf8string, len,
++						  bytes_read, bytes_written,
++						  error);
++#else  /* !G_PLATFORM_WIN32 */
++  gchar *result;
++  if (!utf8string)
++    return g_strdup ("");
++  if (have_broken_filenames ())
++    result = g_locale_from_utf8 (utf8string, len,
++				 bytes_read, bytes_written,
++				 error);
+   else
+-    return strdup_len (utf8string, len, bytes_read, bytes_written, error);
++    result = strdup_len (utf8string, len, bytes_read, bytes_written, error);
++  return result ? result : filename_fallback_dup (utf8string, len,
++						  bytes_read, bytes_written,
++						  error);
+ #endif /* !G_PLATFORM_WIN32 */
+ }

@@ -1,0 +1,57 @@
+--- a/hollywood/app/draw_core.c
++++ b/hollywood/app/draw_core.c
+@@ -80,12 +80,14 @@ draw_core_stop (core, tool)
+      DrawCore * core;
+      Tool * tool;
+ {
+-  if (core->draw_state == INVISIBLE)
++  if (!core->win || !core->gc)
+     return;
+ 
+-  (* core->draw_func) (tool);
++  if (core->draw_state == VISIBLE)
++    (* core->draw_func) (tool);
+ 
+   core->draw_state = INVISIBLE;
++  core->paused_count = 0;
+ }
+ 
+ 
+@@ -94,6 +96,8 @@ draw_core_resume (core, tool)
+      DrawCore * core;
+      Tool * tool;
+ {
++  if (!core->win || !core->gc || core->paused_count == 0)
++    return;
+ 
+   core->paused_count = (core->paused_count > 0) ? core->paused_count - 1 : 0;
+   if (core->paused_count == 0)
+@@ -109,6 +113,18 @@ draw_core_pause (core, tool)
+      DrawCore * core;
+      Tool * tool;
+ {
++  if (!core->win || !core->gc)
++    return;
++
++  if (core->paused_count > 0)
++    {
++      core->paused_count++;
++      return;
++    }
++
++  if (core->draw_state != VISIBLE)
++    return;
++
+   if (core->paused_count == 0)
+     {
+       core->draw_state = INVISIBLE;
+@@ -136,6 +152,9 @@ draw_core_cont (core, tool)
+       Tool * tool;
+       
+ {
++  if (!core->win || !core->gc)
++    return;
++
+   if (VISIBLE == core->draw_state)
+     {
+       core->paused_count = (core->paused_count > 0) ? core->paused_count - 1 : 0;

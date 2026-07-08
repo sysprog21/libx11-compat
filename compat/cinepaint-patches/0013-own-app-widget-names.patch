@@ -1,0 +1,358 @@
+diff --git a/hollywood/app/about_dialog.c b/hollywood/app/about_dialog.c
+index ed1286c..32ddb37 100644
+--- a/hollywood/app/about_dialog.c
++++ b/hollywood/app/about_dialog.c
+@@ -169,7 +169,7 @@ about_dialog_create (int timeout)
+                                 GDK_WINDOW_TYPE_HINT_DIALOG);
+ #else
+       about_dialog = gtk_window_new (GTK_WINDOW_DIALOG);
+-	about_dialog->name = "about dialog";
++	gtk_widget_set_name (about_dialog, "about dialog");
+ 	  g_return_if_fail(about_dialog != NULL);
+ #endif
+       minimize_register(about_dialog);
+@@ -193,13 +193,13 @@ about_dialog_create (int timeout)
+ 	}
+ 
+       vbox = gtk_vbox_new (FALSE, 1);
+-	vbox->name = "about vbox";
++	gtk_widget_set_name (vbox, "about vbox");
+       gtk_container_border_width (GTK_CONTAINER (vbox), 1);
+       gtk_container_add (GTK_CONTAINER (about_dialog), vbox);
+       gtk_widget_show (vbox);
+ 
+       aboutframe = gtk_frame_new (NULL);
+-	aboutframe->name = "about frame 216";
++	gtk_widget_set_name (aboutframe, "about frame 216");
+       gtk_frame_set_shadow_type (GTK_FRAME (aboutframe), GTK_SHADOW_IN);
+       gtk_container_border_width (GTK_CONTAINER (aboutframe), 0);
+       gtk_box_pack_start (GTK_BOX (vbox), aboutframe, TRUE, TRUE, 0);
+@@ -233,7 +233,7 @@ about_dialog_create (int timeout)
+       gtk_widget_show (alignment);
+ 
+       aboutframe = gtk_frame_new (NULL);
+-	aboutframe->name ="aboutframe 251";
++	gtk_widget_set_name (aboutframe, "aboutframe 251");
+       gtk_frame_set_shadow_type (GTK_FRAME (aboutframe), GTK_SHADOW_IN);
+       gtk_container_border_width (GTK_CONTAINER (aboutframe), 0);
+       gtk_container_add (GTK_CONTAINER (alignment), aboutframe);
+@@ -258,7 +258,7 @@ about_dialog_create (int timeout)
+       gtk_widget_show (scroll_area);
+ #endif
+       label = gtk_label_new (_("To ask questions or report bugs visit CinePaint.org"));
+-	label->name = "label";
++	gtk_widget_set_name (label, "label");
+       gtk_box_pack_start (GTK_BOX (vbox), label, FALSE, TRUE, 0);
+       gtk_widget_show (label);
+ #ifdef SCROLL_NAMES
+diff --git a/hollywood/app/airbrush.c b/hollywood/app/airbrush.c
+index c43d504..0be733f 100644
+--- a/hollywood/app/airbrush.c
++++ b/hollywood/app/airbrush.c
+@@ -131,7 +131,7 @@ create_airbrush_options (void)
+ 
+   /*  the rate scale  */
+   table = gtk_table_new (2, 2, FALSE);
+-    table->name = "airbrush table";
++    gtk_widget_set_name (table, "airbrush table");
+   gtk_table_set_col_spacing (GTK_TABLE (table), 0, 4);
+   gtk_table_set_row_spacings (GTK_TABLE (table), 1);
+   gtk_box_pack_start (GTK_BOX (vbox), table, FALSE, FALSE, 0);
+@@ -139,7 +139,7 @@ create_airbrush_options (void)
+   options->rate_w =
+     gtk_adjustment_new (options->rate_d, 0.0, 150.0, 1.0, 1.0, 0.0);
+   scale = gtk_hscale_new (GTK_ADJUSTMENT (options->rate_w));
+-    scale->name = "airbrush rate_w";
++    gtk_widget_set_name (scale, "airbrush rate_w");
+   gtk_scale_set_value_pos (GTK_SCALE (scale), GTK_POS_TOP);
+   gtk_range_set_update_policy (GTK_RANGE (scale), GTK_UPDATE_DELAYED);
+   gtk_signal_connect (GTK_OBJECT (options->rate_w), "value_changed",
+@@ -153,7 +153,7 @@ create_airbrush_options (void)
+   options->pressure_w =
+     gtk_adjustment_new (options->pressure_d, 0.0, 100.0, 1.0, 1.0, 0.0);
+   scale = gtk_hscale_new (GTK_ADJUSTMENT (options->pressure_w));
+-  scale->name = "airbrush pressure_w";
++  gtk_widget_set_name (scale, "airbrush pressure_w");
+   gtk_scale_set_value_pos (GTK_SCALE (scale), GTK_POS_TOP);
+   gtk_range_set_update_policy (GTK_RANGE (scale), GTK_UPDATE_DELAYED);
+   gtk_signal_connect (GTK_OBJECT (options->pressure_w), "value_changed",
+diff --git a/hollywood/app/app.c b/hollywood/app/app.c
+index 1d07116..4ade0af 100644
+--- a/hollywood/app/app.c
++++ b/hollywood/app/app.c
+@@ -276,7 +276,7 @@ void update_statusbar_progress(const char* msg,unsigned percent)
+ void create_statusbar(GtkWidget* parent)
+ { App* app = GetApp();
+   app->statusbar = gtk_label_new("Welcome to CinePaint..."); //gtk_statusbar_new();
+-	app->statusbar->name = "statusbar";
++	gtk_widget_set_name (app->statusbar, "statusbar");
+ //  gtk_container_border_width (GTK_CONTAINER (app->statusbar), 1);
+   gtk_misc_set_alignment (GTK_MISC(app->statusbar), 0.0, 0.5);
+   gtk_misc_set_padding (GTK_MISC(app->statusbar), 2, 2);
+diff --git a/hollywood/app/app_procs.c b/hollywood/app/app_procs.c
+index e6aaea0..d81e093 100644
+--- a/hollywood/app/app_procs.c
++++ b/hollywood/app/app_procs.c
+@@ -394,7 +394,7 @@ really_quit_dialog ()
+     menus_set_sensitive ("<Toolbox>/File/Quit", FALSE);
+     menus_set_sensitive ("<Image>/File/Quit", FALSE);
+     dialog = gtk_dialog_new ();
+-    dialog->name = "quit dialog";
++    gtk_widget_set_name (dialog, "quit dialog");
+     gtk_window_set_wmclass (GTK_WINDOW (dialog), "really_quit", PROGRAM_NAME);
+     gtk_window_set_title (GTK_WINDOW (dialog), _("Really Quit?"));
+     gtk_window_set_policy (GTK_WINDOW (dialog), FALSE, FALSE, FALSE);
+@@ -406,12 +406,12 @@ really_quit_dialog ()
+                         (GtkSignalFunc) really_quit_delete_callback,
+                         dialog);
+     vbox = gtk_vbox_new (FALSE, 1);
+-    vbox->name = "quit vbox";
++    gtk_widget_set_name (vbox, "quit vbox");
+     gtk_container_border_width (GTK_CONTAINER (vbox), 1);
+     gtk_box_pack_start (GTK_BOX (GTK_DIALOG (dialog)->vbox),
+                         vbox, TRUE, TRUE, 0);
+     label = gtk_label_new (_("Really quit? -- Not all is saved."));
+-    label->name = "quit label";
++    gtk_widget_set_name (label, "quit label");
+     gtk_box_pack_start (GTK_BOX (vbox), label, FALSE, FALSE, 4);
+     gtk_misc_set_alignment (GTK_MISC (label), 0.5, 0.5);
+     gtk_widget_show (label);
+diff --git a/hollywood/app/interface.c b/hollywood/app/interface.c
+index a934402..3224fc7 100644
+--- a/hollywood/app/interface.c
++++ b/hollywood/app/interface.c
+@@ -311,7 +311,7 @@ create_color_area (GtkWidget *parent)
+ 				  swap_width, swap_height);
+ 
+   frame = gtk_frame_new (NULL);
+-    frame->name = "color area frame";
++    gtk_widget_set_name (frame, "color area frame");
+   gtk_frame_set_shadow_type (GTK_FRAME (frame), GTK_SHADOW_OUT);
+   gtk_box_pack_start (GTK_BOX (parent), frame, FALSE, FALSE, 0);
+   gtk_widget_realize (frame);
+@@ -369,7 +369,7 @@ create_tools (GtkWidget *parent)
+ 
+   /*create_logo (parent);*/
+   table = gtk_table_new (ROWS, COLUMNS, TRUE);
+-    table->name = "tools table";
++    gtk_widget_set_name (table, "tools table");
+   gtk_box_pack_start (GTK_BOX (parent), table, TRUE, TRUE, 0);
+   gtk_widget_realize (table);
+ 
+@@ -378,7 +378,7 @@ create_tools (GtkWidget *parent)
+       button = gtk_radio_button_new (toolbox_table_group);
+     assert(button);
+     tool_widgets[i] = button;
+-    button->name = "tool widget i";
++    gtk_widget_set_name (button, "tool widget i");
+       gtk_container_border_width (GTK_CONTAINER (button), 0);
+       toolbox_table_group = gtk_radio_button_group (GTK_RADIO_BUTTON (button));
+ 
+@@ -422,7 +422,7 @@ create_tools (GtkWidget *parent)
+     for (; i < num_tools; i++)
+     {
+       tool_widgets[i] = button = gtk_radio_button_new (toolbox_table_group);
+-    button->name = "tool button i";
++    gtk_widget_set_name (button, "tool button i");
+       toolbox_table_group = gtk_radio_button_group (GTK_RADIO_BUTTON (button));
+ 
+       /*  dnd stuff  */
+@@ -535,7 +535,7 @@ create_pixmap_widget (GdkWindow *parent,
+ 
+   pixmap = create_pixmap (parent, &mask, data, width, height);
+   GtkWidget* widget = gtk_pixmap_new (pixmap, mask);
+-  widget->name = "tool pixmap i";
++  gtk_widget_set_name (widget, "tool pixmap i");
+   return widget;
+ }
+ 
+@@ -601,7 +601,7 @@ create_toolbox ()
+   i = SetToolbox(spline_edit_bits,stock_tool_edit_spline_22,_("Spline Edit"),SPLINE_EDIT,i);
+ 
+   app->toolbox = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+-    app->toolbox->name = "app window top";
++    gtk_widget_set_name (app->toolbox, "app window top");
+   gtk_window_set_wmclass (GTK_WINDOW (app->toolbox), "toolbox", PROGRAM_NAME);
+   gtk_window_set_title (GTK_WINDOW (app->toolbox),PROGRAM_TITLE);
+   gtk_widget_set_uposition (app->toolbox, GetRC()->toolbox_x, GetRC()->toolbox_y);
+@@ -651,7 +651,7 @@ create_toolbox ()
+   main_box = gtk_hbox_new (FALSE, 1);
+ #else
+   main_box = gtk_vbox_new(FALSE, 1);
+-  main_box->name = "toolbar vbox";
++  gtk_widget_set_name (main_box, "toolbar vbox");
+ #endif
+   gtk_container_border_width (GTK_CONTAINER (main_box), 1);
+   gtk_container_add (GTK_CONTAINER (app->toolbox), main_box);
+@@ -685,7 +685,7 @@ create_toolbox ()
+   box = gtk_vbox_new (FALSE, 1);
+ #else
+   box = gtk_hbox_new (FALSE, 1);
+-    box->name = "toolbar hbox 689";
++    gtk_widget_set_name (box, "toolbar hbox 689");
+ #endif
+   gtk_box_pack_start (GTK_BOX (main_box), box, TRUE, TRUE, 0);
+   gtk_container_border_width (GTK_CONTAINER (box), 0);
+@@ -779,7 +779,7 @@ create_display_shell (int   gdisp_unique_id,
+ 
+   /*  The toplevel shell */
+   gdisp->shell = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+-    gdisp->shell->name = "gdisp shell toplevel";
++    gtk_widget_set_name (gdisp->shell, "gdisp shell toplevel");
+   gtk_widget_ref  (gdisp->shell);
+   gtk_window_set_title (GTK_WINDOW (gdisp->shell), title);
+   gtk_window_set_wmclass (GTK_WINDOW (gdisp->shell), "image_window", PROGRAM_NAME);
+@@ -817,9 +817,9 @@ create_display_shell (int   gdisp_unique_id,
+    * -jcohen 12/4/01 */
+   
+   vbox = gtk_vbox_new(FALSE, 0);
+-    vbox->name = "shell vbox";
++    gtk_widget_set_name (vbox, "shell vbox");
+   table = gtk_table_new (3, 3, FALSE);
+-    table->name = "shell table";
++    gtk_widget_set_name (table, "shell table");
+   gtk_table_set_col_spacing (GTK_TABLE (table), 0, 1);
+   gtk_table_set_col_spacing (GTK_TABLE (table), 1, 2);
+   gtk_table_set_row_spacing (GTK_TABLE (table), 0, 1);
+@@ -831,11 +831,11 @@ create_display_shell (int   gdisp_unique_id,
+   
+   /*  scrollbars, rulers, canvas, menu popup button  */
+   gdisp->origin = gtk_frame_new (NULL);
+-    gdisp->origin->name = "shell frame";
++    gtk_widget_set_name (gdisp->origin, "shell frame");
+   gtk_frame_set_shadow_type (GTK_FRAME (gdisp->origin), GTK_SHADOW_OUT);
+ 
+   gdisp->hrule = gtk_hruler_new ();
+-    gdisp->hrule->name = "shell hrule";
++    gtk_widget_set_name (gdisp->hrule, "shell hrule");
+   gtk_widget_set_events (GTK_WIDGET (gdisp->hrule),
+ 			 GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK);
+   gtk_ruler_set_metric (GTK_RULER (gdisp->hrule), GetRC()->ruler_units);
+@@ -848,7 +848,7 @@ create_display_shell (int   gdisp_unique_id,
+ 		      gdisp);
+ 
+   gdisp->vrule = gtk_vruler_new ();
+-    gdisp->vrule->name = "shell vrule";
++    gtk_widget_set_name (gdisp->vrule, "shell vrule");
+   gtk_widget_set_events (GTK_WIDGET (gdisp->vrule),
+ 			 GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK);
+   gtk_ruler_set_metric (GTK_RULER (gdisp->vrule), GetRC()->ruler_units);
+@@ -861,15 +861,15 @@ create_display_shell (int   gdisp_unique_id,
+ 		      gdisp);
+ 
+   gdisp->hsb = gtk_hscrollbar_new (gdisp->hsbdata);
+-    gdisp->hsb->name = "shell hsb";
++    gtk_widget_set_name (gdisp->hsb, "shell hsb");
+   GTK_WIDGET_UNSET_FLAGS (gdisp->hsb, GTK_CAN_FOCUS);
+   gdisp->vsb = gtk_vscrollbar_new (gdisp->vsbdata);
+-    gdisp->vsb->name = "shell vsb";
++    gtk_widget_set_name (gdisp->vsb, "shell vsb");
+   GTK_WIDGET_UNSET_FLAGS (gdisp->vsb, GTK_CAN_FOCUS);
+   
+   /* canvas */ 
+   gdisp->canvas = gtk_drawing_area_new ();
+-    gdisp->canvas->name = "shell canvas";
++    gtk_widget_set_name (gdisp->canvas, "shell canvas");
+   gtk_drawing_area_size (GTK_DRAWING_AREA (gdisp->canvas), n_width, n_height);
+ #if 1
+   gtk_widget_set_events (gdisp->canvas, GDK_EXPOSURE_MASK | GDK_POINTER_MOTION_MASK | \
+@@ -1181,7 +1181,7 @@ query_string_box (const char        *title,
+   query_box = (QueryBox *) g_malloc_zero (sizeof (QueryBox));
+ 
+   qbox = gtk_dialog_new ();
+-    qbox->name = "query dialog";
++    gtk_widget_set_name (qbox, "query dialog");
+   gtk_window_set_title (GTK_WINDOW (qbox), title);
+   gtk_window_set_wmclass (GTK_WINDOW (qbox), "query_box", PROGRAM_NAME);
+ 
+@@ -1213,18 +1213,18 @@ query_string_box (const char        *title,
+   gtk_widget_show (button);
+ 
+   vbox = gtk_vbox_new (FALSE, 1);
+-    vbox->name = "query vbox";
++    gtk_widget_set_name (vbox, "query vbox");
+   gtk_container_border_width (GTK_CONTAINER (vbox), 2);
+   gtk_container_add (GTK_CONTAINER (GTK_DIALOG (qbox)->vbox), vbox);
+   gtk_widget_show (vbox);
+ 
+   label = gtk_label_new (message);
+-    label->name = "query label";
++    gtk_widget_set_name (label, "query label");
+   gtk_box_pack_start (GTK_BOX (vbox), label, TRUE, FALSE, 0);
+   gtk_widget_show (label);
+ 
+   entry = gtk_entry_new ();
+-    entry->name = "query entry";
++    gtk_widget_set_name (entry, "query entry");
+   gtk_box_pack_start (GTK_BOX (vbox), entry, TRUE, TRUE, 0);
+   if (initial)
+     gtk_entry_set_text (GTK_ENTRY (entry), initial);
+@@ -1347,7 +1347,7 @@ message_box (const char        *orig,
+       if(!status_label[i])
+       {
+ 	  status_label[i] = gtk_label_new (m);
+-        status_label[i]->name = "status label i";
++        gtk_widget_set_name (status_label[i], "status label i");
+ 	  gtk_box_pack_start (GTK_BOX (label_vbox[i]), status_label[i], TRUE, FALSE, 0);
+ 	  gtk_widget_show (status_label[i]);
+       }
+@@ -1376,7 +1376,7 @@ message_box (const char        *orig,
+   msg_box->i = i;
+ 
+   mbox = gtk_dialog_new ();
+-    mbox->name = "mbx dialog";
++    gtk_widget_set_name (mbox, "mbx dialog");
+   gtk_window_set_wmclass (GTK_WINDOW (mbox), "cine_message", PROGRAM_NAME);
+   gtk_window_set_title (GTK_WINDOW (mbox), PROGRAM_NAME " Message");
+   gtk_widget_set_uposition(mbox, GetRC()->generic_window_x, GetRC()->generic_window_y);
+@@ -1397,13 +1397,13 @@ message_box (const char        *orig,
+   gtk_widget_show (button);
+ 
+   vbox = gtk_vbox_new (FALSE, 1);
+-    vbox->name = "mbox vbox";
++    gtk_widget_set_name (vbox, "mbox vbox");
+   gtk_container_border_width (GTK_CONTAINER (vbox), 1);
+   gtk_container_add (GTK_CONTAINER (GTK_DIALOG (mbox)->vbox), vbox);
+   gtk_widget_show (vbox);
+ 
+   label_vbox[i] = gtk_vbox_new (FALSE, 1);
+-    label_vbox[i]->name = "mbox label vbox i";
++    gtk_widget_set_name (label_vbox[i], "mbox label vbox i");
+   gtk_box_pack_start (GTK_BOX (vbox), label_vbox[i], TRUE, FALSE, 0);
+   gtk_widget_show (label_vbox[i]);
+ 
+@@ -1414,7 +1414,7 @@ message_box (const char        *orig,
+ 	{
+ 	  *str = '\0';
+ 	  label = gtk_label_new (message);
+-        label->name = "mbox label";
++        gtk_widget_set_name (label, "mbox label");
+ 	  gtk_box_pack_start (GTK_BOX (label_vbox[i]), label, TRUE, FALSE, 0);
+ 	  gtk_widget_show (label);
+ 	  message = str + 1;
+@@ -1425,7 +1425,7 @@ message_box (const char        *orig,
+   if (*message != '\0')
+     {
+       label = gtk_label_new (message);
+-    label->name = "mbox label 1428";
++    gtk_widget_set_name (label, "mbox label 1428");
+       gtk_box_pack_start (GTK_BOX (label_vbox[i]), label, TRUE, FALSE, 0);
+       gtk_widget_show (label);
+     }
+diff --git a/hollywood/app/palette_bar.c b/hollywood/app/palette_bar.c
+index 0287ddc..c5b4abc 100644
+--- a/hollywood/app/palette_bar.c
++++ b/hollywood/app/palette_bar.c
+@@ -184,10 +184,10 @@ void create_palette_bar(GtkWidget* parent)
+     palettebar = malloc(sizeof(PaletteBar));
+     palettebar->bitmask = 0;
+     palettebar->hbox = gtk_hbox_new(FALSE, 1);
+-    palettebar->hbox->name = "palette hbox";
++    gtk_widget_set_name (palettebar->hbox, "palette hbox");
+     for (int i = 0; i < PALETTE_COUNT; i++)
+     {   palettebar->button[i] = gtk_button_new();
+-        palettebar->button[i]->name = "palette button i";
++        gtk_widget_set_name (palettebar->button[i], "palette button i");
+ #if 0
+         WidgetDupeStyle(palettebar->palette_button[i]);
+ #endif

@@ -499,6 +499,16 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=No
             if len(parts) != 3:
                 raise ReplayError(f"{source_path}:{lineno}: resize expects W H")
             lines.append(f"resize {int(parts[1])} {int(parts[2])}")
+        elif command == "close":
+            if len(parts) > 2:
+                raise ReplayError(f"{source_path}:{lineno}: close expects [latest]")
+            lines.append("close" if len(parts) == 1 else f"close {parts[1]}")
+        elif command == "target":
+            if len(parts) != 2 or parts[1] not in ("first", "latest"):
+                raise ReplayError(
+                    f"{source_path}:{lineno}: target expects first|latest"
+                )
+            lines.append(f"target {parts[1]}")
         elif command == "wait-window":
             if len(parts) != 3:
                 raise ReplayError(
@@ -1235,6 +1245,7 @@ def run_replay(args):
     if args.input_backend == "internal" and args.in_process_snapshots:
         states_dir = artifacts.states_dir
         artifacts.reset_dir(states_dir)
+        env.setdefault("LIBX11_COMPAT_STATE_SNAPSHOT_TIMEOUT_SEC", "120")
         trace.emit("resource.states", path=str(states_dir))
     sync_dir = None
     if args.input_backend == "internal":
@@ -1413,6 +1424,27 @@ def run_replay(args):
                             str(width),
                             str(height),
                         )
+                elif command == "close":
+                    if len(parts) > 2 or (len(parts) == 2 and parts[1] != "latest"):
+                        raise ReplayError("close expects [latest]")
+                    if args.input_backend == "xdotool":
+                        if len(parts) == 2:
+                            raise ReplayError(
+                                "close latest is not supported with the xdotool backend"
+                            )
+                        if target_window_id is None:
+                            raise ReplayError("close requires a prior wait-window")
+                        xdotool(env, "windowclose", target_window_id)
+                elif command == "target":
+                    if len(parts) != 2 or parts[1] not in ("first", "latest"):
+                        raise ReplayError("target expects first|latest")
+                    if args.input_backend == "xdotool":
+                        # The in-process target heuristic has no xdotool analog;
+                        # xdotool acts on explicit wait-window ids. Fail loudly
+                        # rather than let a script silently diverge per backend.
+                        raise ReplayError(
+                            "target is not supported with the xdotool backend"
+                        )
                 elif command == "screenshot":
                     if len(parts) not in (2, 6):
                         raise ReplayError("screenshot expects: name [x y w h]")
@@ -1430,13 +1462,14 @@ def run_replay(args):
                         # not exist yet when this step is reached, even
                         # though the in-process timeline schedules its
                         # snapshot at the same point. Poll up to the
-                        # libx11-compat snapshot timeout (15s); the
+                        # libx11-compat snapshot timeout (120s); the
                         # save itself is sub-millisecond but the main
                         # thread may be mid-reflow (e.g. right after a
-                        # resize) and not drain the SDL_USEREVENT for
-                        # several seconds.
+                        # resize) or flushing SDL's dummy-driver software
+                        # queue and not drain the SDL_USEREVENT for several
+                        # seconds.
                         wait_start = time.perf_counter()
-                        wait_for_nonempty_file(bmp_path, 16.0)
+                        wait_for_nonempty_file(bmp_path, 121.0)
                         add_metric(
                             metrics,
                             lineno,
@@ -1476,7 +1509,7 @@ def run_replay(args):
                         log_tail = tail_text(artifacts.app_log_path)
                         raise ReplayError(
                             f"in-process snapshot to {bmp_path} did "
-                            f"not produce a file within 5s; refusing "
+                            f"not produce a file within 121s; refusing "
                             f"to silently fall back to screencapture. "
                             f"App log tail:\n{log_tail}"
                         )
@@ -1556,7 +1589,7 @@ def run_replay(args):
                         sync_target = sync_dir / f"wait-converge-{lineno}.json"
                         failure_target = sync_dir / f"wait-converge-{lineno}.fail"
                         wait_start = time.perf_counter()
-                        timeout_s = wait_converge_timeout_ms(parts) / 1000.0 + 16.0
+                        timeout_s = wait_converge_timeout_ms(parts) / 1000.0 + 121.0
                         if not wait_for_nonempty_file(
                             sync_target, timeout_s, proc=proc
                         ):
@@ -1590,7 +1623,7 @@ def run_replay(args):
                         continue
                     state_target = states_dir / f"{parts[1]}.json"
                     wait_start = time.perf_counter()
-                    if not wait_for_nonempty_file(state_target, 16.0):
+                    if not wait_for_nonempty_file(state_target, 121.0):
                         raise ReplayError(
                             f"state-snapshot {state_target} did not appear "
                             f"within {time.perf_counter() - wait_start:.2f}s"

@@ -160,17 +160,18 @@ static void signalSnapshotResult(uint64_t eventGeneration, int rc)
     pthread_mutex_unlock(&snapshotMutex);
 }
 
-/* Block up to 15s for the main thread to finish the round-trip. 15s covers
+/* Block up to 120s for the main thread to finish the round-trip. 120s covers
  * Motif/Xt reflow bursts (resize, freshly mapped XmMainWindow, focus-driven
- * traversal) without masking a genuinely stuck main thread. waitRcOut, if
- * non-NULL, receives the underlying pthread_cond_timedwait return so callers
- * can distinguish timeout from spurious wake in their diagnostic LOG.
+ * traversal) and SDL dummy-driver software-render flushes without masking a
+ * genuinely stuck main thread. waitRcOut, if non-NULL, receives the underlying
+ * pthread_cond_timedwait return so callers can distinguish timeout from
+ * spurious wake in their diagnostic LOG.
  */
 static int waitSnapshotResult(int *waitRcOut)
 {
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += 15;
+    deadline.tv_sec += 120;
     pthread_mutex_lock(&snapshotMutex);
     int waitRc = 0;
     while (!snapshotDone && waitRc == 0)

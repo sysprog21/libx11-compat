@@ -177,6 +177,43 @@ int main(void)
     CHECK(button_only_press.xbutton.y == 50,
           "button-only ButtonPress keeps current window-local y");
 
+    Window child =
+        XCreateSimpleWindow(dpy, win, 1, 1, 20, 20, 0, BlackPixel(dpy, screen),
+                            WhitePixel(dpy, screen));
+    CHECK(child != None, "latest-target child create");
+    Window dialog =
+        XCreateSimpleWindow(dpy, root, 500, 20, 100, 80, 0,
+                            BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+    CHECK(dialog != None, "latest-target dialog create");
+    XMapWindow(dpy, dialog);
+    XSync(dpy, False);
+    XMapWindow(dpy, child);
+    XSync(dpy, False);
+    CHECK(replayTargetSelectLatest(), "latest target selected after child map");
+    CHECK(replayTargetTranslateLocal(5, 5, &translated_root_x,
+                                     &translated_root_y),
+          "latest target translated after child map");
+    CHECK(translated_root_x == 505,
+          "child map did not move latest back to older top-level");
+    CHECK(translated_root_y == 25,
+          "child map kept latest y on newer top-level");
+    XDestroyWindow(dpy, dialog);
+    XSync(dpy, False);
+    CHECK(replayTargetSelectLatest(), "latest target fell back after destroy");
+    CHECK(replayTargetTranslateLocal(5, 5, &translated_root_x,
+                                     &translated_root_y),
+          "fallback latest translated after destroy");
+    CHECK(translated_root_x == 75,
+          "latest target fell back to remaining top-level x");
+    CHECK(translated_root_y == 85,
+          "latest target fell back to remaining top-level y");
+    XDestroyWindow(dpy, child);
+    XSync(dpy, False);
+    while (XPending(dpy) > 0) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+    }
+
     AsyncFakeClickArgs async_args = {dpy, screen, 0, 0, 0};
     pthread_t thread;
     CHECK(pthread_create(&thread, NULL, async_fake_click, &async_args) == 0,
@@ -268,7 +305,8 @@ int main(void)
     CHECK(keys > 0, "KeyPress arrived");
 
     /* Drain any leftover events (such as the auto-generated TEXTINPUT) from the
-     * first test */
+     * first test
+     */
     SDL_StartTextInput();
     SDL_Delay(20);
     XEvent discard;
@@ -290,7 +328,8 @@ int main(void)
     XSetICFocus(ic);
 
     /* Drain any stale IM commits generated during initialization before we
-     * start typing */
+     * start typing
+     */
     SDL_Delay(20);
     while (XCheckIfEvent(dpy, &discard, match_im_commit, NULL)) {
         /* discard */

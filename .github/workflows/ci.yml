@@ -4,8 +4,9 @@
 # LLVM apt repo is added so clang-format-20 is available on ubuntu-24.04
 # (which ships clang-format-18 by default).
 #
-# All 12 top-level jobs (lint, build, debug-build, sanitize, motif,
-# osiris, xfig, xwpe, xephem, gimp, grace, sdl3) run in parallel. The sdl3 job builds the
+# Top-level jobs (lint, build, debug-build, sanitize, motif, osiris,
+# xfig, xwpe, xephem, gimp, gtk1, cinepaint, grace, sdl3) run in
+# parallel. The sdl3 job builds the
 # compat stack against the native SDL3 backend (SDL_BACKEND=sdl3); every
 # other job uses the default SDL2 backend, so the SDL3 translation shim in
 # src/sdl-compat.h is only exercised there. Osiris and Xfig each have no Motif
@@ -22,7 +23,8 @@
 # per-job ccache directories for C object reuse.
 #
 # Screenshot differential gates (Motif / ViolaWWW / Mosaic / Osiris /
-# Xfig vs. system libX11) live in differential.yml. They run in
+# Xfig / GIMP / XNEdit / xwpe / XEphem / XCircuit / Grace vs. system
+# libX11) live in differential.yml. They run in
 # parallel with this workflow on the same trigger so PR feedback is
 # not blocked by the heavier double-build pipeline.
 name: CI
@@ -58,6 +60,11 @@ env:
   # GIMP autoconf step also needs the MOTIF_BUILD_PKGS chain (autoconf + the
   # bundled Motif build).
   GIMP_BUILD_PKGS: "libpng-dev libjpeg-dev zlib1g-dev"
+  # GTK1 configures through CMake; python3-pil backs replay image assertions.
+  GTK1_BUILD_PKGS: "cmake g++ python3-pil"
+  # CinePaint configures through CMake and its PNG/JPEG plug-ins link the
+  # system image libraries.
+  CINEPAINT_BUILD_PKGS: "cmake g++ libpng-dev libjpeg-dev zlib1g-dev python3-pil"
   # xwpe builds its DAP debug client against json-c and its terminal backend
   # against ncursesw, neither pulled in by COMMON_BUILD_PKGS, and runs
   # autoreconf (so it also needs the MOTIF_BUILD_PKGS autotools chain).
@@ -1244,6 +1251,211 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ui-smoke-gimp
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- GTK1 integration and validation ----
+  #
+  # GTK1 builds against libx11-compat with the compat/gtk1-patches/ stack.
+  # Keep it separate from CinePaint so other GTK1 clients can reuse the same
+  # CI workload shape.
+  gtk1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.GTK1_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/gtk1
+            !build/upstream/cinepaint
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache GTK1 source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/gtk1
+          key: gtk1-src-${{ runner.os }}-${{ hashFiles('mk/gtk1.mk', 'compat/gtk1-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-gtk1-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-gtk1-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=512M
+          ccache --zero-stats
+          echo "CXX=g++" >>"$GITHUB_ENV"
+
+      - name: Build GTK1 against compat stack
+        id: gtk1
+        run: make gtk1 -j"$(nproc)"
+
+      - name: Run GTK1 replay check
+        if: ${{ !cancelled() && steps.gtk1.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 125
+        run: make check-smoke-gtk1
+
+      - name: Upload GTK1 build log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: gtk1-build-log
+          path: build/gtk1/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GTK1 UI smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-gtk1
+          path: build/ui-smoke/gtk1-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- CinePaint integration and validation ----
+  #
+  # CinePaint Hollywood builds against GTK1 as a make prerequisite. The replay
+  # checks cover CinePaint startup, first-run, canvas, about, and PNG palette
+  # flows, assert that no new WARN_UNIMPLEMENTED calls leaked into those paths,
+  # and verify that editor/plugins do not link host libX11/libXext.
+  #
+  # There is no CinePaint system-libX11 differential target yet; this job
+  # runs the available CI gates and stays in ci.yml.
+  cinepaint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.CINEPAINT_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/gtk1
+            !build/upstream/cinepaint
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache GTK1 source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/gtk1
+          key: gtk1-src-${{ runner.os }}-${{ hashFiles('mk/gtk1.mk', 'compat/gtk1-patches/**') }}
+
+      - name: Cache CinePaint source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/cinepaint
+          key: cinepaint-src-${{ runner.os }}-${{ hashFiles('mk/cinepaint.mk', 'compat/cinepaint-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-cinepaint-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-cinepaint-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=1024M
+          ccache --zero-stats
+          echo "CXX=g++" >>"$GITHUB_ENV"
+
+      - name: Build CinePaint against compat stack
+        id: cinepaint
+        run: make cinepaint -j"$(nproc)"
+
+      - name: Run CinePaint replay checks
+        if: ${{ !cancelled() && steps.cinepaint.outcome == 'success' }}
+        env:
+          UI_REPLAY_XVFB: --xvfb
+          UI_REPLAY_SCREENSHOT_COMMAND: import
+          UI_REPLAY_DISPLAY: 125
+        run: make check-cinepaint-no-unexpected-stubs check-cinepaint-no-host-x11
+
+      - name: Upload GTK1 build log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cinepaint-gtk1-build-log
+          path: build/gtk1/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload CinePaint build log on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cinepaint-build-log
+          path: build/cinepaint/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload CinePaint UI smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-smoke-cinepaint
           path: build/ui-smoke
           if-no-files-found: warn
           retention-days: 7

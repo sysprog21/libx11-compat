@@ -1,0 +1,49 @@
+--- a/hollywood/plugin/png/png.c
++++ b/hollywood/plugin/png/png.c
+@@ -585,28 +585,28 @@
+   switch (png_get_color_type (pp, info))
+     {
+     case PNG_COLOR_TYPE_RGB:
+-      image_type = GIMP_RGB;
+-      layer_type = GIMP_RGB_IMAGE;
++      image_type = RGB;
++      layer_type = RGB_IMAGE;
+       break;
+ 
+     case PNG_COLOR_TYPE_RGB_ALPHA:
+-      image_type = GIMP_RGB;
+-      layer_type = GIMP_RGBA_IMAGE;
++      image_type = RGB;
++      layer_type = RGBA_IMAGE;
+       break;
+ 
+     case PNG_COLOR_TYPE_GRAY:
+-      image_type = GIMP_GRAY;
+-      layer_type = GIMP_GRAY_IMAGE;
++      image_type = GRAY;
++      layer_type = GRAY_IMAGE;
+       break;
+ 
+     case PNG_COLOR_TYPE_GRAY_ALPHA:
+-      image_type = GIMP_GRAY;
+-      layer_type = GIMP_GRAYA_IMAGE;
++      image_type = GRAY;
++      layer_type = GRAYA_IMAGE;
+       break;
+ 
+     case PNG_COLOR_TYPE_PALETTE:
+-      image_type = GIMP_INDEXED;
+-      layer_type = GIMP_INDEXED_IMAGE;
++      image_type = INDEXED;
++      layer_type = INDEXED_IMAGE;
+       break;
+ 
+     default:
+@@ -621,6 +621,7 @@
+   int width = png_get_image_width (pp, info);
+   int height = png_get_image_height (pp, info);
+   int channels = png_get_channels (pp, info);
++  bpp = channels * (bit_depth == 16 ? 2 : 1);
+ 
+ #endif
+     image = cine_image_new(width, height, image_type);

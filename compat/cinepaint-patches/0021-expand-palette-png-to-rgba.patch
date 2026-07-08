@@ -1,0 +1,27 @@
+--- a/hollywood/plugin/png/png.c
++++ b/hollywood/plugin/png/png.c
+@@ -455,6 +455,13 @@
+   else
+     bit_depth = 8;
+ 
++  if (png_get_color_type (pp, info) == PNG_COLOR_TYPE_PALETTE)
++    {
++      png_set_palette_to_rgb (pp);
++      if (png_get_valid (pp, info, PNG_INFO_tRNS))
++        png_set_tRNS_to_alpha (pp);
++    }
++
+   if (png_get_bit_depth (pp, info) < 8)
+     {
+       if (png_get_color_type (pp, info) == PNG_COLOR_TYPE_GRAY)
+--- a/hollywood/plugin/png/png.c
++++ b/hollywood/plugin/png/png.c
+@@ -774,7 +774,7 @@
+             num= end - begin;
+             cine_pixel_rgn_get_rect(&pixel_rgn, pixel, 0, begin,
+                                     drawable->width, num);
+-            for (i= 0; i < tile_height * drawable->width; ++i)
++            for (i= 0; i < num * drawable->width; ++i)
+             {   pixel[i*2+1]= alpha [ pixel[i*2] ];
+                 pixel[i*2]-= empty;
+             }

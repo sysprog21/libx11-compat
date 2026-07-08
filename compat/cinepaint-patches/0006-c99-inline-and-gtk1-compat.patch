@@ -1,0 +1,131 @@
+--- a/hollywood/app/app.h
++++ b/hollywood/app/app.h
+@@ -260,7 +260,7 @@
+ DLL_API GSList* GetInternalPlugins();
+ DLL_API GSList* GetExternalPlugins();
+ 
+-inline
++static inline
+ const char* GetBaseName(const char* long_filename)
+ {	const char* basename = strrchr(long_filename,'/');
+ 	if(basename)
+@@ -273,7 +273,7 @@
+ 	return long_filename;
+ }
+ 
+-inline
++static inline
+ char* RemoveBaseName(char* long_filename)
+ {	char* basename = strrchr(long_filename, '/');
+ 	if (basename)
+--- a/hollywood/app/app_procs.c
++++ b/hollywood/app/app_procs.c
+@@ -273,7 +273,7 @@
+     get_active_pattern ();
+     paint_funcs_area_setup ();
+     LogoProgress(_("Tablet"), _(""));
+-    app->tablet = GdkTabletOpen();
++    app->tablet = 0;
+     destroy_initialization_status_window();
+ }
+ 
+@@ -322,7 +322,6 @@
+         tools_options_dialog_free ();
+         layout_save();
+     }
+-    GdkTabletClose(app->tablet);
+     app->tablet = 0;
+     /*  gtk_exit (0); */
+     gtk_main_quit();
+--- a/hollywood/app/base_frame_manager.c
++++ b/hollywood/app/base_frame_manager.c
+@@ -432,7 +432,7 @@
+ 
+ const char* OUTPUT_PATH = PROGRAM_NAME;
+ 
+-inline
++static inline
+ const char* GetBasename(const char* pathname)
+ {   char* basename = strrchr(pathname, '/');
+     if (!basename)
+@@ -442,7 +442,7 @@
+     return basename;
+ }
+ 
+-inline
++static inline
+ int IsOutputDir(const char* path)
+ {   const char* match = strstr(path,OUTPUT_PATH);
+     if(!match)
+--- a/hollywood/app/gdisplay.c
++++ b/hollywood/app/gdisplay.c
+@@ -218,8 +218,6 @@
+   if (gdisplay_set_colormanaged(gdisp, GetRC()->cms_manage_by_default) == FALSE)
+   {   g_message(_(_("Cannot colormanage this display.\nEither image or display profile are undefined.\n. To avoid this message switch off automatic colormanagement in File/Preferences/Color Management")));
+   }
+-  App* app = GetApp();
+-  GdkTabletStart(app->tablet,gdisp->canvas->window);
+   return gdisp;
+ }
+ 
+--- a/hollywood/app/interface.h
++++ b/hollywood/app/interface.h
+@@ -54,7 +54,7 @@
+ #define TOOLBOX_COUNT 26
+ extern ToolButton tool_data[TOOLBOX_COUNT];
+ 
+-inline
++static inline
+ const char* GetToolDesc(int type)
+ {	if(type <0 || type >= TOOLBOX_COUNT)
+ 	{	return 0;
+--- a/hollywood/app/palette_bar.c
++++ b/hollywood/app/palette_bar.c
+@@ -26,6 +26,8 @@
+ #include "paint_funcs.h"
+ #include "palette_bar.h"
+ 
++#define gtk_widget_modify_bg(widget, state, color) ((void)0)
++
+ void color_area_select_callback(PixelRow* color, ColorSelectState state, void* client_data);
+ //void color_select_update(ColorSelectP csp, ColorSelectUpdateType update);
+ void color_select_update_caller (ColorSelectP csp);
+--- a/hollywood/app/palette_bar.h
++++ b/hollywood/app/palette_bar.h
+@@ -7,7 +7,7 @@
+ #include <gtk/gtkwidget.h>
+ 
+ //extern ColorSelectP color_select;
+-inline
++static inline
+ unsigned short FLOAT_TO_USHORT(float x)
+ {	if(!x)
+ 	{	return 0;
+@@ -17,7 +17,7 @@
+ 	return us;
+ }
+ 
+-inline
++static inline
+ float USHORT_TO_FLOAT(unsigned short x)
+ {	if(!x)
+ 	{	return 0.;
+--- a/hollywood/i18n.h
++++ b/hollywood/i18n.h
+@@ -13,7 +13,7 @@
+ #if 0
+ DLL_API const char* _(const char* s);
+ #else
+-inline
++static inline
+ const char* _(const char* s)
+ {	return s;
+ }
+@@ -21,6 +21,7 @@
+ 
+ #define N_(String) (String)
+ #define gettext(String)
++#define __(String) (String)
+ #define gettext_noop(String) (String)
+ #define dgettext(Domain,Message) (char *) (Message)
+ #define dcgettext(Domain,Message,Type) (char *) (Message)

@@ -1,0 +1,13 @@
+--- a/gtk/gtkfilesel.c
++++ b/gtk/gtkfilesel.c
+@@ -368,7 +368,9 @@ is_not_utf8 (const gchar *string)
+ static gboolean
+ is_utf8 (const gchar *string)
+ {
+-  return g_utf8_validate (string, -1, NULL);
++  (void) string;
++  /* File selection paths are local byte strings in this compat build. */
++  return TRUE;
+ }
+ 
+ #ifdef G_WITH_CYGWIN

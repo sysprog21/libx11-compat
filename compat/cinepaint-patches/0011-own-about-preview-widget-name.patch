@@ -1,0 +1,11 @@
+--- a/hollywood/app/about_dialog.c
++++ b/hollywood/app/about_dialog.c
+@@ -338,7 +338,7 @@ int load_splash_ppm(GtkWidget *window)
+     }
+ 
+   preview = gtk_preview_new (GTK_PREVIEW_COLOR);
+-  preview->name = "splash preview";
++  gtk_widget_set_name (preview, "splash preview");
+   gtk_preview_size (GTK_PREVIEW (preview), logo->logo_width, logo->logo_height);
+   pixelrow = g_new (guchar, logo->logo_width * 3);
+ 

@@ -259,14 +259,13 @@ long XExtendedMaxRequestSize(Display *dpy)
     return 0;
 }
 
-Status XAllocColorCells(
-    register Display *dpy,
-    Colormap cmap,
-    Bool contig,
-    unsigned long *masks,
-    /* LISTofCARD32 */ /* RETURN */ unsigned int nplanes,
-    /* CARD16 */ unsigned long *pixels,
-    /* LISTofCARD32 */ /* RETURN */ unsigned int ncolors) /* CARD16 */
+Status XAllocColorCells(register Display *dpy,
+                        Colormap cmap,
+                        Bool contig,
+                        unsigned long *masks /* LISTofCARD32 */ /* RETURN */,
+                        unsigned int nplanes /* CARD16 */,
+                        unsigned long *pixels /* LISTofCARD32 */ /* RETURN */,
+                        unsigned int ncolors /* CARD16 */)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -786,14 +785,14 @@ int _XGetHostname(char *buf, int maxlen)
 
 void XSetWMProperties(
     Display *dpy,
-    Window w,                  /* window to decorate */
-    XTextProperty *windowName, /* name of application */
-    XTextProperty *iconName,   /* name string for icon */
-    char **argv,               /* command line */
-    int argc,                  /* size of command line */
-    XSizeHints *sizeHints,     /* size hints for window in its normal state */
-    XWMHints *wmHints,         /* miscellaneous window manager hints */
-    XClassHint *classHints)    /* resource name and class */
+    Window w /* window to decorate */,
+    XTextProperty *windowName /* name of application */,
+    XTextProperty *iconName /* name string for icon */,
+    char **argv /* command line */,
+    int argc /* size of command line */,
+    XSizeHints *sizeHints /* size hints for window in its normal state */,
+    XWMHints *wmHints /* miscellaneous window manager hints */,
+    XClassHint *classHints /* resource name and class */)
 {
     XTextProperty textprop;
     char hostName[256];
@@ -1225,50 +1224,42 @@ XcmsCCC XcmsCreateCCC(Display *dpy,
                       XPointer gamutCompClientData,
                       XcmsWhiteAdjustProc whitePtAdjProc,
                       XPointer whitePtAdjClientData)
-/* 	DESCRIPTION
- * 		Given a Display, Screen, Visual, etc., this routine creates
- * 		an appropriate Color Conversion Context.
+/* Given a Display, Screen, Visual, etc., this routine creates an appropriate
+ * Color Conversion Context.
  *
- * 	RETURNS
- * 		Returns NULL if failed; otherwise address of the newly
- * 		created XcmsCCC.
+ * Return NULL if failed; otherwise address of the newly created XcmsCCC.
  */
 {
     WARN_UNIMPLEMENTED;
     return NULL;
 }
 
+/* Converts color specifications in an array of XcmsColor * structures from RGBi
+ * format to RGB format.
+ *
+ * Return XcmsFailure if failed, XcmsSuccess if succeeded without gamut
+ * compression. XcmsSuccessWithCompression if succeeded with gamut compression.
+ */
 Status XcmsRGBiToRGB(
     XcmsCCC ccc,
-    XcmsColor *pXcmsColors_in_out,
-    /* pointer to XcmsColors to convert */ unsigned int nColors,
-    /* Number of colors */
-    Bool
-        *pCompressed) /* pointer to a bit array */ /* * DESCRIPTION * Converts
-                                                      color specifications in
-                                                      an array of XcmsColor *
-                                                      structures from RGBi
-                                                      format to RGB format. * *
-                                                      RETURNS * XcmsFailure if
-                                                      failed, * XcmsSuccess if
-                                                      succeeded without gamut
-                                                      compression. *
-                                                      XcmsSuccessWithCompression
-                                                      if succeeded with gamut *
-                                                      compression. */
+    XcmsColor *pXcmsColors_in_out /* pointer to XcmsColors to convert */,
+    unsigned int nColors /* Number of colors */,
+    Bool *pCompressed) /* pointer to a bit array */
 {
     WARN_UNIMPLEMENTED;
     return 0;
 }
 
-Status XcmsCIELuvToCIEuvY(
-    XcmsCCC ccc,
-    XcmsColor *pLuv_WhitePt,
-    XcmsColor *pColors_in_out,
-    unsigned int nColors) /* * DESCRIPTION * Converts color specifications in an
-                             array of XcmsColor * structures from CIELuv format
-                             to CIEuvY format. * * RETURNS * XcmsFailure if
-                             failed, * XcmsSuccess if succeeded. * */
+/* Converts color specifications in an array of XcmsColor structures from CIELuv
+ * format to CIEuvY format.
+ *
+ * Return XcmsFailure if failed, XcmsSuccess if succeeded.
+ */
+
+Status XcmsCIELuvToCIEuvY(XcmsCCC ccc,
+                          XcmsColor *pLuv_WhitePt,
+                          XcmsColor *pColors_in_out,
+                          unsigned int nColors)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -1486,16 +1477,17 @@ int XSetAccessControl(register Display *dpy, int mode)
     return 0;
 }
 
-Status XcmsConvertColors(
-    XcmsCCC ccc,
-    XcmsColor *pColors_in_out,
-    unsigned int nColors,
-    XcmsColorFormat targetFormat,
-    Bool *pCompressed) /* * DESCRIPTION * Convert XcmsColor structures to
-                          another format * * RETURNS * XcmsFailure if failed, *
-                          XcmsSuccess if succeeded without gamut compression, *
-                          XcmsSuccessWithCompression if succeeded with gamut *
-                          compression. * */
+/* Convert XcmsColor structures to another format
+ *
+ * Return XcmsFailure if failed, XcmsSuccess if succeeded without gamut
+ * compression, XcmsSuccessWithCompression if succeeded with gamut compression.
+ */
+
+Status XcmsConvertColors(XcmsCCC ccc,
+                         XcmsColor *pColors_in_out,
+                         unsigned int nColors,
+                         XcmsColorFormat targetFormat,
+                         Bool *pCompressed)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -1527,27 +1519,28 @@ XcmsWhiteAdjustProc XcmsSetWhiteAdjustProc(
     return NULL;
 }
 
+/* Converts color specifications in an array of XcmsColor structures from RGB
+ * format to RGBi format.
+ *
+ * Return XcmsFailure if failed, XcmsSuccess if succeeded.
+ */
+
 Status XcmsRGBToRGBi(
     XcmsCCC ccc,
-    XcmsColor *pXcmsColors_in_out,
-    /* pointer to XcmsColors to convert */ unsigned int nColors,
-    /* Number of colors */
-    Bool *pCompressed) /* pointer to a bit array */ /* * DESCRIPTION * Converts
-                                                       color specifications in
-                                                       an array of XcmsColor *
-                                                       structures from RGB
-                                                       format to RGBi format. *
-                                                       * RETURNS * XcmsFailure
-                                                       if failed, * XcmsSuccess
-                                                       if succeeded. */
+    XcmsColor *pXcmsColors_in_out /* pointer to XcmsColors to convert */,
+    unsigned int nColors /* Number of colors */,
+    Bool *pCompressed /* pointer to a bit array */)
 {
     WARN_UNIMPLEMENTED;
     return 0;
 }
 
-int XcmsScreenNumberOfCCC(
-    XcmsCCC ccc) /* * DESCRIPTION * Queries the screen number of the specified
-                    CCC. * * RETURNS * screen number. * */
+/* Queries the screen number of the specified CCC.
+ *
+ * Return screen number.
+ */
+
+int XcmsScreenNumberOfCCC(XcmsCCC ccc)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -1555,9 +1548,9 @@ int XcmsScreenNumberOfCCC(
 
 int XStoreNamedColor(register Display *dpy,
                      Colormap cmap,
-                     _Xconst char *name,
-                     /* STRING8 */ unsigned long pixel,
-                     /* CARD32 */ int flags) /* DoRed, DoGreen, DoBlue */
+                     _Xconst char *name /* STRING8 */,
+                     unsigned long pixel /* CARD32 */,
+                     int flags /* DoRed, DoGreen, DoBlue */)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -1633,13 +1626,10 @@ int XTextExtents16(
     XFontStruct *fs,
     _Xconst XChar2b *string,
     int nchars,
-    int *dir,
-    /* RETURN font information */ int *font_ascent,
-    /* RETURN font information */ int *font_descent,
-    /* RETURN font information */ register XCharStruct *overall) /* RETURN
-                                                                    character
-                                                                    information
-                                                                      */
+    int *dir /* RETURN font information */,
+    int *font_ascent /* RETURN font information */,
+    int *font_descent /* RETURN font information */,
+    register XCharStruct *overall /* RETURN character information */)
 {
     int width =
         fs && string && nchars > 0 ? XTextWidth16(fs, string, nchars) : 0;
@@ -1696,13 +1686,10 @@ int XTextExtents(
     XFontStruct *fs,
     _Xconst char *string,
     int nchars,
-    int *dir,
-    /* RETURN font information */ int *font_ascent,
-    /* RETURN font information */ int *font_descent,
-    /* RETURN font information */ register XCharStruct *overall) /* RETURN
-                                                                    character
-                                                                    information
-                                                                  */
+    int *dir /* RETURN font information */,
+    int *font_ascent /* RETURN font information */,
+    int *font_descent /* RETURN font information */,
+    register XCharStruct *overall /* RETURN character information */)
 {
     int width = string && nchars > 0 ? XTextWidth(fs, string, nchars) : 0;
     fillTextExtents(fs, width, dir, font_ascent, font_descent, overall);
@@ -1845,27 +1832,18 @@ int XDisableAccessControl(register Display *dpy)
     return 0;
 }
 
+/* Converts color specifications in an array of XcmsColor structures from CIEXYZ
+ * format to RGBi format.
+ *
+ * Return XcmsFailure if failed, XcmsSuccess if succeeded without gamut
+ * compression. XcmsSuccessWithCompression if succeeded with gamut compression.
+ */
+
 Status XcmsCIEXYZToRGBi(
     XcmsCCC ccc,
-    XcmsColor *pXcmsColors_in_out,
-    /* pointer to XcmsColors to convert */ unsigned int nColors,
-    /* Number of colors */
-    Bool *
-        pCompressed) /* pointer to an array of Bool */ /* * DESCRIPTION *
-                                                          Converts color
-                                                          specifications in an
-                                                          array of XcmsColor *
-                                                          structures from RGB
-                                                          format to RGBi
-                                                          format. * * RETURNS *
-                                                          XcmsFailure if
-                                                          failed, * XcmsSuccess
-                                                          if succeeded without
-                                                          gamut compression. *
-                                                          XcmsSuccessWithCompression
-                                                          if succeeded with
-                                                          gamut * compression.
-                                                        */
+    XcmsColor *pXcmsColors_in_out /* pointer to XcmsColors to convert */,
+    unsigned int nColors /* Number of colors */,
+    Bool *pCompressed /* pointer to an array of Bool */)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -2495,19 +2473,17 @@ int XwcTextListToTextProperty(Display *dpy,
     return Success;
 }
 
+/* Converts color specifications in an array of XcmsColor structures from RGBi
+ * format to CIEXYZ format.
+ *
+ * Return XcmsFailure if failed, XcmsSuccess if succeeded.
+ */
+
 Status XcmsRGBiToCIEXYZ(
     XcmsCCC ccc,
-    XcmsColor *pXcmsColors_in_out,
-    /* pointer to XcmsColors to convert */ unsigned int nColors,
-    /* Number of colors */
-    Bool *pCompressed) /* pointer to a bit array */ /* * DESCRIPTION * Converts
-                                                       color specifications in
-                                                       an array of XcmsColor *
-                                                       structures from RGBi
-                                                       format to CIEXYZ format.
-                                                       * * RETURNS * XcmsFailure
-                                                       if failed, * XcmsSuccess
-                                                       if succeeded. */
+    XcmsColor *pXcmsColors_in_out /* pointer to XcmsColors to convert */,
+    unsigned int nColors /* Number of colors */,
+    Bool *pCompressed /* pointer to a bit array */)
 {
     WARN_UNIMPLEMENTED;
     return 0;
@@ -2570,18 +2546,17 @@ int XSetIconSizes(Display *dpy,
     return 0;
 }
 
-int XWMGeometry(
-    Display *dpy,
-    /* user's display connection */ int screen,
-    /* screen on which to do computation */ _Xconst char *user_geom,
-    /* user provided geometry spec */ _Xconst char *def_geom,
-    /* default geometry spec for window */ unsigned int bwidth,
-    /* border width */ XSizeHints *hints,
-    /* usually WM_NORMAL_HINTS */ int *x_return,
-    /* location of window */ int *y_return,
-    /* location of window */ int *width_return,
-    /* size of window */ int *height_return,
-    /* size of window */ int *gravity_return) /* gravity of window */
+int XWMGeometry(Display *dpy /* user's display connection */,
+                int screen /* screen on which to do computation */,
+                _Xconst char *user_geom /* user provided geometry spec */,
+                _Xconst char *def_geom /* default geometry spec for window */,
+                unsigned int bwidth /* border width */,
+                XSizeHints *hints /* usually WM_NORMAL_HINTS */,
+                int *x_return /* location of window */,
+                int *y_return /* location of window */,
+                int *width_return /* size of window */,
+                int *height_return /* size of window */,
+                int *gravity_return /* gravity of window */)
 {
     int ux = 0, uy = 0;
     unsigned int uwidth = 0, uheight = 0;
@@ -2778,11 +2753,10 @@ int XGeometry(Display *dpy,
     return userMask;
 }
 
-Status XGetIconSizes(
-    Display *dpy,
-    Window w,
-    /* typically, root */ XIconSize **size_list,
-    /* RETURN */ int *count) /* RETURN number of items on the list */
+Status XGetIconSizes(Display *dpy,
+                     Window w /* typically, root */,
+                     XIconSize **size_list /* RETURN */,
+                     int *count /* RETURN number of items on the list */)
 {
     (void) dpy;
     (void) w;
@@ -3118,11 +3092,11 @@ static int readBitmapHex(FILE *f, int *out)
 int XReadBitmapFile(Display *display,
                     Drawable d,
                     _Xconst char *filename,
-                    unsigned int *width,
-                    /* RETURNED */ unsigned int *height,
-                    /* RETURNED */ Pixmap *pixmap,
-                    /* RETURNED */ int *x_hot,
-                    /* RETURNED */ int *y_hot) /* RETURNED */
+                    unsigned int *width /* RETURNED */,
+                    unsigned int *height /* RETURNED */,
+                    Pixmap *pixmap /* RETURNED */,
+                    int *x_hot /* RETURNED */,
+                    int *y_hot /* RETURNED */)
 {
     if (!filename || !width || !height || !pixmap)
         return BitmapOpenFailed;
@@ -3301,9 +3275,9 @@ Status XTextPropertyToStringList(XTextProperty *tp,
 
 Status XGetRGBColormaps(Display *dpy,
                         Window w,
-                        XStandardColormap **stdcmap,
-                        /* RETURN */ int *count,
-                        /* RETURN */ Atom property) /* XA_RGB_BEST_MAP, etc. */
+                        XStandardColormap **stdcmap /* RETURN */,
+                        int *count /* RETURN */,
+                        Atom property /* XA_RGB_BEST_MAP, etc. */)
 {
     if (!dpy || !stdcmap || !count || property == None)
         return 0;

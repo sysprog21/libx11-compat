@@ -1,0 +1,8 @@
+--- a/hollywood/app/rc.c
++++ b/hollywood/app/rc.c
+@@ -723,4 +723,4 @@
+    */
+-    if(!val1p || !val2p)
++    if(!val1p && !val2p)
+ 	{	return ReturnRC_ERROR();
+ 	}

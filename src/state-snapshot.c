@@ -17,6 +17,7 @@
 
 #include "state-snapshot.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,8 @@
  * same condvar so they cannot interleave.
  */
 #define STATE_SNAPSHOT_EVENT_CODE 0x57415453 /* 'STAW' */
+#define STATE_SNAPSHOT_TIMEOUT_SEC 120
+#define STATE_SNAPSHOT_MAX_TIMEOUT_SEC 120
 
 static pthread_mutex_t stateMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t stateCond = PTHREAD_COND_INITIALIZER;
@@ -59,6 +62,22 @@ static SDL_atomic_t stateEventType = {(int) (Uint32) -1};
  * so it does not prematurely satisfy a fresh waiter on the next request.
  */
 static uint64_t stateGeneration = 0;
+
+static long stateSnapshotTimeoutSec(void)
+{
+    const char *env = getenv("LIBX11_COMPAT_STATE_SNAPSHOT_TIMEOUT_SEC");
+    if (env && *env) {
+        char *end = NULL;
+        errno = 0;
+        long value = strtol(env, &end, 10);
+        if (end != env && *end == '\0' && errno != ERANGE && value > 0) {
+            if (value > STATE_SNAPSHOT_MAX_TIMEOUT_SEC)
+                return STATE_SNAPSHOT_MAX_TIMEOUT_SEC;
+            return value;
+        }
+    }
+    return STATE_SNAPSHOT_TIMEOUT_SEC;
+}
 
 /* Tracked atoms. Index here is just the position in the windows[].properties
  * record; the actual atom value is the literal from atom-list.h / net-atoms.h.
@@ -506,7 +525,7 @@ int stateSnapshotRequestAndWait(const char *path)
     wakeEventPipeForExternalEvent(NULL);
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += 15;
+    deadline.tv_sec += stateSnapshotTimeoutSec();
     pthread_mutex_lock(&stateMutex);
     int wait_rc = 0;
     while (!stateDone && wait_rc == 0)

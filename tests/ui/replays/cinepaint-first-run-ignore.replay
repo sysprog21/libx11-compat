@@ -1,0 +1,6 @@
+delay 3000
+target-motion 235 506
+button 1 click
+delay 10000
+state-snapshot after-ignore
+assert-exit running

@@ -1,0 +1,35 @@
+--- a/hollywood/app/fileops.c
++++ b/hollywood/app/fileops.c
+@@ -819,13 +819,31 @@ append_ext (char * string, char *ext)
+     return s;
+ }
+ 
++static void
++file_filter_selection (PluginProc *proc, GtkWidget *filesel)
++{
++    if (!proc->extensions_list)
++    {   return;
++    }
++    char *ext = (char *) proc->extensions_list->data;
++    if (!ext || !ext[0])
++    {   return;
++    }
++    GString *pattern = g_string_new ("*.");
++    g_string_append (pattern, ext);
++    gtk_file_selection_complete (GTK_FILE_SELECTION(filesel), pattern->str);
++    g_string_free (pattern, TRUE);
++}
++
+ static void
+ file_load_type_callback (GtkWidget *w,
+                          gpointer   client_data)
+ {   PluginProc* proc = (PluginProc *) client_data;
+-    file_update_name (proc, fileload);
+     App* app = GetApp();
+     app->wire_buffer->load_file_proc = proc;
++    if (fileload)
++    {   file_filter_selection (proc, fileload);
++    }
+ }
+ 
+ static void

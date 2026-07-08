@@ -1,0 +1,50 @@
+--- a/hollywood/app/splash.c
++++ b/hollywood/app/splash.c
+@@ -192,7 +192,7 @@ void make_initialization_status_window(void)
+                               GDK_WINDOW_TYPE_HINT_DIALOG);
+ #else
+     app->win_initstatus = gtk_window_new (GTK_WINDOW_DIALOG);
+-    app->win_initstatus->name = "win_initstatus";
++    gtk_widget_set_name (app->win_initstatus, "win_initstatus");
+ //    g_object_ref_sink(G_OBJECT(app->win_initstatus)); // convert floating ref to standard ref
+ #endif
+     gtk_signal_connect (GTK_OBJECT (app->win_initstatus), "delete_event",
+@@ -205,7 +205,7 @@ void make_initialization_status_window(void)
+     {   logo->show_logo = SHOW_LATER;
+     }
+     vbox = gtk_vbox_new(FALSE, 4);
+-    vbox->name = "app_initstatus vbox";
++    gtk_widget_set_name (vbox, "app_initstatus vbox");
+     gtk_container_add(GTK_CONTAINER(app->win_initstatus), vbox);
+     gtk_widget_push_visual (gtk_preview_get_visual ());
+     gtk_widget_push_colormap  (gtk_preview_get_cmap ());
+@@ -214,17 +214,17 @@ void make_initialization_status_window(void)
+     gtk_drawing_area_size (GTK_DRAWING_AREA (logo->logo_area), logo->logo_area_width, logo->logo_area_height);
+     gtk_box_pack_start_defaults(GTK_BOX(vbox), logo->logo_area);
+     logo->label1 = gtk_label_new("");
+-    logo->label1->name = "logo label1";
++    gtk_widget_set_name (logo->label1, "logo label1");
+     gtk_box_pack_start_defaults(GTK_BOX(vbox), logo->label1);
+     logo->label2 = gtk_label_new("");
+-    logo->label2->name = "logo label2";
++    gtk_widget_set_name (logo->label2, "logo label2");
+ #if 1
+     gtk_signal_connect(GTK_OBJECT(logo->logo_area), "expose_event",
+         (GtkSignalFunc)splash_logo_expose, NULL);
+ #endif
+     gtk_box_pack_start_defaults(GTK_BOX(vbox), logo->label2);
+     logo->pbar = gtk_progress_bar_new();
+-    logo->pbar->name = "app progress bar";
++    gtk_widget_set_name (logo->pbar, "app progress bar");
+     gtk_box_pack_start_defaults(GTK_BOX(vbox), logo->pbar);
+     gtk_widget_show(vbox);
+     gtk_widget_show (logo->logo_area);
+@@ -300,7 +300,7 @@ Logo* GetLogo()
+     }
+     memset(logo, 0, sizeof(Logo));
+     logo->logo_area = gtk_drawing_area_new();
+-    logo->logo_area->name = "logo area";
++    gtk_widget_set_name (logo->logo_area, "logo area");
+     logo->logo_area_width = (logo->logo_width > LOGO_WIDTH_MIN) ? logo->logo_width : LOGO_WIDTH_MIN;
+     logo->logo_area_height = (logo->logo_height > LOGO_HEIGHT_MIN) ? logo->logo_height : LOGO_HEIGHT_MIN;
+     return logo;

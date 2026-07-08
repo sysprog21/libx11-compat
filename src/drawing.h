@@ -54,8 +54,9 @@ typedef struct {
     } else if (IS_TYPE(drawable, PIXMAP)) {                                    \
         markPixmapReadbackDirty(drawable);                                     \
         renderer = GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;              \
-        if (SDL_SetRenderTarget(renderer, GET_PIXMAP_TEXTURE(drawable)) !=     \
-            0) {                                                               \
+        SDL_Texture *target = GET_PIXMAP_TEXTURE(drawable);                    \
+        if (SDL_GetRenderTarget(renderer) != target &&                         \
+            SDL_SetRenderTarget(renderer, target) != 0) {                      \
             fprintf(stderr,                                                    \
                     "SDL_SetRenderTarget failed while trying to get renderer " \
                     "in %s, %s, %d: %s\n",                                     \

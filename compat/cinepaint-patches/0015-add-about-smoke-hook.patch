@@ -1,0 +1,10 @@
+--- a/hollywood/app/app_procs.c
++++ b/hollywood/app/app_procs.c
+@@ -278,4 +278,6 @@ void app_init (void)
+     app->tablet = 0;
+     destroy_initialization_status_window();
++    if (getenv("CINEPAINT_TEST_OPEN_ABOUT"))
++        about_dialog_create(0);
+ }
+ 
+ void app_exit_finish (void)

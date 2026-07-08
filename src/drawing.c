@@ -936,8 +936,6 @@ static void presentDrawableRectIfVisibleEx(Drawable drawable,
     if (!drawableTopLevelRect(drawable, haveRect ? rect : NULL, &topWindow,
                               &topRect))
         return;
-    WindowStruct *windowStruct = GET_WINDOW_STRUCT(topWindow);
-    Bool firstPresent = !windowStruct->hasPresented;
     if (haveRect) {
         if (invalidateStamps)
             invalidateTextStampsTopRect(topWindow, &topRect);
@@ -947,8 +945,6 @@ static void presentDrawableRectIfVisibleEx(Drawable drawable,
             flushTextStampsForWindow(topWindow);
         markWindowNeedsPresent(topWindow);
     }
-    if (firstPresent)
-        drawWindowDataToScreen();
 }
 
 void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect)
@@ -1067,22 +1063,28 @@ SDL_Renderer *getWindowRenderer(Window window)
         invalidateSdlDrawStateCache();
     }
 
-    if (GET_WINDOW_STRUCT(drawWindow)->sdlTexture) {
-        if (SDL_SetRenderTarget(
-                renderer, GET_WINDOW_STRUCT(drawWindow)->sdlTexture) != 0) {
+    SDL_Texture *target = GET_WINDOW_STRUCT(drawWindow)->sdlTexture;
+    if (target) {
+        if (SDL_GetRenderTarget(renderer) != target &&
+            SDL_SetRenderTarget(renderer, target) != 0) {
             LOG("SDL_SetRenderTarget failed in %s: %s\n", __func__,
                 SDL_GetError());
         }
     } else if (IS_MAPPED_TOP_LEVEL_WINDOW(drawWindow) ||
                drawWindow == SCREEN_WINDOW) {
-        if (SDL_SetRenderTarget(renderer, NULL) != 0) {
+        if (SDL_GetRenderTarget(renderer) != NULL &&
+            SDL_SetRenderTarget(renderer, NULL) != 0) {
             LOG("SDL_SetRenderTarget(NULL) failed in %s: %s\n", __func__,
                 SDL_GetError());
         }
     }
     LOG("Setting viewport to {x = %d, y = %d, w = %d, h = %d}\n", viewPort.x,
         viewPort.y, viewPort.w, viewPort.h);
-    if (SDL_RenderSetViewport(renderer, &viewPort)) {
+    SDL_Rect currentViewport;
+    SDL_RenderGetViewport(renderer, &currentViewport);
+    if ((currentViewport.x != viewPort.x || currentViewport.y != viewPort.y ||
+         currentViewport.w != viewPort.w || currentViewport.h != viewPort.h) &&
+        SDL_RenderSetViewport(renderer, &viewPort)) {
         LOG("SDL_RenderSetViewport failed in %s: %s\n", __func__,
             SDL_GetError());
     }
@@ -1618,12 +1620,55 @@ static Bool rectInsideDrawable(Drawable drawable, const SDL_Rect *rect)
            rect->w <= width - rect->x && rect->h <= height - rect->y;
 }
 
+static Bool clipCopyAreaRects(Drawable src,
+                              Drawable dest,
+                              int srcX,
+                              int srcY,
+                              unsigned int width,
+                              unsigned int height,
+                              int destX,
+                              int destY,
+                              SDL_Rect *srcOut,
+                              SDL_Rect *destOut)
+{
+    int srcWidth = 0, srcHeight = 0, destWidth = 0, destHeight = 0;
+    if (!getDrawableSize(src, &srcWidth, &srcHeight) ||
+        !getDrawableSize(dest, &destWidth, &destHeight))
+        return False;
+
+    SDL_Rect requestedDest = {destX, destY, (int) width, (int) height};
+    SDL_Rect destBounds = {0, 0, destWidth, destHeight};
+    SDL_Rect clippedDest;
+    if (!SDL_IntersectRect(&requestedDest, &destBounds, &clippedDest))
+        return False;
+
+    SDL_Rect shiftedSrc = {
+        .x = srcX + (clippedDest.x - destX),
+        .y = srcY + (clippedDest.y - destY),
+        .w = clippedDest.w,
+        .h = clippedDest.h,
+    };
+    SDL_Rect srcBounds = {0, 0, srcWidth, srcHeight};
+    SDL_Rect clippedSrc;
+    if (!SDL_IntersectRect(&shiftedSrc, &srcBounds, &clippedSrc))
+        return False;
+
+    clippedDest.x += clippedSrc.x - shiftedSrc.x;
+    clippedDest.y += clippedSrc.y - shiftedSrc.y;
+    clippedDest.w = clippedSrc.w;
+    clippedDest.h = clippedSrc.h;
+    *srcOut = clippedSrc;
+    *destOut = clippedDest;
+    return clippedSrc.w > 0 && clippedSrc.h > 0;
+}
+
 static void postCopyAreaExposure(Display *display,
                                  Drawable src,
                                  Drawable dest,
                                  GC gc,
                                  const SDL_Rect *srcRect,
-                                 const SDL_Rect *destRect)
+                                 const SDL_Rect *requestedDestRect,
+                                 const SDL_Rect *copiedDestRect)
 {
     if (!gcWantsGraphicsExposures(gc))
         return;
@@ -1631,8 +1676,46 @@ static void postCopyAreaExposure(Display *display,
         postEvent(display, dest, NoExpose, X_CopyArea, 0);
         return;
     }
-    postEvent(display, dest, GraphicsExpose, (SDL_Rect *) destRect, (size_t) 1,
-              X_CopyArea, 0);
+    int destWidth = 0, destHeight = 0;
+    SDL_Rect destBounds;
+    SDL_Rect visibleDest;
+    if (!getDrawableSize(dest, &destWidth, &destHeight))
+        return;
+    destBounds = (SDL_Rect) {0, 0, destWidth, destHeight};
+    if (!SDL_IntersectRect(requestedDestRect, &destBounds, &visibleDest))
+        return;
+
+    SDL_Rect expose[4];
+    size_t exposeCount = 0;
+    if (!copiedDestRect) {
+        expose[exposeCount++] = visibleDest;
+    } else {
+        SDL_Rect copied;
+        if (!SDL_IntersectRect(copiedDestRect, &visibleDest, &copied)) {
+            expose[exposeCount++] = visibleDest;
+        } else {
+            if (copied.y > visibleDest.y)
+                expose[exposeCount++] =
+                    (SDL_Rect) {visibleDest.x, visibleDest.y, visibleDest.w,
+                                copied.y - visibleDest.y};
+            if (copied.y + copied.h < visibleDest.y + visibleDest.h)
+                expose[exposeCount++] = (SDL_Rect) {
+                    visibleDest.x, copied.y + copied.h, visibleDest.w,
+                    visibleDest.y + visibleDest.h - (copied.y + copied.h)};
+            if (copied.x > visibleDest.x)
+                expose[exposeCount++] =
+                    (SDL_Rect) {visibleDest.x, copied.y,
+                                copied.x - visibleDest.x, copied.h};
+            if (copied.x + copied.w < visibleDest.x + visibleDest.w)
+                expose[exposeCount++] = (SDL_Rect) {
+                    copied.x + copied.w, copied.y,
+                    visibleDest.x + visibleDest.w - (copied.x + copied.w),
+                    copied.h};
+        }
+    }
+    for (size_t i = 0; i < exposeCount; i++)
+        postEvent(display, dest, GraphicsExpose, &expose[i], exposeCount - i,
+                  X_CopyArea, 0);
 }
 
 void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip)
@@ -3986,7 +4069,9 @@ static int xCopyAreaRasterOp(Display *display,
                              unsigned int width,
                              unsigned int height,
                              int dest_x,
-                             int dest_y)
+                             int dest_y,
+                             const SDL_Rect *exposureSrcRect,
+                             const SDL_Rect *exposureDestRect)
 {
     if (!gc)
         return 0;
@@ -4038,7 +4123,6 @@ static int xCopyAreaRasterOp(Display *display,
         handleError(0, display, src, 0, BadValue, 0);
         return -1;
     }
-    SDL_Rect requestedSrcRect = {src_x, src_y, (int) width, (int) height};
     SDL_Rect srcRect = {(int) srcReadX, (int) srcReadY, destRect.w, destRect.h};
 
     size_t pixelCount = (size_t) destRect.w * (size_t) destRect.h;
@@ -4141,7 +4225,8 @@ static int xCopyAreaRasterOp(Display *display,
         handleError(0, display, src, 0, BadMatch, 0);
         return -1;
     }
-    postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect, &destRect);
+    postCopyAreaExposure(display, src, dest, gc, exposureSrcRect,
+                         exposureDestRect, &destRect);
     if (shapeOk)
         presentDrawableRectIfVisible(dest, &destRect);
     return 1;
@@ -4168,6 +4253,12 @@ int XCopyArea(Display *display,
     TYPE_CHECK(src, DRAWABLE, display, 0);
     TYPE_CHECK(dest, DRAWABLE, display, 0);
     LOG("%s: Copy area from 0x%08lx to 0x%08lx\n", __func__, src, dest);
+    width = (uint16_t) width;
+    height = (uint16_t) height;
+    if (width == 0 || height == 0) {
+        handleError(0, display, src, 0, BadValue, 0);
+        return 0;
+    }
     /* Reject anything whose extents would overflow signed int. Downstream
      * SDL_Rect math uses int x/y/w/h and would wrap; capping width/height alone
      * is not enough because src_x + width or dest_x + width can still overflow
@@ -4181,17 +4272,6 @@ int XCopyArea(Display *display,
         handleError(0, display, src, 0, BadValue, 0);
         return 0;
     }
-    /* Non-GXcopy or masked plane masks need per-pixel arithmetic that
-     * SDL_RenderCopy cannot express. xCopyAreaRasterOp does the slow
-     * read-modify-write through SDL_RenderReadPixels and returns 1 if it
-     * handled the request, 0 to fall through to the fast plain-blit path.
-     */
-    {
-        int rasterRc = xCopyAreaRasterOp(display, src, dest, gc, src_x, src_y,
-                                         width, height, dest_x, dest_y);
-        if (rasterRc != 0)
-            return rasterRc > 0 ? 1 : 0;
-    }
     if (IS_TYPE(src, WINDOW)) {
         if (IS_INPUT_ONLY(src)) {
             LOG("BadMatch: Got input only window as the source in %s!\n",
@@ -4203,13 +4283,53 @@ int XCopyArea(Display *display,
             return 0;
         }
     }
-    if (IS_TYPE(dest, WINDOW)) {
-        if (IS_INPUT_ONLY(dest)) {
-            LOG("BadMatch: Got input only window as the destination in %s!\n",
-                __func__);
-            handleError(0, display, dest, 0, BadMatch, 0);
-            return 0;
+    if (IS_TYPE(dest, WINDOW) && IS_INPUT_ONLY(dest)) {
+        LOG("BadMatch: Got input only window as the destination in %s!\n",
+            __func__);
+        handleError(0, display, dest, 0, BadMatch, 0);
+        return 0;
+    }
+
+    SDL_Rect requestedSrcRect = {src_x, src_y, (int) width, (int) height};
+    SDL_Rect requestedDestRect = {dest_x, dest_y, (int) width, (int) height};
+    SDL_Rect srcRect;
+    SDL_Rect destRect;
+    if (!clipCopyAreaRects(src, dest, src_x, src_y, width, height, dest_x,
+                           dest_y, &srcRect, &destRect)) {
+        int destWidth = 0, destHeight = 0;
+        SDL_Rect destBounds;
+        if (getDrawableSize(dest, &destWidth, &destHeight)) {
+            destBounds = (SDL_Rect) {0, 0, destWidth, destHeight};
+            if (SDL_IntersectRect(&requestedDestRect, &destBounds, &destRect)) {
+                postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
+                                     &requestedDestRect, NULL);
+                return 1;
+            }
         }
+        if (gcWantsGraphicsExposures(gc))
+            postEvent(display, dest, NoExpose, X_CopyArea, 0);
+        return 1;
+    }
+    src_x = srcRect.x;
+    src_y = srcRect.y;
+    dest_x = destRect.x;
+    dest_y = destRect.y;
+    width = (unsigned int) destRect.w;
+    height = (unsigned int) destRect.h;
+
+    /* Non-GXcopy or masked plane masks need per-pixel arithmetic that
+     * SDL_RenderCopy cannot express. xCopyAreaRasterOp does the slow
+     * read-modify-write through SDL_RenderReadPixels and returns 1 if it
+     * handled the request, 0 to fall through to the fast plain-blit path.
+     */
+    {
+        int rasterRc = xCopyAreaRasterOp(display, src, dest, gc, src_x, src_y,
+                                         width, height, dest_x, dest_y,
+                                         &requestedSrcRect, &requestedDestRect);
+        if (rasterRc != 0)
+            return rasterRc > 0 ? 1 : 0;
+    }
+    if (IS_TYPE(dest, WINDOW)) {
         SDL_Renderer *destRenderer = getWindowRenderer(dest);
         if (!destRenderer) {
             handleError(0, display, dest, 0, BadDrawable, 0);
@@ -4226,18 +4346,8 @@ int XCopyArea(Display *display,
             SDL_Renderer *pixmapRenderer =
                 GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
             if (pixmapTexture && destRenderer == pixmapRenderer) {
-                SDL_Rect fastSrc = {
-                    .x = src_x,
-                    .y = src_y,
-                    .w = (int) width,
-                    .h = (int) height,
-                };
-                SDL_Rect fastDest = {
-                    .x = dest_x,
-                    .y = dest_y,
-                    .w = (int) width,
-                    .h = (int) height,
-                };
+                SDL_Rect fastSrc = srcRect;
+                SDL_Rect fastDest = destRect;
                 SDL_SetTextureBlendMode(pixmapTexture, SDL_BLENDMODE_NONE);
                 ShapeGuard fastSg;
                 shapeGuardBegin(&fastSg, dest, destRenderer, &fastDest);
@@ -4260,8 +4370,8 @@ int XCopyArea(Display *display,
                     handleError(0, display, src, 0, BadMatch, 0);
                     return 0;
                 }
-                postCopyAreaExposure(display, src, dest, gc, &fastSrc,
-                                     &fastDest);
+                postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
+                                     &requestedDestRect, &fastDest);
                 if (fastShapeOk)
                     presentDrawableRectIfVisible(dest, &fastDest);
                 return 1;
@@ -4273,19 +4383,6 @@ int XCopyArea(Display *display,
             handleError(0, display, src, 0, BadDrawable, 0);
             return 0;
         }
-        SDL_Rect srcRect = {
-            .x = src_x,
-            .y = src_y,
-            .w = (int) width,
-            .h = (int) height,
-        };
-        SDL_Rect requestedSrcRect = srcRect;
-        SDL_Rect destRect = {
-            .x = dest_x,
-            .y = dest_y,
-            .w = (int) width,
-            .h = (int) height,
-        };
         SDL_Surface *srcSurface = getRenderSurfaceRect(srcRenderer, &srcRect);
         if (!srcSurface) {
             handleError(0, display, src, 0, BadMatch, 0);
@@ -4337,10 +4434,46 @@ int XCopyArea(Display *display,
         }
         SDL_DestroyTexture(srcTexture);
         postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
-                             &destRect);
+                             &requestedDestRect, &destRect);
         if (slowShapeOk)
             presentDrawableRectIfVisible(dest, &destRect);
         return 1;
+    }
+
+    if (IS_TYPE(src, PIXMAP) && IS_TYPE(dest, PIXMAP) && src != dest) {
+        SDL_Texture *pixmapTexture = GET_PIXMAP_TEXTURE(src);
+        SDL_Renderer *sharedRenderer =
+            GET_WINDOW_STRUCT(SCREEN_WINDOW)->sdlRenderer;
+        SDL_Renderer *destRenderer = NULL;
+        GET_RENDERER(dest, destRenderer);
+        if (!destRenderer) {
+            handleError(0, display, dest, 0, BadDrawable, 0);
+            return 0;
+        }
+        if (pixmapTexture && destRenderer == sharedRenderer) {
+            SDL_SetTextureBlendMode(pixmapTexture, SDL_BLENDMODE_NONE);
+            int clipCount = getGcClipIterationCount(gc, dest);
+            int rcCopy = 0;
+            for (int clip = 0; clip < clipCount; clip++) {
+                if (!setGcClipForIteration(destRenderer, gc, clip, dest))
+                    continue;
+                if (SDL_RenderCopy(destRenderer, pixmapTexture, &srcRect,
+                                   &destRect) != 0) {
+                    LOG("SDL_RenderCopy failed in %s pixmap fast path: %s\n",
+                        __func__, SDL_GetError());
+                    rcCopy = -1;
+                    break;
+                }
+            }
+            clearRendererClip(destRenderer);
+            if (rcCopy != 0) {
+                handleError(0, display, src, 0, BadMatch, 0);
+                return 0;
+            }
+            postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
+                                 &requestedDestRect, &destRect);
+            return 1;
+        }
     }
 
     SDL_Renderer *srcRenderer;
@@ -4349,12 +4482,6 @@ int XCopyArea(Display *display,
         handleError(0, display, src, 0, BadDrawable, 0);
         return 0;
     }
-    SDL_Rect srcRect = {
-        .x = src_x,
-        .y = src_y,
-        .w = (int) width,
-        .h = (int) height,
-    };
     SDL_Surface *srcSurface = getRenderSurfaceRect(srcRenderer, &srcRect);
     if (!srcSurface) {
         handleError(0, display, src, 0, BadMatch, 0);
@@ -4384,12 +4511,6 @@ int XCopyArea(Display *display,
         .w = (int) width,
         .h = (int) height,
     };
-    SDL_Rect destRect = {
-        .x = dest_x,
-        .y = dest_y,
-        .w = (int) width,
-        .h = (int) height,
-    };
     SDL_SetTextureBlendMode(srcTexture, SDL_BLENDMODE_NONE);
     int clipCount = getGcClipIterationCount(gc, dest);
     int rcCopy = 0;
@@ -4411,7 +4532,8 @@ int XCopyArea(Display *display,
         return 0;
     }
 
-    postCopyAreaExposure(display, src, dest, gc, &srcRect, &destRect);
+    postCopyAreaExposure(display, src, dest, gc, &requestedSrcRect,
+                         &requestedDestRect, &destRect);
     presentDrawableRectIfVisible(dest, &destRect);
     return 1;
 }
@@ -4544,6 +4666,27 @@ int XFillRectangle(Display *dpy,
     return XFillRectangles(dpy, d, gc, &rect, 1);
 }
 
+/* Fill a batch of rectangles under the active clip. ClipByChildren windows fill
+ * one rect at a time so occluding children can be punched out per rect;
+ * everything else takes SDL's batched fill.
+ */
+static void fillRectsClipAware(SDL_Renderer *renderer,
+                               Drawable d,
+                               const SDL_Rect *rects,
+                               int count,
+                               Bool clipByChildren)
+{
+    if (clipByChildren) {
+        for (int r = 0; r < count; r++) {
+            if (!renderFillRectClipByChildren(renderer, d, &rects[r]))
+                LOG("SDL_RenderFillRect failed in %s: %s\n", __func__,
+                    SDL_GetError());
+        }
+    } else if (SDL_RenderFillRects(renderer, rects, count)) {
+        LOG("SDL_RenderFillRects failed in %s: %s\n", __func__, SDL_GetError());
+    }
+}
+
 int XFillRectangles(Display *display,
                     Drawable d,
                     GC gc,
@@ -4612,6 +4755,15 @@ int XFillRectangles(Display *display,
     for (int r = 1; r < validRectangles; r++)
         unionRect(&shapeUnion, &sdlRectangles[r], &shapeUnion);
     SDL_Surface *shapeBase = captureShapeMaskBaseline(d, renderer, &shapeUnion);
+    Bool clipByChildren =
+        IS_TYPE(d, WINDOW) && gContext->subWindowMode == ClipByChildren;
+    /* True only once a fill path has punched children out per rect. The
+     * raster-op path below cannot punch (it blits whole rects through
+     * readback), so it leaves this False and forces the child-repaint post-step
+     * even on a ClipByChildren window; otherwise the overdrawn children never
+     * get their Expose and keep the raster-op damage.
+     */
+    Bool childrenPunched = False;
     if (gContext->fillStyle == FillSolid) {
         LOG("Fill_style is %s\n", "FillSolid");
         if (gContext->function != GXcopy) {
@@ -4638,13 +4790,11 @@ int XFillRectangles(Display *display,
             for (int clip = 0; clip < clipCount; clip++) {
                 if (!setGcClipForIteration(renderer, gc, clip, d))
                     continue;
-                if (SDL_RenderFillRects(renderer, &sdlRectangles[0],
-                                        validRectangles)) {
-                    LOG("SDL_RenderFillRects failed in %s: %s\n", __func__,
-                        SDL_GetError());
-                }
+                fillRectsClipAware(renderer, d, sdlRectangles, validRectangles,
+                                   clipByChildren);
             }
             clearRendererClip(renderer);
+            childrenPunched = clipByChildren;
         }
     } else if (gContext->fillStyle == FillTiled) {
         LOG("Fill_style is %s\n", "FillTiled");
@@ -4656,13 +4806,11 @@ int XFillRectangles(Display *display,
         for (int clip = 0; clip < clipCount; clip++) {
             if (!setGcClipForIteration(renderer, gc, clip, d))
                 continue;
-            if (SDL_RenderFillRects(renderer, &sdlRectangles[0],
-                                    validRectangles)) {
-                LOG("SDL_RenderFillRects failed in %s: %s\n", __func__,
-                    SDL_GetError());
-            }
+            fillRectsClipAware(renderer, d, sdlRectangles, validRectangles,
+                               clipByChildren);
         }
         clearRendererClip(renderer);
+        childrenPunched = clipByChildren;
     } else if (gContext->fillStyle == FillStippled) {
         LOG("Fill_style is %s\n", "FillStippled");
     }
@@ -4673,8 +4821,12 @@ int XFillRectangles(Display *display,
         SDL_FreeSurface(shapeBase);
     }
     if (shapeOk) {
-        for (int r = 0; r < validRectangles; r++)
-            repaintMappedChildrenInRect(display, d, &sdlRectangles[r]);
+        for (int r = 0; r < validRectangles; r++) {
+            if (childrenPunched)
+                presentDrawableRectIfVisible(d, &sdlRectangles[r]);
+            else
+                repaintMappedChildrenInRect(display, d, &sdlRectangles[r]);
+        }
     }
     free(heapRectangles);
     return 1;

@@ -1,0 +1,32 @@
+--- a/hollywood/app/datadir.c
++++ b/hollywood/app/datadir.c
+@@ -146,10 +146,26 @@ void SetPathData(const char* arg)
+ {   if(app.data_path || !arg)
+     {   return;
+     }
+-    app.arg0 = strdup(arg);
++    if(arg[0] == DIR_SEPARATOR_C)
++    {   app.arg0 = strdup(arg);
++    }
++    else
++    {   char cwd[PATH_MAX];
++        if(getcwd(cwd, sizeof(cwd)))
++        {   app.arg0 = (char*) malloc(strlen(cwd) + strlen(arg) + 2);
++            sprintf(app.arg0, "%s%s%s", cwd, DIR_SEPARATOR, arg);
++        }
++        else
++        {   app.arg0 = strdup(arg);
++        }
++    }
+-    FlipSlashes(app.arg0);
+-    app.data_path = strdup(app.arg0);
++    FlipSlashes(app.arg0);
++    app.data_path = (char*) malloc(strlen(app.arg0) + strlen(app.tips) + 1);
++    if(!app.data_path)
++    {   return;
++    }
++    strcpy(app.data_path, app.arg0);
+     if(!FindTipsFile())
+     {   return;
+     }
+ }
