@@ -1,0 +1,7 @@
+{
+  "assertions": [
+    {"type": "region_min_unique_colors", "rect": [20, 20, 275, 116], "min_unique_colors": 24},
+    {"type": "region_min_unique_colors", "rect": [20, 136, 275, 116], "min_unique_colors": 24},
+    {"type": "region_min_unique_colors", "rect": [295, 20, 300, 232], "min_unique_colors": 8}
+  ]
+}

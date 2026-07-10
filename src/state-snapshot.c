@@ -216,6 +216,21 @@ static void writePropertyRecord(UiSnapshotProperty *out,
         memcpy(out->bytes, stored->data, copy);
 }
 
+/* Does the point at the window's bottom-left corner route back to the window
+ * itself under the current shape mask? Used to confirm a shaped window still
+ * owns its lower-left pixels for event delivery. Precondition: window is a
+ * direct child of SCREEN_WINDOW, so ws->x/ws->y are already root-relative and
+ * can be handed straight to getContainingWindow(SCREEN_WINDOW, ...). The only
+ * caller, populateWindowEntry, snapshots exactly those top-level children.
+ */
+static int shapeBottomLeftHitsSelf(WindowStruct *ws, Window window)
+{
+    if (ws->h == 0)
+        return 0;
+    int rootY = ws->y + (int) ws->h - 1;
+    return getContainingWindow(SCREEN_WINDOW, ws->x, rootY) == window ? 1 : 0;
+}
+
 static void populateWindowEntry(UiSnapshotWindow *entry, Window window)
 {
     WindowStruct *ws = GET_WINDOW_STRUCT(window);
@@ -229,6 +244,12 @@ static void populateWindowEntry(UiSnapshotWindow *entry, Window window)
     entry->sdl_flags = ws->sdlWindow ? SDL_GetWindowFlags(ws->sdlWindow) : 0;
     entry->override_redirect = ws->overrideRedirect ? 1 : 0;
     entry->map_state = (int) ws->mapState;
+    entry->shape_bounding = ws->shapeBoundingMask ? 1 : 0;
+    entry->shape_bounding_origin = windowPointInsideBoundingShape(ws, 0, 0);
+    entry->shape_bounding_bottom_left =
+        ws->h > 0 ? windowPointInsideBoundingShape(ws, 0, (int) ws->h - 1) : 0;
+    entry->shape_bounding_bottom_left_hit = shapeBottomLeftHitsSelf(ws, window);
+    entry->shape_clip = ws->shapeClipMask ? 1 : 0;
     entry->event_mask = ws->eventMask;
     entry->wm_class[0] = '\0';
     entry->wm_name[0] = '\0';
@@ -308,11 +329,17 @@ static void emitWindowEntry(FILE *fp, const UiSnapshotWindow *entry, Bool last)
             "    {\"window\":%lu,\"parent\":%lu,\"x\":%d,\"y\":%d,\"w\":%u,"
             "\"h\":%u,\"sdl_window_id\":%u,\"sdl_flags\":%u,"
             "\"override_redirect\":%d,\"map_state\":%d,\"event_mask\":%ld,"
+            "\"shape_bounding\":%d,\"shape_bounding_origin\":%d,"
+            "\"shape_bounding_bottom_left\":%d,"
+            "\"shape_bounding_bottom_left_hit\":%d,\"shape_clip\":%d,"
             "\"wm_class\":\"",
             (unsigned long) entry->window, (unsigned long) entry->parent,
             entry->x, entry->y, entry->w, entry->h,
             (unsigned) entry->sdl_window_id, (unsigned) entry->sdl_flags,
-            entry->override_redirect, entry->map_state, entry->event_mask);
+            entry->override_redirect, entry->map_state, entry->event_mask,
+            entry->shape_bounding, entry->shape_bounding_origin,
+            entry->shape_bounding_bottom_left,
+            entry->shape_bounding_bottom_left_hit, entry->shape_clip);
     emitJsonStringContent(fp, entry->wm_class);
     fprintf(fp, "\",\"wm_name\":\"");
     emitJsonStringContent(fp, entry->wm_name);

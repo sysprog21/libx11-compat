@@ -76,11 +76,11 @@ static Bool maskPixelActive(SDL_Surface *mask, int x, int y)
     return r || g || b;
 }
 
-static Bool shapeSurfaceContains(SDL_Surface *mask,
-                                 int offsetX,
-                                 int offsetY,
-                                 int64_t x,
-                                 int64_t y)
+Bool shapeSurfaceContains(SDL_Surface *mask,
+                          int offsetX,
+                          int offsetY,
+                          int64_t x,
+                          int64_t y)
 {
     int64_t mx = x - (int64_t) offsetX, my = y - (int64_t) offsetY;
     if (mx < 0 || my < 0 || mx > INT_MAX || my > INT_MAX)

@@ -13,6 +13,7 @@
  *   button <n> press|release
  *   click  <x> <y>           # motion + button 1 press + release
  *   close [latest]           # SDL window-manager close request for target
+ *   target-at <x> <y>        # target top-level containing root x/y
  *   key    <scancode> press|release
  *
  * Why this exists: on macOS, external event-injection tools (cliclick, CGEvent,
@@ -288,6 +289,17 @@ static void runScript(const char *path)
                             lineno);
             } else {
                 fprintf(stderr, "replay: line %d: target bad argument '%s'\n",
+                        lineno, args);
+            }
+        } else if (!strcmp(cmd, "target-at")) {
+            int x = 0, y = 0;
+            if (sscanf(args, "%d %d", &x, &y) == 2) {
+                if (!replayTargetSelectAtRoot(x, y))
+                    fprintf(stderr, "replay: line %d: target-at failed\n",
+                            lineno);
+            } else {
+                fprintf(stderr,
+                        "replay: line %d: target-at bad argument '%s'\n",
                         lineno, args);
             }
         } else if (!strcmp(cmd, "key")) {

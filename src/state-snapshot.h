@@ -49,6 +49,11 @@ typedef struct {
     Uint32 sdl_flags;
     int override_redirect;
     int map_state;
+    int shape_bounding;
+    int shape_bounding_origin;
+    int shape_bounding_bottom_left;
+    int shape_bounding_bottom_left_hit;
+    int shape_clip;
     long event_mask;
     char wm_class[UI_SNAPSHOT_NAME_MAX];
     char wm_name[UI_SNAPSHOT_NAME_MAX];

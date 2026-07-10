@@ -1,0 +1,59 @@
+delay 5000
+state-snapshot initial
+assert-state initial xmms-window-initial.json
+screenshot initial
+assert-image initial common-visible.json
+
+target-at 250 84
+target-motion 230 64
+button 1 click
+delay 1000
+state-snapshot equalizer-open
+assert-state equalizer-open xmms-equalizer-open.json
+screenshot equalizer-open
+assert-image equalizer-open common-visible.json
+
+target-at 273 84
+target-motion 253 64
+button 1 click
+delay 1000
+state-snapshot playlist-open
+assert-state playlist-open xmms-playlist-open.json
+screenshot playlist-open
+assert-image playlist-open common-visible.json
+assert-image playlist-open xmms-skin-pixmap.json
+
+target-at 30 30
+target-motion 10 8
+button 1 click
+delay 500
+state-snapshot menu-open
+assert-state menu-open xmms-menu-open.json
+key 27
+delay 500
+state-snapshot menu-closed
+assert-state menu-closed xmms-menu-closed.json
+
+target-at 273 84
+target-motion 253 64
+button 1 click
+delay 1000
+state-snapshot playlist-closed
+assert-state playlist-closed xmms-playlist-closed.json
+
+target-at 250 84
+target-motion 230 64
+button 1 click
+delay 1000
+state-snapshot equalizer-closed
+assert-state equalizer-closed xmms-equalizer-closed.json
+
+# Window drag is not exercised in the offscreen smoke: XMMS moves its frame by
+# following XQueryPointer, whose root position does not track synthetic motion
+# without a real display, so the window never moves here. Dragging works against
+# a live display; it just cannot be asserted headless.
+
+delay 1000
+close latest
+delay 1000
+assert-exit 0

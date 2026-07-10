@@ -1,0 +1,10 @@
+delay 5000
+state-snapshot mapped
+assert-state mapped xmms-main-window.json
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+delay 2000
+close latest
+delay 1000
+assert-exit 0

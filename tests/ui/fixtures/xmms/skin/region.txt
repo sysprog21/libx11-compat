@@ -1,0 +1,15 @@
+[Normal]
+NumPoints=5
+PointList=0,0,275,0,275,116,10,116,0,106
+
+[Equalizer]
+NumPoints=5
+PointList=0,0,275,0,275,116,10,116,0,106
+
+[WindowShade]
+NumPoints=5
+PointList=0,0,275,0,275,14,10,14,0,4
+
+[EqualizerWS]
+NumPoints=5
+PointList=0,0,275,0,275,14,10,14,0,4

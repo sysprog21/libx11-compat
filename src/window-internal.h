@@ -27,6 +27,7 @@ void destroyScreenWindow(Display *display);
 void destroyWindow(Display *display, Window window, Bool freeParentData);
 Window getContainingWindow(Window window, int x, int y);
 Window getDirectChildContainingPoint(Window window, int x, int y);
+Bool windowPointInsideBoundingShape(WindowStruct *windowStruct, int x, int y);
 void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn);
 void translateWindowPoint(Window sourceWindow,
                           Window destinationWindow,
@@ -132,8 +133,8 @@ Bool topLevelHasMotifFunctionHints(Window window);
 
 /* Decode the stored WM_NORMAL_HINTS (XSizeHints) and set the SDL window's
  * resizable flag the way a real window manager would: resizable unless the
- * client pinned a fixed size (both PMinSize and PMaxSize present with
- * min == max). No-op until the top-level is realized and mapped, when no
+ * client pinned a fixed size (both PMinSize and PMaxSize present with min ==
+ * max). No-op until the top-level is realized and mapped, when no
  * WM_NORMAL_HINTS is stored, or when _MOTIF_WM_HINTS already governs functions.
  */
 void applyNormalHintsResizableFromProperty(Window window);
@@ -142,7 +143,9 @@ void applyNormalHintsResizableFromProperty(Window window);
  * the stored WM_NORMAL_HINTS mark the top-level as resizable (resizable unless
  * a fixed size is pinned), deferring to _MOTIF_WM_HINTS when that governs
  * functions. Does not touch SDL, so it is observable independent of the video
- * driver. Returns False when no usable WM_NORMAL_HINTS is stored.
+ * driver.
+ *
+ * Returns False when no usable WM_NORMAL_HINTS is stored.
  */
 Bool topLevelResizableFromNormalHints(Window window);
 

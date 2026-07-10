@@ -35,6 +35,7 @@ include mk/xfig.mk
 include mk/gimp-motif.mk
 include mk/gtk1.mk
 include mk/cinepaint.mk
+include mk/xmms.mk
 include mk/xnedit.mk
 include mk/xwpe.mk
 include mk/xephem.mk

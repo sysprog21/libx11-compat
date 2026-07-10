@@ -1,0 +1,73 @@
+--- a/glib/glib-config.h
++++ b/glib/glib-config.h
+@@ -8,9 +8,9 @@
+ #include <float.h>
+ #include <inttypes.h> 
+ 
+-#define GLIB_MAJOR_VERSION 2
+-#define GLIB_MICRO_VERSION 1
+-#define GLIB_MINOR_VERSION 2
++#define GLIB_MAJOR_VERSION 1
++#define GLIB_MICRO_VERSION 10
++#define GLIB_MINOR_VERSION 2
+ #define GLIB_INTERFACE_AGE 1
+ #define GLIB_BINARY_AGE 201
+ 
+@@ -588,9 +588,9 @@
+ #define GLIB_BINARY_AGE 906
+ #define GLIB_INTERFACE_AGE 4
+ #define GLIB_LOCALE_DIR "NONE/lib/locale"
+-#define GLIB_MAJOR_VERSION 2
+-#define GLIB_MICRO_VERSION 6
+-#define GLIB_MINOR_VERSION 9
++#define GLIB_MAJOR_VERSION 1
++#define GLIB_MICRO_VERSION 10
++#define GLIB_MINOR_VERSION 2
+ #define GLIB_SIZEOF_SYSTEM_THREAD 4
+ #define G_ATOMIC_I486 1
+ //#define G_COMPILED_WITH_DEBUGGING "yes"
+--- a/gtk/gtkcompat.h
++++ b/gtk/gtkcompat.h
+@@ -36,8 +36,8 @@
+ /* compile time version
+  */
+ #define GTK_MAJOR_VERSION				(1)
+-#define GTK_MINOR_VERSION				(3)
+-#define GTK_MICRO_VERSION				(0)
++#define GTK_MINOR_VERSION				(2)
++#define GTK_MICRO_VERSION				(10)
+ #define GTK_BINARY_AGE					(0)
+ #define GTK_INTERFACE_AGE				(0)
+ 
+--- a/gtk/gtkfeatures.h
++++ b/gtk/gtkfeatures.h
+@@ -28,8 +28,8 @@
+ /* compile time version
+  */
+ #define GTK_MAJOR_VERSION				(1)
+-#define GTK_MINOR_VERSION				(3)
+-#define GTK_MICRO_VERSION				(0)
++#define GTK_MINOR_VERSION				(2)
++#define GTK_MICRO_VERSION				(10)
+ #define GTK_BINARY_AGE					(0)
+ #define GTK_INTERFACE_AGE				(0)
+ #define	GTK_CHECK_VERSION(major,minor,micro)	\
+--- a/gtk/gtkmain.c
++++ b/gtk/gtkmain.c
+@@ -782,16 +782,6 @@
+   
+   g_slist_free (gtk_modules);
+   
+-#ifndef G_OS_WIN32
+-  /* No use warning on Win32, there aren't any non-devel versions anyhow... */
+-  g_warning (""              "YOU ARE USING THE DEVEL BRANCH 1.3.x OF GTK+ WHICH IS CURRENTLY\n"
+-	     "                UNDER HEAVY DEVELOPMENT AND FREQUENTLY INTRODUCES INSTABILITIES.\n"
+-	     "                if you don't know why you are getting this, you probably want to\n"
+-	     "                use the stable branch which can be retrived from\n"
+-	     "                ftp://ftp.gtk.org/pub/gtk/v1.2/ or via CVS with\n"
+-	     "                cvs checkout -r glib-1-2 glib; cvs checkout -r gtk-1-2 gtk+");
+-#endif
+-
+   return TRUE;
+ }
+ 
