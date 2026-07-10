@@ -163,6 +163,17 @@ but each exercises behavior that small examples do not reach.
   build/cinepaint/cmake/cinepaint        # launch the editor
   ```
 
+- [XMMS](https://en.wikipedia.org/wiki/XMMS): the 1.2.x audio player, a GTK1 Winamp-style workload, builds against the compat stack alongside the ported GTK1 fork, driven on macOS by a small in-tree CoreAudio output plugin (`compat/xmms-coreaudio/`).
+  It exercises the SHAPE extension that skinned players rely on: the main window, equalizer, and playlist are non-rectangular, so bounding-mask hit-testing routes pointer and focus events only on the visible pixels and lets clicks fall through transparent corners.
+  Skin pixmap loading, window dragging, the menu and equalizer/playlist toggles, `WM_DELETE_WINDOW` shutdown, and audio playback through the CoreAudio plugin all work; the main-window, equalizer, playlist, and menu states are covered by the replay smoke tests.
+
+  <a href="assets/xmms.png"><img src="assets/xmms.png" alt="XMMS running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make xmms                              # build GTK1 + XMMS against libx11-compat
+  build/xmms/source/xmms/xmms            # launch the player
+  ```
+
 - [XNEdit](https://github.com/unixwork/xnedit): the Motif NEdit fork that renders editor text through Xft/fontconfig builds against the bundled Motif, `libXt-compat`, and the SDL_ttf-backed `libXft-compat`.
   It validates Unicode text rendering in an interactive Motif editor, including Latin-1, Greek, and CJK glyph fallback through the Xft path.
 

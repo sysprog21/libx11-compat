@@ -1,0 +1,8 @@
+{
+  "assertions": [
+    {"type": "geq", "field": "mapped_window_count", "min": 1},
+    {"type": "leq", "field": "truncation_flagged", "max": 0},
+    {"type": "window_with_geometry", "wm_class": "XMMS_Player", "w": 275, "h": 116, "map_state": 1},
+    {"type": "grab_released"}
+  ]
+}

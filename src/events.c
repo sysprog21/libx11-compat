@@ -15,6 +15,7 @@
 #include "input-method.h"
 #include "display.h"
 #include "atoms.h"
+#include "replay-target.h"
 #include "util.h"
 #include "drawing.h"
 #include "window-internal.h"
@@ -2188,11 +2189,24 @@ int convertEvent(Display *display,
                     SDL_GetWindowFromID(sdlEvent->window.windowID),
                     &xEvent->xconfigure.width, &xEvent->xconfigure.height);
             }
-            xEvent->xconfigure.border_width =
-                GET_WINDOW_STRUCT(eventWindow)->borderWidth;
             xEvent->xconfigure.above = None;
-            xEvent->xconfigure.override_redirect =
-                GET_WINDOW_STRUCT(eventWindow)->overrideRedirect;
+            /* eventWindow came from getWindowFromId and can be None for an
+             * untracked SDL window. The caller's XEvent is not zeroed and
+             * FILL_STANDARD_VALUES does not touch these two fields, so set
+             * explicit defaults in that case rather than leaving stack garbage.
+             * One lookup otherwise feeds both the configure fields and the
+             * replay-target offer.
+             */
+            if (eventWindow != None) {
+                WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
+                xEvent->xconfigure.border_width = ws->borderWidth;
+                xEvent->xconfigure.override_redirect = ws->overrideRedirect;
+                replayTargetOfferWindow(sdlEvent->window.windowID, ws->x, ws->y,
+                                        (int) ws->w, (int) ws->h);
+            } else {
+                xEvent->xconfigure.border_width = 0;
+                xEvent->xconfigure.override_redirect = False;
+            }
             break;
         case SDL_WINDOWEVENT_MINIMIZED:
             LOG("Window %d minimized\n", sdlEvent->window.windowID);
@@ -2306,10 +2320,30 @@ int convertEvent(Display *display,
         break;
     case SDL_QUIT: /**< User-requested quit */
         LOG("SDL_QUIT\n");
-        /* Cmd+Q / SIGTERM / dock-quit: emulate a fatal IO error so any
-         * client-installed XIOErrorHandler runs first.
+        /* Cmd+Q, SIGTERM, or dock-quit. Prefer a graceful WM_DELETE to every
+         * top-level that advertises it, the way a window manager closes an app
+         * on logout, so the client shuts down through its own handler. Only
+         * when nothing handles the delete do we emulate a fatal IO error.
+         * Routing straight to triggerIOError ran the client's XIOErrorHandler;
+         * GDK's gdk_x_io_error crashes inside glib charset conversion on macOS,
+         * turning every quit into a segfault.
          */
-        triggerIOError(display);
+        {
+            Bool quitHandled = False;
+            if (SCREEN_WINDOW != None && IS_TYPE(SCREEN_WINDOW, WINDOW)) {
+                Window *topLevels = GET_CHILDREN(SCREEN_WINDOW);
+                size_t topCount =
+                    GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+                Time quitTime =
+                    (Time) XC_EVENT_TIME_MS(sdlEvent->quit.timestamp);
+                for (size_t i = 0; i < topCount; i++) {
+                    if (postWmDeleteIfHandled(display, topLevels[i], quitTime))
+                        quitHandled = True;
+                }
+            }
+            if (!quitHandled)
+                triggerIOError(display);
+        }
         return -1;
     case SDL_APP_TERMINATING: /**< The application is being terminated by the OS
                                  Called on iOS in applicationWillTerminate()

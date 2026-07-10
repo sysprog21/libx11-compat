@@ -2,6 +2,17 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 27bb9a1..4ca46c4 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
+@@ -6,8 +6,8 @@ cmake_minimum_required(VERSION 3.8)
+ project(Gtk1)
+ message("Configuring ${PROJECT_NAME}...")
+ enable_testing()
+-set(CMAKE_C_STANDARD 23)
+-set(CMAKE_CXX_STANDARD 23)
++set(CMAKE_C_STANDARD 11)
++set(CMAKE_CXX_STANDARD 17)
+ add_definitions (-DGLIB_COMPILATION -DGDK_COMPILATION -DGTK_COMPILATION)
+ set (OS unknown)
+ if(WIN32)
 @@ -34,20 +34,25 @@ if(WIN32)
  	add_definitions(/we4133 /we4013 /we4022 /we4047 /we4113)
  	add_definitions(-DDLL_EXPORTS)
@@ -1260,3 +1271,16 @@ index 9d2e1c4..528834c 100644
  GdkEvent*
  gdk_event_unqueue (void)
  {
+--- a/glib/gthread.h
++++ b/glib/gthread.h
+@@ -29,6 +29,10 @@
+ #define GLIB_COMPILATION
+ #include "gatomic.h"
+ 
++#if !defined(_WIN32) && !defined(__stdcall)
++#define __stdcall
++#endif
++
+ G_BEGIN_DECLS
+ 
+ //typedef union GMutex GMutex;

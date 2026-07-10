@@ -10,6 +10,7 @@
 #include "colors.h"
 #include "replay-target.h"
 #include "timeline.h"
+#include "util.h"
 
 Window SCREEN_WINDOW = None;
 
@@ -561,6 +562,12 @@ void postResizeConfigureForMappedChildren(Display *display,
 
 Window getContainingWindow(Window window, int x, int y)
 {
+    WindowStruct *windowStruct = (window != None && IS_TYPE(window, WINDOW))
+                                     ? GET_WINDOW_STRUCT(window)
+                                     : NULL;
+    if (!windowPointInsideBoundingShape(windowStruct, x, y))
+        return None;
+
     Window child = getDirectChildContainingPoint(window, x, y);
     if (child != None) {
         int childX = 0, childY = 0;
@@ -568,6 +575,16 @@ Window getContainingWindow(Window window, int x, int y)
         return getContainingWindow(child, x - childX, y - childY);
     }
     return window;
+}
+
+Bool windowPointInsideBoundingShape(WindowStruct *windowStruct, int x, int y)
+{
+    if (!windowStruct || !windowStruct->shapeBoundingMask)
+        return True;
+
+    return shapeSurfaceContains(windowStruct->shapeBoundingMask,
+                                windowStruct->shapeBoundingOffsetX,
+                                windowStruct->shapeBoundingOffsetY, x, y);
 }
 
 Window getDirectChildContainingPoint(Window window, int x, int y)
@@ -580,13 +597,16 @@ Window getDirectChildContainingPoint(Window window, int x, int y)
         Window child = children[i - 1];
         if (!isWindowEffectivelyViewable(child))
             continue;
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
 
         int childX = 0, childY = 0;
         int childW = 0, childH = 0;
         GET_WINDOW_POS(child, childX, childY);
         GET_WINDOW_DIMS(child, childW, childH);
         if (x >= childX && x < childX + childW && y >= childY &&
-            y < childY + childH) {
+            y < childY + childH &&
+            windowPointInsideBoundingShape(childStruct, x - childX,
+                                           y - childY)) {
             return child;
         }
     }
@@ -1664,6 +1684,12 @@ Bool configureWindow(Display *display,
     if (resizedWindow)
         postResizeConfigureForMappedChildren(
             display, window, oldWidth, oldHeight, resizedWidth, resizedHeight);
+
+    if (isMappedTopLevelWindow && windowStruct->sdlWindow) {
+        replayTargetOfferWindow(SDL_GetWindowID(windowStruct->sdlWindow),
+                                windowStruct->x, windowStruct->y,
+                                (int) windowStruct->w, (int) windowStruct->h);
+    }
 
     timelineTapConfigure(window, windowStruct->x, windowStruct->y,
                          windowStruct->w, windowStruct->h);

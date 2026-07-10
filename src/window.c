@@ -923,6 +923,10 @@ int XRaiseWindow(Display *display, Window window)
         SDL_RaiseWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
     moveChildToTop(display, window);
     postVisibilityForWindowAndSiblings(display, window);
+    /* Re-offer so the replay target module sees the raise: at-root selection
+     * picks the most recently offered window as topmost.
+     */
+    offerReplayTargetForWindow(window);
     return 1;
 }
 

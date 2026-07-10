@@ -6,6 +6,7 @@
 #include "X11/XKBlib.h"
 #include "X11/extensions/XKB.h"
 #include "X11/Xlocale.h"
+#include <errno.h>
 #include <limits.h>
 #include <locale.h>
 #include <stdint.h>
@@ -1152,6 +1153,15 @@ XIOErrorHandler XSetIOErrorHandler(XIOErrorHandler handler)
 
 void triggerIOError(Display *display)
 {
+    /* Real Xlib only reaches _XIOError after a socket operation fails, so a
+     * client's XIOErrorHandler always runs with errno set to the connection
+     * loss code. We invoke it synthetically (an SDL close or quit with no
+     * WM_DELETE handler), so seed errno to match a broken connection. GDK's
+     * gdk_x_io_error formats g_strerror(errno) through a glib charset path that
+     * segfaults for arbitrary errno values; EPIPE steers it onto its clean
+     * "connection broken" branch instead, and matches real teardown semantics.
+     */
+    errno = EPIPE;
     if (ioErrorHandler) {
         /* Per Xlib spec, the IO error handler is not expected to return; if it
          * does, the client is killed.

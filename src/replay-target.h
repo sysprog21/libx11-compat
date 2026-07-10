@@ -19,6 +19,7 @@ Uint32 replayTargetWindowId(void);
 Uint32 replayTargetLatestWindowId(void);
 Bool replayTargetSelectFirst(void);
 Bool replayTargetSelectLatest(void);
+Bool replayTargetSelectAtRoot(int rootX, int rootY);
 void replayTargetRootToLocal(int rootX, int rootY, int *localX, int *localY);
 /* Coherent snapshot of the (target id, target root) triple.
  *

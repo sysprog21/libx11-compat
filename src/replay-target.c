@@ -45,14 +45,26 @@ typedef struct {
     Uint32 id;
     int rootX;
     int rootY;
+    int width;
+    int height;
     unsigned long area;
     unsigned long order;
+    unsigned long stackOrder;
 } ReplayTargetEntry;
 
 static ReplayTargetEntry *knownTargets;
 static size_t knownTargetCount;
 static size_t knownTargetCap;
+/* order is the first-seen sequence, assigned once and never changed; the
+ * first/latest publishers key off it. stackOrder is a topmost proxy that bumps
+ * on every offer, so the most recently offered window sorts on top for at-root
+ * selection. XRaiseWindow re-offers the raised window so a raise moves it to
+ * the front. Map, move, and resize also bump stackOrder; lower and restack are
+ * not tracked. Feed real z-order through the offer if a replay ever needs
+ * pixel-exact topmost among overlapping windows.
+ */
 static unsigned long nextTargetOrder = 1;
+static unsigned long nextStackOrder = 1;
 
 #define REPLAY_TARGET_HIGH_WATER_NUMERATOR 1
 #define REPLAY_TARGET_HIGH_WATER_DENOMINATOR 2
@@ -126,6 +138,8 @@ static ReplayTargetEntry *findKnownTarget(Uint32 id)
 static Bool rememberKnownTarget(Uint32 id,
                                 int rootX,
                                 int rootY,
+                                int width,
+                                int height,
                                 unsigned long area,
                                 Bool *isNewOut)
 {
@@ -133,7 +147,10 @@ static Bool rememberKnownTarget(Uint32 id,
     if (entry) {
         entry->rootX = rootX;
         entry->rootY = rootY;
+        entry->width = width;
+        entry->height = height;
         entry->area = area;
+        entry->stackOrder = nextStackOrder++;
         *isNewOut = False;
         return True;
     }
@@ -153,8 +170,11 @@ static Bool rememberKnownTarget(Uint32 id,
         .id = id,
         .rootX = rootX,
         .rootY = rootY,
+        .width = width,
+        .height = height,
         .area = area,
         .order = nextTargetOrder++,
+        .stackOrder = nextStackOrder++,
     };
     *isNewOut = True;
     return True;
@@ -193,7 +213,8 @@ void replayTargetOfferWindow(Uint32 sdlWindowId,
         return;
     targetWriteLock();
     Bool isNew = False;
-    if (!rememberKnownTarget(sdlWindowId, rootX, rootY, area, &isNew)) {
+    if (!rememberKnownTarget(sdlWindowId, rootX, rootY, width, height, area,
+                             &isNew)) {
         targetWriteUnlock();
         return;
     }
@@ -286,6 +307,27 @@ Bool replayTargetSelectLatest(void)
 {
     return replayTargetSelectSnapshot(&latestWindowId, &latestRootX,
                                       &latestRootY, &latestArea);
+}
+
+Bool replayTargetSelectAtRoot(int rootX, int rootY)
+{
+    targetWriteLock();
+    ReplayTargetEntry *best = NULL;
+    for (size_t i = 0; i < knownTargetCount; i++) {
+        ReplayTargetEntry *entry = &knownTargets[i];
+        if (entry->width <= 0 || entry->height <= 0)
+            continue;
+        if (rootX < entry->rootX || rootY < entry->rootY ||
+            rootX >= (int64_t) entry->rootX + entry->width ||
+            rootY >= (int64_t) entry->rootY + entry->height)
+            continue;
+        if (!best || entry->stackOrder > best->stackOrder)
+            best = entry;
+    }
+    Bool ok = best && replayTargetSelectStored(best->id, best->rootX,
+                                               best->rootY, best->area);
+    targetWriteUnlock();
+    return ok;
 }
 
 void replayTargetForgetWindow(Uint32 sdlWindowId)

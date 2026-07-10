@@ -52,6 +52,7 @@ replay, state, timeline, and renderer artifacts without a visible desktop.
     delay <ms>
     motion <x> <y>                  # screen-relative
     target-motion <x> <y>           # window-relative
+    target-at <x> <y>               # root coordinate
     button <n> press|release|click
     wheel up|down <count>
     key <scancode>
@@ -509,6 +510,10 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=No
                     f"{source_path}:{lineno}: target expects first|latest"
                 )
             lines.append(f"target {parts[1]}")
+        elif command == "target-at":
+            if len(parts) != 3:
+                raise ReplayError(f"{source_path}:{lineno}: target-at expects x y")
+            lines.append(f"target-at {int(parts[1])} {int(parts[2])}")
         elif command == "wait-window":
             if len(parts) != 3:
                 raise ReplayError(
@@ -765,7 +770,8 @@ def assert_state(rule_path, state_path):
     explained without a debugger: each matcher names a single field of the
     snapshot (focused_window, pointer_grab, keyboard_grab,
     mapped_window_count, popup_window_count, window_count, event_queue_depth)
-    or a per-window predicate (wm_class_present, window_with_size).
+    or a per-window predicate (wm_class_present, window_with_size,
+    window_with_geometry).
     """
     if not rule_path.exists():
         raise ReplayError(f"state-rule file not found: {rule_path}")
@@ -813,6 +819,31 @@ def assert_state(rule_path, state_path):
             )
             if not found:
                 failures.append(f"no window with size w={w} h={h}")
+        elif rule_type == "window_with_geometry":
+            fields = (
+                "wm_class",
+                "wm_name",
+                "x",
+                "y",
+                "w",
+                "h",
+                "map_state",
+                "shape_bounding",
+                "shape_bounding_origin",
+                "shape_bounding_bottom_left",
+                "shape_bounding_bottom_left_hit",
+                "shape_clip",
+            )
+            expected = {field: rule[field] for field in fields if field in rule}
+            found = any(
+                all(entry.get(field) == value for field, value in expected.items())
+                for entry in snap.get("windows", [])
+            )
+            if not found:
+                detail = " ".join(
+                    f"{field}={value!r}" for field, value in expected.items()
+                )
+                failures.append(f"no window with geometry {detail}")
         elif rule_type == "grab_released":
             for field in ("pointer_grab", "keyboard_grab"):
                 if snap.get(field, 0) != 0:
@@ -851,6 +882,47 @@ def assert_state(rule_path, state_path):
                     f"property atom={target_atom} on window={target_window} "
                     f"changed: {old_value} -> {new_value}"
                 )
+        elif rule_type == "window_geometry_changed":
+            raw_baseline = rule["between"][0]
+            baseline_candidate = Path(raw_baseline)
+            if baseline_candidate.is_absolute():
+                failures.append(f"geometry baseline must be relative: {raw_baseline!r}")
+                continue
+            states_root = state_path.parent.resolve()
+            baseline_path = (state_path.parent / baseline_candidate).resolve()
+            try:
+                baseline_path.relative_to(states_root)
+            except ValueError:
+                failures.append(
+                    f"geometry baseline {raw_baseline!r} escapes states directory"
+                )
+                continue
+            if not baseline_path.exists():
+                failures.append(f"geometry baseline {baseline_path} missing")
+                continue
+            with baseline_path.open() as bf:
+                baseline = json.load(bf)
+            wanted = rule["wm_class"]
+
+            def first_window(doc):
+                return next(
+                    (
+                        entry
+                        for entry in doc.get("windows", [])
+                        if entry.get("wm_class") == wanted
+                    ),
+                    None,
+                )
+
+            old = first_window(baseline)
+            new = first_window(snap)
+            if old is None or new is None:
+                failures.append(f"missing window for geometry compare {wanted!r}")
+                continue
+            old_geom = tuple(old.get(field) for field in ("x", "y", "w", "h"))
+            new_geom = tuple(new.get(field) for field in ("x", "y", "w", "h"))
+            if old_geom == new_geom:
+                failures.append(f"window geometry unchanged for {wanted!r}: {new_geom}")
         elif rule_type == "property_changed_to":
             target_window = rule["window"]
             target_atom = rule["atom"]
@@ -979,6 +1051,13 @@ def assert_image(rule_path, image_path, screenshots, assertion_base):
                     f"region dark ratio {ratio:.5f} above "
                     f"{float(rule.get('max_dark_ratio', 0.35)):.5f}"
                 )
+        elif rule_type == "region_min_unique_colors":
+            region = crop(img, assertion_rect(rule, img)).convert("RGB")
+            raw = region.tobytes()
+            colors = {raw[offset : offset + 3] for offset in range(0, len(raw), 3)}
+            expected = int(rule.get("min_unique_colors", 2))
+            if len(colors) < expected:
+                failures.append(f"region unique colors {len(colors)} below {expected}")
         elif rule_type == "changed_region":
             baseline_name = rule.get("baseline")
             if baseline_name not in screenshots:
@@ -1349,6 +1428,13 @@ def run_replay(args):
                             target_window_id,
                             parts[1],
                             parts[2],
+                        )
+                elif command == "target-at":
+                    if len(parts) != 3:
+                        raise ReplayError("target-at expects x y")
+                    if args.input_backend == "xdotool":
+                        raise ReplayError(
+                            "target-at is not supported with the xdotool backend"
                         )
                 elif command == "button":
                     if len(parts) != 3:

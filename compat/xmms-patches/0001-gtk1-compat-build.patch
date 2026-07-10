@@ -1,0 +1,146 @@
+Use the in-tree GTK1 X11 header layout and avoid XMMS' obsolete GLib thread
+startup path that the repo-local GTK1 library does not provide. XMMS still uses
+pthreads directly for playlist and control-socket work; this removes the
+missing GLib 1.x init hook and the matching fatal support check.
+Also size the AF_UNIX control socket path from the host struct instead of the
+Linux sun_path length; Darwin's smaller field trips fortified snprintf before
+XMMS reaches the GTK startup path.
+
+--- a/xmms/controlsocket.c
++++ b/xmms/controlsocket.c
+@@ -53,13 +53,23 @@ gboolean setup_ctrlsocket(void)
+ 	gint i;
+ 
+ 	if ((ctrl_fd = socket(AF_UNIX, SOCK_STREAM, 0)) != -1)
+ 	{
+ 		for (i = 0;; i++)
+ 		{
++			gint written;
++
+ 			saddr.sun_family = AF_UNIX;
+-			g_snprintf(saddr.sun_path, 108, "%s/xmms_%s.%d",
+-				   g_get_tmp_dir(), g_get_user_name(), i);
++			written = g_snprintf(saddr.sun_path, sizeof (saddr.sun_path),
++					     "%s/xmms_%s.%d", g_get_tmp_dir(),
++					     g_get_user_name(), i);
++			if (written < 0 || written >= sizeof (saddr.sun_path))
++			{
++				g_log(NULL, G_LOG_LEVEL_CRITICAL,
++				      "setup_ctrlsocket(): Socket path is too long");
++				close(ctrl_fd);
++				return FALSE;
++			}
+ 			if (!xmms_remote_is_running(i))
+ 			{
+ 				if ((unlink(saddr.sun_path) == -1) && errno != ENOENT)
+ 				{
+--- a/libxmms/xmmsctrl.c
++++ b/libxmms/xmmsctrl.c
+@@ -287,17 +287,26 @@ int xmms_connect_to_session(int session)
+ 	int fd;
+ 	uid_t stored_uid, euid;
+ 	struct sockaddr_un saddr;
+ 
+ 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) != -1)
+ 	{
++		gint written;
++
+ 		saddr.sun_family = AF_UNIX;
+ 		stored_uid = getuid();
+ 		euid = geteuid();
+ 		setuid(euid);
+-		g_snprintf(saddr.sun_path, 108, "%s/xmms_%s.%d", g_get_tmp_dir(), g_get_user_name(), session);
++		written = g_snprintf(saddr.sun_path, sizeof (saddr.sun_path),
++				     "%s/xmms_%s.%d", g_get_tmp_dir(),
++				     g_get_user_name(), session);
+ 		setreuid(stored_uid, euid);
++		if (written < 0 || written >= sizeof (saddr.sun_path))
++		{
++			close(fd);
++			return -1;
++		}
+ 		if (connect(fd, (struct sockaddr *) &saddr, sizeof (saddr)) != -1)
+ 			return fd;
+ 	}
+ 	close(fd);
+ 	return -1;
+--- a/xmms/fullscreen.h
++++ b/xmms/fullscreen.h
+@@ -25,7 +25,7 @@
+ #define _XMMS_FULLSCREEN_H 1
+ 
+ #include <gtk/gtk.h>
+-#include <gdk/gdkx.h>
++#include <gdk/x11/gdkx.h>
+ 
+ typedef struct {
+ 	gint width, height;
+--- a/xmms/hints.c
++++ b/xmms/hints.c
+@@ -20,8 +20,8 @@
+ #include <X11/Xlib.h>
+ #include <X11/Xmd.h>
+ #include <X11/Xatom.h>
+-#include <gdk/gdkx.h>
+-#include <gdk/gdkprivate.h>
++#include <gdk/x11/gdkx.h>
++#include <gdk/x11/gdkprivate.h>
+ #include "xmms.h"
+ 
+ /* flags for the window layer */
+--- a/xmms/main.c
++++ b/xmms/main.c
+@@ -19,7 +19,7 @@
+  */
+ #include "xmms.h"
+ 
+-#include <gdk/gdkx.h>
++#include <gdk/x11/gdkx.h>
+ #include <gdk/gdk.h>
+ #include <X11/Xlib.h>
+ #include <X11/Xatom.h>
+@@ -4192,10 +4192,8 @@ int main(int argc, char **argv)
+ 
+ 	signal(SIGPIPE, SIG_IGN); /* for controlsocket.c */
+ 	signal(SIGSEGV, segfault_handler);
+-	g_thread_init(NULL);
+ 	gtk_set_locale();
+-	if (!g_thread_supported())
+-		g_error(_("GLib does not support threads."));
++	/* libx11-compat GTK1 build runs XMMS' pthread paths without GLib threads. */
+ 
+	static_mutex = g_mutex_new();
+	pthread_mutex_init(&playlist_mutex, NULL);
+--- a/xmms/textbox.c
++++ b/xmms/textbox.c
+@@ -18,7 +18,7 @@
+  *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+  */
+ #include "xmms.h"
+-#include <gdk/gdkprivate.h>
++#include <gdk/x11/gdkprivate.h>
+ #include <ctype.h>
+ 
+ static void textbox_generate_pixmap(TextBox * tb);
+--- a/xmms/util.c
++++ b/xmms/util.c
+@@ -18,7 +18,7 @@
+  *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+  */
+ #include "xmms.h"
+-#include <gdk/gdkprivate.h>
++#include <gdk/x11/gdkprivate.h>
+ #include <X11/Xlib.h>
+ #include <sys/ipc.h>
+ #include <ctype.h>
+--- a/xmms/xmms.h
++++ b/xmms/xmms.h
+@@ -19,7 +19,7 @@
+ #define XMMS_H
+ 
+ #include <gtk/gtk.h>
+-#include <gdk/gdkx.h>
++#include <gdk/x11/gdkx.h>
+ #include <gdk/gdkkeysyms.h>
+ #include <X11/Xlib.h>
+ 

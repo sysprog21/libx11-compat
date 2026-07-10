@@ -80,6 +80,16 @@ void putPixel(SDL_Surface *surface,
               unsigned int y,
               Uint32 pixel);
 Uint32 getPixel(SDL_Surface *surface, unsigned int x, unsigned int y);
+/* True if point (x, y), in the mask's coordinate space offset by (offsetX,
+ * offsetY), lands on an active (non-black) mask pixel. Out-of-range points are
+ * outside the shape. Shared by shape rendering and event hit-testing so both
+ * agree on which pixels belong to a shaped window.
+ */
+Bool shapeSurfaceContains(SDL_Surface *mask,
+                          int offsetX,
+                          int offsetY,
+                          int64_t x,
+                          int64_t y);
 SDL_Renderer *getWindowRenderer(Window window);
 unsigned char *glxAcquireCompositeReadback(Window window, size_t need);
 void glxCompositeToWindow(Window window,

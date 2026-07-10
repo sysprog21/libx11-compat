@@ -40,7 +40,8 @@ endif
 
 .PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths
 
-DIFFERENTIAL_TARGETS := check-differential-motif check-differential-violawww
+DIFFERENTIAL_TARGETS := check-differential-motif check-differential-violawww \
+                        check-differential-xmms
 ifeq ($(GLX),1)
   DIFFERENTIAL_TARGETS += check-differential-glx-linux
 endif

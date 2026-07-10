@@ -1,0 +1,10 @@
+{
+  "assertions": [
+    {"type": "equal", "field": "mapped_window_count", "expected": 1},
+    {"type": "equal", "field": "popup_window_count", "expected": 0},
+    {"type": "window_with_geometry", "wm_class": "XMMS_Player", "x": 20, "y": 20, "w": 275, "h": 116, "map_state": 1, "shape_bounding": 1, "shape_bounding_origin": 1, "shape_bounding_bottom_left": 0, "shape_bounding_bottom_left_hit": 0},
+    {"type": "window_with_geometry", "wm_class": "XMMS_Playlist", "w": 300, "h": 232, "map_state": 0},
+    {"type": "window_with_geometry", "wm_class": "XMMS_Equalizer", "w": 275, "h": 116, "map_state": 0},
+    {"type": "grab_released"}
+  ]
+}

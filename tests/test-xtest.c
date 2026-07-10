@@ -18,6 +18,7 @@
 #include <sys/time.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/shape.h>
 #include <X11/extensions/XTest.h>
 #include "sdl-compat.h"
 #include "replay-target.h"
@@ -269,6 +270,36 @@ int main(void)
     CHECK(motion.xmotion.y_root == 120, "MotionNotify keeps root y");
     CHECK(motion.xmotion.x == 30, "MotionNotify converts to window-local x");
     CHECK(motion.xmotion.y == 40, "MotionNotify converts to window-local y");
+
+    SDL_WarpMouseInWindow(target_sdl_window, 11, 12);
+    SDL_PumpEvents();
+    int expected_query_root_x = 0, expected_query_root_y = 0;
+    if (SDL_GetMouseFocus() == target_sdl_window) {
+        CHECK(XTranslateCoordinates(dpy, win, root, 11, 12,
+                                    &expected_query_root_x,
+                                    &expected_query_root_y, NULL),
+              "translated expected XQueryPointer root position");
+    } else {
+        SDL_GetGlobalMouseState(&expected_query_root_x, &expected_query_root_y);
+    }
+    int expected_query_win_x = 0, expected_query_win_y = 0;
+    CHECK(XTranslateCoordinates(dpy, root, win, expected_query_root_x,
+                                expected_query_root_y, &expected_query_win_x,
+                                &expected_query_win_y, NULL),
+          "translated expected XQueryPointer window position");
+    Window query_root = None, query_child = None;
+    int query_root_x = 0, query_root_y = 0, query_win_x = 0, query_win_y = 0;
+    unsigned int query_mask = 0;
+    CHECK(XQueryPointer(dpy, win, &query_root, &query_child, &query_root_x,
+                        &query_root_y, &query_win_x, &query_win_y, &query_mask),
+          "XQueryPointer after synthetic motion");
+    CHECK(query_root == root, "XQueryPointer reports root window");
+    CHECK(query_root_x == expected_query_root_x &&
+              query_root_y == expected_query_root_y,
+          "XQueryPointer follows live SDL root position after XTest motion");
+    CHECK(query_win_x == expected_query_win_x &&
+              query_win_y == expected_query_win_y,
+          "XQueryPointer follows live SDL window position after XTest motion");
 
     /* ButtonPress / ButtonRelease pair, button 1. */
     CHECK(XTestFakeButtonEvent(dpy, 1, True, 0) == 1,
@@ -554,6 +585,65 @@ int main(void)
     XDestroyWindow(dpy, toolTop);
     XDestroyWindow(dpy, toolBottom);
     XDestroyWindow(dpy, form);
+    XSync(dpy, False);
+    while (XPending(dpy) > 0) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+    }
+
+    /* SDL reports pointer events against the host top-level rectangle. If that
+     * top-level has a bounding shape, transparent pixels must still fall
+     * through to lower windows instead of trusting the SDL window id blindly.
+     */
+    Window lower =
+        XCreateSimpleWindow(dpy, root, 40, 40, 120, 80, 0,
+                            BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+    Window shaped =
+        XCreateSimpleWindow(dpy, root, 40, 40, 120, 80, 0,
+                            BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+    CHECK(lower != None && shaped != None,
+          "shaped top-level routing windows created");
+    XSelectInput(dpy, lower, ButtonPressMask);
+    XSelectInput(dpy, shaped, ButtonPressMask);
+
+    int depth = DefaultDepth(dpy, screen);
+    Pixmap shapeMask = XCreatePixmap(dpy, shaped, 120, 80, depth);
+    CHECK(shapeMask != None, "shaped top-level routing mask created");
+    GC shapeGC = XCreateGC(dpy, shapeMask, 0, NULL);
+    CHECK(shapeGC != NULL, "shaped top-level routing mask GC created");
+    XSetForeground(dpy, shapeGC, 0x00000000);
+    XFillRectangle(dpy, shapeMask, shapeGC, 0, 0, 120, 80);
+    XSetForeground(dpy, shapeGC, 0xFFFFFFFF);
+    XFillRectangle(dpy, shapeMask, shapeGC, 60, 0, 60, 80);
+    XShapeCombineMask(dpy, shaped, ShapeBounding, 0, 0, shapeMask, ShapeSet);
+    XFreeGC(dpy, shapeGC);
+    XFreePixmap(dpy, shapeMask);
+
+    XMapWindow(dpy, lower);
+    XMapWindow(dpy, shaped);
+    XRaiseWindow(dpy, shaped);
+    XSync(dpy, False);
+    while (XPending(dpy) > 0) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+    }
+
+    CHECK(replayTargetSelectAtRoot(50, 50),
+          "shaped top-level routing selected replay target");
+    CHECK(XTestFakeMotionEvent(dpy, screen, 50, 50, 0) == 1,
+          "shaped top-level routing motion returned 1");
+    CHECK(XTestFakeButtonEvent(dpy, Button1, True, 0) == 1,
+          "shaped top-level routing press returned 1");
+    XSync(dpy, False);
+    XEvent shapedPress = next_event_of_type(
+        dpy, ButtonPress, 32, "shaped top-level routing ButtonPress arrived");
+    CHECK(shapedPress.xbutton.window == lower,
+          "shaped top-level transparent pixel routed to lower window");
+    CHECK(shapedPress.xbutton.x == 10 && shapedPress.xbutton.y == 10,
+          "shaped top-level fallthrough coords are lower-local");
+
+    XDestroyWindow(dpy, shaped);
+    XDestroyWindow(dpy, lower);
     XSync(dpy, False);
     while (XPending(dpy) > 0) {
         XEvent ev;

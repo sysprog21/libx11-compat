@@ -1,7 +1,7 @@
 GTK1_COMMIT := 8aed827458f1eb975aaa61c22f54f3fe46e0372f
 GTK1_REPO := https://gitlab.com/robinrowe/gtk1.git
 GTK1_SRC_DIR := $(OUT)/upstream/gtk1
-GTK1_SOURCE_STAMP := $(GTK1_SRC_DIR)/.source-stamp
+GTK1_SOURCE_STAMP := $(OUT)/upstream/.gtk1-source-stamp
 GTK1_BUILD_DIR := $(OUT)/gtk1
 GTK1_WORK_DIR := $(GTK1_BUILD_DIR)/source
 GTK1_CMAKE_DIR := $(GTK1_BUILD_DIR)/cmake
@@ -19,6 +19,15 @@ GTK1_RPATH_FLAGS := -Wl,-rpath,$(abspath $(OUT)) -Wl,-rpath,$(abspath $(GTK1_LIB
 ifeq ($(UNAME_S),Linux)
   GTK1_RPATH_FLAGS += -Wl,-rpath-link,$(abspath $(OUT))
 endif
+
+# clang makes incompatible function-pointer assignments a default error and
+# needs this downgrade to build the old GTK1 source. GCC has no such warning
+# name (it folds function pointers into -Wincompatible-pointer-types, already
+# suppressed) and hard-errors on the unknown -Wno-error= option, so scope the
+# flag to clang. Probe the actual driver rather than its name: an Apple/LLVM
+# toolchain invoked as cc is still clang and must get the flag, while the XMMS
+# differential's real gcc must not.
+GTK1_CLANG_CFLAGS := $(if $(shell $(CC) --version 2>/dev/null | grep -i clang),-Wno-error=incompatible-function-pointer-types)
 
 $(GTK1_SOURCE_STAMP): mk/gtk1.mk
 	@echo "  GIT     gtk1"
@@ -39,6 +48,13 @@ $(GTK1_LIB_ALIASES_STAMP): $(TARGET) $(XEXT_COMPAT_TARGET) mk/gtk1.mk
 	$(Q)rm -f $(GTK1_LIB_ALIASES)/libX11.* $(GTK1_LIB_ALIASES)/libXext.*
 	$(Q)ln -sf $(abspath $(OUT))/libX11-compat.so $(GTK1_LIB_ALIASES)/libX11.so
 	$(Q)ln -sf $(abspath $(OUT))/libXext-compat.so $(GTK1_LIB_ALIASES)/libXext.so
+# No versioned libX11.so.6 / libXext.so.6 aliases: our clients link -lX11 and
+# pick up the SONAME libX11-compat.so, so they never need the .6 names. Those
+# names belong to the real system libX11 that host SDL2 pulls in transitively
+# (libXrender and friends resolve _XUnlockMutex_fn and the other thread stubs
+# against it). Shadowing libX11.so.6 with the compat lib, whose thread stubs are
+# deliberately hidden (see src/xlibint-stubs.c), left libXrender with an
+# undefined _XUnlockMutex_fn and aborted every GTK1 client at SDL2 load.
 ifeq ($(UNAME_S),Darwin)
 	$(Q)ln -sf $(abspath $(OUT))/libX11-compat.so $(GTK1_LIB_ALIASES)/libX11.dylib
 	$(Q)ln -sf $(abspath $(OUT))/libXext-compat.so $(GTK1_LIB_ALIASES)/libXext.dylib
@@ -68,7 +84,7 @@ $(GTK1_BUILD_STAMP): $(GTK1_SOURCE_STAMP) $(GTK1_PATCHES) $(GTK1_LIB_ALIASES_STA
 	    cmake $(abspath $(GTK1_WORK_DIR)) \
 	        -DCMAKE_C_COMPILER='$(CC)' \
 	        -DCMAKE_CXX_COMPILER='$(CXX)' \
-	        -DCMAKE_C_FLAGS='-include stdio.h -include glib/gstrfuncs.h -I$(abspath $(GTK1_WORK_DIR)) -I$(abspath include) -I$(abspath $(OUT)/upstream/include) -DNO_SYS_ERRLIST -DNO_SYS_SIGLIST -DHAVE_ATEXIT -Wno-error=implicit-function-declaration -Wno-error=incompatible-function-pointer-types' \
+	        -DCMAKE_C_FLAGS='-include stdio.h -include glib/gstrfuncs.h -I$(abspath $(GTK1_WORK_DIR)) -I$(abspath include) -I$(abspath $(OUT)/upstream/include) -DNO_SYS_ERRLIST -DNO_SYS_SIGLIST -DHAVE_ATEXIT -DHAVE_SHAPE_EXT -Wno-error=implicit-function-declaration -Wno-incompatible-pointer-types $(GTK1_CLANG_CFLAGS)' \
 	        -DCMAKE_CXX_FLAGS='-I$(abspath include) -I$(abspath $(OUT)/upstream/include)' \
 	        -DCMAKE_LIBRARY_PATH='$(abspath $(GTK1_LIB_ALIASES));$(abspath $(OUT))' \
 	        -DCMAKE_SHARED_LINKER_FLAGS='-L$(abspath $(GTK1_LIB_ALIASES)) -L$(abspath $(OUT)) $(GTK1_RPATH_FLAGS)' \

@@ -1,11 +1,13 @@
 # Differential gates for the SDL2-based libx11-compat stack.
 #
 # Each downstream target (Motif, ViolaWWW, Mosaic, Osiris, Xfig, XCircuit,
-# GIMP, XNEdit, XEphem, Grace) is built twice on the same GitHub-hosted runner: once against the
+# GIMP, XNEdit, XEphem, Grace, XMMS) is built twice on the same GitHub-hosted runner: once against the
 # system libX11 stack from apt and once against libx11-compat. The
 # resulting screenshots are compared under Xvfb. This is the local
 # counterpart to the SSH-driven path in scripts/run-*-differential-tests.py
-# and is gated by XXX_DIFF_LOCAL=1.
+# and is gated by XXX_DIFF_LOCAL=1. XMMS has no modern system GTK1 package,
+# so both of its sides build the in-tree GTK1 port from source (the system
+# side linked against system libX11, the compat side against libx11-compat).
 #
 # Differential gates live in a separate workflow from ci.yml so the
 # fast PR feedback loop (lint / build / smoke) is not delayed by the
@@ -1142,6 +1144,105 @@ jobs:
             build/grace-differential/diff
             build/grace-differential/system
             build/grace-differential/compat
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- XMMS (GTK1 skinned audio player) screenshot differential ----
+  #
+  # XMMS has no modern system GTK1 package, so both sides build the in-tree
+  # GTK1 port from source: the system side links it against system libX11 /
+  # libXext, the compat side against libx11-compat. XMMS is then built on each
+  # side and its skinned main window is rendered under Xvfb, and the two
+  # captures are compared. On Linux the macOS CoreAudio plugin is compiled out.
+  # This is the local counterpart to the SSH path in
+  # run-xmms-differential-tests.py, gated by XMMS_DIFF_LOCAL=1.
+  xmms-differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build + system X11 dependencies
+        # Both sides build the in-tree GTK1 with CMake (cmake + g++); the system
+        # side links it against system libX11 / libXext (SYSTEM_X11_DEV_PKGS),
+        # with libxi-dev covering GTK1's XInput include path. XMMS's configure
+        # runs autoreconf, so the autotools chain and patch are pulled in.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.SYSTEM_X11_DEV_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }} \
+            autoconf automake cmake g++ libtool libxi-dev patch
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+            !build/upstream/gtk1
+            !build/upstream/xmms
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache GTK1 source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/gtk1
+          key: gtk1-src-${{ runner.os }}-${{ hashFiles('mk/gtk1.mk', 'compat/gtk1-patches/**') }}
+
+      - name: Cache XMMS source clone
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/xmms
+          key: xmms-src-${{ runner.os }}-${{ hashFiles('mk/xmms.mk', 'compat/xmms-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-xmms-diff-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-xmms-diff-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=2048M
+          ccache --zero-stats
+
+      - name: Run XMMS differential
+        env:
+          XMMS_DIFF_LOCAL: "1"
+          XMMS_DIFF_COMPARE_LOCATION: local
+          XMMS_DIFF_JOBS: "2"
+        run: make check-differential-xmms
+
+      - name: Upload XMMS differential artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xmms-differential
+          path: |
+            build/xmms-differential/report.tsv
+            build/xmms-differential/junit.xml
+            build/xmms-differential/logs
+            build/xmms-differential/diff
+            build/xmms-differential/system
+            build/xmms-differential/compat
           if-no-files-found: warn
           retention-days: 7
 
