@@ -137,9 +137,15 @@ but each exercises behavior that small examples do not reach.
   build/xfig/source/src/xfig tests/data/mindmap.fig
   ```
 
-- [XCircuit](http://opencircuitdesign.com/xcircuit/): the PostScript-oriented schematic capture and drawing tool builds against the compat stack and exercises menu redraw, file dialogs, font rendering, pixmap-backed icon/tool rendering, and larger PostScript example imports.
+- [XCircuit](http://opencircuitdesign.com/xcircuit/): the PostScript-oriented schematic capture and drawing editor builds against the compat stack plus the bundled libXt, libXpm, and the libICE / libSM session libraries.
+  It drives the Xt Intrinsics widget tree and XCircuit's own Xlib-drawn canvas, Xpm-backed toolbar and object icons, `XDrawString` font metrics across the Symbol and Helvetica families, `XCopyArea` backing-pixmap redraw for the file-list hover highlight, object-instance drawing with fixed and normal bounding boxes, and larger PostScript example imports opened through its menus and file dialogs.
 
   <a href="assets/xcircuit.png"><img src="assets/xcircuit.png" alt="XCircuit running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make xcircuit                          # build XCircuit
+  build/xcircuit/source/xcircuit         # launch
+  ```
 
 - [GIMP 0.54](https://en.wikipedia.org/wiki/GIMP): the 1996 release, the last GIMP built on the Motif toolkit before the project moved to GTK, builds against the compat stack plus the bundled Motif.
   It is a full image editor that drives `XCreateImage` / `XPutImage` / `XGetImage`, the MIT-SHM canvas path (`src/xshm.c`), TrueColor 32bpp visual and colormap handling, large Motif dialog and menu trees, and forked image-format plug-ins (PNG / JPEG) that talk to the core over pipes and SysV shared-memory tiles.
