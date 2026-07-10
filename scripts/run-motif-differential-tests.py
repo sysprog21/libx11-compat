@@ -6,13 +6,16 @@ import subprocess
 import sys
 from pathlib import Path
 from differential import (
+    NEED_SH,
+    run_logged_sh,
+    compare,
+    compiler_setup_sh,
     check_local_paths,
     execute,
     fetch_results,
     parse_env_bool,
     parse_env_default,
     q,
-    run,
     sync_repo,
 )
 
@@ -52,7 +55,7 @@ def remote_script(args, remote_repo):
         install_deps = """
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update
+    sudo apt-get update || true
     sudo apt-get install -y --no-install-recommends \\
         autoconf automake bison build-essential ca-certificates git \\
         imagemagick libtool make pkg-config rsync xauth xvfb \\
@@ -73,14 +76,12 @@ set -eu
 
 {install_deps}
 
-need() {{
-    command -v "$1" >/dev/null 2>&1 || {{
-        echo "missing required command: $1" >&2
-        exit 127
-    }}
-}}
+{NEED_SH}
 
 need autoreconf
+need "${{DIFF_CC:-gcc}}"
+# The system-side Motif build preprocesses with CPP="gcc -E", so gcc is
+# required even when DIFF_CC selects another compiler.
 need gcc
 need git
 need import
@@ -111,21 +112,7 @@ system_config_log="$remote_root/logs/system-configure.log"
 display=:{q(args.display)}
 compat_display=:{compat_display_num}
 
-run_logged() {{
-    log=$1
-    shift
-    # Capture $? inside the else-branch: after fi the exit status of
-    # the if-statement is 0 when no branch ran (POSIX), which would mask
-    # the original failure if we read $? on the line below fi.
-    if "$@" >>"$log" 2>&1; then
-        return 0
-    else
-        status=$?
-        echo "FAIL $*; see $log" >&2
-        tail -60 "$log" >&2 || true
-        exit "$status"
-    fi
-}}
+{run_logged_sh()}
 
 write_wsm_home() {{
     home_dir=$1
@@ -190,17 +177,7 @@ mkdir -p "$system_build" "$system_out" "$system_screens" "$compat_screens" \\
     "$system_logs" "$compat_logs"
 : >"$system_build_log"
 
-# Wrap gcc with ccache so the system-side Motif build and the compat
-# motif-demos build both hit the ccache populated by the GitHub
-# Actions cache action. Bare `CC=gcc` would skip the cache and
-# recompile cold every CI run.
-if command -v ccache >/dev/null 2>&1; then
-    if [ -d /usr/lib/ccache ]; then
-        export PATH="/usr/lib/ccache:$PATH"
-    fi
-    export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
-fi
-cc_wrapped="gcc"
+{compiler_setup_sh()}
 
 motif_src="$repo/build/upstream/motif"
 
@@ -415,42 +392,6 @@ python3 "$repo/scripts/compare-motif-reference.py" \\
 """
 
 
-def compare(args, system_dir, compat_dir, out_root):
-    cmd = [
-        sys.executable,
-        "scripts/compare-motif-reference.py",
-        "--skip-local",
-        "--skip-remote",
-        "--local-dir",
-        str(compat_dir),
-        "--ref-dir",
-        str(system_dir),
-        "--diff-dir",
-        str(out_root / "diff"),
-        "--report",
-        str(out_root / "report.tsv"),
-        "--junit",
-        str(out_root / "junit.xml"),
-        "--local-results",
-        str(out_root / "logs" / "compat" / "results.tsv"),
-        "--ref-results",
-        str(out_root / "logs" / "system" / "results.tsv"),
-        "--mae-threshold",
-        str(args.mae_threshold),
-        "--changed-threshold",
-        str(args.changed_threshold),
-        "--allow-diff",
-        args.allow_diff,
-        "--allow-diff-mae-ceiling",
-        str(args.allow_diff_mae_ceiling),
-        "--allow-diff-changed-ceiling",
-        str(args.allow_diff_changed_ceiling),
-        "--top",
-        str(args.top),
-    ]
-    run(cmd)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -474,7 +415,7 @@ def main():
     )
     parser.add_argument(
         "--display",
-        default=parse_env_default("MOTIF_DIFF_DISPLAY", "119"),
+        default=parse_env_default("MOTIF_DIFF_DISPLAY", "100"),
     )
     parser.add_argument(
         "--geometry",
@@ -661,7 +602,20 @@ def main():
 
     if args.compare_location == "local" and system_dir is not None:
         try:
-            compare(args, system_dir, compat_dir, out_root)
+            compare(
+                args,
+                system_dir,
+                compat_dir,
+                out_root,
+                extra_args=[
+                    "--allow-diff",
+                    args.allow_diff,
+                    "--allow-diff-mae-ceiling",
+                    str(args.allow_diff_mae_ceiling),
+                    "--allow-diff-changed-ceiling",
+                    str(args.allow_diff_changed_ceiling),
+                ],
+            )
         except subprocess.CalledProcessError as error:
             compare_status = error.returncode
 

@@ -280,7 +280,7 @@ $(UI_SMOKE_OUT_ROOT)/gimp-motif-startup/.stamp: FORCE $(GIMP_BUILD_STAMP)
 # "GIMP 0.54 Motif validation" for the promotion gate.
 GIMP_DIFF_REMOTE ?= node11
 GIMP_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-gimp-differential
-GIMP_DIFF_DISPLAY ?= 126
+GIMP_DIFF_DISPLAY ?= 110
 GIMP_DIFF_JOBS ?= 1
 GIMP_DIFF_INSTALL_DEPS ?= 0
 GIMP_DIFF_LOCAL ?= 0

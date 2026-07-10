@@ -32,8 +32,13 @@
  * invoke them without dragging in upstream XlibInt.c. The storage is
  * LIBX11_COMPAT_HIDDEN so a system libX11.so.6 loaded alongside libx11-compat
  * cannot reach in and overwrite it; see util.h for the rationale.
+ *
+ * These two function pointers are the entire interface libx11-compat needs from
+ * upstream locking, so declare them here directly rather than pulling in the
+ * staged upstream locking.h. That header lives under build/upstream/src and is
+ * only visible through the upstream sync staging, so including it coupled this
+ * first-party object to that staging order for no real gain.
  */
-#include "locking.h"
 LIBX11_COMPAT_HIDDEN int (*_XInitDisplayLock_fn)(Display *dpy) = NULL;
 LIBX11_COMPAT_HIDDEN void (*_XFreeDisplayLock_fn)(Display *dpy) = NULL;
 
@@ -1009,13 +1014,13 @@ Status XGetNormalHints(Display *dpy, Window w, XSizeHints *hints)
 
 int XSetStandardProperties(
     Display *dpy,
-    Window w,                  /* window to decorate */
-    _Xconst char *name,        /* name of application */
-    _Xconst char *icon_string, /* name string for icon */
-    Pixmap icon_pixmap,        /* pixmap to use as icon, or None */
-    char **argv,               /* command to be used to restart application */
-    int argc,                  /* count of arguments */
-    XSizeHints *hints)         /* size hints for window in its normal state */
+    Window w /* window to decorate */,
+    _Xconst char *name /* name of application */,
+    _Xconst char *icon_string /* name string for icon */,
+    Pixmap icon_pixmap /* pixmap to use as icon, or None */,
+    char **argv /* command to be used to restart application */,
+    int argc /* count of arguments */,
+    XSizeHints *hints /* size hints for window in its normal state */)
 {
     XWMHints phints;
     phints.flags = 0;

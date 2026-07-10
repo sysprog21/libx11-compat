@@ -45,6 +45,9 @@ LOCAL_INCLUDE = ROOT / "include" / "X11"
 CACHE_DIR = ROOT / "build" / "upstream" / ".cache"
 DEFAULT_DEST = ROOT / "build" / "upstream" / "include"
 STAMP_NAME = ".upstream-stamp"
+# Records every staged file (relative to build/upstream) so the stamp-current
+# fast path can confirm the sources it guards were not cleaned out from under it.
+MANIFEST_NAME = ".upstream-manifest"
 
 # Pinned upstream releases. Bumping a version requires updating the matching
 # sha256; the script refuses to use a tarball that fails verification.
@@ -776,12 +779,75 @@ def _stage_indexed(
     return counts
 
 
+def _restage_subdir(staging_root: Path, subdir: str) -> int:
+    """Re-stage exactly one src/ staging subdir, pristine, touching nothing else.
+
+    Used by the per-library patch steps (e.g. libXt) to reset their own source
+    tree before re-applying compat patches. The whole-tree ``fetch --force``
+    would rmtree the shared build/upstream/include/X11 and build/upstream/src
+    trees that first-party objects compile against, which races those compiles
+    under parallel make. Scoping the reset to the library's own subdir keeps the
+    reset off the shared trees: only that library's objects read this subdir,
+    and they are already ordered after the patch stamp.
+    """
+    known = set(_collect_staging_subdirs())
+    if subdir not in known or subdir == "src":
+        raise SystemExit(
+            f"refusing to restage unknown or shared subdir {subdir!r}; "
+            f"known per-library subdirs: {sorted(known - {'src'})}"
+        )
+    entries = {
+        (sub, rel): payload
+        for (sub, rel), payload in upstream_src_index().items()
+        if sub == subdir
+    }
+    if not entries:
+        raise SystemExit(f"no staged sources found for subdir {subdir!r}")
+    sub_dir = staging_root / subdir
+    if sub_dir.exists():
+        shutil.rmtree(sub_dir)
+    counts = _stage_indexed(staging_root, entries, patch=True)
+    for staged, count in sorted(counts.items()):
+        print(
+            f"  STAGE   {count} upstream source(s) -> {staging_root / staged}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _staged_files_present(staging_root: Path, dest: Path) -> bool:
+    """True only if every file recorded in the staging manifest still exists.
+
+    The stamp lives under dest/ (build/upstream/include) but guards sources
+    staged into sibling dirs under staging_root (build/upstream/src*, util),
+    so the stamp can read current while those .c/.h were cleaned or restored
+    independently (a partial clean, or a CI cache that saved include/ but not
+    src/). Verifying the manifest closes that desync using stat only, with no
+    tarball download. A missing manifest (older stamp format) counts as stale.
+    """
+    manifest = dest / MANIFEST_NAME
+    if not manifest.exists():
+        return False
+    for line in manifest.read_text().splitlines():
+        rel = line.strip()
+        if rel and not (staging_root / rel).exists():
+            return False
+    return True
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     dest = _validate_dest(Path(args.dest))
     staging_root = _validate_dest(dest.parent)
+    if getattr(args, "subdir", None):
+        return _restage_subdir(staging_root, args.subdir)
     stamp = dest / STAMP_NAME
     token = stamp_token()
-    if not args.force and stamp.exists() and stamp.read_text() == token:
+    if (
+        not args.force
+        and stamp.exists()
+        and stamp.read_text() == token
+        and _staged_files_present(staging_root, dest)
+    ):
         # Touch so the stamp's mtime catches up to a freshly edited script;
         # otherwise Make would re-run this recipe on every invocation.
         os.utime(stamp, None)
@@ -807,8 +873,14 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             raise SystemExit(f"refusing unsafe tar path: {rel}")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(content)
-    src_counts = _stage_indexed(staging_root, upstream_src_index(), patch=True)
-    util_counts = _stage_indexed(staging_root, upstream_util_index(), patch=False)
+    src_index = upstream_src_index()
+    util_index = upstream_util_index()
+    src_counts = _stage_indexed(staging_root, src_index, patch=True)
+    util_counts = _stage_indexed(staging_root, util_index, patch=False)
+    manifest = [(dest / rel).relative_to(staging_root).as_posix() for rel in index]
+    manifest += [(Path(sub) / rel).as_posix() for (sub, rel) in src_index]
+    manifest += [(Path(sub) / rel).as_posix() for (sub, rel) in util_index]
+    (dest / MANIFEST_NAME).write_text("\n".join(sorted(manifest)) + "\n")
     stamp.write_text(token)
     print(
         f"  STAGE   {len(index)} upstream header(s) -> {dest}",
@@ -906,6 +978,11 @@ def main(argv: list[str]) -> int:
     p_fetch.add_argument("dest", nargs="?", default=str(DEFAULT_DEST))
     p_fetch.add_argument(
         "--force", action="store_true", help="ignore the stamp and re-extract"
+    )
+    p_fetch.add_argument(
+        "--subdir",
+        help="re-stage only this per-library src subdir (e.g. src-libXt), "
+        "pristine, without touching the shared header/src trees or the stamp",
     )
     p_fetch.set_defaults(func=cmd_fetch)
 

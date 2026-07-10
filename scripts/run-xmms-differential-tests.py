@@ -7,6 +7,10 @@ import sys
 from pathlib import Path
 
 from differential import (
+    NEED_SH,
+    run_logged_sh,
+    compare,
+    compiler_setup_sh,
     WAIT_FOR_DISPLAY_SH,
     check_local_paths,
     execute,
@@ -14,7 +18,6 @@ from differential import (
     parse_env_bool,
     parse_env_default,
     q,
-    run,
     sync_repo,
 )
 
@@ -53,16 +56,11 @@ set -eu
 
 {install_deps}
 
-need() {{
-    command -v "$1" >/dev/null 2>&1 || {{
-        echo "missing required command: $1" >&2
-        exit 127
-    }}
-}}
+{NEED_SH}
 
 need autoreconf
 need cmake
-need gcc
+need "${{DIFF_CC:-gcc}}"
 need git
 need import
 need make
@@ -84,18 +82,7 @@ compat_screens="$remote_root/screens/compat"
 display=:{q(args.display)}
 compat_display=:{compat_display_num}
 
-run_logged() {{
-    log=$1
-    shift
-    if "$@" >>"$log" 2>&1; then
-        return 0
-    else
-        status=$?
-        echo "FAIL $*; see $log" >&2
-        tail -80 "$log" >&2 || true
-        exit "$status"
-    fi
-}}
+{run_logged_sh(80)}
 
 stage_xmms_home() {{
     home=$1
@@ -261,13 +248,7 @@ screenshot initial
 assert-image initial common-visible.json
 EOF
 
-if command -v ccache >/dev/null 2>&1; then
-    if [ -d /usr/lib/ccache ]; then
-        export PATH="/usr/lib/ccache:$PATH"
-    fi
-    export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
-fi
-cc_wrapped="gcc"
+{compiler_setup_sh()}
 
 (cd "$repo" && make build/upstream/.gtk1-source-stamp build/upstream/.xmms-source-stamp)
 
@@ -413,36 +394,6 @@ python3 "$repo/scripts/compare-motif-reference.py" \\
 """
 
 
-def compare(args, system_dir, compat_dir, out_root):
-    cmd = [
-        sys.executable,
-        "scripts/compare-motif-reference.py",
-        "--skip-local",
-        "--skip-remote",
-        "--local-dir",
-        str(compat_dir),
-        "--ref-dir",
-        str(system_dir),
-        "--diff-dir",
-        str(out_root / "diff"),
-        "--report",
-        str(out_root / "report.tsv"),
-        "--junit",
-        str(out_root / "junit.xml"),
-        "--local-results",
-        str(out_root / "logs" / "compat" / "results.tsv"),
-        "--ref-results",
-        str(out_root / "logs" / "system" / "results.tsv"),
-        "--mae-threshold",
-        str(args.mae_threshold),
-        "--changed-threshold",
-        str(args.changed_threshold),
-        "--top",
-        str(args.top),
-    ]
-    run(cmd)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -463,7 +414,7 @@ def main():
         ),
     )
     parser.add_argument(
-        "--display", default=parse_env_default("XMMS_DIFF_DISPLAY", "129")
+        "--display", default=parse_env_default("XMMS_DIFF_DISPLAY", "116")
     )
     parser.add_argument(
         "--geometry",
