@@ -2089,18 +2089,27 @@ def main():
 
     attempts = max(1, args.retries)
     for attempt in range(1, attempts + 1):
+        # run_replay catches per-step ReplayErrors internally and reports a
+        # failed run by returning nonzero; it only raises for setup-phase
+        # errors (bad flags). Retry on either signal, otherwise a --retries
+        # smoke would run exactly once regardless of failure.
         try:
-            return run_replay(args)
+            rc = run_replay(args)
+            message = "replay reported failures"
         except ReplayError as error:
-            if attempt < attempts:
-                print(
-                    f"run-ui-replay: attempt {attempt}/{attempts} failed "
-                    f"({error}); re-running",
-                    file=sys.stderr,
-                )
-                continue
-            print(f"run-ui-replay: {error}", file=sys.stderr)
-            return 1
+            rc = 1
+            message = str(error)
+        if rc == 0:
+            return 0
+        if attempt < attempts:
+            print(
+                f"run-ui-replay: attempt {attempt}/{attempts} failed "
+                f"({message}); re-running",
+                file=sys.stderr,
+            )
+            continue
+        print(f"run-ui-replay: {message}", file=sys.stderr)
+        return rc
 
 
 if __name__ == "__main__":
