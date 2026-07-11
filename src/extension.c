@@ -8,6 +8,18 @@
 #include "extension.h"
 #include "util.h"
 
+/* Built-in extensions get fixed protocol codes assigned by hand in
+ * XQueryExtension below: SHAPE (opcode 129, event 64, error 128), MIT-SHM
+ * (opcode 130, event 128, error 129), XTEST (opcode 132), plus synthetic XKB
+ * from missing.c (opcode 135, event 85, error 137). XAddExtension hands
+ * app-registered extensions auto-assigned codes; base them past the highest
+ * built-in in each class so the two schemes never overlap. Bump these if a new
+ * built-in is added above them.
+ */
+#define BUILTIN_EXT_OPCODE_MAX 135
+#define BUILTIN_EXT_EVENT_MAX 128
+#define BUILTIN_EXT_ERROR_MAX 137
+
 static _XExtension *findExtension(Display *display, int extension)
 {
     for (_XExtension *ext = display->ext_procs; ext; ext = ext->next) {
@@ -19,13 +31,28 @@ static _XExtension *findExtension(Display *display, int extension)
 
 XExtCodes *XAddExtension(Display *display)
 {
+    /* Protocol codes are byte-sized on the wire (CARD8, 0-255) even though
+     * XExtCodes stores them as int. Each code is <reserve base> + ext, so the
+     * largest reserve base is the first field to exceed 255; refuse once the
+     * next id would not fit. Computing the max here keeps the guard correct no
+     * matter which class holds the highest built-in. Clamping would hand out
+     * duplicate codes, worse than failing; callers already tolerate a NULL
+     * return (see XInitExtension).
+     */
+    int reserveMax = BUILTIN_EXT_OPCODE_MAX;
+    if (BUILTIN_EXT_EVENT_MAX > reserveMax)
+        reserveMax = BUILTIN_EXT_EVENT_MAX;
+    if (BUILTIN_EXT_ERROR_MAX > reserveMax)
+        reserveMax = BUILTIN_EXT_ERROR_MAX;
+    if (display->ext_number >= 255 - reserveMax)
+        return NULL;
     _XExtension *ext = calloc(1, sizeof(_XExtension));
     if (!ext)
         return NULL;
     ext->codes.extension = ++display->ext_number;
-    ext->codes.major_opcode = 128 + ext->codes.extension;
-    ext->codes.first_event = 64 + ext->codes.extension;
-    ext->codes.first_error = 128 + ext->codes.extension;
+    ext->codes.major_opcode = BUILTIN_EXT_OPCODE_MAX + ext->codes.extension;
+    ext->codes.first_event = BUILTIN_EXT_EVENT_MAX + ext->codes.extension;
+    ext->codes.first_error = BUILTIN_EXT_ERROR_MAX + ext->codes.extension;
     ext->next = display->ext_procs;
     display->ext_procs = ext;
     return &ext->codes;
@@ -83,6 +110,22 @@ Bool XQueryExtension(Display *display,
             *first_event_return = 0;
         if (first_error_return)
             *first_error_return = 0;
+        return True;
+    }
+    /* Stay coherent with the per-extension entry points in src/xshm.c:
+     * XShmQueryExtension reports MIT-SHM present, so probing the generic name
+     * must agree. The event base matches XShmGetEventBase (128) so
+     * ShmCompletion derives to one value from either path. The error base is
+     * advisory (this shim never dispatches extension errors), but must stay
+     * distinct from SHAPE's 128, so MIT-SHM gets 129.
+     */
+    if (name && !strcmp(name, "MIT-SHM")) {
+        if (major_opcode_return)
+            *major_opcode_return = 130;
+        if (first_event_return)
+            *first_event_return = 128;
+        if (first_error_return)
+            *first_error_return = 129;
         return True;
     }
 
