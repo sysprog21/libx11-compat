@@ -1,0 +1,58 @@
+Fix a teardown race that crashes XMMS on exit.
+
+cleanup_plugins() frees ip_data and op_data, but the effect and general
+plugin cleanup loops each pump the GLib main loop (while(g_main_iteration
+(FALSE))). That pump dispatches the still-armed volume idle, which reaches
+read_volume -> input_get_volume -> get_input_playing / output_get_volume.
+Those read ip_data->playing and op_data->current_output_plugin after the
+structs have been freed, so a late tick dereferences freed memory and the
+process dies with the "You've probably found a bug in XMMS" SIGSEGV handler
+(exit status 1) during close.
+
+Null the globals as they are freed and let the reads short-circuit on NULL:
+get_input_playing returns FALSE and output_get_volume returns -1, so a volume
+tick that fires mid-teardown is a clean no-op instead of a freed-pointer
+dereference. This does not depend on which pending source the pump happens to
+dispatch, so it closes the whole class of late-callback races, not just the
+one path observed.
+
+--- a/xmms/input.c
++++ b/xmms/input.c
+@@ -511,7 +511,7 @@ void input_set_volume(int l, int r)
+
+ gboolean get_input_playing(void)
+ {
+-	return ip_data->playing;
++	return ip_data ? ip_data->playing : FALSE;
+ }
+
+ gboolean get_input_paused(void)
+--- a/xmms/output.c
++++ b/xmms/output.c
+@@ -56,7 +56,7 @@ void output_configure(int i)
+
+ void output_get_volume(int *l, int *r)
+ {
+-	if (op_data->current_output_plugin && op_data->current_output_plugin->get_volume)
++	if (op_data && op_data->current_output_plugin && op_data->current_output_plugin->get_volume)
+ 		op_data->current_output_plugin->get_volume(l, r);
+ 	else
+ 		(*l) = (*r) = -1;
+--- a/xmms/pluginenum.c
++++ b/xmms/pluginenum.c
+@@ -417,6 +417,7 @@ void cleanup_plugins(void)
+ 	}
+ 	g_list_free(ip_data->input_list);
+ 	g_free(ip_data);
++	ip_data = NULL;
+
+ 	node = op_data->output_list;
+ 	while (node)
+@@ -428,6 +429,7 @@ void cleanup_plugins(void)
+ 	}
+ 	g_list_free(op_data->output_list);
+ 	g_free(op_data);
++	op_data = NULL;
+
+ 	node = ep_data->effect_list;
+ 	while (node)
