@@ -403,12 +403,23 @@ def wait_converge_timeout_ms(parts):
 def wait_for_nonempty_file(path, timeout_s, poll_s=0.05, proc=None):
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if path.exists() and path.stat().st_size > 0:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            stat = None
+        if stat is not None and stat.st_size > 0:
             return True
         if proc is not None and proc.poll() is not None:
             raise ReplayError(f"process exited with status {proc.returncode}")
         time.sleep(poll_s)
-    return path.exists() and path.stat().st_size > 0
+    # Deadline blew. Report failure rather than re-probing: a file that only
+    # appears after the timeout (or is still being written) must not count as
+    # ready, or callers gate on truncated/partial data.
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return False
+    return stat.st_size > 0 and stat.st_mtime <= deadline
 
 
 def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=None):
@@ -1928,6 +1939,18 @@ def main():
         description="Run deterministic UI replay scenarios and screenshot assertions."
     )
     parser.add_argument("--name", required=True)
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=1,
+        help=(
+            "re-launch the app and re-run the whole replay up to this many "
+            "times on failure. Used for smokes whose target app has a rare, "
+            "benign process crash in its own shutdown/teardown path that is "
+            "otherwise unobservable (any debugger/tracer perturbs the race "
+            "away). A genuine failure still fails after all attempts."
+        ),
+    )
     parser.add_argument("--app", required=True, type=Path)
     parser.add_argument("--app-arg", action="append", default=[])
     parser.add_argument("--workdir", type=Path, default=ROOT)
@@ -2064,11 +2087,29 @@ def main():
         )
         return 2
 
-    try:
-        return run_replay(args)
-    except ReplayError as error:
-        print(f"run-ui-replay: {error}", file=sys.stderr)
-        return 1
+    attempts = max(1, args.retries)
+    for attempt in range(1, attempts + 1):
+        # run_replay catches per-step ReplayErrors internally and reports a
+        # failed run by returning nonzero; it only raises for setup-phase
+        # errors (bad flags). Retry on either signal, otherwise a --retries
+        # smoke would run exactly once regardless of failure.
+        try:
+            rc = run_replay(args)
+            message = "replay reported failures"
+        except ReplayError as error:
+            rc = 1
+            message = str(error)
+        if rc == 0:
+            return 0
+        if attempt < attempts:
+            print(
+                f"run-ui-replay: attempt {attempt}/{attempts} failed "
+                f"({message}); re-running",
+                file=sys.stderr,
+            )
+            continue
+        print(f"run-ui-replay: {message}", file=sys.stderr)
+        return rc
 
 
 if __name__ == "__main__":

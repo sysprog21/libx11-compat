@@ -6,13 +6,16 @@ import subprocess
 import sys
 from pathlib import Path
 from differential import (
+    NEED_SH,
+    run_logged_sh,
+    compare,
+    compiler_setup_sh,
     check_local_paths,
     execute,
     fetch_results,
     parse_env_bool,
     parse_env_default,
     q,
-    run,
     sync_repo,
 )
 
@@ -37,7 +40,7 @@ def remote_script(args, remote_repo):
         install_deps = """
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update
+    sudo apt-get update || true
     sudo apt-get install -y --no-install-recommends \\
         autoconf automake bison build-essential ca-certificates git \\
         imagemagick libtool make pkg-config python3-pil rsync xauth xvfb \\
@@ -56,14 +59,12 @@ set -eu
 
 {install_deps}
 
-need() {{
-    command -v "$1" >/dev/null 2>&1 || {{
-        echo "missing required command: $1" >&2
-        exit 127
-    }}
-}}
+{NEED_SH}
 
 need autoreconf
+need "${{DIFF_CC:-gcc}}"
+# The system-side Motif build preprocesses with CPP="gcc -E", so gcc is
+# required even when DIFF_CC selects another compiler.
 need gcc
 need git
 need import
@@ -96,18 +97,7 @@ display=:{q(args.display)}
 compat_display=:{compat_display_num}
 replay={q(args.replay)}
 
-run_logged() {{
-    log=$1
-    shift
-    if "$@" >>"$log" 2>&1; then
-        return 0
-    else
-        status=$?
-        echo "FAIL $*; see $log" >&2
-        tail -60 "$log" >&2 || true
-        exit "$status"
-    fi
-}}
+{run_logged_sh()}
 
 capture_mosaic() {{
     name=$1
@@ -156,19 +146,10 @@ rm -rf "$remote_root/screens" "$remote_root/logs" "$remote_root/diff" \\
 mkdir -p "$system_build" "$system_out" "$system_mosaic" "$system_logs" \\
     "$compat_logs" "$system_screens" "$compat_screens" "$remote_root/logs"
 
-# Wrap gcc with ccache so the system-side Motif build, the system-side
-# Mosaic build, and the compat-side mosaic build all hit the ccache
-# populated by the GitHub Actions cache action. Use PATH-based wrapping
-# rather than CC="ccache gcc" so recursive Makefiles that pass $(CC)
-# unquoted to sub-make (Mosaic's makefiles/Makefile.linux is one) do
-# not tokenize the value into "CC=ccache gcc-target".
-if command -v ccache >/dev/null 2>&1; then
-    if [ -d /usr/lib/ccache ]; then
-        export PATH="/usr/lib/ccache:$PATH"
-    fi
-    export CCACHE_DIR="${{CCACHE_DIR:-$HOME/.cache/ccache}}"
-fi
-cc_wrapped="gcc"
+# compiler_setup_sh fronts ccache via PATH rather than CC="ccache gcc" so
+# recursive Makefiles that pass $(CC) unquoted to a sub-make (Mosaic's
+# makefiles/Makefile.linux is one) do not tokenize it into "CC=ccache gcc".
+{compiler_setup_sh(legacy=True)}
 
 motif_src="$repo/build/upstream/motif"
 
@@ -369,36 +350,6 @@ python3 "$repo/scripts/compare-motif-reference.py" \\
 """
 
 
-def compare(args, system_dir, compat_dir, out_root):
-    cmd = [
-        sys.executable,
-        "scripts/compare-motif-reference.py",
-        "--skip-local",
-        "--skip-remote",
-        "--local-dir",
-        str(compat_dir),
-        "--ref-dir",
-        str(system_dir),
-        "--diff-dir",
-        str(out_root / "diff"),
-        "--report",
-        str(out_root / "report.tsv"),
-        "--junit",
-        str(out_root / "junit.xml"),
-        "--local-results",
-        str(out_root / "logs" / "compat" / "results.tsv"),
-        "--ref-results",
-        str(out_root / "logs" / "system" / "results.tsv"),
-        "--mae-threshold",
-        str(args.mae_threshold),
-        "--changed-threshold",
-        str(args.changed_threshold),
-        "--top",
-        str(args.top),
-    ]
-    run(cmd)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -421,7 +372,7 @@ def main():
     )
     parser.add_argument(
         "--display",
-        default=parse_env_default("MOSAIC_DIFF_DISPLAY", "123"),
+        default=parse_env_default("MOSAIC_DIFF_DISPLAY", "104"),
     )
     parser.add_argument(
         "--geometry",

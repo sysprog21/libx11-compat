@@ -19,6 +19,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,16 @@ def ssh(remote, script):
 
 
 def execute(args, script):
-    """Run a build/capture/compare shell payload locally or via SSH."""
+    """Run a build/capture/compare shell payload locally or via SSH.
+
+    Forward the caller's DIFF_CC into the payload so the compiler override
+    reaches the generated script in both local and SSH runs; a bare
+    `ssh remote sh -s` would otherwise resolve ${DIFF_CC} against the remote
+    environment, which does not carry it.
+    """
+    diff_cc = os.environ.get("DIFF_CC")
+    if diff_cc:
+        script = f"export DIFF_CC={shlex.quote(diff_cc)}\n" + script
     if args.local:
         run(["sh", "-s"], input_text=script)
     else:
@@ -84,6 +94,135 @@ WAIT_FOR_DISPLAY_SH = """wait_for_display() {
     echo "Xvfb for $target did not become ready within 10s" >&2
     return 1
 }"""
+
+# Modern clang (16+) and gcc (14+) promote the C99-removal diagnostics to
+# errors by default. Pre-C99 application sources (mosaic's libwww2, xcircuit's
+# Xw widgets, xwpe) only compile once these are silenced. Use the plain -Wno-
+# (disable) spelling, not -Wno-error=: gcc hard-errors on an unknown
+# -Wno-error=<name> but silently ignores an unknown -Wno-<name>, and the
+# leading -Wno-unknown-warning-option keeps clang quiet about names it does not
+# know. That lets one flag string cover gcc-13, gcc-14 and clang without
+# branching on the compiler (e.g. return-mismatch is gcc-14/clang-only,
+# deprecated-non-prototype is clang-only).
+LEGACY_CC_FLAGS = (
+    "-Wno-unknown-warning-option "
+    "-Wno-implicit-int -Wno-implicit-function-declaration "
+    "-Wno-return-type -Wno-return-mismatch -Wno-int-conversion "
+    "-Wno-incompatible-pointer-types -Wno-deprecated-non-prototype"
+)
+
+
+def compiler_setup_sh(*, legacy=False, source_date_epoch=False):
+    """Shell that resolves the app-build C compiler into $cc_wrapped.
+
+    Emitted verbatim into a runner's build script (single braces, like
+    WAIT_FOR_DISPLAY_SH). DIFF_CC overrides the default gcc so node11 docker
+    runs build with clang; ccache is fronted via PATH when present.
+
+    legacy=True wraps the compiler in $remote_root/bin/cc-legacy so a modern
+    clang's C99-removal errors drop to warnings and pre-C99 sources still build
+    (codegen unchanged). This keeps ancient apps buildable under a bare
+    `make check-differential-<app> DIFF_CC=clang`, not just via the docker
+    image's own wrapper. source_date_epoch=True supplies a valid
+    SOURCE_DATE_EPOCH for builds (e.g. xwpe) that derive one from `git log` in a
+    git-less source copy, which clang rejects when empty. Requires $remote_root.
+    """
+    lines = [
+        "# Resolve the app-build compiler ($cc_wrapped); DIFF_CC overrides gcc.",
+        "# ccache fronts it via PATH to reuse the CI object cache.",
+        "if command -v ccache >/dev/null 2>&1; then",
+        "    if [ -d /usr/lib/ccache ]; then",
+        '        export PATH="/usr/lib/ccache:$PATH"',
+        "    fi",
+        '    export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"',
+        "fi",
+    ]
+    if source_date_epoch:
+        lines.append('export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1704067200}"')
+    if legacy:
+        # Quoted heredoc: the wrapper body is written verbatim and resolves
+        # DIFF_CC at run time (it is exported through the whole make chain), so
+        # a DIFF_CC value with shell-special characters cannot be expanded or
+        # executed while the wrapper is being generated.
+        lines += [
+            'mkdir -p "$remote_root/bin"',
+            "cat > \"$remote_root/bin/cc-legacy\" <<'LEGACYEOF'",
+            "#!/bin/sh",
+            f'exec "${{DIFF_CC:-gcc}}" {LEGACY_CC_FLAGS} "$@"',
+            "LEGACYEOF",
+            'chmod +x "$remote_root/bin/cc-legacy"',
+            'cc_wrapped="$remote_root/bin/cc-legacy"',
+        ]
+    else:
+        lines.append('cc_wrapped="${DIFF_CC:-gcc}"')
+    return "\n".join(lines)
+
+
+# Shell helper: abort with a clear message when a required command is missing.
+# Emitted verbatim into a runner's build script (single braces).
+NEED_SH = """need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        echo "missing required command: $1" >&2
+        exit 127
+    }
+}"""
+
+
+def run_logged_sh(tail_lines=60):
+    """Shell helper `run_logged LOG CMD...` that appends a command's output to
+    LOG and, on failure, prints the last tail_lines of LOG and exits with the
+    command's status. Emitted verbatim into a runner's build script."""
+    return f"""run_logged() {{
+    log=$1
+    shift
+    if "$@" >>"$log" 2>&1; then
+        return 0
+    else
+        # Capture $? inside the else branch: after `fi` the if-statement's own
+        # status is 0 when no branch ran (POSIX), which would mask the failure
+        # if read on the line below.
+        status=$?
+        echo "FAIL $*; see $log" >&2
+        tail -{tail_lines} "$log" >&2 || true
+        exit "$status"
+    fi
+}}"""
+
+
+def compare(args, system_dir, compat_dir, out_root, *, extra_args=None):
+    """Run compare-motif-reference.py over captured system vs compat screenshots.
+
+    Shared by every runner; extra_args injects per-app flags (motif passes the
+    --allow-diff ceilings) ahead of --top.
+    """
+    cmd = [
+        sys.executable,
+        "scripts/compare-motif-reference.py",
+        "--skip-local",
+        "--skip-remote",
+        "--local-dir",
+        str(compat_dir),
+        "--ref-dir",
+        str(system_dir),
+        "--diff-dir",
+        str(out_root / "diff"),
+        "--report",
+        str(out_root / "report.tsv"),
+        "--junit",
+        str(out_root / "junit.xml"),
+        "--local-results",
+        str(out_root / "logs" / "compat" / "results.tsv"),
+        "--ref-results",
+        str(out_root / "logs" / "system" / "results.tsv"),
+        "--mae-threshold",
+        str(args.mae_threshold),
+        "--changed-threshold",
+        str(args.changed_threshold),
+        *(extra_args or []),
+        "--top",
+        str(args.top),
+    ]
+    run(cmd)
 
 
 def parse_env_default(name, default):

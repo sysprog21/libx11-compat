@@ -341,7 +341,7 @@ check-grace-export: $(GRACE_BIN) $(GRACE_RUNTIME_STAMP)
 # what actually guards the axes/curve/labels from silently going blank.
 GRACE_DIFF_REMOTE ?= node11
 GRACE_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-grace-differential
-GRACE_DIFF_DISPLAY ?= 131
+GRACE_DIFF_DISPLAY ?= 120
 GRACE_DIFF_JOBS ?= 1
 GRACE_DIFF_INSTALL_DEPS ?= 0
 GRACE_DIFF_LOCAL ?= 0

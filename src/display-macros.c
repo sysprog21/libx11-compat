@@ -1,6 +1,5 @@
 #include "X11/Xlib.h"
 #include "X11/Xlibint.h"
-#include "reallocarray.h"
 
 int XDisplayWidth(Display *dpy, int scr)
 {
@@ -277,7 +276,7 @@ int *XListDepths(Display *dpy, int scrnum, int *countp)
         register Depth *dp;
         register int i;
 
-        depths = Xmallocarray(count, sizeof(int));
+        depths = Xcalloc(count, sizeof(int));
         if (!depths)
             return NULL;
         for (i = 0, dp = scr->depths; i < count; i++, dp++)

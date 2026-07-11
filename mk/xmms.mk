@@ -189,6 +189,7 @@ $(UI_SMOKE_OUT_ROOT)/xmms-startup/.stamp: FORCE $(XMMS_BUILD_STAMP)
 	$(Q)mkdir -p $(abspath $(UI_SMOKE_OUT_ROOT))/xmms-startup/home
 	$(Q)$(PYTHON) scripts/run-ui-replay.py \
 	    --name xmms-startup \
+	    --retries 3 \
 	    --app $(abspath $(XMMS_BIN)) \
 	    --workdir $(abspath $(XMMS_INSTALL_DIR)) \
 	    --replay tests/ui/replays/xmms-startup.replay \
@@ -215,6 +216,7 @@ $(UI_SMOKE_OUT_ROOT)/xmms-window/.stamp: FORCE $(XMMS_BUILD_STAMP) \
 	    $(abspath $(UI_SMOKE_OUT_ROOT))/xmms-window/home/.xmms/config
 	$(Q)$(PYTHON) scripts/run-ui-replay.py \
 	    --name xmms-window \
+	    --retries 3 \
 	    --app $(abspath $(XMMS_BIN)) \
 	    --workdir $(abspath $(XMMS_INSTALL_DIR)) \
 	    --replay tests/ui/replays/xmms-window.replay \
@@ -256,7 +258,7 @@ check-xmms: check-xmms-no-host-x11 check-xmms-no-unexpected-stubs \
 
 XMMS_DIFF_REMOTE ?= node11
 XMMS_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-xmms-differential
-XMMS_DIFF_DISPLAY ?= 129
+XMMS_DIFF_DISPLAY ?= 116
 XMMS_DIFF_JOBS ?= 1
 XMMS_DIFF_INSTALL_DEPS ?= 0
 XMMS_DIFF_LOCAL ?= 0

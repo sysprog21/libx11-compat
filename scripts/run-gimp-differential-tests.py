@@ -6,13 +6,15 @@ import subprocess
 import sys
 from pathlib import Path
 from differential import (
+    NEED_SH,
+    run_logged_sh,
+    compare,
     check_local_paths,
     execute,
     fetch_results,
     parse_env_bool,
     parse_env_default,
     q,
-    run,
     sync_repo,
 )
 
@@ -35,7 +37,7 @@ def remote_script(args, remote_repo):
         install_deps = """
 if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update
+    sudo apt-get update || true
     sudo apt-get install -y --no-install-recommends \\
         autoconf automake build-essential ca-certificates git imagemagick \\
         libjpeg-dev libmotif-dev libpixman-1-dev libpng-dev libsdl2-dev \\
@@ -54,15 +56,9 @@ set -eu
 
 {install_deps}
 
-need() {{
-    command -v "$1" >/dev/null 2>&1 || {{
-        echo "missing required command: $1" >&2
-        exit 127
-    }}
-}}
+{NEED_SH}
 
 need autoconf
-need gcc
 need import
 need make
 need patch
@@ -82,18 +78,7 @@ compat_screens="$remote_root/screens/compat"
 display=:{q(args.display)}
 compat_display=:{compat_display_num}
 
-run_logged() {{
-    log=$1
-    shift
-    if "$@" >>"$log" 2>&1; then
-        return 0
-    else
-        status=$?
-        echo "FAIL $*; see $log" >&2
-        tail -60 "$log" >&2 || true
-        exit "$status"
-    fi
-}}
+{run_logged_sh()}
 
 capture_gimp() {{
     name=$1
@@ -183,14 +168,17 @@ mkdir -p "$system_build/source" "$system_logs" "$compat_logs" \\
 # older system gcc (e.g. Ubuntu 20.04 gcc 9) errors out on the unknown
 # warning name. Prefer clang to match the toolchain CI and macOS already
 # use for gimp-motif, falling back to gcc only when no clang is present.
-cc_real=""
-for c in clang clang-18 clang-17 clang-16 clang-15 gcc; do
-    if command -v "$c" >/dev/null 2>&1; then
-        cc_real="$c"
-        break
-    fi
-done
+cc_real="${{DIFF_CC:-}}"
+if [ -z "$cc_real" ]; then
+    for c in clang clang-18 clang-17 clang-16 clang-15 gcc; do
+        if command -v "$c" >/dev/null 2>&1; then
+            cc_real="$c"
+            break
+        fi
+    done
+fi
 [ -n "$cc_real" ] || {{ echo "no C compiler found" >&2; exit 127; }}
+need "$cc_real"
 # Front the compiler with ccache so the system-side and compat-side objects
 # hit the ccache populated by the GitHub Actions cache action; a bare CC
 # would recompile cold every run.
@@ -378,36 +366,6 @@ python3 "$repo/scripts/compare-motif-reference.py" \\
 """
 
 
-def compare(args, system_dir, compat_dir, out_root):
-    cmd = [
-        sys.executable,
-        "scripts/compare-motif-reference.py",
-        "--skip-local",
-        "--skip-remote",
-        "--local-dir",
-        str(compat_dir),
-        "--ref-dir",
-        str(system_dir),
-        "--diff-dir",
-        str(out_root / "diff"),
-        "--report",
-        str(out_root / "report.tsv"),
-        "--junit",
-        str(out_root / "junit.xml"),
-        "--local-results",
-        str(out_root / "logs" / "compat" / "results.tsv"),
-        "--ref-results",
-        str(out_root / "logs" / "system" / "results.tsv"),
-        "--mae-threshold",
-        str(args.mae_threshold),
-        "--changed-threshold",
-        str(args.changed_threshold),
-        "--top",
-        str(args.top),
-    ]
-    run(cmd)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -431,7 +389,7 @@ def main():
     )
     parser.add_argument(
         "--display",
-        default=parse_env_default("GIMP_DIFF_DISPLAY", "126"),
+        default=parse_env_default("GIMP_DIFF_DISPLAY", "110"),
     )
     parser.add_argument(
         "--geometry",

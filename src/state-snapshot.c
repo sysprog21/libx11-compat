@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include "sdl-compat.h"
 #include <X11/Xatom.h>
 #include "display.h"
@@ -373,9 +374,34 @@ static void emitWindowEntry(FILE *fp, const UiSnapshotWindow *entry, Bool last)
 
 static int writeSnapshotJson(const char *path, const UiSnapshot *snap)
 {
-    FILE *fp = fopen(path, "w");
-    if (!fp)
+    /* fprintf writes incrementally, so a runner polling for this path can
+     * observe a non-empty but truncated JSON file and fail to parse it. Write
+     * to a unique temp file in the same directory and rename into place; rename
+     * is atomic within one filesystem, so the reader sees either no file or the
+     * complete one. mkstemp (over a fixed .tmp name) avoids clobbering or
+     * following a pre-existing temp path.
+     */
+    size_t pathLen = strlen(path);
+    static const char TEMPLATE[] = ".XXXXXX";
+    if (pathLen > SIZE_MAX - sizeof(TEMPLATE))
         return -1;
+    char *tmpPath = malloc(pathLen + sizeof(TEMPLATE));
+    if (!tmpPath)
+        return -1;
+    memcpy(tmpPath, path, pathLen);
+    memcpy(tmpPath + pathLen, TEMPLATE, sizeof(TEMPLATE));
+    int fd = mkstemp(tmpPath);
+    if (fd < 0) {
+        free(tmpPath);
+        return -1;
+    }
+    FILE *fp = fdopen(fd, "w");
+    if (!fp) {
+        close(fd);
+        unlink(tmpPath);
+        free(tmpPath);
+        return -1;
+    }
     fprintf(fp,
             "{\n  \"captured_t_ms\":%llu,\n  \"focused_window\":%lu,\n  "
             "\"revert_to\":%d,\n  \"pointer_grab\":%lu,\n  "
@@ -392,7 +418,17 @@ static int writeSnapshotJson(const char *path, const UiSnapshot *snap)
     for (int i = 0; i < snap->window_count; i++)
         emitWindowEntry(fp, &snap->windows[i], i == snap->window_count - 1);
     fprintf(fp, "  ]\n}\n");
-    fclose(fp);
+    /* Check for any latched stream error (a failed fprintf leaves ferror set
+     * even when the later fclose flush succeeds) so a partially written JSON is
+     * never renamed into place as if complete. */
+    int writeErr = ferror(fp);
+    int closeRc = fclose(fp);
+    if (writeErr || closeRc != 0 || rename(tmpPath, path) != 0) {
+        unlink(tmpPath);
+        free(tmpPath);
+        return -1;
+    }
+    free(tmpPath);
     return 0;
 }
 

@@ -108,9 +108,8 @@ $(LIBXT_HOST_DIR) $(LIBXT_GEN_DIR) $(LIBXT_OBJ_DIR):
 # Compile makestrs as a host-side tool. It is a single-file standalone
 # generator that depends only on libc; no need for any libx11-compat
 # include paths. Depend on the staged makestrs.c (not just the headers
-# stamp) so the LIBXT_PATCH_STAMP recipe, which runs `fetch --force` and
-# briefly removes and re-stages util/makestrs.c, cannot race this compile
-# under parallel make and leave it reading a half-removed file.
+# stamp) so a clean parallel build stages util/makestrs.c before this host
+# compile reads it.
 $(LIBXT_HOST_MAKESTRS): $(LIBXT_UTIL_DIR)/makestrs.c | $(LIBXT_HOST_DIR)
 	@echo "  HOSTCC  $(LIBXT_UTIL_DIR)/makestrs.c"
 	$(Q)$(HOST_CC) -O2 -o $@ $(LIBXT_UTIL_DIR)/makestrs.c
@@ -120,7 +119,7 @@ $(LIBXT_HOST_MAKESTRS): $(LIBXT_UTIL_DIR)/makestrs.c | $(LIBXT_HOST_DIR)
 # prerequisites before trying to build libXt objects or the host generator.
 $(LIBXT_PATCH_STAMP): $(UPSTREAM_HEADERS_STAMP) $(LIBXT_PATCHES) $(LIBXT_PATCH_LIST_FILE) mk/libxt.mk
 	@echo "  PATCH   libXt"
-	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch --force $(UPSTREAM_HEADERS_DIR)
+	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch --subdir src-libXt $(UPSTREAM_HEADERS_DIR)
 	$(Q)set -e; for patch in $(abspath $(LIBXT_PATCHES)); do \
 	    if patch -d $(abspath $(LIBXT_SRC_DIR)) -p1 --dry-run < "$$patch" >/dev/null; then \
 	        patch -d $(abspath $(LIBXT_SRC_DIR)) -p1 < "$$patch" >/dev/null; \
