@@ -7773,6 +7773,17 @@ static int test_extensions(Display *display)
     CHECK(XInitExtension(display, "GLX") == NULL,
           "XInitExtension returned codes for unsupported extension");
 
+    int xkbOpcode = 0, xkbEvent = 0, xkbError = 0, xkbMajor = 0, xkbMinor = 0;
+    CHECK(XkbQueryExtension(display, &xkbOpcode, &xkbEvent, &xkbError,
+                            &xkbMajor, &xkbMinor),
+          "XkbQueryExtension must report supported");
+    /* MIT-SHM holds the highest built-in event base; derive the bound from it
+     * rather than a literal so a reserve bump cannot silently invalidate this.
+     */
+    int shmOp = 0, shmEv = 0, shmErr = 0;
+    CHECK(XQueryExtension(display, "MIT-SHM", &shmOp, &shmEv, &shmErr),
+          "XQueryExtension must report MIT-SHM");
+
     XExtCodes *first = XAddExtension(display);
     XExtCodes *second = XAddExtension(display);
     CHECK(first != NULL && second != NULL, "XAddExtension returned NULL");
@@ -7781,6 +7792,20 @@ static int test_extensions(Display *display)
     CHECK(first->major_opcode > 0 && first->first_event > 0 &&
               first->first_error > 0,
           "extension codes were not populated");
+    /* Auto-assigned codes must sit above fixed built-ins plus synthetic XKB so
+     * directly-registered extensions never land on a reserved code.
+     */
+    CHECK(first->major_opcode > xkbOpcode && second->major_opcode > xkbOpcode,
+          "XAddExtension opcode collides with a built-in extension");
+    CHECK(first->first_event > shmEv && first->first_error > xkbError,
+          "XAddExtension event/error base collides with a built-in extension");
+    for (int i = 0; i < 6; ++i) {
+        XExtCodes *extra = XAddExtension(display);
+        CHECK(extra != NULL, "extra XAddExtension returned NULL");
+        CHECK(extra->major_opcode > xkbOpcode && extra->first_event > shmEv &&
+                  extra->first_error > xkbError,
+              "later XAddExtension code collides with a built-in extension");
+    }
     CHECK(XESetCloseDisplay(display, first->extension,
                             counted_extension_close) == NULL,
           "first XESetCloseDisplay did not return NULL previous handler");
@@ -7857,6 +7882,23 @@ static int test_extensions(Display *display)
     CHECK(XShmQueryExtension(display), "XShmQueryExtension should be true");
     CHECK(XShmGetEventBase(display) != 0,
           "XShmGetEventBase should return a synthetic base");
+    /* The generic probe must agree with XShmGetEventBase: report MIT-SHM
+     * present and hand back the same event base, so ShmCompletion derives to
+     * one value from either path.
+     */
+    int shmOpcode = 99, shmEvBase = 99, shmErrBase = 98;
+    CHECK(XQueryExtension(display, "MIT-SHM", &shmOpcode, &shmEvBase,
+                          &shmErrBase),
+          "XQueryExtension should report MIT-SHM");
+    CHECK(shmOpcode > 0 && shmEvBase == XShmGetEventBase(display),
+          "XQueryExtension MIT-SHM disagrees with XShmGetEventBase");
+    /* MIT-SHM must not reuse another extension's error base; SHAPE holds 128.
+     */
+    int shapeOp2 = 0, shapeEv2 = 0, shapeErr2 = 0;
+    CHECK(XQueryExtension(display, SHAPENAME, &shapeOp2, &shapeEv2, &shapeErr2),
+          "XQueryExtension should report SHAPE");
+    CHECK(shmErrBase != shapeErr2,
+          "MIT-SHM error base collides with SHAPE error base");
     int shmMajor = 99, shmMinor = 98;
     Bool sharedPix = True;
     CHECK(XShmQueryVersion(display, &shmMajor, &shmMinor, &sharedPix),
@@ -7891,6 +7933,20 @@ static int test_extensions(Display *display)
     CHECK(completion->drawable == shmWindow &&
               completion->major_code == X_ShmPutImage,
           "XShm completion event fields were incorrect");
+
+    /* Attach/Detach are no-ops in the in-process model but must report success,
+     * and the delegating readers/pixmap path must round-trip without crashing.
+     */
+    CHECK(XShmAttach(display, &shminfo), "XShmAttach should report success");
+    CHECK(XShmGetImage(display, shmWindow, shmImage, 0, 0, AllPlanes),
+          "XShmGetImage should read back the window via XGetSubImage");
+    Pixmap shmPixmap =
+        XShmCreatePixmap(display, shmWindow, shmPixels, &shminfo, 2, 2,
+                         DefaultDepth(display, DefaultScreen(display)));
+    CHECK(shmPixmap != None, "XShmCreatePixmap should return a valid pixmap");
+    XFreePixmap(display, shmPixmap);
+    CHECK(XShmDetach(display, &shminfo), "XShmDetach should report success");
+
     XDestroyWindow(display, shmWindow);
     XDestroyImage(shmImage);
 
@@ -7920,7 +7976,9 @@ static int test_extensions(Display *display)
           "XRRQueryExtension should report unsupported");
     CHECK(evBase == 0 && errBase == 0,
           "XRRQueryExtension did not zero outputs");
-    int opcode = 77, xkbMajor = 1, xkbMinor = 1;
+    int opcode = 77;
+    xkbMajor = 1;
+    xkbMinor = 1;
     evBase = 99;
     errBase = 98;
     /* xfreerdp / Motif / GTK probe XkbUseExtension and XkbQueryExtension before
