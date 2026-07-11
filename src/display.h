@@ -36,6 +36,17 @@ unsigned char getLastRequestCode(Display *display);
 double compatGlobalHiDpiScale(void);
 void compatSetGlobalHiDpiScale(double scale);
 
+/* True when the SDL library loaded at runtime provides
+ * SDL_GetWindowSizeInPixels (added in SDL 2.26.0). The wrapper thunk for that
+ * symbol is compiled in whenever the build headers are >= 2.26, but invoking it
+ * against an older runtime library resolves a NULL dlsym and aborts, so every
+ * caller must gate on this and fall back to the renderer-output-size path.
+ * SDL_GetVersion reports the real loaded version and exists in every SDL2. The
+ * LIBX11_COMPAT_NO_SIZE_IN_PIXELS env var forces the fallback so the older-SDL
+ * path is exercisable on a new host.
+ */
+Bool compatSdlHasWindowSizeInPixels(void);
+
 #define SET_X_SERVER_REQUEST(display, requestId)                \
     do {                                                        \
         GET_DISPLAY(display)->request++;                        \

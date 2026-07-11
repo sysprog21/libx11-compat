@@ -6353,10 +6353,11 @@ static int test_snap_axis_to_increment(Display *display)
      * 20, below min 50; base+inc is 20, so 50 (>= 20) is the final result. */
     CHECK(libx11CompatSnapAxisToIncrement(30, 20, 0, 50) == 50,
           "snap: result below min should clamp to min");
-    /* One-increment floor: even with min 0, never collapse below base + inc.
-     * base 80 inc 8, current 84 -> 80 + (4/8)*8 = 80, clamped up to 88. */
-    CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 0) == 88,
-          "snap: result below base+inc should clamp to base+inc");
+    /* Base size (i == 0) is reachable: a size in [base, base+inc) rounds down
+     * to base, not up to base+inc. base 80 inc 8, current 84 -> 80 + (4/8)*8
+     * = 80. */
+    CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 0) == 80,
+          "snap: a size within one increment of base rounds down to base");
     /* Both clamps active: pick the larger (min beats base+inc when min bigger).
      * base 80 inc 8 gives base+inc 88; min 100 is larger, so 100 wins. */
     CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 100) == 100,
@@ -9726,6 +9727,7 @@ static int test_live_resize_reflow_hook(Display *display)
     if (liveResizeReentrantSawInPresent != 1) {
         fprintf(stderr,
                 "reentrant-close: reflow ran outside a present frame\n");
+        libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
         return 0;
     }
     /* Deferred: the re-entrant close left the open count untouched, both at the
@@ -9737,10 +9739,12 @@ static int test_live_resize_reflow_hook(Display *display)
                 "(during=%d after=%d expected=%d)\n",
                 liveResizeReentrantCountDuringClose, numDisplaysOpen,
                 openBefore);
+        libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
         return 0;
     }
     if (libx11CompatInLiveResizePresent()) {
         fprintf(stderr, "reentrant-close: still in present after unwind\n");
+        libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
         return 0;
     }
     /* The drain now performs the deferred close exactly once. */

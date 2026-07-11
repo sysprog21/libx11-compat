@@ -104,11 +104,13 @@ void scaleSdlPointToPixels(Window sdlWindow,
                            int *outY);
 
 /* Snap one axis of a physical-pixel size DOWN to the nearest whole resize
- * increment the ICCCM way: size = base + i * inc. Never returns below the
- * client's declared minimum, nor below a single increment above base. A real
- * window manager quantizes user resizes to these increments; there is none
- * here, so the drag-end snap (snapTopLevelToResizeIncrements) replays it. Pure
- * arithmetic, exposed so it can be unit-tested without SDL. inc must be > 0.
+ * increment the ICCCM way: size = base + i * inc for i >= 0. The base size
+ * (i == 0) is a valid result and is preserved; the result never drops below the
+ * client's declared minimum. A real window manager quantizes user resizes to
+ * these increments; there is none here, so the drag-end snap
+ * (snapTopLevelToResizeIncrements) replays it. Pure arithmetic, exposed so it
+ * can be unit-tested without SDL. An inc <= 0 (client published no PResizeInc)
+ * is a defined no-op that returns current unchanged.
  */
 int libx11CompatSnapAxisToIncrement(int current, int inc, int base, int min);
 

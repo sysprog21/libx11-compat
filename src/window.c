@@ -212,11 +212,13 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
          * the renderer / window-surface paths so older SDL and the CI dummy
          * driver keep working.
          */
+        if (compatSdlHasWindowSizeInPixels()) {
 #if SDL_VERSION_ATLEAST(2, 26, 0)
-        SDL_GetWindowSizeInPixels(sdlWindow, &physW, &physH);
-        if (physW > 0 && physH > 0)
-            haveSize = True;
+            SDL_GetWindowSizeInPixels(sdlWindow, &physW, &physH);
+            if (physW > 0 && physH > 0)
+                haveSize = True;
 #endif
+        }
         if (!haveSize && !windowStruct->presentUsesSoftware &&
             windowStruct->presentRenderer) {
             SDL_GetRendererOutputSize(windowStruct->presentRenderer, &physW,

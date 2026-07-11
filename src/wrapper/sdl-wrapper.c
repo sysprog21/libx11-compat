@@ -256,6 +256,7 @@ void *sdlCocoaWindowHandle(SDL_Window *window)
     return NULL;
 }
 #endif
+SDL_WRAP_VOID(SDL_GetVersion, (SDL_version * ver), (ver))
 SDL_WRAP(Uint32, SDL_GetWindowID, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_GetWindowPosition,
               (SDL_Window * window, int *x, int *y),

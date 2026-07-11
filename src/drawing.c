@@ -550,6 +550,12 @@ void drawWindowDataToScreen()
      * even if the client never returns to its idle wait before the safety cap.
      */
     if (coalesceActive()) {
+        /* This pass may have been driven by the present wake event, which
+         * leaves presentWakePending set. Clear it before rescheduling:
+         * otherwise schedulePresentWake short-circuits on the still-set flag,
+         * no new timer arms, and a burst that outlives its first wake is
+         * stranded past the safety cap with no present. */
+        SDL_AtomicSet(&presentWakePending, False);
         schedulePresentWake();
         return;
     }

@@ -706,12 +706,19 @@ int libx11CompatSnapAxisToIncrement(int current, int inc, int base, int min)
     if (inc <= 0)
         return current;
     int b = base > 0 ? base : 0;
-    int snapped = b + ((current - b) / inc) * inc;
-    /* Never snap below one increment or the client's declared minimum. */
+    /* ICCCM size = base + i*inc for i >= 0. Round the step count down but never
+     * below 0, so the base size itself (i == 0) is reachable instead of being
+     * bumped up a whole increment. */
+    int steps = (current - b) / inc;
+    if (steps < 0)
+        steps = 0;
+    int snapped = b + steps * inc;
+    /* Honor the client's declared minimum, then guard against a degenerate
+     * non-positive window when the base is 0 and the size rounds to 0. */
     if (snapped < min)
         snapped = min;
-    if (snapped < b + inc)
-        snapped = b + inc;
+    if (snapped <= 0)
+        snapped = inc;
     return snapped;
 }
 

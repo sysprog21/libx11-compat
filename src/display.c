@@ -80,6 +80,23 @@ void compatSetGlobalHiDpiScale(double scale)
         globalHiDpiScale = scale;
 }
 
+Bool compatSdlHasWindowSizeInPixels(void)
+{
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+    const char *force = getenv("LIBX11_COMPAT_NO_SIZE_IN_PIXELS");
+    if (force && force[0] == '1')
+        return False;
+    SDL_version linked;
+    SDL_GetVersion(&linked);
+    return SDL_VERSIONNUM(linked.major, linked.minor, linked.patch) >=
+                   SDL_VERSIONNUM(2, 26, 0)
+               ? True
+               : False;
+#else
+    return False;
+#endif
+}
+
 /* Measure the host HiDPI backing scale from a hidden throwaway window. SDL only
  * exposes the Retina backing ratio through a live window (SDL_GetDisplayDPI is
  * unreliable on macOS and SDL_GetDisplayContentScale reports 1.0), so create a
@@ -99,21 +116,24 @@ static void probeGlobalHiDpiScale(void)
     }
     int pointW = 0, pointH = 0, pixelW = 0, pixelH = 0;
     SDL_GetWindowSize(probe, &pointW, &pointH);
+    if (compatSdlHasWindowSizeInPixels()) {
 #if SDL_VERSION_ATLEAST(2, 26, 0)
-    SDL_GetWindowSizeInPixels(probe, &pixelW, &pixelH);
-#else
-    /* SDL_GetWindowSizeInPixels predates 2.26.0. Derive the backing size from a
-     * throwaway renderer's output size, which reports physical pixels on every
-     * SDL2 that ships a renderer. */
-    SDL_Renderer *probeRenderer =
-        SDL_CreateRenderer(probe, -1, SDL_RENDERER_ACCELERATED);
-    if (!probeRenderer)
-        probeRenderer = SDL_CreateRenderer(probe, -1, 0);
-    if (probeRenderer) {
-        SDL_GetRendererOutputSize(probeRenderer, &pixelW, &pixelH);
-        SDL_DestroyRenderer(probeRenderer);
-    }
+        SDL_GetWindowSizeInPixels(probe, &pixelW, &pixelH);
 #endif
+    } else {
+        /* SDL_GetWindowSizeInPixels is unavailable (headers or runtime predate
+         * 2.26.0). Derive the backing size from a throwaway renderer's output
+         * size, which reports physical pixels on every SDL2 that ships a
+         * renderer. */
+        SDL_Renderer *probeRenderer =
+            SDL_CreateRenderer(probe, -1, SDL_RENDERER_ACCELERATED);
+        if (!probeRenderer)
+            probeRenderer = SDL_CreateRenderer(probe, -1, 0);
+        if (probeRenderer) {
+            SDL_GetRendererOutputSize(probeRenderer, &pixelW, &pixelH);
+            SDL_DestroyRenderer(probeRenderer);
+        }
+    }
     if (pointW > 0 && pixelW > 0 && pixelW != pointW)
         compatSetGlobalHiDpiScale((double) pixelW / (double) pointW);
     else if (pointH > 0 && pixelH > 0 && pixelH != pointH)
@@ -820,8 +840,11 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
     /* Cache the resize increments so the drag-end snap does not have to decode
      * the property back on every resize. Only WM_NORMAL_HINTS governs live
      * sizing (WM_ZOOM_HINTS and friends do not), and only PResizeInc requests
-     * cell snapping. Missing PBaseSize/PMinSize default to 0, which the snap
-     * treats as "no base/min", matching the ICCCM fallback. */
+     * cell snapping. ICCCM: when PBaseSize is absent the minimum size stands in
+     * for the base, so fall back to min_width/height (not 0) as the grid
+     * origin, matching the geometry path in missing.c. A missing PMinSize
+     * defaults to 0
+     * ("no minimum"). */
     if (prop == XA_WM_NORMAL_HINTS && IS_TYPE(w, WINDOW)) {
         WindowStruct *windowStruct = GET_WINDOW_STRUCT(w);
         if ((hints->flags & PResizeInc) && hints->width_inc > 0 &&
@@ -830,9 +853,13 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
             windowStruct->widthInc = hints->width_inc;
             windowStruct->heightInc = hints->height_inc;
             windowStruct->baseWidth =
-                (hints->flags & PBaseSize) ? hints->base_width : 0;
+                (hints->flags & PBaseSize)
+                    ? hints->base_width
+                    : ((hints->flags & PMinSize) ? hints->min_width : 0);
             windowStruct->baseHeight =
-                (hints->flags & PBaseSize) ? hints->base_height : 0;
+                (hints->flags & PBaseSize)
+                    ? hints->base_height
+                    : ((hints->flags & PMinSize) ? hints->min_height : 0);
             windowStruct->minWidth =
                 (hints->flags & PMinSize) ? hints->min_width : 0;
             windowStruct->minHeight =
