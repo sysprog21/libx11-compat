@@ -32,6 +32,13 @@
 
 #define WARN_UNIMPLEMENTED LOG("Hit unimplemented function %s.\n", __func__)
 
+/* Unconditional diagnostic trace, independent of DEBUG_LIBX11_COMPAT and of
+ * stderr (curses apps such as xwpe take over the terminal, so stderr LOG output
+ * is unreliable). When the LIBX11_COMPAT_TRACE environment variable names a
+ * file, each call appends one formatted line to it; otherwise it is a no-op.
+ */
+void compatTrace(const char *fmt, ...);
+
 /* Hide private data symbols (lock function pointers, global mutex state) from
  * the dynamic symbol table so a system libX11.so.6 loaded into the same process
  * via SDL2's transitive dependency chain cannot interpose on them. Without

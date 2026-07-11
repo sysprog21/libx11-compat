@@ -89,10 +89,69 @@ typedef struct {
     /* The renderer of this window. Only set if sdlWindow or sdlTexture is set.
      */
     SDL_Renderer *sdlRenderer;
+    /* Per-window accelerated present path. When a top-level window is realized
+     * an accelerated SDL_Renderer is created directly on its SDL_Window; if
+     * that succeeds the window presents its SCREEN-backing pixels through
+     * presentRenderer (streaming texture -> SDL_RenderCopy ->
+     * SDL_RenderPresent) instead of the SDL_GetWindowSurface software path,
+     * giving a real Metal nextDrawable every frame and removing the
+     * CAMetalLayer gravity race during live resize. This is a per-window
+     * LIFETIME decision, taken once before any SDL_GetWindowSurface call (the
+     * two are mutually exclusive on one window): presentUsesSoftware is set
+     * True when the accelerated renderer cannot be created (dummy/headless
+     * driver) or the kill switch forces it, and the window then keeps the
+     * software path unchanged.
+     * presentTexture is a STREAMING RGBA8888 texture on presentRenderer sized
+     * presentTexW x presentTexH, kept up to date by uploading only dirty rects;
+     * presentReadback is the per-window CPU scratch (grown on demand, sized by
+     * presentReadbackCap) that SDL_RenderReadPixels fills before the upload.
+     * All torn down in destroyWindow.
+     */
+    SDL_Renderer *presentRenderer;
+    SDL_Texture *presentTexture;
+    int presentTexW;
+    int presentTexH;
+    unsigned char *presentReadback;
+    size_t presentReadbackCap;
+    Bool presentUsesSoftware;
     /* The position of this window relative to its parent. */
     int x, y;
     /* The dimensions of this window. */
     unsigned int w, h;
+    /* Physical-pixel / SDL-logical-point ratio for this top-level window,
+     * cached so mouse-coordinate scaling and resize handling do not re-query
+     * SDL every event. Under Option 1b the X11 geometry (w/h above) is stored
+     * in physical pixels while SDL mouse events arrive in logical points;
+     * multiply incoming SDL point coords by these to reach X11 pixel space. 1.0
+     * on non-HiDPI hosts and under the SDL dummy driver used in CI, so this is
+     * a no-op there. Set at realize time from the SDL window surface size and
+     * refreshed on every resize.
+     */
+    double hiDpiScaleX;
+    double hiDpiScaleY;
+    /* Cached WM_NORMAL_HINTS resize increments (ICCCM PResizeInc), in the same
+     * physical-pixel space as w/h. A real window manager snaps user resizes to
+     * these; there is none here, so the shim replays that behaviour at drag end
+     * (see snapTopLevelToResizeIncrements). hasResizeInc gates the snap so the
+     * vast majority of clients, which never publish PResizeInc, are unaffected.
+     * baseWidth/baseHeight and minWidth/minHeight anchor the snap the ICCCM
+     * way: width = base + i * width_inc. Populated from XSetWMSizeHints.
+     */
+    Bool hasResizeInc;
+    int widthInc;
+    int heightInc;
+    int baseWidth;
+    int baseHeight;
+    int minWidth;
+    int minHeight;
+    /* Nonzero while configureWindow is applying a client-initiated resize via
+     * SDL_SetWindowSize. That call makes SDL post its own RESIZED/SIZE_CHANGED,
+     * which the event filter must not turn into a second ConfigureNotify
+     * (configureWindow already posts one). The filter consumes this to drop the
+     * echoed events; a genuine host-driven resize arrives with the flag clear.
+     * Atomic because the filter can run on SDL's event thread.
+     */
+    SDL_atomic_t suppressSdlResizeEcho;
     Bool inputOnly;
     Visual *visual;
     Colormap colormap;

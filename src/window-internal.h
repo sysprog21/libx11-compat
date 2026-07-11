@@ -22,6 +22,11 @@ void initWindowStruct(WindowStruct *windowStruct,
                       Pixmap backgroundPixmap);
 Bool initScreenWindow(Display *display);
 Window getWindowFromId(Uint32 sdlWindowId);
+/* Resolve a window's effective background colour, walking up through
+ * ParentRelative backgrounds, with an opaque alpha forced on. Used by the
+ * present path to fill the margin newly exposed during a live host resize so it
+ * shows a stable background colour instead of flickering garbage. */
+unsigned long resolvedWindowBackgroundColor(Window window);
 size_t collectMappedOverrideRedirectWindows(Window *out, size_t max);
 void destroyScreenWindow(Display *display);
 void destroyWindow(Display *display, Window window, Bool freeParentData);

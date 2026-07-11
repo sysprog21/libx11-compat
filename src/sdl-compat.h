@@ -267,6 +267,20 @@ static inline int xc_RenderReadPixels(SDL_Renderer *renderer,
     return rc;
 }
 
+/* Accelerated per-window renderer. SDL3 dropped the driver index and the
+ * SDL_RENDERER_* flag word (renderer selection is by name, vsync is a separate
+ * call), so ignore the SDL2 flags and request the best available renderer.
+ * Returns NULL on failure, which drives the software present fallback.
+ */
+static inline SDL_Renderer *xc_CreateRenderer(SDL_Window *win, Uint32 flags)
+{
+    (void) flags;
+    return SDL_CreateRenderer(win, NULL);
+}
+/* SDL3 dropped the SDL_RENDERER_* flag word; xc_CreateRenderer ignores flags
+ * there, so this token is only a portable spelling for the call site. */
+#define XC_RENDERER_ACCELERATED 0u
+
 /* SDL3 flipped the success convention (int 0 -> bool true) for these calls, but
  * the call sites still test the SDL2 way (`< 0` / `!= 0` / `== 0`). Each
  * wrapper restores the int 0/-1 result. The four render entry points that
@@ -763,6 +777,15 @@ typedef SDL_PixelFormat *XcPixelFormat;
 #define xcAllocFormat(f) SDL_AllocFormat(f)
 #define xcFreeFormat(f) SDL_FreeFormat(f)
 
+/* Accelerated per-window renderer; see the SDL3 wrapper above. SDL2 keeps the
+ * driver index (-1 = first supporting the flags) and the SDL_RENDERER_* flags.
+ */
+static inline SDL_Renderer *xc_CreateRenderer(SDL_Window *win, Uint32 flags)
+{
+    return SDL_CreateRenderer(win, -1, flags);
+}
+#define XC_RENDERER_ACCELERATED SDL_RENDERER_ACCELERATED
+
 #define XC_WINDOW_SUBEVENT(ev) ((ev)->window.event)
 #define XC_CASE_WINDOWEVENT case SDL_WINDOWEVENT
 #define XC_EVENT_KEYSYM(ev) ((ev)->key.keysym.sym)
@@ -812,6 +835,26 @@ static inline unsigned long sdlX11WindowHandle(SDL_Window *window)
 }
 #else
 unsigned long sdlX11WindowHandle(SDL_Window *window);
+#endif
+#endif
+
+/* Native NSWindow of an SDL window on macOS, or NULL when it is not a Cocoa
+ * window (the dummy driver). Under SDL3 it is a window property; under SDL2 the
+ * wrapper shim implements it so SDL_syswm.h and its Cocoa types stay out of the
+ * compat sources (mirrors sdlX11WindowHandle above).
+ */
+#if defined(__APPLE__)
+#ifdef LIBX11_COMPAT_SDL3
+static inline void *sdlCocoaWindowHandle(SDL_Window *window)
+{
+    SDL_PropertiesID props = SDL_GetWindowProperties(window);
+    if (!props)
+        return NULL;
+    return SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
+                                  NULL);
+}
+#else
+void *sdlCocoaWindowHandle(SDL_Window *window);
 #endif
 #endif
 

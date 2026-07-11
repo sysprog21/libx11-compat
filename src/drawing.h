@@ -138,6 +138,26 @@ void clearRendererClip(SDL_Renderer *renderer);
  */
 void invalidatePrimitiveClipCache(void);
 void drawWindowDataToScreen(void);
+/* Runtime kill switch for the per-window accelerated present path. When
+ * LIBX11_COMPAT_FORCE_SOFTWARE_PRESENT is set to a truthy value every top-level
+ * window keeps the SDL_GetWindowSurface software present, so the accelerated
+ * path can be bisected out without a rebuild. Read once and cached.
+ */
+Bool libx11CompatForceSoftwarePresent(void);
+/* True when the per-window accelerated present pipeline is actually usable on
+ * this host. Some drivers (SDL2's dummy driver on headless CI) return a
+ * renderer whose SDL_RenderReadPixels never reflects what was drawn, so a
+ * driver-name check is insufficient; this probes the readback capability once
+ * on a throwaway window and caches the verdict. realizeTopLevelWindow forces
+ * the SDL_GetWindowSurface software present when this returns False. */
+Bool libx11CompatAcceleratedPresentUsable(void);
+/* Coalesce a client repaint burst so its intermediate XFlush/XSync presents do
+ * not reach the screen (see the deadline notes in drawing.c). begin arms the
+ * hold at the point a host-resize ConfigureNotify is produced; end presents the
+ * final frame once and disarms, called when the client returns to its idle
+ * input wait. */
+void beginCoalesceClientRepaint(void);
+void endCoalesceClientRepaint(void);
 Bool presentWakeOwnsEventType(Uint32 eventType);
 void markWindowNeedsPresent(Window window);
 void markWindowNeedsPresentRect(Window window, const SDL_Rect *rect);

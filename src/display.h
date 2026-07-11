@@ -24,6 +24,18 @@
 void setLastRequestCode(Display *display, unsigned char requestCode);
 unsigned char getLastRequestCode(Display *display);
 
+/* Display-global HiDPI factor (physical pixels per logical point), probed once
+ * at XOpenDisplay from a hidden throwaway SDL window. macOS reports the Retina
+ * backing scale only via a live window, and clients such as xwpe load their
+ * fixed-pixel fonts before any window exists, so the factor has to be known up
+ * front. It scales the font pixel size and core metrics (src/font.c) to match
+ * the physical-pixel window geometry promoted in realizeTopLevelWindow, keeping
+ * the terminal grid identical while glyphs render at native resolution. 1.0 on
+ * non-HiDPI hosts and under the CI dummy driver, so the scaling is a no-op.
+ */
+double compatGlobalHiDpiScale(void);
+void compatSetGlobalHiDpiScale(double scale);
+
 #define SET_X_SERVER_REQUEST(display, requestId)                \
     do {                                                        \
         GET_DISPLAY(display)->request++;                        \

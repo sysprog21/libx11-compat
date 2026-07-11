@@ -1,6 +1,7 @@
 #include "X11/Xlib.h"
 #include "sdl-compat.h"
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -241,6 +242,14 @@ static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
         if (focusWindow != None && IS_TYPE(focusWindow, WINDOW)) {
             int local_x = 0, local_y = 0;
             SDL_GetMouseState(&local_x, &local_y);
+            /* Option 1b: SDL_GetMouseState is in logical points but the focus
+             * window's X11 geometry is physical pixels. Scale into pixel space
+             * before translating so the reported root position is consistent
+             * with the pixel geometry, using the same shared scaler the event
+             * delivery path uses. No-op (1.0) on non-HiDPI hosts.
+             */
+            scaleSdlPointToPixels(focusWindow, local_x, local_y, &local_x,
+                                  &local_y);
             Window child = None;
             if (XTranslateCoordinates(display, focusWindow, SCREEN_WINDOW,
                                       local_x, local_y, root_x, root_y,

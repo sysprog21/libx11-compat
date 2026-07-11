@@ -2,6 +2,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "atoms.h"
 #include "display.h"
@@ -120,6 +121,10 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         "borderless=%d\n",
         window, windowStruct->x, windowStruct->y, hostX, hostY, windowStruct->w,
         windowStruct->h, (flags & SDL_WINDOW_BORDERLESS) != 0);
+    compatTrace(
+        "realizeTopLevelWindow: window=%lu requestedSize=(%ux%u) "
+        "globalScale=%.3f\n",
+        window, windowStruct->w, windowStruct->h, compatGlobalHiDpiScale());
     SDL_Window *sdlWindow =
         SDL_CreateWindow(windowStruct->windowName, hostX, hostY,
                          windowStruct->w, windowStruct->h, flags);
@@ -131,6 +136,39 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
 
     registerWindowMapping(window, SDL_GetWindowID(sdlWindow));
     windowStruct->sdlWindow = sdlWindow;
+
+    /* Decide the present path for this window's lifetime, before anything calls
+     * SDL_GetWindowSurface: SDL_GetWindowSurface binds a hidden framebuffer
+     * renderer to the window and SDL_CreateRenderer then fails ("renderer
+     * already associated"), so the accelerated renderer must be created first.
+     * On success the window presents through presentRenderer for its whole
+     * life; if creation fails (dummy/headless driver) or the kill switch forces
+     * it, the window keeps the SDL_GetWindowSurface software path unchanged.
+     *
+     * Some drivers still hand back a (software) renderer whose
+     * SDL_RenderReadPixels cannot read the backing (SDL2's dummy driver on
+     * headless CI), so the accelerated readback path would never present and
+     * hasPresented would stay False. libx11CompatAcceleratedPresentUsable
+     * probes the readback capability once; when it reports the pipeline is not
+     * usable, force the software present path so headless/CI runs behave like a
+     * real driver.
+     */
+    if (libx11CompatForceSoftwarePresent() ||
+        !libx11CompatAcceleratedPresentUsable()) {
+        windowStruct->presentUsesSoftware = True;
+    } else {
+        windowStruct->presentRenderer =
+            xc_CreateRenderer(sdlWindow, XC_RENDERER_ACCELERATED);
+        if (windowStruct->presentRenderer) {
+            windowStruct->presentUsesSoftware = False;
+        } else {
+            LOG("xc_CreateRenderer(accelerated) failed for window %lu: %s; "
+                "using software present\n",
+                window, SDL_GetError());
+            windowStruct->presentUsesSoftware = True;
+        }
+    }
+
     if (windowStruct->overrideRedirect) {
 #if SDL_VERSION_ATLEAST(2, 0, 16)
         SDL_SetWindowAlwaysOnTop(sdlWindow, SDL_TRUE);
@@ -147,6 +185,94 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
      * XMapWindow will present and show it after map/expose state is ready.
      */
     (void) getWindowRenderer(window);
+
+    /* Option 1b: promote X11 geometry to physical pixels. SDL created the
+     * window from logical points; on Retina the actual backing is 2x. The
+     * physical size is the size drawWindowDataToScreen presents against:
+     * SDL_GetRendererOutputSize for accelerated windows (the renderer
+     * drawable), or the SDL window surface for software windows (which cannot
+     * use a renderer). getWindowRenderer above already primed the backing
+     * texture at the logical size; resizeWindowTexture re-creates it at the
+     * promoted pixel geometry (it reads windowStruct->w/h). Falls through as a
+     * no-op when the query fails or the host is non-HiDPI (ratio 1.0, e.g. the
+     * CI dummy driver, which also takes the software branch).
+     */
+    {
+        int physW = 0, physH = 0;
+        Bool haveSize = False;
+        /* Prefer SDL_GetWindowSizeInPixels: it reports the window's physical
+         * backing size directly and does not depend on a renderer or the
+         * SDL_GetWindowSurface software binding. On sdl2-compat over SDL3 the
+         * SDL_GetRendererOutputSize thunk fills the size correctly but can
+         * return nonzero on a still-hidden window, which would skip the
+         * promotion and leave xwpe reading the logical (1x) size from
+         * XGetWindowAttributes -- the initial File Manager dialog then comes up
+         * at the wrong grid size. Treat any query that yields a sane (>0) size
+         * as usable regardless of its int return code, and fall back through
+         * the renderer / window-surface paths so older SDL and the CI dummy
+         * driver keep working.
+         */
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+        SDL_GetWindowSizeInPixels(sdlWindow, &physW, &physH);
+        if (physW > 0 && physH > 0)
+            haveSize = True;
+#endif
+        if (!haveSize && !windowStruct->presentUsesSoftware &&
+            windowStruct->presentRenderer) {
+            SDL_GetRendererOutputSize(windowStruct->presentRenderer, &physW,
+                                      &physH);
+            if (physW > 0 && physH > 0)
+                haveSize = True;
+        }
+        if (!haveSize && windowStruct->presentUsesSoftware) {
+            /* Software-present windows have no accelerated renderer, so the
+             * SDL_GetWindowSurface binding is safe here. Skip it for
+             * accelerated windows: it would bind a framebuffer renderer that
+             * collides with presentRenderer. */
+            SDL_Surface *winSurface = SDL_GetWindowSurface(sdlWindow);
+            if (winSurface) {
+                physW = winSurface->w;
+                physH = winSurface->h;
+                haveSize = (physW > 0 && physH > 0);
+            }
+        }
+        if (haveSize && physW > 0 && physH > 0 && windowStruct->w > 0 &&
+            windowStruct->h > 0) {
+            windowStruct->hiDpiScaleX =
+                (double) physW / (double) windowStruct->w;
+            windowStruct->hiDpiScaleY =
+                (double) physH / (double) windowStruct->h;
+            /* The font engine scaled glyphs and metrics by the display-global
+             * HiDPI factor probed at XOpenDisplay. That factor and this
+             * per-window ratio come from the same host display, so on a
+             * single-scale setup they agree and the grid math lines up
+             * (promoted pixel geometry / scaled font size == the original
+             * grid). A divergence would only arise across monitors with
+             * different scales, which the font size (loaded once, globally)
+             * cannot track; surface this so such a mismatch is diagnosable.
+             */
+            LOG("realizeTopLevelWindow: window=%lu surfaceScale=(%.3f,%.3f) "
+                "globalFontScale=%.3f\n",
+                window, windowStruct->hiDpiScaleX, windowStruct->hiDpiScaleY,
+                compatGlobalHiDpiScale());
+            compatTrace(
+                "realizeTopLevelWindow: window=%lu phys=(%dx%d) "
+                "requested=(%ux%u) surfaceScale=(%.3f,%.3f) globalScale=%.3f\n",
+                window, physW, physH, windowStruct->w, windowStruct->h,
+                windowStruct->hiDpiScaleX, windowStruct->hiDpiScaleY,
+                compatGlobalHiDpiScale());
+            if (physW != (int) windowStruct->w ||
+                physH != (int) windowStruct->h) {
+                windowStruct->w = (unsigned int) physW;
+                windowStruct->h = (unsigned int) physH;
+                resizeWindowTexture(window); /* re-size backing to pixels */
+                compatTrace(
+                    "realizeTopLevelWindow: window=%lu PROMOTED to "
+                    "(%ux%u)\n",
+                    window, windowStruct->w, windowStruct->h);
+            }
+        }
+    }
 
     return True;
 }
@@ -217,6 +343,25 @@ static void unrealizeTopLevelWindow(Window window)
         windowStruct->glxMetalView = NULL;
     }
 #endif
+    /* Tear down the per-window accelerated present resources before the SDL
+     * window they are bound to. realizeTopLevelWindow rebuilds presentRenderer
+     * on the next map, so leaving these live would leak the renderer and tie
+     * its streaming texture to a destroyed SDL_Window. Texture first (owned by
+     * the renderer), then the renderer, then the CPU readback scratch. */
+    if (windowStruct->presentTexture) {
+        SDL_DestroyTexture(windowStruct->presentTexture);
+        windowStruct->presentTexture = NULL;
+    }
+    if (windowStruct->presentRenderer) {
+        SDL_DestroyRenderer(windowStruct->presentRenderer);
+        windowStruct->presentRenderer = NULL;
+    }
+    free(windowStruct->presentReadback);
+    windowStruct->presentReadback = NULL;
+    windowStruct->presentReadbackCap = 0;
+    windowStruct->presentTexW = 0;
+    windowStruct->presentTexH = 0;
+    windowStruct->presentUsesSoftware = False;
     SDL_DestroyWindow(windowStruct->sdlWindow);
     windowStruct->sdlWindow = NULL;
     windowStruct->needsPresent = False;
@@ -292,6 +437,11 @@ Window XCreateWindow(Display *display,
     SET_XID_VALUE(windowID, windowStruct);
     initWindowStruct(windowStruct, x, y, width, height, visual, None, inputOnly,
                      0, None);
+    compatTrace(
+        "XCreateWindow: id=%lu parent=%lu topLevel=%d req=(%d,%d %ux%u) "
+        "globalScale=%.3f\n",
+        windowID, parent, parent == SCREEN_WINDOW, x, y, width, height,
+        compatGlobalHiDpiScale());
     windowStruct->depth = depth;
     windowStruct->borderWidth = border_width;
     if (!addChildToWindow(parent, windowID)) {
@@ -583,6 +733,12 @@ int XMapWindow(Display *display, Window window)
          * empty frame, then show + raise.
          */
         windowStruct->needsPresent = True;
+        /* Release any coalesce gate a prior host-resize burst left armed (its
+         * 150ms safety cap may still be pending) so this mandatory
+         * present-before-show is not swallowed by drawWindowDataToScreen's
+         * coalesce early-return, which would leave the freshly mapped window
+         * unpresented. No-op when nothing is coalescing. */
+        endCoalesceClientRepaint();
         drawWindowDataToScreen();
         SDL_ShowWindow(windowStruct->sdlWindow);
         SDL_RaiseWindow(windowStruct->sdlWindow);
@@ -856,6 +1012,13 @@ int XReparentWindow(Display *display,
              */
             if (windowStruct->sdlWindow) {
                 windowStruct->needsPresent = True;
+                /* Release any coalesce gate a prior host-resize burst left
+                 * armed so this mandatory present-before-show is not swallowed
+                 * by drawWindowDataToScreen's coalesce early-return (which
+                 * would leave hasPresented False). No-op when nothing is
+                 * coalescing.
+                 */
+                endCoalesceClientRepaint();
                 drawWindowDataToScreen();
                 SDL_ShowWindow(windowStruct->sdlWindow);
                 replayDeferredWmProperties(display, window);

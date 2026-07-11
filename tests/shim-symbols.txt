@@ -1,0 +1,25 @@
+# Non-Xlib shim hooks exported by libX11-compat (all prefixed libx11Compat).
+# These are the live-resize / accelerated-present integration points, resolved
+# at runtime by clients such as the xwpe live-resize harness. They are not part
+# of the Xlib ABI but are still an exported surface, so this manifest is enforced
+# by `make symbol-coverage` (via tests/check-api-symbols.py) to catch accidental
+# additions or removals. Only exported on builds that compile the live-resize
+# layer (macOS); on other platforms the exported set is empty and the check is a
+# no-op. Keep this list sorted and in sync with intentional shim API changes.
+libx11CompatAcceleratedPresentUsable
+libx11CompatConfigureLiveResizeLayer
+libx11CompatForceSoftwarePresent
+libx11CompatHasLiveResizeReflow
+libx11CompatInLiveResizePresent
+libx11CompatInvokeLiveResizeReflow
+libx11CompatLiveResizeTrace
+libx11CompatPresentDuringLiveResize
+libx11CompatPresentDuringLiveResizeEx
+libx11CompatRegisterLiveResizeReflow
+libx11CompatResetLiveResizeCoalesce
+libx11CompatRunDeferredDisplayClose
+libx11CompatSdlPeepEventsIsXlibDrain
+libx11CompatSideQueueEventRemoved
+libx11CompatSnapAxisToIncrement
+libx11CompatStartLiveResizeObserver
+libx11CompatStopLiveResizeObserver
