@@ -203,6 +203,18 @@ static void liveResizeDidEnd(void *self, void *_cmd, void *notification)
     (void) _cmd;
     (void) notification;
     libx11CompatLiveResizeTrace("notify\tdid-end");
+    /* A DidEnd can arrive late - AppKit has been seen posting it 30s+ after the
+     * modal loop exits, by which point the observer callback has already
+     * disarmed off -[NSWindow inLiveResize] and a new drag may have re-armed
+     * and captured a new window. If the captured window is still in a live
+     * resize, this DidEnd belongs to a finished earlier drag; disarming now
+     * would kill the active drag's per-tick reflow/presents, so ignore it.
+     * Likewise, if the observer is already gone the earlier drag was fully
+     * finalized and there is nothing to do. */
+    if (liveResizeWindowInLiveResize())
+        return;
+    if (!liveResizeObserver)
+        return;
     disarmLiveResizeObserver();
     /* One last present outside the modal loop so the final geometry lands on
      * fully reflowed content 1:1 (the observer is now removed, so nothing else

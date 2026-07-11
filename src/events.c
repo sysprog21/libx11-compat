@@ -544,18 +544,24 @@ int libx11CompatInLiveResizePresent(void)
  * window keeps changing size we only re-present the last good frame (cheap,
  * ~5ms, so the drag stays fluid), and we run the costly reflow only once the
  * size has SETTLED (paused for a few ticks) or at drag end (forceReflow).
- * liveResizeLastSeenW/H is the window pixel size observed on the previous tick;
- * liveResizeSettleTicks counts consecutive ticks at that same size. Reset when
+ * The tracking state (previous-tick pixel size + settle counter) lives per
+ * top-level on the WindowStruct, so two windows resizing at once do not
+ * overwrite each other's coalesce state and each settles on its own. Reset when
  * a fresh drag arms the observer. Main-thread-only. */
-static int liveResizeLastSeenW = 0;
-static int liveResizeLastSeenH = 0;
-static int liveResizeSettleTicks = 0;
-
 void libx11CompatResetLiveResizeCoalesce(void)
 {
-    liveResizeLastSeenW = 0;
-    liveResizeLastSeenH = 0;
-    liveResizeSettleTicks = 0;
+    if (SCREEN_WINDOW == None || !IS_TYPE(SCREEN_WINDOW, WINDOW))
+        return;
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    size_t count = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+    for (size_t i = 0; i < count; i++) {
+        if (!IS_TYPE(children[i], WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(children[i]);
+        ws->liveResizeLastSeenW = 0;
+        ws->liveResizeLastSeenH = 0;
+        ws->liveResizeSettleTicks = 0;
+    }
 }
 
 /* Client-registered live-resize reflow callback. Registered once at client
@@ -786,6 +792,13 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
         if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
             continue;
         presentThisTick = False;
+        /* At drag end, snap every mapped top-level to whole resize increments
+         * the way a real WM would - independent of whether a reflow hook is
+         * registered, so hook-less clients settle on a whole-cell size too.
+         * Mid-drag (forceReflow == 0) the window tracks the cursor freely; the
+         * settle happens once on release. */
+        if (forceReflow)
+            snapTopLevelToResizeIncrements(window);
         if (!reflow) {
             /* Mode 1 (no reflow hook): the client's draw loop is blocked for
              * the whole drag, so there is no new content to compute. Re-present
@@ -796,14 +809,9 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
             presentThisTick = True;
         }
         if (reflow) {
-            /* At drag end only, snap the window to whole resize increments the
-             * way a real WM would, BEFORE reading its size below, so the reflow
-             * and the final backing adopt the quantized (no-remainder) size.
-             * Skipped mid-drag (forceReflow == 0) so the window tracks the
-             * cursor freely; the settle happens once on release. */
-            if (forceReflow)
-                snapTopLevelToResizeIncrements(window);
-            /* Derive the live drag size the SAME way the RESIZED
+            /* The drag-end increment snap already ran above for every mapped
+             * top-level, so the size read here already reflects the quantized
+             * geometry. Derive the live drag size the SAME way the RESIZED
              * ConfigureNotify handler does: logical points from
              * SDL_GetWindowSize times the cached per-axis HiDPI scale. The rest
              * of the pipeline (backing texture, the client's font metrics, the
@@ -840,19 +848,19 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
                  * size settles (SETTLE_TICKS at rest) or at drag end
                  * (forceReflow). ~16ms/tick, so ~2 ticks is a ~30ms pause. */
                 enum { LIVE_RESIZE_SETTLE_TICKS = 2 };
-                Bool moving = (pixelW != liveResizeLastSeenW ||
-                               pixelH != liveResizeLastSeenH);
+                Bool moving = (pixelW != ws->liveResizeLastSeenW ||
+                               pixelH != ws->liveResizeLastSeenH);
                 if (moving) {
-                    liveResizeLastSeenW = pixelW;
-                    liveResizeLastSeenH = pixelH;
-                    liveResizeSettleTicks = 0;
+                    ws->liveResizeLastSeenW = pixelW;
+                    ws->liveResizeLastSeenH = pixelH;
+                    ws->liveResizeSettleTicks = 0;
                     geometryChanged = True; /* still dragging: keep armed */
                 } else {
-                    liveResizeSettleTicks++;
+                    ws->liveResizeSettleTicks++;
                 }
                 Bool backingStale = (pixelW != oldWidth || pixelH != oldHeight);
                 Bool doReflow = backingStale &&
-                                (forceReflow || liveResizeSettleTicks >=
+                                (forceReflow || ws->liveResizeSettleTicks >=
                                                     LIVE_RESIZE_SETTLE_TICKS);
                 /* Re-present only when something changed: a reflow will land
                  * new content, or the window is still moving so the upscaled
@@ -868,7 +876,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
                     "geom\twin_pt=%dx%d px=%dx%d backing=%dx%d "
                     "settle=%d%s%s",
                     logicalW, logicalH, pixelW, pixelH, oldWidth, oldHeight,
-                    liveResizeSettleTicks, moving ? " MOVING" : "",
+                    ws->liveResizeSettleTicks, moving ? " MOVING" : "",
                     doReflow ? " REFLOW" : "");
                 if (doReflow) {
                     ws->w = (unsigned int) pixelW;
@@ -2648,6 +2656,12 @@ int convertEvent(Display *display,
                     topLevelWindowLogicalPosition(
                         eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
+                    /* A resize from the top/left edge moves the window origin.
+                     * The size-only branch below never touches position, so
+                     * persist the queried logical origin here (mirroring the
+                     * MOVED branch) to keep ws->x/y from going stale. */
+                    GET_WINDOW_STRUCT(eventWindow)->x = xEvent->xconfigure.x;
+                    GET_WINDOW_STRUCT(eventWindow)->y = xEvent->xconfigure.y;
                 }
             }
             /* Option 1b: the X11 window and its backing track physical pixels,
@@ -2803,6 +2817,38 @@ int convertEvent(Display *display,
                 xEvent->xconfigure.override_redirect = False;
             }
             break;
+/* SDL2 only: the SDL3 backend routes window events through a different
+ * (SDL_EVENT_WINDOW_*) model, so the mixed-DPI scale refresh is handled on the
+ * SDL2 path (the primary macOS backend) and is a no-op under SDL3 for now. */
+#if !defined(LIBX11_COMPAT_SDL3) && SDL_VERSION_ATLEAST(2, 0, 18)
+        case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
+            /* The window moved to a different display, which may have a
+             * different HiDPI backing scale than the one cached at realize
+             * time. Re-derive the per-window scale from the live pixel/point
+             * ratio so the next resize's logical<->physical conversion and the
+             * present blit use the new monitor's scale instead of a stale one.
+             * This is event-driven and never runs on the resize fast path, so
+             * faked test resizes are unaffected; geometry still flows through
+             * RESIZED. */
+            if (eventWindow != None && compatSdlHasWindowSizeInPixels()) {
+                SDL_Window *movedWin =
+                    SDL_GetWindowFromID(sdlEvent->window.windowID);
+                if (movedWin) {
+                    int lw = 0, lh = 0, pw = 0, ph = 0;
+                    SDL_GetWindowSize(movedWin, &lw, &lh);
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+                    SDL_GetWindowSizeInPixels(movedWin, &pw, &ph);
+#endif
+                    WindowStruct *movedWs = GET_WINDOW_STRUCT(eventWindow);
+                    if (lw > 0 && pw > 0)
+                        movedWs->hiDpiScaleX = (double) pw / (double) lw;
+                    if (lh > 0 && ph > 0)
+                        movedWs->hiDpiScaleY = (double) ph / (double) lh;
+                }
+            }
+            return -1;
+        }
+#endif
         case SDL_WINDOWEVENT_MINIMIZED:
             LOG("Window %d minimized\n", sdlEvent->window.windowID);
             if (eventWindow != None)

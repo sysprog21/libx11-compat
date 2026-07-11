@@ -82,7 +82,10 @@ void compatSetGlobalHiDpiScale(double scale)
 
 Bool compatSdlHasWindowSizeInPixels(void)
 {
-#if SDL_VERSION_ATLEAST(2, 26, 0)
+#if defined(LIBX11_COMPAT_SDL3)
+    /* SDL3 always provides SDL_GetWindowSizeInPixels. */
+    return True;
+#elif SDL_VERSION_ATLEAST(2, 26, 0)
     const char *force = getenv("LIBX11_COMPAT_NO_SIZE_IN_PIXELS");
     if (force && force[0] == '1')
         return False;
@@ -120,11 +123,14 @@ static void probeGlobalHiDpiScale(void)
 #if SDL_VERSION_ATLEAST(2, 26, 0)
         SDL_GetWindowSizeInPixels(probe, &pixelW, &pixelH);
 #endif
-    } else {
-        /* SDL_GetWindowSizeInPixels is unavailable (headers or runtime predate
-         * 2.26.0). Derive the backing size from a throwaway renderer's output
-         * size, which reports physical pixels on every SDL2 that ships a
-         * renderer. */
+    }
+#if !defined(LIBX11_COMPAT_SDL3)
+    else {
+        /* SDL_GetWindowSizeInPixels is unavailable (SDL2 older than 2.26).
+         * Derive the backing size from a throwaway renderer's output size,
+         * which reports physical pixels on every SDL2 that ships a renderer.
+         * SDL3 always has SizeInPixels, so this fallback is never compiled
+         * there (its SDL2-only renderer API would not build). */
         SDL_Renderer *probeRenderer =
             SDL_CreateRenderer(probe, -1, SDL_RENDERER_ACCELERATED);
         if (!probeRenderer)
@@ -134,6 +140,7 @@ static void probeGlobalHiDpiScale(void)
             SDL_DestroyRenderer(probeRenderer);
         }
     }
+#endif
     if (pointW > 0 && pixelW > 0 && pixelW != pointW)
         compatSetGlobalHiDpiScale((double) pixelW / (double) pointW);
     else if (pointH > 0 && pixelH > 0 && pixelH != pointH)

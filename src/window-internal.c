@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdint.h>
 
 #include "window-internal.h"
@@ -67,6 +68,9 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->baseHeight = 0;
     windowStruct->minWidth = 0;
     windowStruct->minHeight = 0;
+    windowStruct->liveResizeLastSeenW = 0;
+    windowStruct->liveResizeLastSeenH = 0;
+    windowStruct->liveResizeSettleTicks = 0;
     SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
     windowStruct->inputOnly = inputOnly;
     windowStruct->colormap = colormap;
@@ -1763,11 +1767,30 @@ Bool configureWindow(Display *display,
                  * echoed SDL events before disarming. Without this a client
                  * XResizeWindow would deliver two ConfigureNotifies.
                  */
+                /* width/height are physical X11 pixels (top-levels are promoted
+                 * to the backing size). SDL_SetWindowSize/GetWindowSize speak
+                 * logical points, so convert through the cached per-axis HiDPI
+                 * scale the same way snapTopLevelToResizeIncrements does;
+                 * otherwise a 2x-Retina XResizeWindow would request a window
+                 * twice the intended size and then record the logical size as
+                 * physical. No-op at scale 1.0 (Linux / CI dummy). */
+                double scaleX = windowStruct->hiDpiScaleX > 0.0
+                                    ? windowStruct->hiDpiScaleX
+                                    : 1.0;
+                double scaleY = windowStruct->hiDpiScaleY > 0.0
+                                    ? windowStruct->hiDpiScaleY
+                                    : 1.0;
+                int logicalWidth = (int) lround((double) width / scaleX);
+                int logicalHeight = (int) lround((double) height / scaleY);
                 SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 1);
-                SDL_SetWindowSize(windowStruct->sdlWindow, width, height);
+                SDL_SetWindowSize(windowStruct->sdlWindow, logicalWidth,
+                                  logicalHeight);
                 SDL_PumpEvents();
                 SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
-                SDL_GetWindowSize(windowStruct->sdlWindow, &width, &height);
+                SDL_GetWindowSize(windowStruct->sdlWindow, &logicalWidth,
+                                  &logicalHeight);
+                width = (int) lround((double) logicalWidth * scaleX);
+                height = (int) lround((double) logicalHeight * scaleY);
                 LOG("configureWindow: SDL reports actual=(%ux%u)\n",
                     (unsigned) width, (unsigned) height);
             }

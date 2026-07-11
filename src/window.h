@@ -144,6 +144,15 @@ typedef struct {
     int baseHeight;
     int minWidth;
     int minHeight;
+    /* Live-resize coalescing state, per top-level so two
+     * simultaneously-resizing windows do not overwrite each other's tracking (a
+     * shared global would make neither ever settle). liveResizeLastSeen* is
+     * this window's pixel size on the previous observer tick;
+     * liveResizeSettleTicks counts consecutive ticks at that same size. Reset
+     * when a fresh drag arms the observer. */
+    int liveResizeLastSeenW;
+    int liveResizeLastSeenH;
+    int liveResizeSettleTicks;
     /* Nonzero while configureWindow is applying a client-initiated resize via
      * SDL_SetWindowSize. That call makes SDL post its own RESIZED/SIZE_CHANGED,
      * which the event filter must not turn into a second ConfigureNotify

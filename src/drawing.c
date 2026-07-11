@@ -502,8 +502,15 @@ static Bool presentWindowAccelerated(Window win,
                 return False;
             }
             SDL_Rect dst = {rects[r].x, rects[r].y + row, rects[r].w, 1};
-            SDL_UpdateTexture(child->presentTexture, &dst,
-                              child->presentReadback, rowPitch);
+            if (SDL_UpdateTexture(child->presentTexture, &dst,
+                                  child->presentReadback, rowPitch) != 0) {
+                /* Bail like the readback failure above: leave needsPresent and
+                 * the dirty region set so the frame is retried, instead of
+                 * marking it presented and stranding stale pixels on screen. */
+                LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
+                    SDL_GetError());
+                return False;
+            }
         }
         framePixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
     }

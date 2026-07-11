@@ -1,5 +1,6 @@
 #include <X11/Xlib.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -368,6 +369,24 @@ static void unrealizeTopLevelWindow(Window window)
     windowStruct->sdlWindow = NULL;
     windowStruct->needsPresent = False;
     windowStruct->hasPresented = False;
+
+    /* Demote the promoted physical-pixel geometry back to logical points before
+     * the SDL window is gone. realizeTopLevelWindow creates the next SDL window
+     * from ws->w/h as *logical* dimensions and then re-promotes to pixels;
+     * leaving the physical size here would feed physical dims in as logical on
+     * remap and grow the window by the HiDPI factor on every unmap/map cycle.
+     * The next realize re-derives the scale, so reset it to 1.0. No-op at scale
+     * 1.0 (Linux / CI dummy). */
+    if (windowStruct->hiDpiScaleX > 0.0 && windowStruct->hiDpiScaleY > 0.0 &&
+        (windowStruct->hiDpiScaleX != 1.0 ||
+         windowStruct->hiDpiScaleY != 1.0)) {
+        windowStruct->w = (unsigned int) lround((double) windowStruct->w /
+                                                windowStruct->hiDpiScaleX);
+        windowStruct->h = (unsigned int) lround((double) windowStruct->h /
+                                                windowStruct->hiDpiScaleY);
+    }
+    windowStruct->hiDpiScaleX = 1.0;
+    windowStruct->hiDpiScaleY = 1.0;
 }
 
 Window XCreateSimpleWindow(Display *display,
