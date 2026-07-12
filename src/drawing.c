@@ -107,6 +107,38 @@ static int dirtyRectCap(void)
     return cached;
 }
 
+/* Upper bound on the per-window CPU readback scratch retained between presents.
+ * The accelerated present reads each dirty rect into this buffer before the
+ * texture upload; sizing it to the largest rect lets each rect transfer in a
+ * single call pair. Retaining a full backing-sized buffer per top-level window
+ * indefinitely, though, is unbounded memory pressure once several 4K/8K windows
+ * live-resize at once. Cap the retained buffer here: a rect larger than the cap
+ * is transferred in successive horizontal bands that each fit, so the retained
+ * buffer never exceeds the cap (its only larger-than-cap case is a single
+ * scanline wider than the cap, which must fit whole - 32 KiB even at 8K width,
+ * far under this cap). 8 MiB holds a 2048-wide rect in one band and any
+ * narrower rect in correspondingly more rows per band.
+ * Hard-clamped to at least one MiB when read from the env.
+ */
+#define PRESENT_READBACK_CAP_DEFAULT (8u * 1024u * 1024u)
+
+static size_t presentReadbackCapLimit(void)
+{
+    static size_t cached = 0;
+    if (cached != 0)
+        return cached;
+    size_t value = PRESENT_READBACK_CAP_DEFAULT;
+    const char *env = getenv("LIBX11_COMPAT_PRESENT_READBACK_CAP");
+    if (env && *env) {
+        char *end = NULL;
+        long long parsed = strtoll(env, &end, 10);
+        if (end != env && parsed >= (long long) (1u * 1024u * 1024u))
+            value = (size_t) parsed;
+    }
+    cached = value;
+    return cached;
+}
+
 static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
 {
     if (!windowStruct)
@@ -465,10 +497,12 @@ static Bool presentWindowAccelerated(Window win,
 
     /* Read each dirty rect from the SCREEN backing into the CPU scratch, then
      * upload just that rect into the persistent streaming texture. The scratch
-     * holds one whole rect (rect->h rows at rect->w*4 pitch) so each rect is
-     * read and uploaded in a single call pair rather than one call per scanline
-     * (a tall full-width rect would otherwise cost h SDL_RenderReadPixels plus
-     * h SDL_UpdateTexture calls - ~1600 round trips for a full-window present).
+     * holds as many whole rows as fit under the retained cap (typically the
+     * whole rect), so each rect is read and uploaded in one call pair - or a
+     * few banded pairs for a rect larger than the cap - rather than one call
+     * per scanline (a tall full-width rect would otherwise cost h
+     * SDL_RenderReadPixels plus h SDL_UpdateTexture calls - ~1600 round trips
+     * for a full-window present).
      */
     if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
         LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
@@ -482,16 +516,29 @@ static Bool presentWindowAccelerated(Window win,
         return False;
     }
 
-    /* Size the scratch to the largest rect this frame (w*h*4). Grow once up
-     * front so the per-rect loop below never reallocates mid-present. The
-     * multiply is bounded by the backing dimensions (bw*bh, already validated
-     * against the texture size), but guard it anyway before the cast. */
+    /* Size the scratch to the largest rect this frame (w*h*4), but bound it by
+     * the retained cap so a 4K/8K window does not hold a full backing-sized
+     * buffer indefinitely. A rect wider than one capped band is still read in a
+     * single row-aligned pitch; the cap only limits how many rows are pulled
+     * per SDL_RenderReadPixels, so the buffer must hold at least one scanline
+     * of the widest rect. The multiply is bounded by the backing dimensions
+     * (bw*bh, already validated against the texture size), but guard it anyway.
+     */
+    size_t capLimit = presentReadbackCapLimit();
     size_t need = 0;
+    size_t maxRowBytes = 0;
     for (int r = 0; r < nrects; r++) {
-        size_t rectBytes = (size_t) rects[r].w * (size_t) rects[r].h * 4u;
+        size_t rowBytes = (size_t) rects[r].w * 4u;
+        size_t rectBytes = rowBytes * (size_t) rects[r].h;
         if (rectBytes > need)
             need = rectBytes;
+        if (rowBytes > maxRowBytes)
+            maxRowBytes = rowBytes;
     }
+    if (need > capLimit)
+        need = capLimit;
+    if (need < maxRowBytes)
+        need = maxRowBytes; /* always fit at least one full scanline */
     if (need > child->presentReadbackCap) {
         unsigned char *grown = realloc(child->presentReadback, need);
         if (!grown) {
@@ -506,20 +553,33 @@ static Bool presentWindowAccelerated(Window win,
     uint64_t framePixels = 0;
     for (int r = 0; r < nrects; r++) {
         int pitch = rects[r].w * 4;
-        if (SDL_RenderReadPixels(screen, &rects[r], SDL_PIXELFORMAT_RGBA8888,
-                                 child->presentReadback, pitch) != 0) {
-            LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
-                SDL_GetError());
-            return False;
-        }
-        if (SDL_UpdateTexture(child->presentTexture, &rects[r],
-                              child->presentReadback, pitch) != 0) {
-            /* Bail like the readback failure above: leave needsPresent and the
-             * dirty region set so the frame is retried, instead of marking it
-             * presented and stranding stale pixels on screen. */
-            LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
-                SDL_GetError());
-            return False;
+        /* Rows that fit the scratch in one band (>=1: guaranteed by the
+         * maxRowBytes floor above). Tall rects are read in successive bands. */
+        int bandRows = pitch > 0
+                           ? (int) (child->presentReadbackCap / (size_t) pitch)
+                           : rects[r].h;
+        if (bandRows < 1)
+            bandRows = 1;
+        for (int y = 0; y < rects[r].h; y += bandRows) {
+            int rows = rects[r].h - y;
+            if (rows > bandRows)
+                rows = bandRows;
+            SDL_Rect band = {rects[r].x, rects[r].y + y, rects[r].w, rows};
+            if (SDL_RenderReadPixels(screen, &band, SDL_PIXELFORMAT_RGBA8888,
+                                     child->presentReadback, pitch) != 0) {
+                LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
+                    SDL_GetError());
+                return False;
+            }
+            if (SDL_UpdateTexture(child->presentTexture, &band,
+                                  child->presentReadback, pitch) != 0) {
+                /* Bail like the readback failure above: leave needsPresent and
+                 * the dirty region set so the frame is retried, instead of
+                 * marking it presented and stranding stale pixels on screen. */
+                LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
+                    SDL_GetError());
+                return False;
+            }
         }
         framePixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
     }
