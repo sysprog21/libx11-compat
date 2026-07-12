@@ -465,7 +465,11 @@ static Bool presentWindowAccelerated(Window win,
 
     /* Read each dirty rect from the SCREEN backing into the CPU scratch, then
      * upload just that rect into the persistent streaming texture. The scratch
-     * holds one full-width band per rect (rect->h rows at bw pitch). */
+     * holds one whole rect (rect->h rows at rect->w*4 pitch) so each rect is
+     * read and uploaded in a single call pair rather than one call per scanline
+     * (a tall full-width rect would otherwise cost h SDL_RenderReadPixels plus
+     * h SDL_UpdateTexture calls - ~1600 round trips for a full-window present).
+     */
     if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
         LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
             SDL_GetError());
@@ -478,7 +482,16 @@ static Bool presentWindowAccelerated(Window win,
         return False;
     }
 
-    size_t need = (size_t) bw * 4u;
+    /* Size the scratch to the largest rect this frame (w*h*4). Grow once up
+     * front so the per-rect loop below never reallocates mid-present. The
+     * multiply is bounded by the backing dimensions (bw*bh, already validated
+     * against the texture size), but guard it anyway before the cast. */
+    size_t need = 0;
+    for (int r = 0; r < nrects; r++) {
+        size_t rectBytes = (size_t) rects[r].w * (size_t) rects[r].h * 4u;
+        if (rectBytes > need)
+            need = rectBytes;
+    }
     if (need > child->presentReadbackCap) {
         unsigned char *grown = realloc(child->presentReadback, need);
         if (!grown) {
@@ -492,25 +505,21 @@ static Bool presentWindowAccelerated(Window win,
     uint64_t readStart = monotonicNowNs();
     uint64_t framePixels = 0;
     for (int r = 0; r < nrects; r++) {
-        int rowPitch = rects[r].w * 4;
-        for (int row = 0; row < rects[r].h; row++) {
-            SDL_Rect line = {rects[r].x, rects[r].y + row, rects[r].w, 1};
-            if (SDL_RenderReadPixels(screen, &line, SDL_PIXELFORMAT_RGBA8888,
-                                     child->presentReadback, rowPitch) != 0) {
-                LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
-                    SDL_GetError());
-                return False;
-            }
-            SDL_Rect dst = {rects[r].x, rects[r].y + row, rects[r].w, 1};
-            if (SDL_UpdateTexture(child->presentTexture, &dst,
-                                  child->presentReadback, rowPitch) != 0) {
-                /* Bail like the readback failure above: leave needsPresent and
-                 * the dirty region set so the frame is retried, instead of
-                 * marking it presented and stranding stale pixels on screen. */
-                LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
-                    SDL_GetError());
-                return False;
-            }
+        int pitch = rects[r].w * 4;
+        if (SDL_RenderReadPixels(screen, &rects[r], SDL_PIXELFORMAT_RGBA8888,
+                                 child->presentReadback, pitch) != 0) {
+            LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
+                SDL_GetError());
+            return False;
+        }
+        if (SDL_UpdateTexture(child->presentTexture, &rects[r],
+                              child->presentReadback, pitch) != 0) {
+            /* Bail like the readback failure above: leave needsPresent and the
+             * dirty region set so the frame is retried, instead of marking it
+             * presented and stranding stale pixels on screen. */
+            LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
+                SDL_GetError());
+            return False;
         }
         framePixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
     }
