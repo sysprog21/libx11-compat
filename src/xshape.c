@@ -1,9 +1,11 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/Xregion.h>
 #include <X11/extensions/shape.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "drawing.h"
 #include "display.h"
@@ -179,11 +181,8 @@ static SDL_Surface *combineShapeSurfaces(WindowStruct *window,
                                          int srcOffsetY,
                                          int op,
                                          int *outOffsetX,
-                                         int *outOffsetY,
-                                         Bool *outNoop)
+                                         int *outOffsetY)
 {
-    if (outNoop)
-        *outNoop = False;
     if (op == ShapeSet) {
         if (!srcMask)
             return NULL;
@@ -226,16 +225,13 @@ static SDL_Surface *combineShapeSurfaces(WindowStruct *window,
         return NULL;
 
     Uint32 white = SDL_MapRGBA(XC_SURFACE_FORMAT(out), 255, 255, 255, 255);
-    /* Track whether the produced mask actually excludes any window pixel. A
-     * combine that ends up admitting every window pixel within the mask bbox
-     * AND whose bbox covers the whole window is a no-op. The mask in that case
-     * is functionally "no mask installed" and should not flip the window into
-     * shaped state.
+    /* A window is shaped iff a mask was installed, exactly like real X: a
+     * combine that ends up admitting every window pixel still leaves the window
+     * shaped (ShapeSet keeps such a mask too), so do not special-case full
+     * coverage here.
      */
-    Bool excludesAny = False;
     for (int y = 0; y < out->h; y++) {
         int64_t wy = minY + y;
-        Bool yInWindow = wy >= 0 && wy < (int64_t) window->h;
         for (int x = 0; x < out->w; x++) {
             int64_t wx = minX + x;
             Bool oldIn = shapeRegionContains(oldMask, oldOffsetX, oldOffsetY,
@@ -262,26 +258,11 @@ static SDL_Surface *combineShapeSurfaces(WindowStruct *window,
             }
             if (active)
                 putPixel(out, (unsigned int) x, (unsigned int) y, white);
-            else if (yInWindow && wx >= 0 && wx < (int64_t) window->w)
-                excludesAny = True;
         }
     }
-    Bool coversWindow = minX <= 0 && minY <= 0 &&
-                        maxX >= (int64_t) window->w - 1 &&
-                        maxY >= (int64_t) window->h - 1;
-    if (!excludesAny && coversWindow) {
-        /* The combine produced a mask that admits every window pixel,
-         * functionally equivalent to no mask installed. Drop the surface and
-         * flag the no-op so the caller can clear any existing mask without
-         * leaving the window flagged as shaped.
-         */
-        SDL_FreeSurface(out);
-        if (outNoop)
-            *outNoop = True;
-        return NULL;
-    }
 
-    *outOffsetX = (int) minX, *outOffsetY = (int) minY;
+    *outOffsetX = (int) minX;
+    *outOffsetY = (int) minY;
     return out;
 }
 
@@ -378,6 +359,126 @@ Status XShapeQueryVersion(Display *dpy,
     return 1;
 }
 
+/* Combine an already-rasterized source mask (srcSurface, at window-relative
+ * offset srcOffsetX/Y) into the window's bounding or clip slot. srcSurface may
+ * be NULL: with ShapeSet that clears the slot, with any other op it is the
+ * empty source region. The caller retains ownership of srcSurface. This is the
+ * shared tail of the rectangle-, region-, and mask-combine entry points.
+ */
+static void installShapeCombine(Display *dpy,
+                                Window dest,
+                                int destKind,
+                                SDL_Surface *srcSurface,
+                                int srcOffsetX,
+                                int srcOffsetY,
+                                int op)
+{
+    WindowStruct *window = GET_WINDOW_STRUCT(dest);
+    SDL_Surface **maskSlot = NULL;
+    int *offsetXSlot = NULL;
+    int *offsetYSlot = NULL;
+    if (!shapeSlots(window, destKind, &maskSlot, &offsetXSlot, &offsetYSlot))
+        return;
+
+    int newOffsetX = 0, newOffsetY = 0;
+    SDL_Surface *newMask = combineShapeSurfaces(
+        window, *maskSlot, *offsetXSlot, *offsetYSlot, srcSurface, srcOffsetX,
+        srcOffsetY, op, &newOffsetX, &newOffsetY);
+    /* NULL from a real source means the combine failed: keep the existing mask.
+     * NULL from a NULL source under ShapeSet is the explicit clear, which drops
+     * the installed mask and stops treating the window as shaped.
+     */
+    if (!newMask && !(!srcSurface && op == ShapeSet))
+        return;
+
+    if (*maskSlot)
+        SDL_FreeSurface(*maskSlot);
+    *maskSlot = newMask;
+    *offsetXSlot = newMask ? newOffsetX : 0;
+    *offsetYSlot = newMask ? newOffsetY : 0;
+
+    if (destKind != ShapeBounding)
+        return;
+    invalidateVisibleRegionForTopLevel(dest);
+    if (*maskSlot)
+        repaintBoundingMask(dpy, dest);
+}
+
+/* Rasterize a rectangle list into a shape mask surface: pixels inside the union
+ * of the rectangles are opaque, everything else transparent. The surface spans
+ * the rectangles' bounding box; *localMinX/Y receive that box's origin in
+ * rectangle-relative coordinates so the caller can bias it by xOff/yOff. An
+ * empty (or all-degenerate) list yields a 1x1 transparent surface, which under
+ * ShapeSet means "fully clipped", not "unshaped".
+ *
+ * Returns NULL only on allocation failure.
+ */
+static SDL_Surface *rasterizeShapeRects(const XRectangle *rects,
+                                        int n_rects,
+                                        int *localMinX,
+                                        int *localMinY)
+{
+    Bool hasBounds = False;
+    int minX = 0, minY = 0, maxX = 0, maxY = 0;
+    for (int i = 0; i < n_rects; i++) {
+        int rw = rects[i].width, rh = rects[i].height;
+        if (rw <= 0 || rh <= 0)
+            continue;
+        int rx = rects[i].x, ry = rects[i].y;
+        int right = rx + rw, bottom = ry + rh;
+        if (!hasBounds) {
+            minX = rx, minY = ry, maxX = right, maxY = bottom;
+            hasBounds = True;
+            continue;
+        }
+        if (rx < minX)
+            minX = rx;
+        if (ry < minY)
+            minY = ry;
+        if (right > maxX)
+            maxX = right;
+        if (bottom > maxY)
+            maxY = bottom;
+    }
+
+    if (!hasBounds) {
+        *localMinX = 0;
+        *localMinY = 0;
+        return createShapeSurface(0, 0);
+    }
+
+    SDL_Surface *surface = createShapeSurface(maxX - minX, maxY - minY);
+    if (!surface)
+        return NULL;
+    Uint32 white = SDL_MapRGBA(XC_SURFACE_FORMAT(surface), 255, 255, 255, 255);
+    for (int i = 0; i < n_rects; i++) {
+        if (rects[i].width <= 0 || rects[i].height <= 0)
+            continue;
+        SDL_Rect r = {
+            .x = rects[i].x - minX,
+            .y = rects[i].y - minY,
+            .w = rects[i].width,
+            .h = rects[i].height,
+        };
+        SDL_FillRect(surface, &r, white);
+    }
+    *localMinX = minX;
+    *localMinY = minY;
+    return surface;
+}
+
+/* Bias a shape origin by a mask's bounding-box offset without signed overflow;
+ * xOff/yOff are client-supplied, so a hostile value must not invoke UB.
+ */
+static Bool addShapeOffset(int base, int delta, int *out)
+{
+    int64_t v = (int64_t) base + (int64_t) delta;
+    if (v < INT_MIN || v > INT_MAX)
+        return False;
+    *out = (int) v;
+    return True;
+}
+
 void XShapeCombineRegion(Display *dpy,
                          Window dest,
                          int destKind,
@@ -386,13 +487,51 @@ void XShapeCombineRegion(Display *dpy,
                          Region r,
                          int op)
 {
-    (void) dpy;
-    (void) dest;
-    (void) destKind;
-    (void) xOff;
-    (void) yOff;
-    (void) r;
-    (void) op;
+    if (!isValidShapeOp(op) ||
+        (destKind != ShapeBounding && destKind != ShapeClip))
+        return;
+    if (dest == None || !IS_TYPE(dest, WINDOW) || !r)
+        return;
+
+    /* A Region is a YX-banded BOX list; convert to XRectangles and reuse the
+     * rectangle rasterizer rather than writing a second one.
+     */
+    REGION *region = (REGION *) r;
+    long n = region->numRects;
+    if (n < 0 || n > INT_MAX || (size_t) n > SIZE_MAX / sizeof(XRectangle))
+        return;
+    XRectangle *rects = NULL;
+    if (n > 0) {
+        rects = malloc(sizeof(XRectangle) * (size_t) n);
+        if (!rects)
+            return;
+        for (long i = 0; i < n; i++) {
+            BOX *box = &region->rects[i];
+            rects[i].x = box->x1;
+            rects[i].y = box->y1;
+            /* Canonical pixman boxes have x2 >= x1; clamp an inverted box to a
+             * zero-size rect (filtered by the rasterizer) rather than wrapping
+             * the unsigned width into a huge span.
+             */
+            rects[i].width =
+                box->x2 > box->x1 ? (unsigned short) (box->x2 - box->x1) : 0;
+            rects[i].height =
+                box->y2 > box->y1 ? (unsigned short) (box->y2 - box->y1) : 0;
+        }
+    }
+
+    int localMinX = 0, localMinY = 0;
+    SDL_Surface *srcSurface =
+        rasterizeShapeRects(rects, (int) n, &localMinX, &localMinY);
+    free(rects);
+    if (!srcSurface)
+        return;
+    int srcOffsetX = 0, srcOffsetY = 0;
+    if (addShapeOffset(xOff, localMinX, &srcOffsetX) &&
+        addShapeOffset(yOff, localMinY, &srcOffsetY))
+        installShapeCombine(dpy, dest, destKind, srcSurface, srcOffsetX,
+                            srcOffsetY, op);
+    SDL_FreeSurface(srcSurface);
 }
 
 void XShapeCombineRectangles(Display *dpy,
@@ -405,15 +544,30 @@ void XShapeCombineRectangles(Display *dpy,
                              int op,
                              int ordering)
 {
-    (void) dpy;
-    (void) dest;
-    (void) destKind;
-    (void) xOff;
-    (void) yOff;
-    (void) rects;
-    (void) n_rects;
-    (void) op;
+    /* The ordering hint (Unsorted/YSorted/YXSorted/YXBanded) only lets a real
+     * server skip sorting; rasterizing by fill is order-independent, so it has
+     * no effect here.
+     */
     (void) ordering;
+    if (!isValidShapeOp(op) ||
+        (destKind != ShapeBounding && destKind != ShapeClip))
+        return;
+    if (dest == None || !IS_TYPE(dest, WINDOW))
+        return;
+    if (n_rects < 0 || (n_rects > 0 && !rects))
+        return;
+
+    int localMinX = 0, localMinY = 0;
+    SDL_Surface *srcSurface =
+        rasterizeShapeRects(rects, n_rects, &localMinX, &localMinY);
+    if (!srcSurface)
+        return;
+    int srcOffsetX = 0, srcOffsetY = 0;
+    if (addShapeOffset(xOff, localMinX, &srcOffsetX) &&
+        addShapeOffset(yOff, localMinY, &srcOffsetY))
+        installShapeCombine(dpy, dest, destKind, srcSurface, srcOffsetX,
+                            srcOffsetY, op);
+    SDL_FreeSurface(srcSurface);
 }
 
 void XShapeCombineMask(Display *dpy,
@@ -424,36 +578,17 @@ void XShapeCombineMask(Display *dpy,
                        Pixmap src,
                        int op)
 {
-    (void) dpy;
     if (!isValidShapeOp(op) ||
         (destKind != ShapeBounding && destKind != ShapeClip))
         return;
     if (dest == None || !IS_TYPE(dest, WINDOW))
         return;
-    WindowStruct *window = GET_WINDOW_STRUCT(dest);
-    SDL_Surface **maskSlot = NULL;
-    int *offsetXSlot = NULL;
-    int *offsetYSlot = NULL;
-    if (!shapeSlots(window, destKind, &maskSlot, &offsetXSlot, &offsetYSlot))
-        return;
-
-    /* src == None clears an installed mask for ShapeSet. For other combine
-     * operations it is an empty source region.
-     */
-    if (src == None && op == ShapeSet) {
-        if (*maskSlot) {
-            SDL_FreeSurface(*maskSlot);
-            *maskSlot = NULL;
-        }
-        *offsetXSlot = 0;
-        *offsetYSlot = 0;
-        if (destKind == ShapeBounding)
-            invalidateVisibleRegionForTopLevel(dest);
-        return;
-    }
     if (src != None && !IS_TYPE(src, PIXMAP))
         return;
 
+    /* src == None is the empty source region: under ShapeSet it clears the
+     * installed mask, under any other op it combines with nothing.
+     */
     SDL_Surface *srcSurface = NULL;
     if (src != None) {
         PixmapStruct *pixmap = GET_PIXMAP_STRUCT(src);
@@ -482,31 +617,8 @@ void XShapeCombineMask(Display *dpy,
             return;
     }
 
-    int newOffsetX = 0, newOffsetY = 0;
-    Bool combineNoop = False;
-    SDL_Surface *newMask = combineShapeSurfaces(
-        window, *maskSlot, *offsetXSlot, *offsetYSlot, srcSurface, xOff, yOff,
-        op, &newOffsetX, &newOffsetY, &combineNoop);
+    installShapeCombine(dpy, dest, destKind, srcSurface, xOff, yOff, op);
     SDL_FreeSurface(srcSurface);
-    /* NULL with combineNoop == False means the combine failed; keep the
-     * existing mask. NULL with combineNoop == True (or the explicit
-     * ShapeSet/None clear) means the result admits every window pixel, so drop
-     * any installed mask and stop treating the window as shaped.
-     */
-    if (!newMask && !combineNoop && !(op == ShapeSet && src == None))
-        return;
-
-    if (*maskSlot)
-        SDL_FreeSurface(*maskSlot);
-    *maskSlot = newMask;
-    *offsetXSlot = newMask ? newOffsetX : 0;
-    *offsetYSlot = newMask ? newOffsetY : 0;
-
-    if (destKind != ShapeBounding)
-        return;
-    invalidateVisibleRegionForTopLevel(dest);
-    if (*maskSlot)
-        repaintBoundingMask(dpy, dest);
 }
 
 void XShapeCombineShape(Display *dpy,
@@ -514,27 +626,91 @@ void XShapeCombineShape(Display *dpy,
                         int destKind,
                         int xOff,
                         int yOff,
-                        Pixmap src,
+                        Window src,
                         int srcKind,
                         int op)
 {
-    (void) dpy;
-    (void) dest;
-    (void) destKind;
-    (void) xOff;
-    (void) yOff;
-    (void) src;
-    (void) srcKind;
-    (void) op;
+    if (!isValidShapeOp(op) ||
+        (destKind != ShapeBounding && destKind != ShapeClip) ||
+        (srcKind != ShapeBounding && srcKind != ShapeClip))
+        return;
+    if (dest == None || !IS_TYPE(dest, WINDOW) || src == None ||
+        !IS_TYPE(src, WINDOW))
+        return;
+
+    WindowStruct *srcWindow = GET_WINDOW_STRUCT(src);
+    SDL_Surface **srcMaskSlot = NULL;
+    int *srcOffXSlot = NULL, *srcOffYSlot = NULL;
+    if (!shapeSlots(srcWindow, srcKind, &srcMaskSlot, &srcOffXSlot,
+                    &srcOffYSlot))
+        return;
+
+    /* The source is another window's installed shape. When that window is
+     * unshaped its shape is its full rectangle, so synthesize an all-inside
+     * mask of the window size (owned here and freed below). A shaped source
+     * lends its live mask surface, read-only, so it is not freed here.
+     *
+     * The default bounding region is taken as (0,0,w,h), excluding the border,
+     * to match combineShapeSurfaces' own default bounds, defaultWindowContains,
+     * and XShapeQueryExtents. Real X includes the border in the bounding shape;
+     * honoring that would be a layer-wide convention change, not a local one.
+     */
+    SDL_Surface *srcSurface = *srcMaskSlot;
+    SDL_Surface *ownedSurface = NULL;
+    int srcBaseX = *srcOffXSlot, srcBaseY = *srcOffYSlot;
+    if (!srcSurface) {
+        if (srcWindow->w > (unsigned int) INT_MAX ||
+            srcWindow->h > (unsigned int) INT_MAX)
+            return;
+        ownedSurface =
+            createShapeSurface((int) srcWindow->w, (int) srcWindow->h);
+        if (!ownedSurface)
+            return;
+        SDL_FillRect(
+            ownedSurface, NULL,
+            SDL_MapRGBA(XC_SURFACE_FORMAT(ownedSurface), 255, 255, 255, 255));
+        srcSurface = ownedSurface;
+        srcBaseX = 0;
+        srcBaseY = 0;
+    }
+
+    int srcOffsetX = 0, srcOffsetY = 0;
+    if (addShapeOffset(xOff, srcBaseX, &srcOffsetX) &&
+        addShapeOffset(yOff, srcBaseY, &srcOffsetY))
+        installShapeCombine(dpy, dest, destKind, srcSurface, srcOffsetX,
+                            srcOffsetY, op);
+    if (ownedSurface)
+        SDL_FreeSurface(ownedSurface);
 }
 
 void XShapeOffsetShape(Display *dpy, XID dest, int destKind, int xOff, int yOff)
 {
-    (void) dpy;
-    (void) dest;
-    (void) destKind;
-    (void) xOff;
-    (void) yOff;
+    if (destKind != ShapeBounding && destKind != ShapeClip)
+        return;
+    if (dest == None || !IS_TYPE(dest, WINDOW))
+        return;
+    WindowStruct *window = GET_WINDOW_STRUCT(dest);
+    SDL_Surface **maskSlot = NULL;
+    int *offsetXSlot = NULL, *offsetYSlot = NULL;
+    if (!shapeSlots(window, destKind, &maskSlot, &offsetXSlot, &offsetYSlot))
+        return;
+    /* Translating an absent shape is a no-op: an unshaped window stays
+     * rectangular.
+     */
+    if (!*maskSlot)
+        return;
+
+    int newX = 0, newY = 0;
+    if (!addShapeOffset(*offsetXSlot, xOff, &newX) ||
+        !addShapeOffset(*offsetYSlot, yOff, &newY))
+        return;
+    *offsetXSlot = newX;
+    *offsetYSlot = newY;
+
+    if (destKind != ShapeBounding)
+        return;
+    invalidateVisibleRegionForTopLevel(dest);
+    repaintBoundingMask(dpy, dest);
 }
 
 Status XShapeQueryExtents(Display *dpy,
@@ -601,6 +777,69 @@ unsigned long XShapeInputSelected(Display *dpy, Window window)
     return 0;
 }
 
+/* Decompose an installed mask into window-relative rectangles, one horizontal
+ * run of active pixels per scanline. Height-1 rows sorted top-to-bottom then
+ * left-to-right are YXBanded, which is what X clients expect back.
+ *
+ * Returns a malloc'd array (freed by XFree) or NULL when the mask has no active
+ * pixels.
+ */
+static XRectangle *maskToRectangles(SDL_Surface *mask,
+                                    int offsetX,
+                                    int offsetY,
+                                    int *count)
+{
+    size_t capacity = 0;
+    int n = 0;
+    XRectangle *rects = NULL;
+    for (int y = 0; y < mask->h; y++) {
+        int x = 0;
+        while (x < mask->w) {
+            if (!maskPixelActive(mask, x, y)) {
+                x++;
+                continue;
+            }
+            int start = x;
+            while (x < mask->w && maskPixelActive(mask, x, y))
+                x++;
+            /* XRectangle carries 16-bit coordinates, matching X's own rect
+             * type. Skip a run whose window coordinates or width do not fit
+             * rather than emit wrapped values; only an absurd offset or a run
+             * wider than 64k can trip this, neither of which a real shape hits.
+             */
+            int64_t rx = (int64_t) start + offsetX;
+            int64_t ry = (int64_t) y + offsetY;
+            int runWidth = x - start;
+            if (rx < SHRT_MIN || rx > SHRT_MAX || ry < SHRT_MIN ||
+                ry > SHRT_MAX || runWidth > USHRT_MAX)
+                continue;
+            if ((size_t) n == capacity) {
+                if (capacity > (SIZE_MAX / sizeof(XRectangle)) / 2) {
+                    free(rects);
+                    *count = 0;
+                    return NULL;
+                }
+                size_t newCap = capacity ? capacity * 2 : 16;
+                XRectangle *grown = realloc(rects, sizeof(XRectangle) * newCap);
+                if (!grown) {
+                    free(rects);
+                    *count = 0;
+                    return NULL;
+                }
+                rects = grown;
+                capacity = newCap;
+            }
+            rects[n].x = (short) rx;
+            rects[n].y = (short) ry;
+            rects[n].width = (unsigned short) runWidth;
+            rects[n].height = 1;
+            n++;
+        }
+    }
+    *count = n;
+    return rects;
+}
+
 XRectangle *XShapeGetRectangles(Display *dpy,
                                 Window window,
                                 int kind,
@@ -608,11 +847,44 @@ XRectangle *XShapeGetRectangles(Display *dpy,
                                 int *ordering)
 {
     (void) dpy;
-    (void) window;
-    (void) kind;
     if (count)
         *count = 0;
     if (ordering)
         *ordering = 0;
-    return NULL;
+    if (window == None || !IS_TYPE(window, WINDOW))
+        return NULL;
+    if (kind != ShapeBounding && kind != ShapeClip)
+        return NULL;
+
+    WindowStruct *win = GET_WINDOW_STRUCT(window);
+    SDL_Surface *mask =
+        kind == ShapeBounding ? win->shapeBoundingMask : win->shapeClipMask;
+    int offsetX = kind == ShapeBounding ? win->shapeBoundingOffsetX
+                                        : win->shapeClipOffsetX;
+    int offsetY = kind == ShapeBounding ? win->shapeBoundingOffsetY
+                                        : win->shapeClipOffsetY;
+    if (!mask) {
+        if (win->w > USHRT_MAX || win->h > USHRT_MAX)
+            return NULL;
+        XRectangle *rects = malloc(sizeof(*rects));
+        if (!rects)
+            return NULL;
+        rects[0] = (XRectangle) {0, 0, (unsigned short) win->w,
+                                 (unsigned short) win->h};
+        if (count)
+            *count = 1;
+        if (ordering)
+            *ordering = YXBanded;
+        return rects;
+    }
+
+    int n = 0;
+    XRectangle *rects = maskToRectangles(mask, offsetX, offsetY, &n);
+    if (!rects)
+        return NULL;
+    if (count)
+        *count = n;
+    if (ordering)
+        *ordering = YXBanded;
+    return rects;
 }
