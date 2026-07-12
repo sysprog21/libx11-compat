@@ -8,6 +8,7 @@
 #include "X11/XKBlib.h"
 #include "sdl-compat.h"
 #include "events.h"
+#include "selection.h"
 #include "events-ewmh.h"
 #include "events-expose.h"
 #include "errors.h"
@@ -2653,6 +2654,7 @@ int convertEvent(Display *display,
 #endif
     case SDL_CLIPBOARDUPDATE: /**< The clipboard changed */
         LOG("SDL_CLIPBOARDUPDATE\n");
+        clipboardHandleExternalUpdate(display);
         return -1;
     case SDL_DROPFILE: /**< The system requests a file open */
         LOG("SDL_DROPFILE\n");
@@ -2717,6 +2719,12 @@ int convertEvent(Display *display,
                 sendEvent = allocEvent->send_event;
                 serial = GET_DISPLAY(display)->request;
                 allocEvent->serial = serial;
+                if (clipboardConsumeInternalEvent(display, eventWindow, type,
+                                                  allocEvent)) {
+                    if (freeInternalEvents)
+                        free(allocEvent);
+                    return -1;
+                }
                 switch (type) {
                 case KeyRelease:
                 case KeyPress:
@@ -2852,6 +2860,14 @@ int convertEvent(Display *display,
                     free(allocEvent);
                 break;
             } else if (sdlEvent->user.code == SEND_EVENT_CODE) {
+                XEvent *sent = sdlEvent->user.data1;
+                Window sentWindow = (Window) sdlEvent->user.data2;
+                if (clipboardConsumeInternalEvent(display, sentWindow,
+                                                  sent->type, sent)) {
+                    if (freeInternalEvents)
+                        free(sent);
+                    return -1;
+                }
                 memcpy(xEvent, sdlEvent->user.data1, sizeof(XEvent));
                 if (freeInternalEvents)
                     free(sdlEvent->user.data1);
