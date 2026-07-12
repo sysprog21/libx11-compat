@@ -199,6 +199,7 @@ typedef struct {
     MapState mapState;
     long eventMask;
     Bool overrideRedirect;
+    Bool internal;
     SDL_Surface *shapeBoundingMask;
     int shapeBoundingOffsetX;
     int shapeBoundingOffsetY;

@@ -74,7 +74,7 @@ extern void XShapeCombineShape(Display *dpy,
                                int destKind,
                                int xOff,
                                int yOff,
-                               Pixmap src,
+                               Window src,
                                int srcKind,
                                int op);
 extern void XShapeOffsetShape(Display *dpy,

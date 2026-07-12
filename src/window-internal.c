@@ -121,6 +121,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->mapState = UnMapped;
     windowStruct->eventMask = NoEventMask;
     windowStruct->overrideRedirect = False;
+    windowStruct->internal = False;
     windowStruct->shapeBoundingMask = NULL;
     windowStruct->shapeBoundingOffsetX = 0;
     windowStruct->shapeBoundingOffsetY = 0;
@@ -777,7 +778,8 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         SDL_DestroyWindow(windowStruct->sdlWindow);
     }
     deleteWindowMapping(window);
-    postEvent(display, window, DestroyNotify);
+    if (!windowStruct->internal)
+        postEvent(display, window, DestroyNotify);
     if (freeParentData)
         removeChildFromParent(window);
     /* Hold visibleRegion live through removeChildFromParent's invalidation

@@ -7,11 +7,25 @@
 
 #define XSHM_EVENT_BASE 128
 
-/* The MIT-SHM extension speeds up image transfer with shared memory.
- * libx11-compat has no client/server boundary, so XGetSubImage and XPutImage
- * are already the fast path. The wrappers below let callers that probe XShm
- * fall back without crashing, and route XShmGetImage and XShmPutImage through
- * the regular image APIs.
+/* MIT-SHM exists to skip copying image bytes across the X11 client/server
+ * socket. libx11-compat has no such socket: the "server" runs in the client's
+ * own address space, which collapses every part of the extension:
+ *
+ * - XShmAttach is a no-op. The client already shmat'd the segment and set
+ *   shminfo->shmaddr; image->data points at that mapping, already readable
+ * here. There is nothing for the "server" to attach to.
+ * - XShmPutImage cannot be zero-copy. XPutImage swizzles each pixel from the
+ *   X-canonical byte order into SDL's texture format and forces opaque pixels
+ *   visible before SDL_UpdateTexture, which does a raw per-row memcpy. So
+ *   image->data is not a general upload source; that per-pixel transform is
+ *   mandatory work, not a wire copy MIT-SHM elides, so XPutImage is the fast
+ *   path.
+ * - shared_pixmaps stays False (see XShmQueryVersion): pixmaps are GPU textures
+ *   and cannot be backed by a CPU shm segment with live coherence.
+ *
+ * The wrappers below route XShmGetImage/XShmPutImage through the regular image
+ * APIs. XShmQueryExtension reporting True stays coherent with the generic
+ * XQueryExtension("MIT-SHM") probe in src/extension.c.
  */
 
 static int destroyShmImage(XImage *image)
@@ -98,6 +112,9 @@ Bool XShmPutImage(Display *dpy,
             return False;
         XShmCompletionEvent *completion = (XShmCompletionEvent *) event;
         completion->type = XSHM_EVENT_BASE + ShmCompletion;
+        /* serial stays 0 (calloc). Real Xlib fills the request serial, but no
+         * in-tree client keys completion handling off it.
+         */
         completion->send_event = False;
         completion->display = dpy;
         completion->drawable = d;
@@ -118,7 +135,12 @@ Bool XShmGetImage(Display *dpy,
                   int y,
                   unsigned long plane_mask)
 {
-    if (!image)
+    /* XGetSubImage writes through image->data via XPutPixel, which silently
+     * no-ops when data is NULL, so it would report success without copying. A
+     * no-op XShmAttach can leave image->data NULL if the client fills shmaddr
+     * only after XShmCreateImage, so reject that up front.
+     */
+    if (!image || (image->width && image->height && !image->data))
         return False;
     return XGetSubImage(dpy, d, x, y, image->width, image->height, plane_mask,
                         image->format, image, 0, 0)
@@ -135,6 +157,12 @@ XImage *XShmCreateImage(Display *dpy,
                         unsigned int width,
                         unsigned int height)
 {
+    /* The caller owns image->data. In the canonical MIT-SHM sequence the client
+     * sets image->data = shminfo->shmaddr = shmat(...) itself, so bind
+     * whichever the caller has already provided. Since XShmAttach is a no-op, a
+     * client that fills shminfo->shmaddr only after this call gets a NULL-data
+     * image; that is not the documented flow.
+     */
     (void) shminfo;
     XImage *image =
         XCreateImage(dpy, visual, depth, format, 0,

@@ -420,7 +420,8 @@ static int writeSnapshotJson(const char *path, const UiSnapshot *snap)
     fprintf(fp, "  ]\n}\n");
     /* Check for any latched stream error (a failed fprintf leaves ferror set
      * even when the later fclose flush succeeds) so a partially written JSON is
-     * never renamed into place as if complete. */
+     * never renamed into place as if complete.
+     */
     int writeErr = ferror(fp);
     int closeRc = fclose(fp);
     if (writeErr || closeRc != 0 || rename(tmpPath, path) != 0) {
@@ -450,6 +451,12 @@ static void populateSnapshot(Display *display, UiSnapshot *snap)
     for (size_t i = 0; i < screen->children.length; i++) {
         Window child = children[i];
         WindowStruct *cws = GET_WINDOW_STRUCT(child);
+        /* Internal windows (the hidden clipboard requestor) are library
+         * plumbing, not part of the client's window tree; keep them out of the
+         * snapshot.
+         */
+        if (cws->internal)
+            continue;
         if (cws->mapState == Mapped)
             snap->mapped_window_count++;
         if (cws->overrideRedirect && cws->mapState == Mapped)

@@ -79,6 +79,18 @@ Bool configureWindow(Display *display,
                      Window window,
                      unsigned long value_mask,
                      XWindowChanges *values);
+Window createInternalWindow(Display *display,
+                            Window parent,
+                            int x,
+                            int y,
+                            unsigned int width,
+                            unsigned int height,
+                            unsigned int border_width,
+                            int depth,
+                            unsigned int clazz,
+                            Visual *visual,
+                            unsigned long valueMask,
+                            XSetWindowAttributes *attributes);
 
 /* Sibling-occlusion clipping support. computeVisibleRegion writes the
  * caller-owned region (which must be uninitialized) and is the slow path;
