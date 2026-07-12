@@ -85,13 +85,16 @@ static void liveResizeObserverCallback(CFRunLoopObserverRef observer,
     libx11CompatLiveResizeTrace("tick-in");
     libx11CompatPresentDuringLiveResize();
     libx11CompatLiveResizeTrace("tick-out");
-    liveResizeObserverRunning = 0;
     /* A re-entrant XCloseDisplay teardown inside the present above can latch a
      * pending stop and destroy the captured NSWindow. Honour the latch first,
      * before touching liveResizeWindow, so inLiveResize is never messaged on a
-     * freed handle. */
+     * freed handle. Keep liveResizeObserverRunning set until after every disarm
+     * decision below so any disarmLiveResizeObserver() reached from inside this
+     * callback still routes through the pending-stop latch rather than removing
+     * the observer synchronously while CF may still dereference it. */
     if (liveResizeObserverPendingStop) {
         liveResizeObserverPendingStop = 0;
+        liveResizeObserverRunning = 0;
         disarmLiveResizeObserver(); /* now safe: outside body */
         return;
     }
@@ -104,11 +107,21 @@ static void liveResizeObserverCallback(CFRunLoopObserverRef observer,
     if (!stillResizing) {
         /* Modal loop has ended (DidEnd may not have posted yet). Disarm and
          * present one final, fully-reflowed frame so the window settles on
-         * correct content and the observer stops ticking. */
+         * correct content and the observer stops ticking. The disarm defers to
+         * the pending-stop latch because liveResizeObserverRunning is still
+         * set; clear it and honour the latch after the final present so the
+         * removal lands once this callback has fully returned. */
         libx11CompatLiveResizeTrace("observer\tinactive-disarm");
         disarmLiveResizeObserver();
         libx11CompatPresentDuringLiveResizeEx(1);
+        liveResizeObserverRunning = 0;
+        if (liveResizeObserverPendingStop) {
+            liveResizeObserverPendingStop = 0;
+            disarmLiveResizeObserver();
+        }
+        return;
     }
+    liveResizeObserverRunning = 0;
 }
 
 /* Add the CFRunLoopObserver to the main run loop. Called from the
