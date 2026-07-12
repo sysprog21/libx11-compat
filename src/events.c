@@ -810,37 +810,45 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
         if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
             continue;
         presentThisTick = False;
-        /* At drag end, snap every mapped top-level to whole resize increments
-         * the way a real WM would - independent of whether a reflow hook is
-         * registered, so hook-less clients settle on a whole-cell size too.
-         * Mid-drag (forceReflow == 0) the window tracks the cursor freely; the
-         * settle happens once on release. */
-        if (forceReflow)
-            snapTopLevelToResizeIncrements(window);
         if (!reflow) {
             /* Mode 1 (no reflow hook): the client's draw loop is blocked for
-             * the whole drag, so there is no new content to compute. Re-present
-             * the existing last-good backing every tick so the compositor's
-             * upscale of the live (larger) surface stays as sharp as possible
-             * until the real RESIZED event at drag end drives the full repaint.
+             * the whole drag, so there is no new content to compute. Do NOT
+             * snap here: snapTopLevelToResizeIncrements resizes the SDL window
+             * and suppresses the RESIZED echo, but without a reflow hook
+             * nothing updates ws->w/h or reflows the client to the snapped
+             * size, so the client would keep drawing at the pre-snap size and
+             * its content would be clipped by up to a cell. Leave the window on
+             * the size the drag produced and re-present the existing last-good
+             * backing every tick so the compositor's upscale of the live
+             * (larger) surface stays as sharp as possible until the real
+             * RESIZED event at drag end drives the full repaint.
              */
             presentThisTick = True;
         }
         if (reflow) {
-            /* The drag-end increment snap already ran above for every mapped
-             * top-level, so the size read here already reflects the quantized
-             * geometry. Derive the live drag size the SAME way the RESIZED
-             * ConfigureNotify handler does: logical points from
-             * SDL_GetWindowSize times the cached per-axis HiDPI scale. The rest
-             * of the pipeline (backing texture, the client's font metrics, the
-             * 1:1 present) is all in physical pixels, so the drag-tick geometry
-             * must be too. Re-querying SDL_GetWindowSurface here instead
-             * returns a size in logical points on a Retina host, which would
-             * make the client compute its cell grid against physical font
-             * metrics in a logical-sized window and present a mismatched blit -
-             * the glyphs come out distorted. Using the canonical formula keeps
-             * every drag tick identical to the drag-end configure, so the grid
-             * and backing stay in one coordinate space.
+            /* At drag end, snap this top-level to whole resize increments the
+             * way a real WM would, so the client settles on a whole-cell size.
+             * Only done when a reflow hook is registered: the reflow below
+             * reads the snapped size and repaints the client to match, so the
+             * snapped geometry and the client content stay consistent. Mid-drag
+             * (forceReflow == 0) the window tracks the cursor freely; the
+             * settle happens once on release. */
+            if (forceReflow)
+                snapTopLevelToResizeIncrements(window);
+            /* The drag-end increment snap above ran for this top-level, so the
+             * size read here already reflects the quantized geometry. Derive
+             * the live drag size the SAME way the RESIZED ConfigureNotify
+             * handler does: logical points from SDL_GetWindowSize times the
+             * cached per-axis HiDPI scale. The rest of the pipeline (backing
+             * texture, the client's font metrics, the 1:1 present) is all in
+             * physical pixels, so the drag-tick geometry must be too.
+             * Re-querying SDL_GetWindowSurface here instead returns a size in
+             * logical points on a Retina host, which would make the client
+             * compute its cell grid against physical font metrics in a
+             * logical-sized window and present a mismatched blit - the glyphs
+             * come out distorted. Using the canonical formula keeps every drag
+             * tick identical to the drag-end configure, so the grid and backing
+             * stay in one coordinate space.
              */
             WindowStruct *ws = GET_WINDOW_STRUCT(window);
             int logicalW = 0, logicalH = 0;
