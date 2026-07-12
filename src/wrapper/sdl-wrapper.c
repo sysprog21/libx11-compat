@@ -741,6 +741,10 @@ SDL_WRAP_VOID(SDL_SetTextInputRect, (const SDL_Rect *rect), (rect))
 SDL_WRAP_VOID(SDL_SetTextInputRect, (SDL_Rect * rect), (rect))
 #endif
 SDL_WRAP(int,
+         SDL_SetTextureAlphaMod,
+         (SDL_Texture * texture, Uint8 alpha),
+         (texture, alpha))
+SDL_WRAP(int,
          SDL_SetTextureBlendMode,
          (SDL_Texture * texture, SDL_BlendMode blendMode),
          (texture, blendMode))
