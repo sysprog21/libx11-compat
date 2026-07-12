@@ -763,9 +763,15 @@ static Bool snapTopLevelToResizeIncrements(Window window)
     if (snappedLogicalW == logicalW && snappedLogicalH == logicalH)
         return False;
 
+    /* Do not pump SDL here: this runs inside the live-resize present frame
+     * (forceReflow), and SDL_PumpEvents would re-enter the event path the
+     * present must not be nested under. The SDL RESIZED echo that
+     * SDL_SetWindowSize queues is neutralized at delivery anyway - the
+     * suppressSdlResizeEcho flag drops it in the callback, and the RESIZED
+     * sizeChanged short-circuit skips the destructive path when it does arrive
+     * - so there is nothing to flush synchronously here. */
     SDL_AtomicSet(&ws->suppressSdlResizeEcho, 1);
     SDL_SetWindowSize(ws->sdlWindow, snappedLogicalW, snappedLogicalH);
-    SDL_PumpEvents();
     SDL_AtomicSet(&ws->suppressSdlResizeEcho, 0);
     return True;
 }
