@@ -154,6 +154,17 @@ void applyNormalHintsResizableFromProperty(Window window);
  */
 Bool topLevelResizableFromNormalHints(Window window);
 
+/* Refresh the top-level's cached resize increments (widthInc/heightInc, base
+ * and min sizes used by the live-resize drag-end snap) from the stored
+ * WM_NORMAL_HINTS property. XSetWMSizeHints caches these directly from the
+ * XSizeHints struct, but a client that writes WM_NORMAL_HINTS via a raw
+ * XChangeProperty never goes through that path, so the property write hook
+ * calls this to decode the property bytes and keep the cache in sync. Clears
+ * hasResizeInc when the property has no usable PResizeInc. No-op on non-windows
+ * or when no decodable WM_NORMAL_HINTS is stored.
+ */
+void cacheResizeIncrementsFromNormalHintsProperty(Window window);
+
 /* Returns True when the window's stored hints declare it modal, either via
  * _NET_WM_STATE_MODAL or MWM_INPUT_FULL_APPLICATION_MODAL.
  */

@@ -993,6 +993,51 @@ void applyNormalHintsResizableFromProperty(Window window)
 #endif
 }
 
+void cacheResizeIncrementsFromNormalHintsProperty(Window window)
+{
+    if (!IS_TYPE(window, WINDOW))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    WindowProperty *prop =
+        findProperty(&windowStruct->properties, XA_WM_NORMAL_HINTS, NULL);
+    if (!prop || prop->dataFormat != 32 || prop->type != XA_WM_SIZE_HINTS ||
+        prop->dataLength < OldNumPropSizeElements || !prop->data) {
+        windowStruct->hasResizeInc = False;
+        return;
+    }
+
+    xPropSizeHints *sizeHints = (xPropSizeHints *) prop->data;
+    /* Mirror the cache the XSetWMSizeHints path populates from the XSizeHints
+     * struct (see the PResizeInc block there): only WM_NORMAL_HINTS governs
+     * live sizing and only PResizeInc requests cell snapping. ICCCM: when
+     * PBaseSize is absent the minimum size stands in for the base, so fall back
+     * to min_width/height (not 0) as the grid origin; a missing PMinSize
+     * defaults to 0 ("no minimum"). */
+    if ((sizeHints->flags & PResizeInc) && sizeHints->widthInc > 0 &&
+        sizeHints->heightInc > 0) {
+        windowStruct->hasResizeInc = True;
+        windowStruct->widthInc = (int) sizeHints->widthInc;
+        windowStruct->heightInc = (int) sizeHints->heightInc;
+        windowStruct->baseWidth =
+            (sizeHints->flags & PBaseSize)
+                ? (int) sizeHints->baseWidth
+                : ((sizeHints->flags & PMinSize) ? (int) sizeHints->minWidth
+                                                 : 0);
+        windowStruct->baseHeight =
+            (sizeHints->flags & PBaseSize)
+                ? (int) sizeHints->baseHeight
+                : ((sizeHints->flags & PMinSize) ? (int) sizeHints->minHeight
+                                                 : 0);
+        windowStruct->minWidth =
+            (sizeHints->flags & PMinSize) ? (int) sizeHints->minWidth : 0;
+        windowStruct->minHeight =
+            (sizeHints->flags & PMinSize) ? (int) sizeHints->minHeight : 0;
+    } else {
+        windowStruct->hasResizeInc = False;
+    }
+}
+
 Status XGetWMSizeHints(Display *dpy,
                        Window w,
                        XSizeHints *hints,

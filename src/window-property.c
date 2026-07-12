@@ -314,8 +314,16 @@ int XChangeProperty(Display *display,
      * than XSetWMNormalHints) still get the resizable mirror here; the apply
      * defers to _MOTIF_WM_HINTS when that governs functions.
      */
-    if (property == XA_WM_NORMAL_HINTS && format == 32)
+    if (property == XA_WM_NORMAL_HINTS && format == 32) {
         applyNormalHintsResizableFromProperty(window);
+        /* XSetWMSizeHints caches the resize increments straight from the
+         * XSizeHints struct, but a client that writes WM_NORMAL_HINTS through a
+         * raw XChangeProperty (as here) bypasses that path; decode the stored
+         * property so the live-resize drag-end snap still sees the increments.
+         * Unlike the resizable mirror above this runs regardless of mapped
+         * state, since the snap reads the cache lazily at drag end. */
+        cacheResizeIncrementsFromNormalHintsProperty(window);
+    }
     /* WM_TRANSIENT_FOR establishes a parent / popup link (ICCCM 4.1.2.6). Plain
      * transient_for does NOT make the child modal; SDL's modal hook is only
      * safe when the child is actually marked modal via _NET_WM_STATE_MODAL or
