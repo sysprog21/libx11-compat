@@ -510,13 +510,33 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
             /* Drop the SDL resize echo of a client-initiated XResizeWindow:
              * configureWindow arms this flag around its SDL_SetWindowSize and
              * already posts the ConfigureNotify itself, so converting the
-             * echoed SDL event too would double-post. A genuine host-driven
+             * echoed SDL event too would double-post. It pumps synchronously
+             * while armed, so both the RESIZED and SIZE_CHANGED echoes SDL
+             * posts are filtered here before it disarms. A genuine host-driven
              * resize (border drag) arrives with the flag clear and is kept so
              * it can become the ConfigureNotify that reflows the client.
              */
-            if (SDL_AtomicGet(
-                    &GET_WINDOW_STRUCT(resizeWindow)->suppressSdlResizeEcho))
+            WindowStruct *rws = GET_WINDOW_STRUCT(resizeWindow);
+            if (SDL_AtomicGet(&rws->suppressSdlResizeEcho))
                 return 0;
+            /* The drag-end increment snap cannot pump (it runs inside the
+             * present frame), so instead of the flag it records the exact
+             * logical size it wrote via SDL_SetWindowSize. Drop any echo
+             * carrying that size - both the RESIZED and SIZE_CHANGED posts - so
+             * the deferred echo does not escape as a redundant ConfigureNotify;
+             * a genuine resize to a different size still passes through. The
+             * key is cleared once the RESIZED echo matches so a later host
+             * resize back to the same size is kept.
+             */
+            if (rws->snapEchoW > 0 && rws->snapEchoH > 0 &&
+                event->window.data1 == rws->snapEchoW &&
+                event->window.data2 == rws->snapEchoH) {
+                if (sub == SDL_WINDOWEVENT_RESIZED) {
+                    rws->snapEchoW = 0;
+                    rws->snapEchoH = 0;
+                }
+                return 0;
+            }
         }
         /* Fall through to enqueue routable top-level window events. */
         ENQUEUE_EVENT_IN_PIPE((Display *) userdata);
@@ -573,6 +593,13 @@ void libx11CompatResetLiveResizeCoalesce(void)
         ws->liveResizeLastSeenW = 0;
         ws->liveResizeLastSeenH = 0;
         ws->liveResizeSettleTicks = 0;
+        /* Clear any snap echo-suppression key a previous drag-end snap left
+         * set: if that snap's echo was coalesced away the key never matched,
+         * and a stale key could otherwise drop a genuine resize of this new
+         * drag that happens to land on the same size. The snap sets it fresh
+         * each time. */
+        ws->snapEchoW = 0;
+        ws->snapEchoH = 0;
     }
 }
 
@@ -765,14 +792,16 @@ static Bool snapTopLevelToResizeIncrements(Window window)
 
     /* Do not pump SDL here: this runs inside the live-resize present frame
      * (forceReflow), and SDL_PumpEvents would re-enter the event path the
-     * present must not be nested under. The SDL RESIZED echo that
-     * SDL_SetWindowSize queues is neutralized at delivery anyway - the
-     * suppressSdlResizeEcho flag drops it in the callback, and the RESIZED
-     * sizeChanged short-circuit skips the destructive path when it does arrive
-     * - so there is nothing to flush synchronously here. */
-    SDL_AtomicSet(&ws->suppressSdlResizeEcho, 1);
+     * present must not be nested under. The present cannot pump to flush the
+     * SDL echo synchronously, so record the exact logical size written instead:
+     * the filter drops every echo carrying that size (both the RESIZED and
+     * SIZE_CHANGED posts) so the deferred echo does not escape as a redundant
+     * ConfigureNotify, while a genuine resize to any other size still passes.
+     * The size key is self-limiting - the filter clears it on the matching
+     * RESIZED echo - and each snap overwrites it, so it cannot go stale. */
+    ws->snapEchoW = snappedLogicalW;
+    ws->snapEchoH = snappedLogicalH;
     SDL_SetWindowSize(ws->sdlWindow, snappedLogicalW, snappedLogicalH);
-    SDL_AtomicSet(&ws->suppressSdlResizeEcho, 0);
     return True;
 }
 

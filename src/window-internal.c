@@ -72,6 +72,8 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->liveResizeLastSeenH = 0;
     windowStruct->liveResizeSettleTicks = 0;
     SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
+    windowStruct->snapEchoW = 0;
+    windowStruct->snapEchoH = 0;
     windowStruct->inputOnly = inputOnly;
     windowStruct->colormap = colormap;
     windowStruct->visual = visual;

@@ -156,11 +156,21 @@ typedef struct {
     /* Nonzero while configureWindow is applying a client-initiated resize via
      * SDL_SetWindowSize. That call makes SDL post its own RESIZED/SIZE_CHANGED,
      * which the event filter must not turn into a second ConfigureNotify
-     * (configureWindow already posts one). The filter consumes this to drop the
-     * echoed events; a genuine host-driven resize arrives with the flag clear.
-     * Atomic because the filter can run on SDL's event thread.
+     * (configureWindow already posts one). configureWindow pumps synchronously
+     * while this is set so both echoes are dropped before it clears the flag; a
+     * genuine host-driven resize arrives with the flag clear. Atomic because
+     * the filter can run on SDL's event thread.
      */
     SDL_atomic_t suppressSdlResizeEcho;
+    /* Logical (point) size the drag-end increment snap last wrote via
+     * SDL_SetWindowSize. That snap runs inside the live-resize present frame
+     * and cannot pump to flush the echo, so it cannot use the flag above;
+     * instead the filter drops resize echoes whose payload matches this size
+     * (both the RESIZED and SIZE_CHANGED posts) and clears the key on the
+     * matching RESIZED so it cannot suppress a later genuine resize. Zero when
+     * no snap is pending. Only touched on the main/event thread. */
+    int snapEchoW;
+    int snapEchoH;
     Bool inputOnly;
     Visual *visual;
     Colormap colormap;
