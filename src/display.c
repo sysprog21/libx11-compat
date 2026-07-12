@@ -1013,19 +1013,24 @@ void cacheResizeIncrementsFromNormalHintsProperty(Window window)
      * live sizing and only PResizeInc requests cell snapping. ICCCM: when
      * PBaseSize is absent the minimum size stands in for the base, so fall back
      * to min_width/height (not 0) as the grid origin; a missing PMinSize
-     * defaults to 0 ("no minimum"). */
+     * defaults to 0 ("no minimum"). The base fields live only in the 18-element
+     * ICCCM-v1 payload (indices 15-16); a legacy 15-element write reaches here
+     * with dataLength == OldNumPropSizeElements, so treat PBaseSize as absent
+     * unless the full payload is present, or the read runs past the store. */
+    Bool haveBaseFields = (sizeHints->flags & PBaseSize) &&
+                          prop->dataLength >= NumPropSizeElements;
     if ((sizeHints->flags & PResizeInc) && sizeHints->widthInc > 0 &&
         sizeHints->heightInc > 0) {
         windowStruct->hasResizeInc = True;
         windowStruct->widthInc = (int) sizeHints->widthInc;
         windowStruct->heightInc = (int) sizeHints->heightInc;
         windowStruct->baseWidth =
-            (sizeHints->flags & PBaseSize)
+            haveBaseFields
                 ? (int) sizeHints->baseWidth
                 : ((sizeHints->flags & PMinSize) ? (int) sizeHints->minWidth
                                                  : 0);
         windowStruct->baseHeight =
-            (sizeHints->flags & PBaseSize)
+            haveBaseFields
                 ? (int) sizeHints->baseHeight
                 : ((sizeHints->flags & PMinSize) ? (int) sizeHints->minHeight
                                                  : 0);
