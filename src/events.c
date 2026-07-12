@@ -480,16 +480,28 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
          * let a stray ENTER for an override-redirect popup steal pointer hover
          * and misroute a grabbed click. The one gap was live-resize *size*:
          * RESIZED/SIZE_CHANGED must reach convertEvent to become
-         * ConfigureNotify, or a host resize never reflows the client. Let only
-         * those through, and only when they map to a known top-level; keep
-         * dropping everything else (MOVED included - a bare move needs no
-         * client reflow and, arriving asynchronously here, would inject
-         * spurious ConfigureNotifies).
+         * ConfigureNotify, or a host resize never reflows the client.
+         * DISPLAY_CHANGED must also reach it on the SDL3 backend: moving a
+         * window to a monitor with a different backing scale changes the
+         * physical pixel geometry with no RESIZED, and the handler there
+         * re-promotes the window and reflows the client. Let those through,
+         * and only when they map to a known top-level; keep dropping
+         * everything else (MOVED included - a bare move needs no client reflow
+         * and, arriving asynchronously here, would inject spurious
+         * ConfigureNotifies).
          */
         Uint32 sub = XC_WINDOW_SUBEVENT(event);
         Bool resizeSubevent = sub == SDL_WINDOWEVENT_RESIZED ||
                               sub == SDL_WINDOWEVENT_SIZE_CHANGED;
-        if (sub != SDL_WINDOWEVENT_CLOSE && !resizeSubevent)
+        Bool displayChangedSubevent = False;
+#if defined(LIBX11_COMPAT_SDL3) && SDL_VERSION_ATLEAST(2, 0, 18)
+        displayChangedSubevent = sub == SDL_WINDOWEVENT_DISPLAY_CHANGED;
+#endif
+        if (sub != SDL_WINDOWEVENT_CLOSE && !resizeSubevent &&
+            !displayChangedSubevent)
+            return 0;
+        if (displayChangedSubevent &&
+            getWindowFromId(event->window.windowID) == None)
             return 0;
         if (resizeSubevent) {
             Window resizeWindow = getWindowFromId(event->window.windowID);
@@ -2817,10 +2829,7 @@ int convertEvent(Display *display,
                 xEvent->xconfigure.override_redirect = False;
             }
             break;
-/* SDL2 only: the SDL3 backend routes window events through a different
- * (SDL_EVENT_WINDOW_*) model, so the mixed-DPI scale refresh is handled on the
- * SDL2 path (the primary macOS backend) and is a no-op under SDL3 for now. */
-#if !defined(LIBX11_COMPAT_SDL3) && SDL_VERSION_ATLEAST(2, 0, 18)
+#if SDL_VERSION_ATLEAST(2, 0, 18)
         case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
             /* The window moved to a different display, which may have a
              * different HiDPI backing scale than the one cached at realize
@@ -2828,8 +2837,7 @@ int convertEvent(Display *display,
              * ratio so the next resize's logical<->physical conversion and the
              * present blit use the new monitor's scale instead of a stale one.
              * This is event-driven and never runs on the resize fast path, so
-             * faked test resizes are unaffected; geometry still flows through
-             * RESIZED. */
+             * faked test resizes are unaffected. */
             if (eventWindow != None && compatSdlHasWindowSizeInPixels()) {
                 SDL_Window *movedWin =
                     SDL_GetWindowFromID(sdlEvent->window.windowID);
@@ -2844,6 +2852,48 @@ int convertEvent(Display *display,
                         movedWs->hiDpiScaleX = (double) pw / (double) lw;
                     if (lh > 0 && ph > 0)
                         movedWs->hiDpiScaleY = (double) ph / (double) lh;
+                    compatTrace(
+                        "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
+                        "logical=(%dx%d) phys=(%dx%d) newScale=(%.3f,%.3f) "
+                        "cachedPhys=(%ux%u)\n",
+                        eventWindow, lw, lh, pw, ph, movedWs->hiDpiScaleX,
+                        movedWs->hiDpiScaleY, movedWs->w, movedWs->h);
+#if defined(LIBX11_COMPAT_SDL3)
+                    /* SDL2 follows a DISPLAY_CHANGED with a SIZE_CHANGED that
+                     * reflows geometry using the scale just refreshed above.
+                     * The SDL3 backend delivers no such geometry event for a
+                     * bare monitor move, so the window keeps the previous
+                     * monitor's physical pixel dimensions (over- or
+                     * under-promoted) and the present mis-scales. Re-promote
+                     * the window to the new monitor's physical size and reflow
+                     * the client here. The global font scale tracks the same
+                     * host backing, so refresh it too; on a single-scale setup
+                     * the value is unchanged. */
+                    if (pw > 0 && ph > 0) {
+                        if (lw > 0)
+                            compatSetGlobalHiDpiScale((double) pw /
+                                                      (double) lw);
+                        else if (lh > 0)
+                            compatSetGlobalHiDpiScale((double) ph /
+                                                      (double) lh);
+                        /* Republish the new scale on the root window before the
+                         * re-promote below posts the ConfigureNotify, so a
+                         * client re-deriving its font from the property during
+                         * that configure reads the destination monitor's
+                         * scale. */
+                        compatPublishHiDpiScaleProperty(display);
+                        if (pw != (int) movedWs->w || ph != (int) movedWs->h) {
+                            compatTrace(
+                                "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
+                                "RE-PROMOTE (%ux%u)->(%dx%d) "
+                                "globalScale=%.3f\n",
+                                eventWindow, movedWs->w, movedWs->h, pw, ph,
+                                compatGlobalHiDpiScale());
+                            postSyntheticWindowResize(display, eventWindow, pw,
+                                                      ph);
+                        }
+                    }
+#endif
                 }
             }
             return -1;

@@ -80,6 +80,23 @@ void compatSetGlobalHiDpiScale(double scale)
         globalHiDpiScale = scale;
 }
 
+void compatPublishHiDpiScaleProperty(Display *display)
+{
+    if (!display || SCREEN_WINDOW == None)
+        return;
+    Atom scaleAtom = internalInternAtom(HIDPI_SCALE_PROPERTY_NAME);
+    if (scaleAtom == None)
+        return;
+    long fixed = lround(globalHiDpiScale * HIDPI_SCALE_PROPERTY_FIXED_POINT);
+    if (fixed < 0)
+        fixed = 0;
+    /* Format-32 properties are stored and returned as an array of long (the
+     * documented Xlib client convention, which this shim follows), so publish
+     * a long rather than a fixed-width 32-bit integer. */
+    XChangeProperty(display, SCREEN_WINDOW, scaleAtom, XA_CARDINAL, 32,
+                    PropModeReplace, (const unsigned char *) &fixed, 1);
+}
+
 Bool compatSdlHasWindowSizeInPixels(void)
 {
 #if defined(LIBX11_COMPAT_SDL3)
@@ -569,6 +586,12 @@ Display *XOpenDisplay(_Xconst char *display_name)
         /* Init the font search path */
         XSetFontPath(display, NULL, 0);
     }
+    /* Advertise the probed HiDPI backing scale on the root window so clients
+     * that render at a fixed point size can scale their glyphs to match the
+     * promoted physical-pixel geometry. Kept current on a monitor move by the
+     * SDL_WINDOWEVENT_DISPLAY_CHANGED handler.
+     */
+    compatPublishHiDpiScaleProperty(display);
     return display;
 }
 

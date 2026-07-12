@@ -36,6 +36,23 @@ unsigned char getLastRequestCode(Display *display);
 double compatGlobalHiDpiScale(void);
 void compatSetGlobalHiDpiScale(double scale);
 
+/* Publish the current HiDPI backing scale as a CARDINAL property
+ * (_LIBX11_COMPAT_HIDPI_SCALE, scale * 1000 rounded) on the root window, and
+ * post the PropertyNotify. Clients that render at a fixed point size (e.g. the
+ * xwpe Cairo/Pango backend) read this to scale their glyphs with the monitor's
+ * backing so the apparent grid stays consistent across a mixed-DPI monitor
+ * move; on a real X server the property is simply absent and clients fall back
+ * to 1.0. Called at XOpenDisplay once the root window exists and again whenever
+ * a window moves to a display with a different backing scale. No-op when the
+ * root window is not yet initialized. */
+void compatPublishHiDpiScaleProperty(Display *display);
+
+/* Property name and fixed-point encoding shared by the publisher above and any
+ * client that reads it. The value is scale * HIDPI_SCALE_PROPERTY_FIXED_POINT
+ * so a fractional scale survives the integer CARDINAL transport. */
+#define HIDPI_SCALE_PROPERTY_NAME "_LIBX11_COMPAT_HIDPI_SCALE"
+#define HIDPI_SCALE_PROPERTY_FIXED_POINT 1000
+
 /* True when the SDL library loaded at runtime provides
  * SDL_GetWindowSizeInPixels (added in SDL 2.26.0). The wrapper thunk for that
  * symbol is compiled in whenever the build headers are >= 2.26, but invoking it
