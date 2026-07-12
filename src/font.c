@@ -561,7 +561,15 @@ static short hiDpiScaledMetric(short value)
     double scale = compatGlobalHiDpiScale();
     if (scale <= 1.0 || value == 0)
         return value;
-    return (short) ((double) value * scale + 0.5);
+    /* value returns as a short, so a large advance width scaled by a high
+     * factor can exceed SHRT_MAX and wrap negative. Clamp to the short range
+     * (both ends, since a negative advance is meaningless) before the cast. */
+    double scaled = (double) value * scale + (value > 0 ? 0.5 : -0.5);
+    if (scaled > (double) SHRT_MAX)
+        scaled = (double) SHRT_MAX;
+    else if (scaled < (double) SHRT_MIN)
+        scaled = (double) SHRT_MIN;
+    return (short) scaled;
 }
 
 /* Fixed-bitmap variant of hiDpiScaledMetric: fonts drawn by
