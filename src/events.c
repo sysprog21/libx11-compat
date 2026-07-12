@@ -2905,6 +2905,12 @@ int convertEvent(Display *display,
                                 compatGlobalHiDpiScale());
                             postSyntheticWindowResize(display, eventWindow, pw,
                                                       ph);
+                            /* The cached visible region is the pre-move
+                             * (0,0,w,h) rect; the re-promote just grew the
+                             * top-level, so invalidate it as the RESIZED
+                             * ConfigureNotify path does or the added physical
+                             * columns/rows stay clipped and black. */
+                            invalidateVisibleRegionForTopLevel(eventWindow);
                         }
                     }
 #endif
