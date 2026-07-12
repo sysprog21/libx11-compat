@@ -126,6 +126,11 @@ Bool compatSdlHasWindowSizeInPixels(void)
  */
 static void probeGlobalHiDpiScale(void)
 {
+    /* Reset first so a later 1x session cannot inherit a prior Retina scale:
+     * globalHiDpiScale is process-lifetime, and the probe below only overwrites
+     * it on a pixel!=point mismatch, so without this a Retina-then-1x sequence
+     * (or the probe-failure early return) would keep the stale 2.0. */
+    globalHiDpiScale = 1.0;
     SDL_Window *probe =
         SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                          1, 1, SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI);
@@ -864,40 +869,14 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
     if (hints->flags & PWinGravity)
         data.winGravity = hints->win_gravity;
 
+    /* The resize-increment cache is refreshed from the stored property on the
+     * XChangeProperty success path (window-property.c calls
+     * cacheResizeIncrementsFromNormalHintsProperty for
+     * WM_NORMAL_HINTS/format-32 there), so it stays correct without a second
+     * inline decode here that would also run even when the property write
+     * failed. */
     XChangeProperty(dpy, w, prop, XA_WM_SIZE_HINTS, 32, PropModeReplace,
                     (unsigned char *) &data, NumPropSizeElements);
-
-    /* Cache the resize increments so the drag-end snap does not have to decode
-     * the property back on every resize. Only WM_NORMAL_HINTS governs live
-     * sizing (WM_ZOOM_HINTS and friends do not), and only PResizeInc requests
-     * cell snapping. ICCCM: when PBaseSize is absent the minimum size stands in
-     * for the base, so fall back to min_width/height (not 0) as the grid
-     * origin, matching the geometry path in missing.c. A missing PMinSize
-     * defaults to 0
-     * ("no minimum"). */
-    if (prop == XA_WM_NORMAL_HINTS && IS_TYPE(w, WINDOW)) {
-        WindowStruct *windowStruct = GET_WINDOW_STRUCT(w);
-        if ((hints->flags & PResizeInc) && hints->width_inc > 0 &&
-            hints->height_inc > 0) {
-            windowStruct->hasResizeInc = True;
-            windowStruct->widthInc = hints->width_inc;
-            windowStruct->heightInc = hints->height_inc;
-            windowStruct->baseWidth =
-                (hints->flags & PBaseSize)
-                    ? hints->base_width
-                    : ((hints->flags & PMinSize) ? hints->min_width : 0);
-            windowStruct->baseHeight =
-                (hints->flags & PBaseSize)
-                    ? hints->base_height
-                    : ((hints->flags & PMinSize) ? hints->min_height : 0);
-            windowStruct->minWidth =
-                (hints->flags & PMinSize) ? hints->min_width : 0;
-            windowStruct->minHeight =
-                (hints->flags & PMinSize) ? hints->min_height : 0;
-        } else {
-            windowStruct->hasResizeInc = False;
-        }
-    }
 }
 
 

@@ -1491,31 +1491,49 @@ static void drawUtf8String(XftDraw *draw,
     SDL_Rect destRect = {destX, destY, rectW, rectH};
     ShapeGuard sg;
     shapeGuardBegin(&sg, draw->drawable, renderer, &destRect);
-    if (draw->clipRectCount <= 0) {
-        SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
-    } else {
-        /* Xft clip rects are in the same drawable/viewport space as the base
-         * clip GET_RENDERER installed, so intersect each one with the base clip
-         * (as setGcClipForIteration does) and copy per rect.
-         */
+    /* Clip to the drawable's sibling visible region the same way the core-font
+     * path does (font.c), so Xft text into a child obscured by a higher-stacked
+     * sibling cannot paint over that sibling. getWindowRenderer resolves every
+     * child to its top-level's shared backing texture, so without this the copy
+     * would only honour the base clip and the Xft clip rects. Passing gc==NULL
+     * makes these helpers iterate the visible region alone (gc-clip count 1),
+     * and setGcClipForIteration installs the base clip intersected with each
+     * visible-region rect; a fully occluded window reports 0 iterations.
+     */
+    int clipCount = getGcClipIterationCount(NULL, draw->drawable);
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(renderer, NULL, clip, draw->drawable))
+            continue;
+        if (draw->clipRectCount <= 0) {
+            SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
+            continue;
+        }
+        /* Xft clip rects share the drawable/viewport space of the base+sibling
+         * clip just installed, so intersect each one with that clip (read back
+         * from the renderer) and copy per rect. */
         SDL_bool baseClipEnabled = SDL_RenderIsClipEnabled(renderer);
         SDL_Rect baseClip;
         if (baseClipEnabled)
             SDL_RenderGetClipRect(renderer, &baseClip);
         for (int i = 0; i < draw->clipRectCount; i++) {
-            SDL_Rect clip = {draw->clipRects[i].x, draw->clipRects[i].y,
-                             draw->clipRects[i].width,
-                             draw->clipRects[i].height};
-            if (baseClipEnabled && !SDL_IntersectRect(&clip, &baseClip, &clip))
+            SDL_Rect xftClip = {draw->clipRects[i].x, draw->clipRects[i].y,
+                                draw->clipRects[i].width,
+                                draw->clipRects[i].height};
+            if (baseClipEnabled &&
+                !SDL_IntersectRect(&xftClip, &baseClip, &xftClip))
                 continue;
-            SDL_RenderSetClipRect(renderer, &clip);
+            SDL_RenderSetClipRect(renderer, &xftClip);
             SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
         }
-        clearRendererClip(renderer);
     }
-    shapeGuardEnd(&sg);
+    clearRendererClip(renderer);
+    /* If the post-draw shape composite failed, masked-out pixels may still be
+     * on the renderer; skip the present so the next draw recomposes from a
+     * fresh baseline rather than flashing stale output (mirrors image.c). */
+    Bool shapeOk = shapeGuardEnd(&sg);
     SDL_DestroyTexture(texture);
-    presentDrawableRectIfVisible(draw->drawable, &destRect);
+    if (shapeOk)
+        presentDrawableRectIfVisible(draw->drawable, &destRect);
 }
 
 void XftDrawStringUtf8(XftDraw *draw,

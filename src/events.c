@@ -495,7 +495,7 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
         Bool resizeSubevent = sub == SDL_WINDOWEVENT_RESIZED ||
                               sub == SDL_WINDOWEVENT_SIZE_CHANGED;
         Bool displayChangedSubevent = False;
-#if defined(LIBX11_COMPAT_SDL3) && SDL_VERSION_ATLEAST(2, 0, 18)
+#if SDL_VERSION_ATLEAST(2, 0, 18)
         displayChangedSubevent = sub == SDL_WINDOWEVENT_DISPLAY_CHANGED;
 #endif
         if (sub != SDL_WINDOWEVENT_CLOSE && !resizeSubevent &&
@@ -2485,8 +2485,13 @@ int convertEvent(Display *display,
         xEvent->xbutton.root = SCREEN_WINDOW;
         xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->button.timestamp);
         int sdlButtonX = sdlEvent->button.x, sdlButtonY = sdlEvent->button.y;
-        scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
-                              &sdlButtonX, &sdlButtonY);
+        /* XTest tags synthetic buttons with which == SDL_TOUCH_MOUSEID and
+         * their coordinates are already X11 physical pixels; scaling again
+         * would double them on Retina. Real hardware events carry SDL points
+         * and still need the scale (mirrors the motion/wheel handling). */
+        if (sdlEvent->button.which != SDL_TOUCH_MOUSEID)
+            scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
+                                  &sdlButtonX, &sdlButtonY);
         translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
                                 sdlButtonY, &xEvent->xbutton.x_root,
                                 &xEvent->xbutton.y_root);
@@ -2577,8 +2582,13 @@ int convertEvent(Display *display,
         xEvent->xmotion.root = SCREEN_WINDOW;
         xEvent->xmotion.time = XC_EVENT_TIME_MS(sdlEvent->motion.timestamp);
         int sdlMotionX = sdlEvent->motion.x, sdlMotionY = sdlEvent->motion.y;
-        scaleSdlPointToPixels(sdlMotionWindow, sdlMotionX, sdlMotionY,
-                              &sdlMotionX, &sdlMotionY);
+        /* XTest tags synthetic motion with which == SDL_TOUCH_MOUSEID and its
+         * coordinates are already X11 physical pixels; scaling again would
+         * double them on Retina. Real hardware motion carries SDL points and
+         * still needs the scale. */
+        if (sdlEvent->motion.which != SDL_TOUCH_MOUSEID)
+            scaleSdlPointToPixels(sdlMotionWindow, sdlMotionX, sdlMotionY,
+                                  &sdlMotionX, &sdlMotionY);
         translateSdlPointToRoot(display, sdlMotionWindow, sdlMotionX,
                                 sdlMotionY, &xEvent->xmotion.x_root,
                                 &xEvent->xmotion.y_root);
@@ -3291,14 +3301,21 @@ int convertEvent(Display *display,
              * have routed every later real wheel to the stale injected
              * coords.
              */
+            Bool wheelInjected = False;
             if (sdlEvent->wheel.which == SDL_TOUCH_MOUSEID &&
                 replayTargetReadPointer(&mx, &my)) {
                 /* injected pos wins */
+                wheelInjected = True;
             } else {
                 SDL_GetMouseState(&mx, &my);
             }
             xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->wheel.timestamp);
-            scaleSdlPointToPixels(sdlWheelWindow, mx, my, &mx, &my);
+            /* Injected pointer coordinates are already X11 physical pixels
+             * (from replayTargetReadPointer); only real SDL_GetMouseState
+             * points need scaling. Matches the motion/button synthetic
+             * handling. */
+            if (!wheelInjected)
+                scaleSdlPointToPixels(sdlWheelWindow, mx, my, &mx, &my);
             translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
                                     &xEvent->xbutton.x_root,
                                     &xEvent->xbutton.y_root);

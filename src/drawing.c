@@ -599,8 +599,14 @@ static Bool presentWindowAccelerated(Window win,
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(child->presentRenderer);
     SDL_Rect dstCopy = {0, 0, bw, bh};
-    SDL_RenderCopy(child->presentRenderer, child->presentTexture, NULL,
-                   &dstCopy);
+    if (SDL_RenderCopy(child->presentRenderer, child->presentTexture, NULL,
+                       &dstCopy) != 0) {
+        /* Bail like the readback/upload failures above: leave needsPresent and
+         * the dirty region set so the frame is retried instead of being marked
+         * presented and permanently dropped. */
+        LOG("SDL_RenderCopy failed in %s: %s\n", __func__, SDL_GetError());
+        return False;
+    }
     SDL_RenderPresent(child->presentRenderer);
     *updateNs += monotonicNowNs() - updateStart;
 
