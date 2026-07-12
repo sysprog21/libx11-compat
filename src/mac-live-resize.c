@@ -434,7 +434,12 @@ static void commitInstantTransaction(void)
 /* Build an NSString for the topLeft gravity constant from its literal value.
  * kCAGravityTopLeft is documented to equal @"topLeft"; constructing it via the
  * objc runtime avoids resolving the QuartzCore symbol / linking the framework.
- * Cached after first use. */
+ * Cached after first use. Under manual retain/release (no ARC) the cache must
+ * own a +1 reference: +stringWithUTF8String: returns an autoreleased instance
+ * that the surrounding autorelease pool drains every run-loop tick, which would
+ * leave the static dangling. +alloc/-initWithUTF8String: returns a retained
+ * (+1) instance that is never autoreleased, so the process-lifetime cache stays
+ * valid; the object is intentionally never released. */
 static void *topLeftGravityString(void)
 {
     static void *cached = NULL;
@@ -443,8 +448,12 @@ static void *topLeftGravityString(void)
     void *cls = objc_getClass("NSString");
     if (!cls)
         return NULL;
+    void *allocated = ((void *(*) (void *, void *) ) objc_msgSend)(
+        cls, sel_registerName("alloc"));
+    if (!allocated)
+        return NULL;
     cached = ((void *(*) (void *, void *, const char *) ) objc_msgSend)(
-        cls, sel_registerName("stringWithUTF8String:"), "topLeft");
+        allocated, sel_registerName("initWithUTF8String:"), "topLeft");
     return cached;
 }
 
