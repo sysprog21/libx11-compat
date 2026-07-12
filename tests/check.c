@@ -7874,10 +7874,177 @@ static int test_extensions(Display *display)
               hcs == hbs,
           "XShapeQueryExtents did not return rectangular extents");
     int xc = 99, oc = 98;
-    CHECK(XShapeGetRectangles(display, RootWindow(display, 0), ShapeBounding,
-                              &xc, &oc) == NULL,
-          "XShapeGetRectangles should return NULL");
-    CHECK(xc == 0 && oc == 0, "XShapeGetRectangles did not zero outputs");
+    XRectangle *rootRects = XShapeGetRectangles(display, RootWindow(display, 0),
+                                                ShapeBounding, &xc, &oc);
+    CHECK(rootRects && xc == 1 && oc == YXBanded,
+          "XShapeGetRectangles should return the default rectangle");
+    CHECK(rootRects[0].x == 0 && rootRects[0].y == 0 &&
+              rootRects[0].width == DisplayWidth(display, 0) &&
+              rootRects[0].height == DisplayHeight(display, 0),
+          "XShapeGetRectangles returned the wrong default rectangle");
+    XFree(rootRects);
+
+    /* Rectangle shaping: two disjoint squares define a non-rectangular bounding
+     * shape. QueryExtents reports the union bbox, GetRectangles reads the
+     * installed shape back, and the read-back rectangles cover the same total
+     * area (round-trip through the mask decomposition).
+     */
+    Window shapeWin = XCreateSimpleWindow(
+        display, RootWindow(display, DefaultScreen(display)), 0, 0, 32, 32, 0,
+        0, 0);
+    CHECK(shapeWin != None, "shape window creation failed");
+    XRectangle shapeRects[2] = {
+        {0, 0, 10, 10},
+        {16, 16, 8, 8},
+    };
+    XShapeCombineRectangles(display, shapeWin, ShapeBounding, 0, 0, shapeRects,
+                            2, ShapeSet, Unsorted);
+    Bool sb = False, sc = True;
+    int sbx = 9, sby = 9;
+    unsigned int sbw = 0, sbh = 0, scw = 0, sch = 0;
+    int scx = 0, scy = 0;
+    CHECK(XShapeQueryExtents(display, shapeWin, &sb, &sbx, &sby, &sbw, &sbh,
+                             &sc, &scx, &scy, &scw, &sch),
+          "XShapeQueryExtents after rectangle shaping failed");
+    CHECK(sb && !sc, "rectangle shaping should mark only the bounding shape");
+    CHECK(sbx == 0 && sby == 0 && sbw == 24 && sbh == 24,
+          "rectangle-shaped bounding extents wrong");
+
+    int rectCount = 0, rectOrder = 99;
+    XRectangle *readBack = XShapeGetRectangles(display, shapeWin, ShapeBounding,
+                                               &rectCount, &rectOrder);
+    CHECK(readBack && rectCount > 0,
+          "XShapeGetRectangles should read installed rectangle shape");
+    CHECK(rectOrder == YXBanded, "read-back rectangles should be YXBanded");
+    long shapedArea = 0;
+    for (int i = 0; i < rectCount; i++)
+        shapedArea += (long) readBack[i].width * (long) readBack[i].height;
+    CHECK(shapedArea == 10 * 10 + 8 * 8,
+          "read-back rectangles cover the wrong area");
+    XFree(readBack);
+
+    /* Union grows the shape; Subtract removes part of it. */
+    XRectangle unionRect = {24, 0, 8, 8};
+    XShapeCombineRectangles(display, shapeWin, ShapeBounding, 0, 0, &unionRect,
+                            1, ShapeUnion, Unsorted);
+    CHECK(XShapeQueryExtents(display, shapeWin, &sb, &sbx, &sby, &sbw, &sbh,
+                             &sc, &scx, &scy, &scw, &sch) &&
+              sbw == 32,
+          "ShapeUnion did not extend the bounding shape");
+    XShapeCombineRectangles(display, shapeWin, ShapeBounding, 0, 0, &unionRect,
+                            1, ShapeSubtract, Unsorted);
+    readBack = XShapeGetRectangles(display, shapeWin, ShapeBounding, &rectCount,
+                                   &rectOrder);
+    long afterSub = 0;
+    for (int i = 0; i < rectCount; i++)
+        afterSub += (long) readBack[i].width * (long) readBack[i].height;
+    CHECK(afterSub == 10 * 10 + 8 * 8,
+          "ShapeSubtract did not restore the original area");
+    XFree(readBack);
+
+    /* A Region shape must produce the same result as the equivalent rectangle
+     * list.
+     */
+    Window regionWin = XCreateSimpleWindow(
+        display, RootWindow(display, DefaultScreen(display)), 0, 0, 32, 32, 0,
+        0, 0);
+    Region shapeRegion = XCreateRegion();
+    XUnionRectWithRegion(&shapeRects[0], shapeRegion, shapeRegion);
+    XUnionRectWithRegion(&shapeRects[1], shapeRegion, shapeRegion);
+    XShapeCombineRegion(display, regionWin, ShapeBounding, 0, 0, shapeRegion,
+                        ShapeSet);
+    XDestroyRegion(shapeRegion);
+    unsigned int rbw = 0, rbh = 0, rcw = 0, rch = 0;
+    int rbx = 0, rby = 0, rcx = 0, rcy = 0;
+    Bool rsb = False, rsc = True;
+    CHECK(XShapeQueryExtents(display, regionWin, &rsb, &rbx, &rby, &rbw, &rbh,
+                             &rsc, &rcx, &rcy, &rcw, &rch) &&
+              rsb && rbx == 0 && rby == 0 && rbw == 24 && rbh == 24,
+          "region shaping did not match the equivalent rectangle shape");
+    XDestroyWindow(display, regionWin);
+
+    /* XShapeOffsetShape translates the installed shape; extents shift by the
+     * offset while the covered area is unchanged.
+     */
+    XShapeOffsetShape(display, shapeWin, ShapeBounding, 5, 5);
+    CHECK(XShapeQueryExtents(display, shapeWin, &sb, &sbx, &sby, &sbw, &sbh,
+                             &sc, &scx, &scy, &scw, &sch) &&
+              sbx == 5 && sby == 5 && sbw == 24 && sbh == 24,
+          "XShapeOffsetShape did not translate the bounding shape");
+    XShapeOffsetShape(display, shapeWin, ShapeBounding, -5, -5);
+    CHECK(XShapeQueryExtents(display, shapeWin, &sb, &sbx, &sby, &sbw, &sbh,
+                             &sc, &scx, &scy, &scw, &sch) &&
+              sbx == 0 && sby == 0,
+          "XShapeOffsetShape did not translate back to the origin");
+
+    /* XShapeCombineShape copies another window's installed shape. */
+    Window copyWin = XCreateSimpleWindow(
+        display, RootWindow(display, DefaultScreen(display)), 0, 0, 32, 32, 0,
+        0, 0);
+    XShapeCombineShape(display, copyWin, ShapeBounding, 0, 0, shapeWin,
+                       ShapeBounding, ShapeSet);
+    CHECK(XShapeQueryExtents(display, copyWin, &sb, &sbx, &sby, &sbw, &sbh, &sc,
+                             &scx, &scy, &scw, &sch) &&
+              sb && sbx == 0 && sby == 0 && sbw == 24 && sbh == 24,
+          "XShapeCombineShape did not copy the source window shape");
+    readBack = XShapeGetRectangles(display, copyWin, ShapeBounding, &rectCount,
+                                   &rectOrder);
+    long copyArea = 0;
+    for (int i = 0; i < rectCount; i++)
+        copyArea += (long) readBack[i].width * (long) readBack[i].height;
+    CHECK(copyArea == 10 * 10 + 8 * 8,
+          "XShapeCombineShape copied the wrong area");
+    XFree(readBack);
+    XDestroyWindow(display, copyWin);
+
+    /* An unshaped source contributes its full window rectangle, positioned by
+     * the offset.
+     */
+    Window plainWin = XCreateSimpleWindow(
+        display, RootWindow(display, DefaultScreen(display)), 0, 0, 12, 10, 0,
+        0, 0);
+    Window destWin = XCreateSimpleWindow(
+        display, RootWindow(display, DefaultScreen(display)), 0, 0, 32, 32, 0,
+        0, 0);
+    XShapeCombineShape(display, destWin, ShapeBounding, 2, 3, plainWin,
+                       ShapeBounding, ShapeSet);
+    CHECK(XShapeQueryExtents(display, destWin, &sb, &sbx, &sby, &sbw, &sbh, &sc,
+                             &scx, &scy, &scw, &sch) &&
+              sb && sbx == 2 && sby == 3 && sbw == 12 && sbh == 10,
+          "XShapeCombineShape from an unshaped source should copy the full "
+          "window rectangle");
+    XDestroyWindow(display, destWin);
+    XDestroyWindow(display, plainWin);
+
+    /* An empty rectangle list under ShapeSet clips the window away entirely
+     * (fully shaped, nothing visible), which is not the same as clearing the
+     * shape.
+     */
+    XShapeCombineRectangles(display, shapeWin, ShapeBounding, 0, 0, NULL, 0,
+                            ShapeSet, Unsorted);
+    CHECK(XShapeQueryExtents(display, shapeWin, &sb, &sbx, &sby, &sbw, &sbh,
+                             &sc, &scx, &scy, &scw, &sch) &&
+              sb,
+          "empty ShapeSet rectangle list should leave the window shaped");
+    CHECK(XShapeGetRectangles(display, shapeWin, ShapeBounding, &rectCount,
+                              &rectOrder) == NULL &&
+              rectCount == 0,
+          "empty-shaped window should expose no visible rectangles");
+
+    /* A non-Set combine that grows the shape to cover the whole window must
+     * keep the window shaped, exactly as an equivalent full ShapeSet would. The
+     * window is shaped iff a mask was installed, regardless of coverage.
+     */
+    XRectangle fullRect = {0, 0, 32, 32};
+    XShapeCombineRectangles(display, shapeWin, ShapeBounding, 0, 0, &fullRect,
+                            1, ShapeSet, Unsorted);
+    XShapeCombineRectangles(display, shapeWin, ShapeBounding, 0, 0, NULL, 0,
+                            ShapeUnion, Unsorted);
+    CHECK(XShapeQueryExtents(display, shapeWin, &sb, &sbx, &sby, &sbw, &sbh,
+                             &sc, &scx, &scy, &scw, &sch) &&
+              sb,
+          "full-cover ShapeUnion should leave the window shaped");
+    XDestroyWindow(display, shapeWin);
 
     CHECK(XShmQueryExtension(display), "XShmQueryExtension should be true");
     CHECK(XShmGetEventBase(display) != 0,
