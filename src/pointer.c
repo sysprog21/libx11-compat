@@ -12,7 +12,7 @@
 #include "errors.h"
 #include "timeline.h"
 
-unsigned int currentEventMask = ~0;
+static unsigned int currentEventMask = ~0;
 Bool mouseFrozen = False;
 Bool keyboardFrozen = False;
 
@@ -94,9 +94,11 @@ static void installPointerGrab(Display *display,
     currentEventMask = event_mask;
     mouseFrozen = pointer_mode == GrabModeSync;
     keyboardFrozen = keyboard_mode == GrabModeSync;
+
     if (confine_to != None && IS_TYPE(confine_to, WINDOW) &&
         IS_MAPPED_TOP_LEVEL_WINDOW(confine_to))
         SDL_SetWindowGrab(GET_WINDOW_STRUCT(confine_to)->sdlWindow, SDL_TRUE);
+
     pointerGrab.cursorWasOverridden = False;
     pointerGrab.savedCursor = None;
     if (cursor != None && IS_TYPE(grab_window, WINDOW)) {
@@ -312,6 +314,7 @@ int XWarpPointer(Display *display,
                             ? win_h - (unsigned int) src_y
                             : 0;
             }
+
             /* X rect containment is half-open: x <= p < x + width. The
              * difference runs through int64 so a local_x of INT_MIN and src_x
              * of INT_MAX cannot wrap before the unsigned compare.
@@ -332,6 +335,7 @@ int XWarpPointer(Display *display,
                                   &curr_x, &curr_y, NULL);
         }
     }
+
     /* Compute final pointer in int64 and clamp to SDL's int arg range so
      * callers cannot drive an overflow into the warp call.
      */
@@ -367,6 +371,7 @@ Bool XQueryPointer(Display *display,
     // https://tronche.com/gui/x/xlib/window-information/XQueryPointer.html
     SET_X_SERVER_REQUEST(display, X_QueryPointer);
     TYPE_CHECK(window, WINDOW, display, False);
+
     /* Real XQueryPointer round-trips to the server and always reports the live
      * pointer state. SDL only refreshes its cached button/position state on a
      * pump, so without this a client that polls XQueryPointer without draining
@@ -427,6 +432,7 @@ int XGrabPointer(Display *display,
 {
     // https://tronche.com/gui/x/xlib/input/XGrabPointer.html
     SET_X_SERVER_REQUEST(display, X_GrabPointer);
+
     /* Xlib status codes: GrabSuccess == 0, AlreadyGrabbed == 1, GrabInvalidTime
      * == 2, GrabNotViewable == 3, GrabFrozen == 4.
      *
@@ -457,6 +463,7 @@ int XGrabPointer(Display *display,
         timelineTapGrabPointer(grab_window, True);
         return GrabSuccess;
     }
+
     /* GrabInvalidTime: the requested time must be CurrentTime or no later than
      * the last server time. Compare as CARD32 with a signed delta so a 32-bit
      * tick rollover (every ~49 days of uptime) doesn't spuriously fire. Time is
@@ -491,6 +498,7 @@ int XGrabButton(Display *display,
 {
     SET_X_SERVER_REQUEST(display, X_GrabButton);
     TYPE_CHECK(grab_window, WINDOW, display, BadWindow);
+
     /* Xlib semantics: a passive grab on the same (button, modifiers,
      * grab_window) triple replaces the previous one. Appending would silently
      * leak the prior grab and route events through whichever matched first.

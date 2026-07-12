@@ -378,6 +378,74 @@ jobs:
       - name: ccache stats
         run: ccache --show-stats
 
+  # ---- Run the display-lock threading test under ThreadSanitizer ----
+  #
+  # ASan/UBSan (the sanitize job) and TSan cannot share a build, so the
+  # display-lock race gate is its own job. It builds the library and the
+  # check binary with -fsanitize=thread and runs only
+  # test_display_lock_threads via LIBX11_COMPAT_THREAD_TEST_ONLY, offscreen
+  # under the dummy driver. The rest of make check has benign SDL
+  # event-thread interactions that are out of scope for this gate.
+  thread-sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ${{ env.COMMON_BUILD_PKGS }} ${{ env.MOTIF_BUILD_PKGS }} \
+            ${{ env.DIFFERENTIAL_PKGS }}
+
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-tsan-v2-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-tsan-v2-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=400M
+          ccache --zero-stats
+          echo "CC=ccache clang" >>"$GITHUB_ENV"
+
+      - name: Build and run the display-lock threading test under TSan
+        env:
+          TSAN_FLAGS: "-fsanitize=thread -fno-omit-frame-pointer -g -O1"
+          # A data race aborts the process (non-zero exit fails the job).
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          make CFLAGS_EXTRA="$TSAN_FLAGS" LDFLAGS="$TSAN_FLAGS" \
+            -j"$(nproc)" build/tests/check
+          SDL_VIDEODRIVER=dummy LIBX11_COMPAT_THREAD_TEST_ONLY=1 \
+            ./build/tests/check
+
+      - name: ccache stats
+        run: ccache --show-stats
+
   # ---- Motif, ViolaWWW, Mosaic integration and validation ----
   #
   # Build the thentenaar/motif libXm and libMrm against the compat stack,

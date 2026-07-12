@@ -28,21 +28,49 @@
 #include "timeline.h"
 #include "X11/Xlibint.h"
 
-int eventFds[2] = {-1, -1};
+static int eventFds[2] = {-1, -1};
 #define READ_EVENT_FD eventFds[0]
 #define WRITE_EVENT_FD eventFds[1]
-unsigned long lastEventSerial = 1;
+
+static unsigned long lastEventSerial = 1;
+
+/* lastEventSerial is a process-global event serial counter bumped and read from
+ * multiple threads (Xlib entry points plus the SDL event thread), so every
+ * access goes through these relaxed atomics to stay data-race free under
+ * XInitThreads. Relaxed ordering suffices: it is a standalone counter with no
+ * happens-before dependency on other state.
+ */
+static unsigned long currentEventSerial(void)
+{
+    return __atomic_load_n(&lastEventSerial, __ATOMIC_RELAXED);
+}
+
+static void bumpEventSerial(void)
+{
+    __atomic_add_fetch(&lastEventSerial, 1, __ATOMIC_RELAXED);
+}
 static SDL_mutex *eventQueueLengthLock = NULL;
 
 /* Concurrency: SDL invokes onSdlEvent on its own event thread while Xlib API
  * entries run on the application thread. Each shared piece of state has its own
  * mutex; helper wrappers tolerate a NULL lock so static initializers and
  * pre-init code do not deadlock. The locks are created in initEventPipe and
- * destroyed when the last display closes.
+ * destroyed when the last display closes. These fine-grained locks are always
+ * active (the SDL event thread races the app thread regardless of
+ * XInitThreads); only the coarse LockDisplay is XInitThreads-gated.
+ *
+ * Lock order (outermost first); acquire only left-to-right, never the reverse:
+ *   LockDisplay > eventPipeGlobalLock > trackedDisplaysLock
+ *     > { putBackEventsLock, eventQueueLengthLock }
+ * The last two are leaves and are never held at the same time (each is taken
+ * and released within a single helper). onSdlEvent (the SDL-thread producer)
+ * takes only eventQueueLengthLock and never LockDisplay, which is what keeps
+ * the coarse lock off the SDL thread and the whole order acyclic.
  */
 static SDL_mutex *putBackEventsLock = NULL;
 static SDL_mutex *trackedDisplaysLock = NULL;
 static SDL_mutex *activePointerWindowLock = NULL;
+
 /* Tracks whether the pump-wake timer has an outstanding, not-yet-consumed byte
  * in the event pipe. See xtWakeTimerCallback and consumePumpWakeByte. Kept
  * separate from the SDL event queue so the periodic Cocoa/SDL pump wake never
@@ -52,6 +80,7 @@ static SDL_mutex *activePointerWindowLock = NULL;
 static SDL_atomic_t pumpWakePending = {0};
 static SDL_TimerID xtWakeTimer = 0;
 static Array trackedDisplays = {NULL, 0, 0};
+
 #if SDL_VERSION_ATLEAST(2, 0, 18)
 static __thread float wheelPreciseX = 0.0f, wheelPreciseY = 0.0f;
 #endif
@@ -63,11 +92,13 @@ static __thread float wheelPreciseX = 0.0f, wheelPreciseY = 0.0f;
  * setup.
  */
 static SDL_SpinLock eventPipeGlobalLock;
+
 static void lockPutBackEvents(void)
 {
     if (putBackEventsLock)
         SDL_LockMutex(putBackEventsLock);
 }
+
 static void unlockPutBackEvents(void)
 {
     if (putBackEventsLock)
@@ -78,21 +109,25 @@ static void lockTrackedDisplays(void)
     if (trackedDisplaysLock)
         SDL_LockMutex(trackedDisplaysLock);
 }
+
 static void unlockTrackedDisplays(void)
 {
     if (trackedDisplaysLock)
         SDL_UnlockMutex(trackedDisplaysLock);
 }
+
 static void lockActivePointerWindow(void)
 {
     if (activePointerWindowLock)
         SDL_LockMutex(activePointerWindowLock);
 }
+
 static void unlockActivePointerWindow(void)
 {
     if (activePointerWindowLock)
         SDL_UnlockMutex(activePointerWindowLock);
 }
+
 static Bool pointerHoverIsWithin(Window window);
 
 /* clearWindowTreeWithoutExpose, postFullWindowExpose, and
@@ -185,6 +220,7 @@ void pumpEventsSafe(void)
 static Uint32 xtWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
 {
     (void) param;
+
     /* macOS/Cocoa (and every SDL video backend) requires the event loop to be
      * serviced on the main thread via SDL_PumpEvents, which libx11-compat only
      * runs when the client re-enters an Xlib API. This timer periodically wakes
@@ -219,6 +255,7 @@ static Bool shouldStartXtWakeTimer(void)
 typedef struct PutBackEvent {
     Display *display;
     XEvent event;
+
     /* True when convertEvent's terminal tap already ran before the event was
      * placed on this queue. Put-back delivery paths use this to avoid
      * double-tapping such events into the timeline. Synthesized events that
@@ -266,87 +303,104 @@ static int sdlPeepEventsForXlibDrain(SDL_Event *events,
  * list. Both file descriptors are non-blocking after initEventPipe so a full or
  * empty pipe never stalls the event loop on a slow client or a phantom qlen.
  */
-static void incrementDisplayEventQueueLength(Display *display)
+static void lockEventQueueLength(void)
 {
     if (eventQueueLengthLock)
         SDL_LockMutex(eventQueueLengthLock);
-    GET_DISPLAY(display)->qlen++;
-    if (eventQueueLengthLock)
-        SDL_UnlockMutex(eventQueueLengthLock);
 }
 
-static void decrementDisplayEventQueueLength(Display *display)
+static void unlockEventQueueLength(void)
 {
-    if (eventQueueLengthLock)
-        SDL_LockMutex(eventQueueLengthLock);
-    if (GET_DISPLAY(display)->qlen > 0)
-        GET_DISPLAY(display)->qlen--;
     if (eventQueueLengthLock)
         SDL_UnlockMutex(eventQueueLengthLock);
 }
 
 static int displayEventQueueLength(Display *display)
 {
-    if (eventQueueLengthLock)
-        SDL_LockMutex(eventQueueLengthLock);
+    lockEventQueueLength();
     int qlen = GET_DISPLAY(display)->qlen;
-    if (eventQueueLengthLock)
-        SDL_UnlockMutex(eventQueueLengthLock);
+    unlockEventQueueLength();
     return qlen;
 }
 
 static void setDisplayEventQueueLength(Display *display, int qlen)
 {
-    if (eventQueueLengthLock)
-        SDL_LockMutex(eventQueueLengthLock);
+    lockEventQueueLength();
     GET_DISPLAY(display)->qlen = qlen < 0 ? 0 : qlen;
-    if (eventQueueLengthLock)
-        SDL_UnlockMutex(eventQueueLengthLock);
+    unlockEventQueueLength();
 }
 
 static void discardPipeWakeups(void)
 {
     char buffer[64];
-    while (read(READ_EVENT_FD, buffer, sizeof(buffer)) > 0) {
-    }
+    while (read(READ_EVENT_FD, buffer, sizeof(buffer)) > 0)
+        ; /* drain */
 }
 
-static void resetEventWakeups(Display *display, int qlen)
+/* Write count wake bytes into the event pipe in buffer-sized chunks, stopping
+ * early if a short or failed write signals the pipe is full. Does no locking;
+ * callers hold eventQueueLengthLock across the discard-then-rewrite.
+ */
+static void writePipeWakeBytes(int count)
 {
     char buffer[64];
     memset(buffer, 'e', sizeof(buffer));
-    discardPipeWakeups();
-    /* discardPipeWakeups() emptied the pipe, so any outstanding pump-wake byte
-     * is gone too; clear its flag so the timer can re-arm and pumpEventsSafe()
-     * does not later read a real-event byte in its place.
-     */
-    SDL_AtomicSet(&pumpWakePending, 0);
-    int remaining = qlen;
-    while (remaining > 0) {
-        size_t chunk = (size_t) remaining;
+    while (count > 0) {
+        size_t chunk = (size_t) count;
         if (chunk > sizeof(buffer))
             chunk = sizeof(buffer);
         ssize_t written = write(WRITE_EVENT_FD, buffer, chunk);
         if (written <= 0)
             break;
-        remaining -= (int) written;
+        count -= (int) written;
     }
-    setDisplayEventQueueLength(display, qlen);
 }
 
-#define ENQUEUE_EVENT_IN_PIPE(display)                               \
-    do {                                                             \
-        char buffer = 'e';                                           \
-        ssize_t _w = write(WRITE_EVENT_FD, &buffer, sizeof(buffer)); \
-        (void) _w;                                                   \
-        incrementDisplayEventQueueLength(display);                   \
+static void resetEventWakeups(Display *display, int qlen)
+{
+    /* Hold eventQueueLengthLock across the whole discard-then-rewrite so it is
+     * atomic against a concurrent ENQUEUE/READ producer (onSdlEvent), which
+     * takes the same lock: the reconcile can no longer discard a wake byte the
+     * producer just wrote or overwrite the matching qlen++ mid-flight. qlen is
+     * set directly here rather than via setDisplayEventQueueLength, which would
+     * re-lock the non-recursive mutex.
+     */
+    lockEventQueueLength();
+    discardPipeWakeups();
+
+    /* discardPipeWakeups() emptied the pipe, so any outstanding pump-wake byte
+     * is gone too; clear its flag so the timer can re-arm and pumpEventsSafe()
+     * does not later read a real-event byte in its place.
+     */
+    SDL_AtomicSet(&pumpWakePending, 0);
+    writePipeWakeBytes(qlen);
+    GET_DISPLAY(display)->qlen = qlen < 0 ? 0 : qlen;
+    unlockEventQueueLength();
+}
+
+/* The wake-pipe byte and the qlen counter are mutated together under
+ * eventQueueLengthLock so the pair moves atomically against resetEventWakeups'
+ * discard-then-rewrite, which takes the same lock. Both fds are non-blocking,
+ * so holding the lock across the write/read never stalls.
+ */
+#define ENQUEUE_EVENT_IN_PIPE(display)                       \
+    do {                                                     \
+        lockEventQueueLength();                              \
+        char _b = 'e';                                       \
+        ssize_t _w = write(WRITE_EVENT_FD, &_b, sizeof(_b)); \
+        (void) _w;                                           \
+        GET_DISPLAY(display)->qlen++;                        \
+        unlockEventQueueLength();                            \
     } while (0)
-#define READ_EVENT_IN_PIPE(display)                                \
-    do {                                                           \
-        char buffer;                                               \
-        ssize_t _r = read(READ_EVENT_FD, &buffer, sizeof(buffer)); \
-        (void) _r;                                                 \
-        decrementDisplayEventQueueLength(display);                 \
+#define READ_EVENT_IN_PIPE(display)                        \
+    do {                                                   \
+        lockEventQueueLength();                            \
+        char _b;                                           \
+        ssize_t _r = read(READ_EVENT_FD, &_b, sizeof(_b)); \
+        (void) _r;                                         \
+        if (GET_DISPLAY(display)->qlen > 0)                \
+            GET_DISPLAY(display)->qlen--;                  \
+        unlockEventQueueLength();                          \
     } while (0)
 
 void libx11CompatSideQueueEventRemoved(SDL_EventFilter filter, void *userdata)
@@ -396,20 +450,18 @@ void wakeEventPipeForExternalEvent(Display *display)
         }
     }
     unlockTrackedDisplays();
+
     if (haveSdlQueued) {
-        char buffer[64];
-        memset(buffer, 'e', sizeof(buffer));
+        /* Same serialization as resetEventWakeups: hold eventQueueLengthLock
+         * across the discard-then-rewrite so it is atomic against a concurrent
+         * ENQUEUE/READ producer (onSdlEvent), which takes the same lock. The
+         * per-display setDisplayEventQueueLength calls above are already
+         * locked; only this shared-pipe rewrite needed it.
+         */
+        lockEventQueueLength();
         discardPipeWakeups();
-        int remaining = maxDesiredQlen;
-        while (remaining > 0) {
-            size_t chunk = (size_t) remaining;
-            if (chunk > sizeof(buffer))
-                chunk = sizeof(buffer);
-            ssize_t written = write(WRITE_EVENT_FD, buffer, chunk);
-            if (written <= 0)
-                break;
-            remaining -= (int) written;
-        }
+        writePipeWakeBytes(maxDesiredQlen);
+        unlockEventQueueLength();
     }
 }
 
@@ -435,7 +487,7 @@ Bool postWmDeleteIfHandled(Display *display, Window window, Time time)
             XEvent event;
             memset(&event, 0, sizeof(event));
             event.xclient.type = ClientMessage;
-            event.xclient.serial = lastEventSerial;
+            event.xclient.serial = currentEventSerial();
             event.xclient.send_event = True;
             event.xclient.display = display;
             event.xclient.window = window;
@@ -1090,10 +1142,12 @@ static void deliverPutBackEvent(Display *display,
     Bool alreadyTapped = node->alreadyTapped;
     memcpy(event, &node->event, sizeof(XEvent));
     free(node);
+
     /* Match the pipe byte enqueuePutBackEvent wrote so the wake-up accounting
      * stays consistent.
      */
     READ_EVENT_IN_PIPE(display);
+
     /* Put-back events that bypass convertEvent's terminal tap (synthesized
      * crossings, send-event payloads) need to be tapped here so timeline JSONL
      * captures the full event stream. Events that already went through
@@ -1136,17 +1190,31 @@ static int countPutBackEvents(Display *display)
 
 static int drainSdlEventsToPutBack(Display *display)
 {
+    /* Serialize this compound drain-convert-refill-and-wake-accounting against
+     * the same sequence in checkTypedEvent/checkIfEvent, which run under
+     * LockDisplay. Without it, a thread in XPending/XEventsQueued (which reach
+     * here) races a thread in XCheckTypedEvent: both SDL_PeepEvents(GETEVENT)
+     * the same queue, so the count one reads goes stale under the other's drain
+     * and resetEventWakeups writes the wrong number of pipe wake bytes. The
+     * lock is recursive and only live under XInitThreads, so convertEvent
+     * nesting back through here is safe and a single-threaded client pays
+     * nothing. No pump runs here, so the lock is never held across a re-entrant
+     * SDL call.
+     */
+    LockDisplay(display);
     int qlen = 0;
     getEventQueueLength(&qlen);
     if (qlen <= 0) {
         int putBackCount = countPutBackEvents(display);
         if (displayEventQueueLength(display) > putBackCount)
             resetEventWakeups(display, putBackCount);
+        UnlockDisplay(display);
         return putBackCount;
     }
 
     SDL_Event *events = calloc((size_t) qlen, sizeof(SDL_Event));
     if (!events) {
+        UnlockDisplay(display);
         handleOutOfMemory(0, display, 0, 0);
         return countPutBackEvents(display);
     }
@@ -1156,6 +1224,7 @@ static int drainSdlEventsToPutBack(Display *display)
     if (qlen < 0) {
         LOG("Unable to read event queue: %s\n", SDL_GetError());
         free(events);
+        UnlockDisplay(display);
         return countPutBackEvents(display);
     }
 
@@ -1178,7 +1247,9 @@ static int drainSdlEventsToPutBack(Display *display)
     }
 
     free(events);
-    return countPutBackEvents(display);
+    int result = countPutBackEvents(display);
+    UnlockDisplay(display);
+    return result;
 }
 
 static Bool enqueuePutBackExpose(Display *display, Window window)
@@ -1190,7 +1261,7 @@ static Bool enqueuePutBackExpose(Display *display, Window window)
     XEvent event;
     memset(&event, 0, sizeof(event));
     event.xexpose.type = Expose;
-    event.xexpose.serial = lastEventSerial;
+    event.xexpose.serial = currentEventSerial();
     event.xexpose.send_event = False;
     event.xexpose.display = display;
     event.xexpose.window = window;
@@ -1211,7 +1282,7 @@ static void fillCrossingEvent(Display *display,
 {
     memset(event, 0, sizeof(*event));
     event->type = type;
-    event->serial = lastEventSerial;
+    event->serial = currentEventSerial();
     event->send_event = False;
     event->display = display;
     event->root = SCREEN_WINDOW;
@@ -1483,7 +1554,7 @@ Bool postFocusEvent(Display *display, Window window, int type, int detail)
         return False;
     }
     event->type = type;
-    event->serial = lastEventSerial;
+    event->serial = currentEventSerial();
     event->send_event = False;
     event->display = display;
     event->window = window;
@@ -1697,6 +1768,18 @@ static void releaseDiscardedImCommit(const XEvent *event)
 
 void discardQueuedEventsForWindow(Display *display, Window window)
 {
+    /* Hold the display lock across BOTH the put-back sweep and the SDL drain.
+     * If it were taken only around the drain, a concurrent XCheck* on another
+     * thread (holding LockDisplay) could drain an SDL event for this window and
+     * append it to the put-back list in the gap after the sweep, so the event
+     * would survive teardown. Holding it throughout makes the discard atomic
+     * against every consumer. It also serializes the drain's
+     * SDL_PeepEvents(GETEVENT) and wake-byte accounting against
+     * drainSdlEventsToPutBack/checkTypedEvent, which run under the same lock.
+     * Recursive and XInitThreads-gated, so a single-threaded caller pays
+     * nothing, and putBackEventsLock nests inside (display-then-fine-grained).
+     */
+    LockDisplay(display);
     int removedPutBackEvents = 0;
     lockPutBackEvents();
     PutBackEvent **link = &putBackEvents;
@@ -1717,11 +1800,14 @@ void discardQueuedEventsForWindow(Display *display, Window window)
 
     int qlen = 0;
     getEventQueueLength(&qlen);
-    if (qlen <= 0)
+    if (qlen <= 0) {
+        UnlockDisplay(display);
         return;
+    }
 
     SDL_Event *events = calloc((size_t) qlen, sizeof(SDL_Event));
     if (!events) {
+        UnlockDisplay(display);
         handleOutOfMemory(0, display, 0, 0);
         return;
     }
@@ -1730,6 +1816,7 @@ void discardQueuedEventsForWindow(Display *display, Window window)
     if (qlen < 0) {
         LOG("Unable to read event queue: %s\n", SDL_GetError());
         free(events);
+        UnlockDisplay(display);
         return;
     }
 
@@ -1755,6 +1842,7 @@ void discardQueuedEventsForWindow(Display *display, Window window)
             resetEventWakeups(display, desiredQlen);
     }
     free(events);
+    UnlockDisplay(display);
 }
 
 /* SDL_SetEventFilter only stores one (callback, userdata) pair, so the event
@@ -1815,7 +1903,7 @@ static void destroyMutexSlot(SDL_mutex **slot)
 int initEventPipe(Display *display)
 {
     captureMainEventThreadIfUnset();
-    lastEventSerial = 1;
+    __atomic_store_n(&lastEventSerial, 1, __ATOMIC_RELAXED);
     SDL_AtomicLock(&eventPipeGlobalLock);
     if (!ensureNamedMutex(&eventQueueLengthLock, "event queue") ||
         !ensureNamedMutex(&putBackEventsLock, "put-back events") ||
@@ -1838,6 +1926,7 @@ int initEventPipe(Display *display)
             SDL_AtomicUnlock(&eventPipeGlobalLock);
             return -1;
         }
+
         /* Real X11 clients select() / poll() on the connection FD then call
          * XNextEvent in a non-blocking mode. The pipe is just a wake-up signal;
          * reads happen inside XNextEvent itself, so make the FD non-blocking so
@@ -1895,6 +1984,7 @@ void closeEventPipe(Display *display)
                                  ? trackedDisplays.array[remainingDisplays - 1]
                                  : NULL;
     unlockTrackedDisplays();
+
     /* The SDL filter handoff is conditional: only the display that currently
      * owns the slot (currentUserdata == display) hands it over. Last-display
      * cleanup is unconditional: when no displays remain, mutex slots and pipe
@@ -1925,6 +2015,7 @@ void closeEventPipe(Display *display)
         destroyMutexSlot(&putBackEventsLock);
         destroyMutexSlot(&trackedDisplaysLock);
         destroyMutexSlot(&activePointerWindowLock);
+
         /* Release the shared pipe fds so a later XOpenDisplay creates fresh
          * ones instead of leaking them.
          */
@@ -1949,6 +2040,7 @@ unsigned int convertModifierState(Uint16 mod)
         state |= ControlMask;
     if (HAS_VALUE(mod, KMOD_CAPS))
         state |= LockMask;
+
     /* X11 convention: Mod1Mask is Alt, Mod2Mask is NumLock. Motif accelerators
      * (Alt-F for File, Alt-E for Edit, etc.) test for Mod1; without this,
      * accelerators silently never fire. The previous mapping put NumLock on
@@ -2070,6 +2162,7 @@ static Bool postPointerCrossingEvents(Display *display,
                                       Time time)
 {
     Window newHoverWindow = getContainingWindow(SCREEN_WINDOW, rootX, rootY);
+
     /* Hold activePointerWindowLock through the path walks AND the
      * appendPointerCrossingEvent calls, not just the initial snapshot. Both
      * reviewers (PR #7 round 4) flagged a UAF window in the earlier shape: this
@@ -2291,6 +2384,7 @@ static Bool shouldSuppressIMTextKeydown(Display *display,
     if (inputMethodHasActivePreedit() &&
         (keycode == SDLK_RETURN || keycode == SDLK_KP_ENTER))
         return True;
+
     /* Any printable character key also arrives as SDL_TEXTINPUT, so suppressing
      * only ASCII would let a non-ASCII layout key (Latin-1 or any Unicode
      * codepoint) emit both a raw KeyPress and the IM commit. SDL keycodes for
@@ -2363,7 +2457,7 @@ int convertEvent(Display *display,
     Bool sendEvent = False;
     Window eventWindow = None;
     int type = -1;
-    unsigned long serial = lastEventSerial;
+    unsigned long serial = currentEventSerial();
 #define FILL_STANDARD_VALUES(eventStruct)       \
     xEvent->eventStruct.type = type;            \
     xEvent->eventStruct.serial = serial;        \
@@ -2384,6 +2478,7 @@ int convertEvent(Display *display,
         Window sdlKeyWindow = getWindowFromId(sdlEvent->key.windowID);
         xEvent->xkey.root = SCREEN_WINDOW;
         xEvent->xkey.state = convertModifierState(XC_EVENT_KEYMOD(sdlEvent));
+
         /* X11 KeyCode is 8-bit, but SDL keycodes span ASCII (< 0x80) plus a
          * separate 0x4000xxxx scancode range, so no collision-free mapping into
          * 0..255 exists. Truncating to the low byte keeps every ASCII key on
@@ -2398,6 +2493,7 @@ int convertEvent(Display *display,
          * 8-bit limit.
          */
         xEvent->xkey.keycode = (unsigned int) XC_EVENT_KEYSYM(sdlEvent) & 0xFF;
+
         /* Route priority for key events:
          * 1. Active XGrabKeyboard (modal dialogs like Motif's Help popup)
          * 2. Passive XGrabKey match (Motif accelerators)
@@ -2435,6 +2531,7 @@ int convertEvent(Display *display,
                         Window oldFocus = getKeyboardFocus();
                         syncKeyboardFocusFromHost(hostFocus);
                         eventWindow = getKeyboardFocus();
+
                         /* Deliver the FocusIn the absent SDL FOCUS_GAINED never
                          * produced, so a client selecting FocusChangeMask still
                          * learns it holds focus. It trails this first key by
@@ -2448,6 +2545,7 @@ int convertEvent(Display *display,
             }
             eventWindow = eventWindow == None ? xEvent->xkey.root : eventWindow;
         }
+
         xEvent->xkey.window = eventWindow;
         xEvent->xkey.subwindow = None;
         xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
@@ -2518,6 +2616,7 @@ int convertEvent(Display *display,
                 xEvent->xbutton.y_root, xEvent->xbutton.button,
                 xEvent->xbutton.state);
         }
+
         /* Explicit XGrabPointer routing owns the event when
          * routePointerGrabEvent returns True; otherwise fall back to the normal
          * pointer-window selection (with a sticky ButtonRelease delivery to the
@@ -2599,6 +2698,7 @@ int convertEvent(Display *display,
             display, xEvent->xmotion.x_root, xEvent->xmotion.y_root,
             motionState, XC_EVENT_TIME_MS(sdlEvent->motion.timestamp));
         long motionMask = motionMaskForButtonState(motionButtonState);
+
         /* Explicit XGrabPointer routing owns the event when
          * routePointerGrabEvent returns True; otherwise the implicit
          * button-press grab (snapshot != None) wins, falling back to regular
@@ -2864,6 +2964,7 @@ int convertEvent(Display *display,
                     SDL_GetWindowFromID(sdlEvent->window.windowID),
                     &xEvent->xconfigure.width, &xEvent->xconfigure.height);
             }
+
             xEvent->xconfigure.above = None;
             /* eventWindow came from getWindowFromId and can be None for an
              * untracked SDL window. The caller's XEvent is not zeroed and
@@ -3234,6 +3335,7 @@ int convertEvent(Display *display,
                 return -1;
             xEvent->xkey.root = SCREEN_WINDOW;
             xEvent->xkey.window = eventWindow;
+
             /* Carry the commit id so the lookup retrieves this exact commit
              * regardless of delivery order; keycode stays 0 as the IM
              * marker.
@@ -3337,6 +3439,7 @@ int convertEvent(Display *display,
                                     pointerButtonStateSnapshot();
             xEvent->xbutton.button = wheelButton;
             xEvent->xbutton.same_screen = True;
+
             /* Real X11 always pairs a wheel ButtonPress with an immediate
              * matching ButtonRelease, and Motif translations (XmScrollBar,
              * XmText) only fire their scroll actions once they see the full
@@ -3520,7 +3623,7 @@ int convertEvent(Display *display,
                 eventWindow = (Window) sdlEvent->user.data2;
                 type = allocEvent->type;
                 sendEvent = allocEvent->send_event;
-                serial = GET_DISPLAY(display)->request;
+                serial = atomicLoadRequest(display);
                 allocEvent->serial = serial;
                 if (clipboardConsumeInternalEvent(display, eventWindow, type,
                                                   allocEvent)) {
@@ -3681,6 +3784,7 @@ int convertEvent(Display *display,
         }
         return -1;
     }
+
     FILL_STANDARD_VALUES(xany);
     xEvent->xany.window = eventWindow;
     xEvent->type = type;
@@ -3833,6 +3937,7 @@ int XNextEvent(Display *display, XEvent *event_return)
                 event = next;
             }
         }
+
         /* Drain the wake-up byte the SDL filter wrote for this event so a
          * follow-up select(ConnectionNumber) reflects the real queue depth.
          * With the non-blocking pipe, a stale qlen no longer forces
@@ -3843,17 +3948,17 @@ int XNextEvent(Display *display, XEvent *event_return)
         if (convertResult == 0) {
             GET_DISPLAY(display)->last_request_read = event_return->xany.serial;
             printEventInfo(event_return);
-            lastEventSerial++;
+            bumpEventSerial();
             LOG("Leaving XNextEvent\n");
             return 0;
         }
         if (convertResult < 0) {
             /* Silently swallowed SDL event (e.g. exposed). */
-            lastEventSerial++;
+            bumpEventSerial();
             continue;
         }
         LOG("Got unknown SDL event %d, dropping.\n", event.type);
-        lastEventSerial++;
+        bumpEventSerial();
         /* Do NOT fabricate a fake Expose: a wrong event type confuses
          * Motif's translation tables and Xt's event dispatcher far worse
          * than a brief spin in this loop. Wait for the next real event
@@ -3862,11 +3967,38 @@ int XNextEvent(Display *display, XEvent *event_return)
     }
 }
 
+/* Shared SDL user-event type for the internal pump (enqueueEvent's
+ * INTERNAL_EVENT_CODE) and XSendEvent's SEND_EVENT_CODE. The specific id is
+ * irrelevant: convertEvent dispatches both purely on user.code, so one
+ * registered type serves both paths. Registered lazily and guarded so two
+ * threads issuing their first enqueueEvent/XSendEvent under XInitThreads cannot
+ * each grab a separate id or race the plain read the two call sites used to do
+ * on their own function-local statics. SDL-atomic-backed for a lock-free read
+ * once registered, mirroring snapshot.c's snapshotEventType.
+ */
+static SDL_atomic_t internalEventType = {(int) (Uint32) -1};
+
+static Uint32 getInternalEventType(void)
+{
+    Uint32 registered = (Uint32) SDL_AtomicGet(&internalEventType);
+    if (registered != (Uint32) -1)
+        return registered;
+
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
+    registered = (Uint32) SDL_AtomicGet(&internalEventType);
+    if (registered == (Uint32) -1) {
+        registered = SDL_RegisterEvents(1);
+        if (registered != (Uint32) -1)
+            SDL_AtomicSet(&internalEventType, (int) registered);
+    }
+    pthread_mutex_unlock(&lock);
+    return registered;
+}
+
 Bool enqueueEvent(Display *display, Window eventWindow, void *event)
 {
-    static Uint32 sendEventType = (Uint32) -1;
-    if (sendEventType == ((Uint32) -1))
-        sendEventType = SDL_RegisterEvents(1);
+    Uint32 sendEventType = getInternalEventType();
     if (sendEventType != ((Uint32) -1)) {
         SDL_Event sdlEvent;
         SDL_zero(sdlEvent);
@@ -3937,12 +4069,10 @@ Status XSendEvent(Display *display,
         eventWindow = GET_PARENT(eventWindow);
     }
     event_send->xany.send_event = True;
-    event_send->xany.serial = lastEventSerial;
+    event_send->xany.serial = currentEventSerial();
     event_send->xany.display = display;
-    lastEventSerial++;
-    static Uint32 sendEventType = (Uint32) -1;
-    if (sendEventType == ((Uint32) -1))
-        sendEventType = SDL_RegisterEvents(1);
+    bumpEventSerial();
+    Uint32 sendEventType = getInternalEventType();
     if (sendEventType != ((Uint32) -1)) {
         XEvent *copy = malloc(sizeof(XEvent));
         if (!copy) {
@@ -3971,6 +4101,7 @@ Bool XFilterEvent(XEvent *event, Window w)
     // http://www.x.org/archive/X11R7.6/doc/man/man3/XFilterEvent.3.xhtml
     (void) event;
     (void) w;
+
     /* The host input method consumes composition at the SDL layer before
      * convertEvent ever runs: preedit keystrokes arrive as SDL_TEXTEDITING
      * and are dropped with return -1, while committed text arrives as
@@ -4234,7 +4365,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         XEvent event;
         memset(&event, 0, sizeof(event));
         event.xexpose.type = eventId;
-        event.xexpose.serial = GET_DISPLAY(display)->request;
+        event.xexpose.serial = atomicLoadRequest(display);
         event.xexpose.send_event = False;
         event.xexpose.display = display;
         event.xexpose.window = eventWindow;
@@ -4243,6 +4374,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         event.xexpose.width = exposeRect->w;
         event.xexpose.height = exposeRect->h;
         event.xexpose.count = exposeCount;
+
         /* Expose bursts are generated internally; queue them directly so Xt
          * exposure compression can see the complete burst. Drain already
          * queued SDL events first so this Expose does not jump ahead of
@@ -4338,6 +4470,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
             SKIP XReparentEvent *event = malloc(sizeof(XReparentEvent));
         if (!event)
             break;
+
         event->type = eventId;
         event->send_event = False;
         event->display = display;
@@ -4387,6 +4520,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
             SKIP XMapEvent *event = malloc(sizeof(XMapEvent));
         if (!event)
             break;
+
         event->type = eventId;
         event->send_event = False;
         event->display = display;
@@ -4411,6 +4545,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
             SKIP XUnmapEvent *event = malloc(sizeof(XUnmapEvent));
         if (!event)
             break;
+
         event->type = eventId;
         event->send_event = False;
         event->display = display;
@@ -4437,6 +4572,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         XClientMessageEvent *event = calloc(1, sizeof(XClientMessageEvent));
         if (!event)
             break;
+
         event->type = eventId;
         event->send_event = True;
         event->display = display;
@@ -4453,6 +4589,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
             SKIP XVisibilityEvent *event = malloc(sizeof(XVisibilityEvent));
         if (!event)
             break;
+
         event->type = eventId;
         event->send_event = False;
         event->display = display;
@@ -4466,7 +4603,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         if (!event)
             break;
         event->type = eventId;
-        event->serial = lastEventSerial;
+        event->serial = currentEventSerial();
         event->send_event = False;
         event->display = display;
         event->drawable = eventWindow;
@@ -4482,7 +4619,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         if (!event)
             break;
         event->type = eventId;
-        event->serial = lastEventSerial;
+        event->serial = currentEventSerial();
         event->send_event = False;
         event->display = display;
         event->drawable = eventWindow;
@@ -4502,7 +4639,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         if (!event)
             break;
         event->type = eventId;
-        event->serial = lastEventSerial;
+        event->serial = currentEventSerial();
         event->send_event = False;
         event->display = display;
         event->window = eventWindow;
@@ -4521,7 +4658,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         if (!event)
             break;
         event->type = eventId;
-        event->serial = lastEventSerial;
+        event->serial = currentEventSerial();
         event->send_event = False;
         event->display = display;
         event->window = eventWindow;
@@ -4541,7 +4678,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         if (!event)
             break;
         event->type = eventId;
-        event->serial = lastEventSerial;
+        event->serial = currentEventSerial();
         event->send_event = False;
         event->display = display;
         event->window = eventWindow;
@@ -4597,7 +4734,9 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
     default:
         break;
     }
+
     va_end(args);
+
     if (!eventData)
         return !eventNeeded;
     /* enqueueEvent only owns the heap event once it actually pushes onto
@@ -4833,12 +4972,12 @@ int XWindowEvent(Display *display, Window w, long mask, XEvent *event)
 }
 
 Bool XCheckIfEvent(register Display *display,
-                   register XEvent *event, /* XEvent to be filled in. */
+                   register XEvent *event /* XEvent to be filled in. */,
                    Bool (*predicate)(Display * /* display */,
                                      XEvent * /* event */,
                                      char * /* arg */
-                                     ),     /* function to call */
-                   char *arg)
+                                     ),
+                   char *arg /* argument passed to predicate */)
 {
     return checkIfEvent(display, event, predicate, arg);
 }

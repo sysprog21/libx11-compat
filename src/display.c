@@ -22,6 +22,7 @@
 #include <X11/X.h>
 #include <X11/Xutil.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdlib.h>
 
 #ifndef SDL_HINT_VIDEO_X11_XKB
@@ -49,9 +50,61 @@ LIBX11_COMPAT_HIDDEN void (*_XFreeDisplayLock_fn)(Display *dpy) = NULL;
     if (_XFreeDisplayLock_fn) \
     (*_XFreeDisplayLock_fn)(d)
 
-// void __attribute__((constructor)) _init() {
-//     setenv("DISPLAY", ":0", 0);
-// }
+/* Display locking under XInitThreads. Upstream locking.c allocates
+ * dpy->lock_fns at display open (only when a client called XInitThreads, which
+ * installs _XInitDisplayLock_fn) and points lock_display at its own
+ * non-recursive per-display mutex. That mutex self-deadlocks the moment one
+ * locked path re-enters another: an app-level XLockDisplay followed by any
+ * internal LockDisplay, or one public Xlib entry calling another. We repoint
+ * the hooks at a single process-global recursive mutex instead, so all such
+ * nesting is safe. Single-threaded clients never install lock_fns, so
+ * LockDisplay stays a no-op and this lock is never touched.
+ *
+ * One global lock, not per-display. Simultaneous Displays are rare here and a
+ * coarse lock is correct; if multi-display contention ever shows up, key the
+ * mutex off dpy.
+ */
+static pthread_mutex_t globalDisplayLock;
+static pthread_once_t globalDisplayLockOnce = PTHREAD_ONCE_INIT;
+
+static void initGlobalDisplayLock(void)
+{
+    pthread_mutexattr_t attr;
+    /* pthread_once cannot report failure, and a display lock that silently
+     * no-ops would let threads corrupt shared state undetected. Fail loudly.
+     */
+    if (pthread_mutexattr_init(&attr) != 0 ||
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0 ||
+        pthread_mutex_init(&globalDisplayLock, &attr) != 0) {
+        fprintf(stderr, "libX11-compat: failed to init display lock\n");
+        abort();
+    }
+    pthread_mutexattr_destroy(&attr);
+}
+
+static void compatLockDisplay(Display *dpy)
+{
+    (void) dpy;
+    pthread_mutex_lock(&globalDisplayLock);
+}
+
+static void compatUnlockDisplay(Display *dpy)
+{
+    (void) dpy;
+    pthread_mutex_unlock(&globalDisplayLock);
+}
+
+/* Redirect the just-initialized lock hooks at the recursive global mutex. Call
+ * right after InitDisplayLock; a no-op when threads were not initialized.
+ */
+static void installRecursiveDisplayLock(Display *display)
+{
+    if (!display->lock_fns)
+        return;
+    pthread_once(&globalDisplayLockOnce, initGlobalDisplayLock);
+    display->lock_fns->lock_display = compatLockDisplay;
+    display->lock_fns->unlock_display = compatUnlockDisplay;
+}
 
 int numDisplaysOpen = 0;
 /* Vendor reports the SDL version this library was compiled against. The active
@@ -303,6 +356,15 @@ int XCloseDisplay(Display *display)
         }
         free(GET_DISPLAY(display)->screens);
     }
+
+    /* Release the upstream per-display lock allocation (lock, lock_fns, and the
+     * mutex/condvars _XInitDisplayLock created). Only allocated under
+     * XInitThreads; the macro no-ops otherwise. Safe even though we repointed
+     * lock_fns->lock_display: _XFreeDisplayLock frees dpy->lock and
+     * dpy->lock_fns without invoking them, and never touches the shared
+     * globalDisplayLock.
+     */
+    FreeDisplayLock(display);
     free(display);
     return 0;
 }
@@ -499,6 +561,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
         XCloseDisplay(display);
         return NULL;
     }
+    installRecursiveDisplayLock(display);
 
     if (!(display->free_funcs = Xcalloc(1, sizeof(_XFreeFuncRec)))) {
         fprintf(stderr, "libX11-compat: failed to allocate free_funcs\n");

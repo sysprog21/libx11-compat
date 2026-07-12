@@ -89,6 +89,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->needsPresent = False;
     windowStruct->hasPresentRect = False;
     windowStruct->presentRect = (SDL_Rect) {0, 0, 0, 0};
+
     /* Region must be init'd before any union/clear; matches the
      * pixman_region32_init contract for visibleRegion above.
      */
@@ -130,6 +131,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->shapeClipOffsetY = 0;
     windowStruct->deferredTransientParent = None;
     windowStruct->deferredTransientApplied = False;
+
     /* pixman_region32_init is the only safe zero state for a region; a
      * memset/bare zero would crash on the first fini. The valid flag stays
      * False so the next consumer recomputes from the real frame dimensions and
@@ -194,6 +196,7 @@ void destroyScreenWindow(Display *display)
         WindowStruct *windowStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
         for (i = 0; i < windowStruct->children.length; i++)
             destroyWindow(display, children[i], False);
+
         /* A grab taken directly on the root survives the child teardown above,
          * so drop it before SCREEN_WINDOW goes away to avoid stale grab state
          * across a display close/reopen.
@@ -213,7 +216,7 @@ void destroyScreenWindow(Display *display)
     }
 }
 
-WindowSdlIdMapper *mappingListStart = NULL;
+static WindowSdlIdMapper *mappingListStart = NULL;
 
 /* The mapping list is touched both by client threads (X{Create,Destroy}Window)
  * and by the SDL event-pump thread which translates SDL_WINDOW events back to X
@@ -366,6 +369,7 @@ static Bool decoratedWindowOffsetAt(int logicalX,
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
     Window nearest = None;
     int64_t nearestDistSq = 0;
+
     /* Top-down (children run bottom-to-top) so an overlapping stack resolves to
      * the top-most owner the menu was posted from.
      */
@@ -386,6 +390,7 @@ static Bool decoratedWindowOffsetAt(int logicalX,
             *offsetY = hostY - ry;
             return True;
         }
+
         /* No rectangle contains the point when a menu drops below or beside its
          * owner. Track the nearest decorated window instead of falling back to
          * an arbitrary one, so a dropdown just past its owner still picks that
@@ -469,6 +474,7 @@ size_t collectMappedOverrideRedirectWindows(Window *out, size_t max)
          m = m->next) {
         if (!IS_TYPE(m->window, WINDOW))
             continue;
+
         WindowStruct *ws = GET_WINDOW_STRUCT(m->window);
         if (ws && ws->overrideRedirect && ws->mapState == Mapped &&
             ws->sdlWindow)
@@ -641,6 +647,7 @@ void removeChildFromParent(Window child)
 {
     if (child == SCREEN_WINDOW)
         return;
+
     Window parent = GET_PARENT(child);
     if (parent != None) {
         /* Tear-down may have already invalidated this top-level subtree via the
@@ -681,6 +688,7 @@ void releaseActiveGrabsForUnviewableWindow(Display *display, Window window)
 void destroyWindow(Display *display, Window window, Bool freeParentData)
 {
     flushTextStampsForWindow(window);
+
     /* Drain pre-cascade stale events for this window FIRST, before any
      * recursion. A focused descendant whose revert lands on this window would
      * otherwise queue FocusIn(window) during the recursion, and a naive discard
@@ -706,16 +714,19 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      * route events through a stale grab entry.
      */
     releaseButtonGrabsForWindow(window);
+
     /* A destroyed window is unviewable, so release any active pointer/keyboard
      * grab it held for the same reason XUnmapWindow does.
      */
     releaseActiveGrabsForUnviewableWindow(display, window);
+
     /* Clear cached pointer-target XIDs so a queued SDL motion event does not
      * drive postPointerCrossingEvents -> buildWindowPathToRoot into this
      * window's freed WindowStruct. ASan caught this on the test-xtest path
      * where XDestroyWindow ran before the SDL motion queue drained.
      */
     clearPointerStateForWindow(window);
+
     /* Tear down any GLX/EGL surface bound to this drawable. The GLX layer is
      * optional (GLX=0 compiles src/glx.c out), so this is a registered
      * function-pointer hook: src/glx.c sets it from a constructor when built,
@@ -723,6 +734,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      */
     if (glxDrawableDestroyedHook)
         glxDrawableDestroyedHook(window);
+
     freeArray(&windowStruct->children);
     XFreeColormap(display, GET_COLORMAP(window));
     for (i = 0; i < windowStruct->properties.length; i++)
@@ -755,6 +767,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     }
     if (windowStruct->sdlTexture)
         SDL_DestroyTexture(windowStruct->sdlTexture);
+
     /* GLX offscreen-composite scratch (destroyed before the top-level renderer
      * that owns the staging texture, since children tear down before parents).
      */
@@ -762,6 +775,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         SDL_DestroyTexture(windowStruct->glxCompositeTexture);
     free(windowStruct->glxCompositeFlip);
     free(windowStruct->glxReadbackBuf);
+
     if (windowStruct->sdlWindow) {
 #if SDL_VERSION_ATLEAST(2, 0, 5)
         /* Detach any live modal-for binding so the host WM does not keep
@@ -782,6 +796,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         postEvent(display, window, DestroyNotify);
     if (freeParentData)
         removeChildFromParent(window);
+
     /* Hold visibleRegion live through removeChildFromParent's invalidation
      * walk, then fini it immediately before the matching free so the lifecycle
      * is obvious and a future reorder cannot wedge a use after free between the
@@ -1218,6 +1233,7 @@ void computeVisibleRegion(Window window, pixman_region32_t *out)
 
             int64_t rx64 = (int64_t) siblingStruct->x - winOX;
             int64_t ry64 = (int64_t) siblingStruct->y - winOY;
+
             /* Cull occluders that cannot intersect the (0,0,w,h) frame before
              * they reach pixman. The helper would clip to an empty rect anyway,
              * but the explicit cull keeps the math and the iterations under it
@@ -1228,6 +1244,7 @@ void computeVisibleRegion(Window window, pixman_region32_t *out)
                                                  windowStruct->w,
                                                  windowStruct->h))
                 continue;
+
             pixman_region32_t occluder;
             initSiblingOccluderRegion(siblingStruct, rx64, ry64,
                                       windowStruct->w, windowStruct->h,
@@ -1261,6 +1278,7 @@ static void invalidateVisibleRegionSubtree(Window window)
         return;
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     windowStruct->visibleRegionValid = False;
+
     /* The per-primitive drawing-side cache may hold a pointer to the just-
      * invalidated region; flush it so the next draw recomputes from fresh data
      * instead of reading freed pixman rect storage.
