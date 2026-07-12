@@ -2892,10 +2892,46 @@ int convertEvent(Display *display,
                     SDL_GetWindowSizeInPixels(movedWin, &pw, &ph);
 #endif
                     WindowStruct *movedWs = GET_WINDOW_STRUCT(eventWindow);
+                    double oldScaleX = movedWs->hiDpiScaleX;
+                    double oldScaleY = movedWs->hiDpiScaleY;
                     if (lw > 0 && pw > 0)
                         movedWs->hiDpiScaleX = (double) pw / (double) lw;
                     if (lh > 0 && ph > 0)
                         movedWs->hiDpiScaleY = (double) ph / (double) lh;
+                    /* The cached PResizeInc increments live in physical-pixel
+                     * space (see WindowStruct), so a monitor move that changes
+                     * the backing scale makes them stale: they still describe
+                     * the previous monitor's cell size. A client that
+                     * re-derives its font from the scale (xwpe re-publishes
+                     * WM_NORMAL_HINTS after refitting) will overwrite these;
+                     * but a client that does not leaves the drag-end snap
+                     * quantising to the old cell, leaving a sub-cell remainder
+                     * band. Rescale them by newScale/oldScale so the snap grid
+                     * matches the destination monitor even without a
+                     * re-publish. */
+                    if (movedWs->hasResizeInc && oldScaleX > 0.0 &&
+                        oldScaleY > 0.0) {
+                        double rx = movedWs->hiDpiScaleX / oldScaleX;
+                        double ry = movedWs->hiDpiScaleY / oldScaleY;
+                        if (rx > 0.0 && rx != 1.0) {
+                            movedWs->widthInc =
+                                (int) (movedWs->widthInc * rx + 0.5);
+                            movedWs->baseWidth =
+                                (int) (movedWs->baseWidth * rx + 0.5);
+                            movedWs->minWidth =
+                                (int) (movedWs->minWidth * rx + 0.5);
+                        }
+                        if (ry > 0.0 && ry != 1.0) {
+                            movedWs->heightInc =
+                                (int) (movedWs->heightInc * ry + 0.5);
+                            movedWs->baseHeight =
+                                (int) (movedWs->baseHeight * ry + 0.5);
+                            movedWs->minHeight =
+                                (int) (movedWs->minHeight * ry + 0.5);
+                        }
+                        if (movedWs->widthInc <= 0 || movedWs->heightInc <= 0)
+                            movedWs->hasResizeInc = False;
+                    }
                     compatTrace(
                         "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
                         "logical=(%dx%d) phys=(%dx%d) newScale=(%.3f,%.3f) "

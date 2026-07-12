@@ -1,5 +1,5 @@
 XWPE_URL := https://github.com/vejeta/xwpe
-XWPE_REVISION := b850185475c596da16f3afcc50fd4bbef2b26d1d
+XWPE_REVISION := 88290d5bb17098c2071408d5a090eecf8f3aba02
 XWPE_CLONE_FLAGS ?= --filter=blob:none --no-checkout
 XWPE_SRC_DIR := $(OUT)/upstream/xwpe
 XWPE_SOURCE_STAMP := $(XWPE_SRC_DIR)/.source-stamp

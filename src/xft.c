@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "colors.h"
+#include "drawing.h"
 #include "font.h"
 #include "util.h"
 
@@ -1171,7 +1172,7 @@ void XftDrawChange(XftDraw *draw, Drawable drawable)
         draw->drawable = drawable;
 }
 
-static int clampToInt(long long value)
+static int xftClampToInt(long long value)
 {
     if (value < INT_MIN)
         return INT_MIN;
@@ -1204,8 +1205,8 @@ Bool XftDrawSetClipRectangles(XftDraw *draw,
     if (!newRects)
         return False;
     for (int i = 0; i < n; i++) {
-        newRects[i].x = clampToInt((long long) rects[i].x + x_origin);
-        newRects[i].y = clampToInt((long long) rects[i].y + y_origin);
+        newRects[i].x = xftClampToInt((long long) rects[i].x + x_origin);
+        newRects[i].y = xftClampToInt((long long) rects[i].y + y_origin);
         newRects[i].width = rects[i].width;
         newRects[i].height = rects[i].height;
     }
@@ -1392,45 +1393,6 @@ static SDL_Color sdlColorFromXft(const XftColor *color)
     return sdl;
 }
 
-static Bool xftClipContains(const XftDraw *draw, int x, int y)
-{
-    if (!draw || draw->clipRectCount == 0)
-        return True;
-    for (int i = 0; i < draw->clipRectCount; i++) {
-        const XftClipRect *rect = &draw->clipRects[i];
-        long long left = rect->x;
-        long long top = rect->y;
-        long long right = left + rect->width;
-        long long bottom = top + rect->height;
-        if (x >= left && x < right && y >= top && y < bottom)
-            return True;
-    }
-    return False;
-}
-
-static unsigned long blendPixel(unsigned long dst,
-                                XcPixelFormat format,
-                                Uint32 srcPixel,
-                                Uint8 colorAlpha)
-{
-    Uint8 sr, sg, sb, sa;
-    SDL_GetRGBA(srcPixel, format, &sr, &sg, &sb, &sa);
-    sa = (Uint8) (((unsigned int) sa * colorAlpha) / 255u);
-    if (sa == 0)
-        return dst;
-    unsigned int dr = GET_RED_FROM_COLOR(dst);
-    unsigned int dg = GET_GREEN_FROM_COLOR(dst);
-    unsigned int db = GET_BLUE_FROM_COLOR(dst);
-    unsigned int inv = 255u - sa;
-    unsigned int r = (sr * sa + dr * inv) / 255u;
-    unsigned int g = (sg * sa + dg * inv) / 255u;
-    unsigned int b = (sb * sa + db * inv) / 255u;
-    return ((unsigned long) 0xffu << ALPHA_SHIFT) |
-           ((unsigned long) r << RED_SHIFT) |
-           ((unsigned long) g << GREEN_SHIFT) |
-           ((unsigned long) b << BLUE_SHIFT);
-}
-
 static void drawUtf8String(XftDraw *draw,
                            const XftColor *color,
                            XftFont *font,
@@ -1450,13 +1412,12 @@ static void drawUtf8String(XftDraw *draw,
         SDL_FreeSurface(glyphs);
         return;
     }
-    /* Clip the source/destination rect against the drawable's bounds. XGetImage
-     * rejects any read that touches off-drawable pixels with a BadMatch, which
-     * would silently drop the entire string when the caller's text overflows
-     * the drawable - common at edges and when clients pass y past the baseline.
-     * Intersect the glyph rect with [0, dw) x [0, dh) and adjust the source
-     * offset into the glyphs surface so partial draws still paint the visible
-     * portion.
+    /* Clip the source/destination rect against the drawable's bounds so a
+     * string that overflows the drawable - common at edges and when clients
+     * pass y past the baseline - paints only its visible portion instead of
+     * stretching the glyph over the whole target. Intersect the glyph rect with
+     * [0, dw) x [0, dh) and adjust the source offset into the glyphs surface to
+     * match.
      */
     Window rootRet = None;
     int dx = 0;
@@ -1500,39 +1461,61 @@ static void drawUtf8String(XftDraw *draw,
         SDL_FreeSurface(glyphs);
         return;
     }
-    XImage *image = XGetImage(draw->display, draw->drawable, destX, destY,
-                              (unsigned int) rectW, (unsigned int) rectH,
-                              AllPlanes, ZPixmap);
-    if (!image) {
+    /* Composite the glyph on the GPU instead of reading the destination back
+     * for a CPU blend. The previous XGetImage/blendPixel/XPutImage path forced
+     * a full-pixmap SDL_RenderReadPixels per glyph (XPutImage re-dirties the
+     * readback cache), which dominated typing latency. Uploading the blended
+     * glyph as a BLEND texture and letting SDL_RenderCopy alpha-composite it
+     * keeps the whole draw in renderer space.
+     */
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(draw->drawable, renderer);
+    if (!renderer) {
         SDL_FreeSurface(glyphs);
         return;
     }
-    if (SDL_LockSurface(glyphs) != 0) {
-        XDestroyImage(image);
-        SDL_FreeSurface(glyphs);
-        return;
-    }
-    for (int yy = 0; yy < rectH; yy++) {
-        for (int xx = 0; xx < rectW; xx++) {
-            if (!xftClipContains(draw, destX + xx, destY + yy))
-                continue;
-            Uint32 *row = (Uint32 *) ((char *) glyphs->pixels +
-                                      (yy + srcY) * glyphs->pitch);
-            unsigned long dst = XGetPixel(image, xx, yy);
-            unsigned long blended = blendPixel(dst, XC_SURFACE_FORMAT(glyphs),
-                                               row[xx + srcX], sdlColor.a);
-            XPutPixel(image, xx, yy, blended);
-        }
-    }
-    SDL_UnlockSurface(glyphs);
-    GC gc = XCreateGC(draw->display, draw->drawable, 0, NULL);
-    if (gc) {
-        XPutImage(draw->display, draw->drawable, gc, image, 0, 0, destX, destY,
-                  (unsigned int) rectW, (unsigned int) rectH);
-        XFreeGC(draw->display, gc);
-    }
-    XDestroyImage(image);
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, glyphs);
     SDL_FreeSurface(glyphs);
+    if (!texture)
+        return;
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+    /* TTF baked the glyph RGB from the requested colour; only the colour's
+     * alpha still needs to scale coverage, matching the old blendPixel
+     * multiply.
+     */
+    SDL_SetTextureAlphaMod(texture, sdlColor.a);
+#if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(texture, XC_SCALEMODE_LINEAR);
+#endif
+    SDL_Rect srcRect = {srcX, srcY, rectW, rectH};
+    SDL_Rect destRect = {destX, destY, rectW, rectH};
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, draw->drawable, renderer, &destRect);
+    if (draw->clipRectCount <= 0) {
+        SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
+    } else {
+        /* Xft clip rects are in the same drawable/viewport space as the base
+         * clip GET_RENDERER installed, so intersect each one with the base clip
+         * (as setGcClipForIteration does) and copy per rect.
+         */
+        SDL_bool baseClipEnabled = SDL_RenderIsClipEnabled(renderer);
+        SDL_Rect baseClip;
+        if (baseClipEnabled)
+            SDL_RenderGetClipRect(renderer, &baseClip);
+        for (int i = 0; i < draw->clipRectCount; i++) {
+            SDL_Rect clip = {draw->clipRects[i].x, draw->clipRects[i].y,
+                             draw->clipRects[i].width,
+                             draw->clipRects[i].height};
+            if (baseClipEnabled && !SDL_IntersectRect(&clip, &baseClip, &clip))
+                continue;
+            SDL_RenderSetClipRect(renderer, &clip);
+            SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
+        }
+        clearRendererClip(renderer);
+    }
+    shapeGuardEnd(&sg);
+    SDL_DestroyTexture(texture);
+    presentDrawableRectIfVisible(draw->drawable, &destRect);
 }
 
 void XftDrawStringUtf8(XftDraw *draw,
