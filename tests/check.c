@@ -28,6 +28,7 @@
 #include "path/edges.h"
 #include "path/path.h"
 #include "replay-target.h"
+#include "selection.h"
 #include "state-snapshot.h"
 #include "timeline.h"
 #include "util.h"
@@ -8195,6 +8196,53 @@ static int test_selection(Display *display)
     Atom targets = XInternAtom(display, "TARGETS", False);
     Atom prop = XInternAtom(display, "SDL2X11_SEL_TEST", False);
 
+    XSelectInput(display, root, SubstructureNotifyMask);
+
+    /* A clipboard update during the very first fetch, before anything has been
+     * pushed (so lastPushed is NULL and the echo guard cannot classify it),
+     * must not expire the owner we are fetching from. Regression for a spurious
+     * startup SDL_CLIPBOARDUPDATE aborting the fetch. Runs first, while
+     * lastPushed is still NULL.
+     */
+    Window firstWin = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
+    XEvent rootEvent;
+    while (XCheckTypedWindowEvent(display, root, CreateNotify, &rootEvent)) {
+    }
+    Window qtRoot, qtParent, *qtKids = NULL;
+    unsigned int qtBefore = 0, qtAfter = 0;
+    XQueryTree(display, root, &qtRoot, &qtParent, &qtKids, &qtBefore);
+    if (qtKids)
+        XFree(qtKids);
+    XSetSelectionOwner(display, clipboard, firstWin, CurrentTime);
+    CHECK(!XCheckTypedWindowEvent(display, root, CreateNotify, &rootEvent),
+          "internal clipboard requestor leaked CreateNotify on root");
+    XSelectInput(display, root, NoEventMask);
+    /* Claiming CLIPBOARD lazily creates the hidden requestor as a child of the
+     * root; it must stay out of a client's XQueryTree walk.
+     */
+    qtKids = NULL;
+    XQueryTree(display, root, &qtRoot, &qtParent, &qtKids, &qtAfter);
+    if (qtKids)
+        XFree(qtKids);
+    CHECK(qtAfter == qtBefore,
+          "internal clipboard requestor leaked into XQueryTree(root)");
+    XEvent firstDrain;
+    while (XCheckTypedEvent(display, SelectionRequest, &firstDrain)) {
+    }
+    while (XCheckTypedEvent(display, SelectionClear, &firstDrain)) {
+    }
+    SDL_SetClipboardText("spurious-startup-value");
+    clipboardHandleExternalUpdate(display);
+    CHECK(!XCheckTypedEvent(display, SelectionClear, &firstDrain),
+          "clipboard update during the first fetch (lastPushed NULL) must not "
+          "expire the owner");
+    CHECK(XGetSelectionOwner(display, clipboard) == firstWin,
+          "owner was revoked by an update during the first fetch");
+    XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &firstDrain)) {
+    }
+    XDestroyWindow(display, firstWin);
+
     /* No owner: XConvertSelection emits SelectionNotify with property=None. */
     SDL_SetClipboardText("");
     XConvertSelection(display, XInternAtom(display, "PRIMARY", False), utf8,
@@ -8257,6 +8305,516 @@ static int test_selection(Display *display)
     CHECK(atoms[0] == targets && atoms[1] == utf8 && atoms[2] == XA_STRING,
           "SDL-backed TARGETS atom list was incorrect");
     XFree(data);
+
+    /* Outbound push: an X owner's CLIPBOARD is mirrored to SDL so an external
+     * host app can paste it. Play the owner here: answer the SelectionRequest
+     * the layer fires on XSetSelectionOwner, then confirm the payload landed on
+     * SDL's clipboard and the internal SelectionNotify never leaked out. Flush
+     * any queued clipboard-change echo while no X owner exists, so it cannot
+     * spuriously expire the owner set just below (mirrors real timing, where an
+     * external change lands before a client claims ownership).
+     */
+    for (int i = 0; i < 4; i++)
+        XPending(display);
+    /* Drain stale SelectionRequests left by the earlier owner1/owner2 claims
+     * (each CLIPBOARD claim now fires an outbound fetch); those dummy owners
+     * never answered, so only the request from the claim below should remain.
+     */
+    XEvent flush;
+    while (XCheckTypedEvent(display, SelectionRequest, &flush)) {
+    }
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent req;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &req),
+          "outbound push did not post a SelectionRequest to the owner");
+    CHECK(req.xselectionrequest.target == utf8,
+          "outbound SelectionRequest target should be UTF8_STRING");
+    Window requestor = req.xselectionrequest.requestor;
+    Atom reqProp = req.xselectionrequest.property;
+    const char *payload = "outbound-clip";
+    XChangeProperty(display, requestor, reqProp, utf8, 8, PropModeReplace,
+                    (const unsigned char *) payload, (int) strlen(payload));
+    XEvent notify;
+    memset(&notify, 0, sizeof(notify));
+    notify.xselection.type = SelectionNotify;
+    notify.xselection.requestor = requestor;
+    notify.xselection.selection = clipboard;
+    notify.xselection.target = utf8;
+    notify.xselection.property = reqProp;
+    notify.xselection.time = CurrentTime;
+    XSendEvent(display, requestor, False, 0, &notify);
+    /* Drain until the swallowed SelectionNotify has driven the push, rather
+     * than assuming a fixed pump count.
+     */
+    char *hostText = NULL;
+    for (int i = 0; i < 16; i++) {
+        XPending(display);
+        hostText = SDL_GetClipboardText();
+        if (hostText && strcmp(hostText, payload) == 0)
+            break;
+        if (hostText) {
+            SDL_free(hostText);
+            hostText = NULL;
+        }
+    }
+    CHECK(hostText && strcmp(hostText, payload) == 0,
+          "outbound push did not reach the SDL clipboard");
+    SDL_free(hostText);
+    CHECK(!XCheckTypedEvent(display, SelectionNotify, &notify),
+          "internal SelectionNotify leaked to the client");
+
+    /* A superseded fetch's late reply must not overwrite the current fetch.
+     * Claim CLIPBOARD for two owners back to back, then answer the first
+     * (stale) and the second (current); only the current owner's data may reach
+     * SDL.
+     */
+    XEvent flush2;
+    while (XCheckTypedEvent(display, SelectionRequest, &flush2)) {
+    }
+    XSetSelectionOwner(display, clipboard, owner1, CurrentTime);
+    XEvent reqA;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqA),
+          "no SelectionRequest for the first racing owner");
+    Window rqA = reqA.xselectionrequest.requestor;
+    Atom propA = reqA.xselectionrequest.property;
+    XSetSelectionOwner(display, clipboard, owner2, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &flush2)) {
+    }
+    XEvent reqB;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqB),
+          "no SelectionRequest for the second racing owner");
+    Window rqB = reqB.xselectionrequest.requestor;
+    Atom propB = reqB.xselectionrequest.property;
+    CHECK(propA != propB,
+          "consecutive fetches should use distinct receiving properties");
+    XChangeProperty(display, rqA, propA, utf8, 8, PropModeReplace,
+                    (const unsigned char *) "STALE-A", 7);
+    XEvent nA;
+    memset(&nA, 0, sizeof(nA));
+    nA.xselection.type = SelectionNotify;
+    nA.xselection.requestor = rqA;
+    nA.xselection.selection = clipboard;
+    nA.xselection.target = utf8;
+    nA.xselection.property = propA;
+    nA.xselection.time = CurrentTime;
+    XSendEvent(display, rqA, False, 0, &nA);
+    XChangeProperty(display, rqB, propB, utf8, 8, PropModeReplace,
+                    (const unsigned char *) "CURRENT-B", 9);
+    XEvent nB;
+    memset(&nB, 0, sizeof(nB));
+    nB.xselection.type = SelectionNotify;
+    nB.xselection.requestor = rqB;
+    nB.xselection.selection = clipboard;
+    nB.xselection.target = utf8;
+    nB.xselection.property = propB;
+    nB.xselection.time = CurrentTime;
+    XSendEvent(display, rqB, False, 0, &nB);
+    char *raceText = NULL;
+    for (int i = 0; i < 16; i++) {
+        XPending(display);
+        raceText = SDL_GetClipboardText();
+        if (raceText && strcmp(raceText, "CURRENT-B") == 0)
+            break;
+        if (raceText) {
+            SDL_free(raceText);
+            raceText = NULL;
+        }
+    }
+    CHECK(raceText && strcmp(raceText, "CURRENT-B") == 0,
+          "a superseded fetch reply overwrote the current clipboard");
+    SDL_free(raceText);
+    XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &flush2)) {
+    }
+
+    /* A superseded fetch's decline must not cancel the current fetch: owner C
+     * declines (property None) while owner D supplies text; D's text must still
+     * reach SDL rather than being dropped as if unsolicited.
+     */
+    while (XCheckTypedEvent(display, SelectionRequest, &flush2)) {
+    }
+    XSetSelectionOwner(display, clipboard, owner1, CurrentTime);
+    XEvent reqC;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqC),
+          "no SelectionRequest for the declining owner");
+    Window rqC = reqC.xselectionrequest.requestor;
+    XSetSelectionOwner(display, clipboard, owner2, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &flush2)) {
+    }
+    XEvent reqD;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqD),
+          "no SelectionRequest for the supplying owner");
+    Window rqD = reqD.xselectionrequest.requestor;
+    Atom propD = reqD.xselectionrequest.property;
+    XEvent nC;
+    memset(&nC, 0, sizeof(nC));
+    nC.xselection.type = SelectionNotify;
+    nC.xselection.requestor = rqC;
+    nC.xselection.selection = clipboard;
+    nC.xselection.target = utf8;
+    nC.xselection.property = None;
+    nC.xselection.time = CurrentTime;
+    XSendEvent(display, rqC, False, 0, &nC);
+    XChangeProperty(display, rqD, propD, utf8, 8, PropModeReplace,
+                    (const unsigned char *) "DECLINE-D", 9);
+    XEvent nD;
+    memset(&nD, 0, sizeof(nD));
+    nD.xselection.type = SelectionNotify;
+    nD.xselection.requestor = rqD;
+    nD.xselection.selection = clipboard;
+    nD.xselection.target = utf8;
+    nD.xselection.property = propD;
+    nD.xselection.time = CurrentTime;
+    XSendEvent(display, rqD, False, 0, &nD);
+    char *declineText = NULL;
+    for (int i = 0; i < 16; i++) {
+        XPending(display);
+        declineText = SDL_GetClipboardText();
+        if (declineText && strcmp(declineText, "DECLINE-D") == 0)
+            break;
+        if (declineText) {
+            SDL_free(declineText);
+            declineText = NULL;
+        }
+    }
+    CHECK(declineText && strcmp(declineText, "DECLINE-D") == 0,
+          "a superseded fetch decline dropped the current fetch reply");
+    SDL_free(declineText);
+    XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &flush2)) {
+    }
+
+    /* A legacy owner may decline UTF8_STRING but serve XA_STRING. The outbound
+     * mirror should retry STRING instead of leaving the old host clipboard.
+     */
+    while (XCheckTypedEvent(display, SelectionRequest, &flush2)) {
+    }
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent reqString1;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqString1),
+          "STRING fallback test did not post the UTF8 request");
+    CHECK(reqString1.xselectionrequest.target == utf8,
+          "STRING fallback test should start with UTF8_STRING");
+    Window rqString = reqString1.xselectionrequest.requestor;
+    Atom propString = reqString1.xselectionrequest.property;
+    XEvent declineUtf8;
+    memset(&declineUtf8, 0, sizeof(declineUtf8));
+    declineUtf8.xselection.type = SelectionNotify;
+    declineUtf8.xselection.requestor = rqString;
+    declineUtf8.xselection.selection = clipboard;
+    declineUtf8.xselection.target = utf8;
+    declineUtf8.xselection.property = None;
+    declineUtf8.xselection.time = CurrentTime;
+    XSendEvent(display, rqString, False, 0, &declineUtf8);
+    XEvent reqString2;
+    Bool sawStringRetry = False;
+    for (int i = 0; i < 8 && !sawStringRetry; i++) {
+        XPending(display);
+        sawStringRetry =
+            XCheckTypedEvent(display, SelectionRequest, &reqString2);
+    }
+    CHECK(sawStringRetry, "UTF8 decline did not retry XA_STRING");
+    CHECK(reqString2.xselectionrequest.target == XA_STRING,
+          "retry target should be XA_STRING");
+    CHECK(reqString2.xselectionrequest.requestor == rqString &&
+              reqString2.xselectionrequest.property == propString,
+          "STRING retry should reuse the active requestor/property");
+    XChangeProperty(display, rqString, propString, XA_STRING, 8,
+                    PropModeReplace, (const unsigned char *) "latin1-clip", 11);
+    XEvent notifyString;
+    memset(&notifyString, 0, sizeof(notifyString));
+    notifyString.xselection.type = SelectionNotify;
+    notifyString.xselection.requestor = rqString;
+    notifyString.xselection.selection = clipboard;
+    notifyString.xselection.target = XA_STRING;
+    notifyString.xselection.property = propString;
+    notifyString.xselection.time = CurrentTime;
+    XSendEvent(display, rqString, False, 0, &notifyString);
+    char *stringText = NULL;
+    for (int i = 0; i < 16; i++) {
+        XPending(display);
+        stringText = SDL_GetClipboardText();
+        if (stringText && strcmp(stringText, "latin1-clip") == 0)
+            break;
+        if (stringText) {
+            SDL_free(stringText);
+            stringText = NULL;
+        }
+    }
+    CHECK(stringText && strcmp(stringText, "latin1-clip") == 0,
+          "XA_STRING fallback did not reach the SDL clipboard");
+    SDL_free(stringText);
+    XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &flush2)) {
+    }
+
+    /* An XA_STRING (Latin-1) reply is transcoded to UTF-8 before reaching SDL:
+     * the byte 0xE9 ('e' acute) must become the two UTF-8 bytes 0xC3 0xA9.
+     */
+    while (XCheckTypedEvent(display, SelectionRequest, &flush2)) {
+    }
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent reqL;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqL),
+          "latin1 test did not post the UTF8 request");
+    Window rqL = reqL.xselectionrequest.requestor;
+    XEvent declineL;
+    memset(&declineL, 0, sizeof(declineL));
+    declineL.xselection.type = SelectionNotify;
+    declineL.xselection.requestor = rqL;
+    declineL.xselection.selection = clipboard;
+    declineL.xselection.target = utf8;
+    declineL.xselection.property = None;
+    declineL.xselection.time = CurrentTime;
+    XSendEvent(display, rqL, False, 0, &declineL);
+    XEvent reqL2;
+    Bool sawL2 = False;
+    for (int i = 0; i < 8 && !sawL2; i++) {
+        XPending(display);
+        sawL2 = XCheckTypedEvent(display, SelectionRequest, &reqL2);
+    }
+    CHECK(sawL2 && reqL2.xselectionrequest.target == XA_STRING,
+          "latin1 test did not retry XA_STRING");
+    Atom propL = reqL2.xselectionrequest.property;
+    const unsigned char latin1[] = {'c', 'a', 'f', 0xE9};
+    const char *utf8Expected = "caf\xC3\xA9";
+    XChangeProperty(display, rqL, propL, XA_STRING, 8, PropModeReplace, latin1,
+                    4);
+    XEvent notifyL;
+    memset(&notifyL, 0, sizeof(notifyL));
+    notifyL.xselection.type = SelectionNotify;
+    notifyL.xselection.requestor = rqL;
+    notifyL.xselection.selection = clipboard;
+    notifyL.xselection.target = XA_STRING;
+    notifyL.xselection.property = propL;
+    notifyL.xselection.time = CurrentTime;
+    XSendEvent(display, rqL, False, 0, &notifyL);
+    char *latinText = NULL;
+    for (int i = 0; i < 16; i++) {
+        XPending(display);
+        latinText = SDL_GetClipboardText();
+        if (latinText && strcmp(latinText, utf8Expected) == 0)
+            break;
+        if (latinText) {
+            SDL_free(latinText);
+            latinText = NULL;
+        }
+    }
+    CHECK(latinText && strcmp(latinText, utf8Expected) == 0,
+          "Latin-1 XA_STRING reply was not transcoded to UTF-8");
+    SDL_free(latinText);
+    XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    while (XCheckTypedEvent(display, SelectionClear, &flush2)) {
+    }
+
+    /* A reply with a non-text type/format is dropped, not mirrored with a wrong
+     * byte length: the host clipboard keeps whatever it held before.
+     */
+    char *beforeBogus = SDL_GetClipboardText();
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent req2;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &req2),
+          "second fetch did not post a SelectionRequest");
+    Window requestor2 = req2.xselectionrequest.requestor;
+    Atom reqProp2 = req2.xselectionrequest.property;
+    Atom bogus[] = {utf8};
+    XChangeProperty(display, requestor2, reqProp2, XA_ATOM, 32, PropModeReplace,
+                    (const unsigned char *) bogus, 1);
+    XEvent notify2;
+    memset(&notify2, 0, sizeof(notify2));
+    notify2.xselection.type = SelectionNotify;
+    notify2.xselection.requestor = requestor2;
+    notify2.xselection.selection = clipboard;
+    notify2.xselection.target = utf8;
+    notify2.xselection.property = reqProp2;
+    notify2.xselection.time = CurrentTime;
+    XSendEvent(display, requestor2, False, 0, &notify2);
+    for (int i = 0; i < 8; i++)
+        XPending(display);
+    char *afterBogus = SDL_GetClipboardText();
+    CHECK(afterBogus && beforeBogus && strcmp(afterBogus, beforeBogus) == 0,
+          "non-text clipboard reply should have been dropped, not mirrored");
+    SDL_free(afterBogus);
+    SDL_free(beforeBogus);
+
+    /* INCR reassembly: an owner too large for one property answers with an INCR
+     * size hint, then streams the payload as chunks, each acked by a property
+     * delete. Play that owner and confirm the reassembled text reaches SDL.
+     */
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent req3;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &req3),
+          "INCR fetch did not post a SelectionRequest");
+    Window requestor3 = req3.xselectionrequest.requestor;
+    Atom incrProp = req3.xselectionrequest.property;
+    Atom incrType = XInternAtom(display, "INCR", False);
+    long incrSize = 32;
+    XChangeProperty(display, requestor3, incrProp, incrType, 32,
+                    PropModeReplace, (const unsigned char *) &incrSize, 1);
+    XEvent notify3;
+    memset(&notify3, 0, sizeof(notify3));
+    notify3.xselection.type = SelectionNotify;
+    notify3.xselection.requestor = requestor3;
+    notify3.xselection.selection = clipboard;
+    notify3.xselection.target = utf8;
+    notify3.xselection.property = incrProp;
+    notify3.xselection.time = CurrentTime;
+    XSendEvent(display, requestor3, False, 0, &notify3);
+
+    const char *chunks[] = {"Hello, ", "this is an ",
+                            "INCR clipboard payload."};
+    const char *incrFull = "Hello, this is an INCR clipboard payload.";
+    int nchunks = 3;
+    int chunkIdx = 0;
+    Bool sentTerminator = False;
+    Bool incrDone = False;
+    for (int iter = 0; iter < 64 && !incrDone; iter++) {
+        XPending(display);
+        XEvent pe;
+        /* Each property delete the layer posts acks a chunk; send the next one,
+         * then a zero-length chunk to terminate.
+         */
+        while (
+            XCheckTypedWindowEvent(display, requestor3, PropertyNotify, &pe)) {
+            if (pe.xproperty.state != PropertyDelete)
+                continue;
+            if (chunkIdx < nchunks) {
+                XChangeProperty(display, requestor3, incrProp, utf8, 8,
+                                PropModeReplace,
+                                (const unsigned char *) chunks[chunkIdx],
+                                (int) strlen(chunks[chunkIdx]));
+                chunkIdx++;
+            } else if (!sentTerminator) {
+                XChangeProperty(display, requestor3, incrProp, utf8, 8,
+                                PropModeReplace, (const unsigned char *) "", 0);
+                sentTerminator = True;
+            }
+        }
+        char *cur = SDL_GetClipboardText();
+        if (cur && strcmp(cur, incrFull) == 0)
+            incrDone = True;
+        if (cur)
+            SDL_free(cur);
+    }
+    CHECK(incrDone, "INCR payload did not reassemble onto the SDL clipboard");
+
+    /* A malformed INCR size hint (wrong format) is dropped, not entered as a
+     * streaming transfer: the clipboard keeps the reassembled payload.
+     */
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent reqBad;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqBad),
+          "malformed-INCR test did not post a SelectionRequest");
+    Window requestorBad = reqBad.xselectionrequest.requestor;
+    Atom incrPropBad = reqBad.xselectionrequest.property;
+    char badHint = 1;
+    XChangeProperty(display, requestorBad, incrPropBad, incrType, 8,
+                    PropModeReplace, (const unsigned char *) &badHint, 1);
+    XEvent notifyBad;
+    memset(&notifyBad, 0, sizeof(notifyBad));
+    notifyBad.xselection.type = SelectionNotify;
+    notifyBad.xselection.requestor = requestorBad;
+    notifyBad.xselection.selection = clipboard;
+    notifyBad.xselection.target = utf8;
+    notifyBad.xselection.property = incrPropBad;
+    notifyBad.xselection.time = CurrentTime;
+    XSendEvent(display, requestorBad, False, 0, &notifyBad);
+    for (int i = 0; i < 8; i++)
+        XPending(display);
+    char *afterBadHint = SDL_GetClipboardText();
+    CHECK(afterBadHint && strcmp(afterBadHint, incrFull) == 0,
+          "malformed INCR size hint should have been dropped");
+    SDL_free(afterBadHint);
+
+    /* Clearing the owner mid-INCR abandons the transfer: a late chunk from the
+     * old request must not push. Start an INCR, let the layer ack it, clear the
+     * owner, then send a chunk and confirm the SDL clipboard is untouched.
+     */
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent req4;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &req4),
+          "cancel test did not post a SelectionRequest");
+    Window requestor4 = req4.xselectionrequest.requestor;
+    Atom incrProp4 = req4.xselectionrequest.property;
+    XChangeProperty(display, requestor4, incrProp4, incrType, 32,
+                    PropModeReplace, (const unsigned char *) &incrSize, 1);
+    XEvent notify4;
+    memset(&notify4, 0, sizeof(notify4));
+    notify4.xselection.type = SelectionNotify;
+    notify4.xselection.requestor = requestor4;
+    notify4.xselection.selection = clipboard;
+    notify4.xselection.target = utf8;
+    notify4.xselection.property = incrProp4;
+    notify4.xselection.time = CurrentTime;
+    XSendEvent(display, requestor4, False, 0, &notify4);
+    XEvent drain;
+    for (int i = 0; i < 4; i++)
+        XPending(display);
+    while (
+        XCheckTypedWindowEvent(display, requestor4, PropertyNotify, &drain)) {
+    }
+    XSetSelectionOwner(display, clipboard, None, CurrentTime);
+    XChangeProperty(display, requestor4, incrProp4, utf8, 8, PropModeReplace,
+                    (const unsigned char *) "SHOULD-NOT-APPEAR", 17);
+    for (int i = 0; i < 8; i++)
+        XPending(display);
+    char *afterCancel = SDL_GetClipboardText();
+    CHECK(afterCancel && strcmp(afterCancel, incrFull) == 0,
+          "chunk after owner-clear must not push to the SDL clipboard");
+    SDL_free(afterCancel);
+
+    /* An empty selection pushes "" without its own SDL_CLIPBOARDUPDATE echo
+     * being mistaken for an external change and revoking the owner.
+     */
+    XEvent flushE;
+    while (XCheckTypedEvent(display, SelectionRequest, &flushE)) {
+    }
+    while (XCheckTypedEvent(display, SelectionClear, &flushE)) {
+    }
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent reqE;
+    CHECK(XCheckTypedEvent(display, SelectionRequest, &reqE),
+          "empty-push test did not post a SelectionRequest");
+    Window rqE = reqE.xselectionrequest.requestor;
+    Atom propE = reqE.xselectionrequest.property;
+    XChangeProperty(display, rqE, propE, utf8, 8, PropModeReplace,
+                    (const unsigned char *) "", 0);
+    XEvent nE;
+    memset(&nE, 0, sizeof(nE));
+    nE.xselection.type = SelectionNotify;
+    nE.xselection.requestor = rqE;
+    nE.xselection.selection = clipboard;
+    nE.xselection.target = utf8;
+    nE.xselection.property = propE;
+    nE.xselection.time = CurrentTime;
+    XSendEvent(display, rqE, False, 0, &nE);
+    /* Drain the reply and its own SDL_CLIPBOARDUPDATE echo. The echo must be
+     * recognized as ours and not revoke the owner we just set.
+     */
+    for (int i = 0; i < 8; i++)
+        XPending(display);
+    CHECK(!XCheckTypedEvent(display, SelectionClear, &flushE),
+          "empty push echo must not expire its own owner");
+
+    /* Ownership expiry: an external host clipboard change revokes any X owner
+     * that still thinks it holds CLIPBOARD.
+     */
+    XSetSelectionOwner(display, clipboard, window, CurrentTime);
+    XEvent stray;
+    while (XCheckTypedEvent(display, SelectionRequest, &stray)) {
+    }
+    /* Drain any SelectionClear left over from earlier owner transitions so the
+     * one asserted below is unambiguously from the expiry.
+     */
+    while (XCheckTypedEvent(display, SelectionClear, &stray)) {
+    }
+    SDL_SetClipboardText("host-app-external-copy");
+    clipboardHandleExternalUpdate(display);
+    XEvent clr;
+    CHECK(XCheckTypedEvent(display, SelectionClear, &clr),
+          "external clipboard change did not revoke the X owner");
+    CHECK(clr.xselectionclear.window == window,
+          "expiry SelectionClear went to the wrong window");
 
     XDestroyWindow(display, owner1);
     XDestroyWindow(display, owner2);

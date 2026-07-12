@@ -241,18 +241,19 @@ Window XCreateSimpleWindow(Display *display,
                          CWBackPixel | CWBorderPixel, &attributes);
 }
 
-Window XCreateWindow(Display *display,
-                     Window parent,
-                     int x,
-                     int y,
-                     unsigned int width,
-                     unsigned int height,
-                     unsigned int border_width,
-                     int depth,
-                     unsigned int clazz,
-                     Visual *visual,
-                     unsigned long valueMask,
-                     XSetWindowAttributes *attributes)
+static Window createWindowImpl(Display *display,
+                               Window parent,
+                               int x,
+                               int y,
+                               unsigned int width,
+                               unsigned int height,
+                               unsigned int border_width,
+                               int depth,
+                               unsigned int clazz,
+                               Visual *visual,
+                               unsigned long valueMask,
+                               XSetWindowAttributes *attributes,
+                               Bool internalWindow)
 {
     // https://tronche.com/gui/x/xlib/window/XCreateWindow.html
     SET_X_SERVER_REQUEST(display, X_CreateWindow);
@@ -292,6 +293,7 @@ Window XCreateWindow(Display *display,
     SET_XID_VALUE(windowID, windowStruct);
     initWindowStruct(windowStruct, x, y, width, height, visual, None, inputOnly,
                      0, None);
+    windowStruct->internal = internalWindow;
     windowStruct->depth = depth;
     windowStruct->borderWidth = border_width;
     if (!addChildToWindow(parent, windowID)) {
@@ -335,10 +337,45 @@ Window XCreateWindow(Display *display,
      */
     if (HAS_VALUE(valueMask, CWEventMask))
         windowStruct->eventMask = attributes->event_mask;
-    postEvent(display, windowID, CreateNotify);
+    if (!windowStruct->internal)
+        postEvent(display, windowID, CreateNotify);
     if (valueMask != 0)
         XChangeWindowAttributes(display, windowID, valueMask, attributes);
     return windowID;
+}
+
+Window XCreateWindow(Display *display,
+                     Window parent,
+                     int x,
+                     int y,
+                     unsigned int width,
+                     unsigned int height,
+                     unsigned int border_width,
+                     int depth,
+                     unsigned int clazz,
+                     Visual *visual,
+                     unsigned long valueMask,
+                     XSetWindowAttributes *attributes)
+{
+    return createWindowImpl(display, parent, x, y, width, height, border_width,
+                            depth, clazz, visual, valueMask, attributes, False);
+}
+
+Window createInternalWindow(Display *display,
+                            Window parent,
+                            int x,
+                            int y,
+                            unsigned int width,
+                            unsigned int height,
+                            unsigned int border_width,
+                            int depth,
+                            unsigned int clazz,
+                            Visual *visual,
+                            unsigned long valueMask,
+                            XSetWindowAttributes *attributes)
+{
+    return createWindowImpl(display, parent, x, y, width, height, border_width,
+                            depth, clazz, visual, valueMask, attributes, True);
 }
 
 int XDestroySubwindows(Display *display, Window window)
@@ -1167,12 +1204,23 @@ Status XQueryTree(Display *display,
     TYPE_CHECK(window, WINDOW, display, 0);
     *root_return = SCREEN_WINDOW;
     *parent_return = GET_PARENT(window);
-    *nchildren_return = GET_WINDOW_STRUCT(window)->children.length;
-    *children_return = malloc(sizeof(Window) * (*nchildren_return));
-    if (!*children_return && *nchildren_return > 0)
+    size_t total = GET_WINDOW_STRUCT(window)->children.length;
+    Window *source = GET_CHILDREN(window);
+    /* Internal windows (the hidden clipboard requestor) are library plumbing
+     * and must not surface to a client walking the tree. Copy only the real
+     * ones.
+     */
+    Window *out = malloc(sizeof(Window) * total);
+    if (!out && total > 0)
         return 0;
-
-    memcpy(*children_return, GET_CHILDREN(window),
-           sizeof(Window) * (*nchildren_return));
+    unsigned int kept = 0;
+    for (size_t i = 0; i < total; i++) {
+        if (IS_TYPE(source[i], WINDOW) &&
+            GET_WINDOW_STRUCT(source[i])->internal)
+            continue;
+        out[kept++] = source[i];
+    }
+    *children_return = out;
+    *nchildren_return = kept;
     return 1;
 }
