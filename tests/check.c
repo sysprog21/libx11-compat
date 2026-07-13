@@ -11735,6 +11735,18 @@ static int test_main_dispatch(Display *display)
 struct offThreadWinArgs {
     Display *display;
     Window window;
+    /* Interned on the main thread and passed in: the WM-state property writes
+     * below need them, and interning off-thread would race the main thread's
+     * XPending on the shared atom table.
+     */
+    Window parent;
+    Atom netWmState;
+    Atom netWmStateFullscreen;
+    Atom netWmStateModal;
+    Atom motifWmHints;
+    Atom netWmWindowType;
+    Atom netWmWindowTypeMenu;
+    Atom netWmIcon;
     SDL_atomic_t done;
 };
 
@@ -11743,6 +11755,49 @@ static void *offThreadWinWorker(void *p)
     struct offThreadWinArgs *a = (struct offThreadWinArgs *) p;
     XMapWindow(a->display, a->window);
     XStoreName(a->display, a->window, "worker-title");
+
+    /* WM-state property writes drive the self-routing appliers off-thread:
+     * XSetWMNormalHints (size constraints + resizable), _NET_WM_STATE,
+     * _MOTIF_WM_HINTS, _NET_WM_WINDOW_TYPE (borderless), and _NET_WM_ICON. Each
+     * touches SDL on a mapped top-level, so a broken self-route would run SDL
+     * on this worker (a macOS crash) or race the main thread under TSan.
+     */
+    XSizeHints sizeHints = {0};
+    sizeHints.flags = PMinSize | PMaxSize;
+    sizeHints.min_width = 40;
+    sizeHints.min_height = 30;
+    sizeHints.max_width = 200;
+    sizeHints.max_height = 150;
+    XSetWMNormalHints(a->display, a->window, &sizeHints);
+
+    /* Map the parent and make the window transient-for + modal so the routed
+     * applyTransientForRelationship reaches SDL_SetWindowModalFor on the main
+     * thread. The _NET_WM_STATE write carries both fullscreen (applyNetWmState)
+     * and modal (drives the transient applier's SDL_SetWindowModalFor).
+     */
+    XMapWindow(a->display, a->parent);
+    Window transientTarget = a->parent;
+    XChangeProperty(a->display, a->window, XA_WM_TRANSIENT_FOR, XA_WINDOW, 32,
+                    PropModeReplace, (unsigned char *) &transientTarget, 1);
+
+    long netWmStateData[2] = {(long) a->netWmStateFullscreen,
+                              (long) a->netWmStateModal};
+    XChangeProperty(a->display, a->window, a->netWmState, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *) netWmStateData, 2);
+
+    long motifData[5] = {3 /* FUNCTIONS | DECORATIONS */, 2 /* FUNC_RESIZE */,
+                         2 /* DECOR_BORDER */, 0, 0};
+    XChangeProperty(a->display, a->window, a->motifWmHints, a->motifWmHints, 32,
+                    PropModeReplace, (unsigned char *) motifData, 5);
+
+    long windowTypeData = (long) a->netWmWindowTypeMenu;
+    XChangeProperty(a->display, a->window, a->netWmWindowType, XA_ATOM, 32,
+                    PropModeReplace, (unsigned char *) &windowTypeData, 1);
+
+    long iconData[3] = {1 /* width */, 1 /* height */, (long) 0xffffffff};
+    XChangeProperty(a->display, a->window, a->netWmIcon, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char *) iconData, 3);
+
     /* Raise/resize/move drive the newly-routed SDL branches off-thread; a
      * broken router trips the requireMainEventThread / configureWindow abort
      * guards.
@@ -11761,8 +11816,23 @@ static int test_off_thread_window_calls(Display *display)
     Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
                                      80, 60, 0, 0, 0);
     CHECK(win != None, "XCreateSimpleWindow failed");
+    Window parent = XCreateSimpleWindow(display, DefaultRootWindow(display), 0,
+                                        0, 90, 70, 0, 0, 0);
+    CHECK(parent != None, "XCreateSimpleWindow (parent) failed");
 
-    struct offThreadWinArgs a = {display, win, {0}};
+    struct offThreadWinArgs a = {
+        display,
+        win,
+        parent,
+        XInternAtom(display, "_NET_WM_STATE", False),
+        XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False),
+        XInternAtom(display, "_NET_WM_STATE_MODAL", False),
+        XInternAtom(display, "_MOTIF_WM_HINTS", False),
+        XInternAtom(display, "_NET_WM_WINDOW_TYPE", False),
+        XInternAtom(display, "_NET_WM_WINDOW_TYPE_MENU", False),
+        XInternAtom(display, "_NET_WM_ICON", False),
+        {0},
+    };
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, offThreadWinWorker, &a) == 0,
           "pthread_create failed");
@@ -11782,6 +11852,51 @@ static int test_off_thread_window_calls(Display *display)
     CHECK(attrs.map_state != IsUnmapped,
           "off-thread XMapWindow did not map the window");
     XDestroyWindow(display, win);
+    XDestroyWindow(display, parent);
+    return 1;
+}
+
+struct offThreadCloseArgs {
+    Display *display;
+};
+
+static void *offThreadCloseWorker(void *p)
+{
+    struct offThreadCloseArgs *a = (struct offThreadCloseArgs *) p;
+    XCloseDisplay(a->display);
+    return NULL;
+}
+
+static int test_off_thread_close_display_teardown(void)
+{
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay failed");
+    Window child = XCreateSimpleWindow(display, DefaultRootWindow(display), 0,
+                                       0, 20, 20, 0, 0, 0);
+    CHECK(child != None, "XCreateSimpleWindow failed");
+
+    struct offThreadCloseArgs a = {display};
+    pthread_t worker;
+    CHECK(pthread_create(&worker, NULL, offThreadCloseWorker, &a) == 0,
+          "pthread_create failed");
+
+    int handled = 0;
+    for (int i = 0; i < 100000 && !handled; i++) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (mainDispatchOwnsEventType(ev.type) &&
+                ev.user.code == MAIN_DISPATCH_EVENT_CODE) {
+                mainDispatchHandleEvent(&ev);
+                handled = 1;
+                break;
+            }
+        }
+        if (!handled)
+            SDL_Delay(1);
+    }
+    CHECK(handled, "off-thread XCloseDisplay teardown did not route to main");
+    pthread_join(worker, NULL);
+    printf("ok off_thread_close_display_teardown\n");
     return 1;
 }
 
@@ -11988,6 +12103,78 @@ static int test_main_dispatch_handoff_order(void)
     return 1;
 }
 
+struct deferredXNextArgs {
+    Display *display;
+    Window window;
+    SDL_atomic_t lockedDone;
+    SDL_atomic_t normalDone;
+};
+
+static void deferredXNextLockedThunk(void *p)
+{
+    struct deferredXNextArgs *a = (struct deferredXNextArgs *) p;
+    SDL_AtomicSet(&a->lockedDone, 1);
+}
+
+static void deferredXNextNormalThunk(void *p)
+{
+    struct deferredXNextArgs *a = (struct deferredXNextArgs *) p;
+    XEvent ev = make_event(ClientMessage, a->window);
+    XSendEvent(a->display, a->window, False, NoEventMask, &ev);
+    SDL_AtomicSet(&a->normalDone, 1);
+}
+
+static void *deferredXNextLockedWorker(void *p)
+{
+    struct deferredXNextArgs *a = (struct deferredXNextArgs *) p;
+    XLockDisplay(a->display);
+    runOnMainThread(deferredXNextLockedThunk, p);
+    XUnlockDisplay(a->display);
+    return NULL;
+}
+
+static void *deferredXNextNormalWorker(void *p)
+{
+    runOnMainThread(deferredXNextNormalThunk, p);
+    return NULL;
+}
+
+static int test_main_dispatch_deferred_xnext(void)
+{
+    CHECK(XInitThreads() != 0, "XInitThreads failed");
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay failed");
+    CHECK(display->lock_fns != NULL, "lock hooks not installed");
+
+    Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
+                                     40, 30, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+
+    struct deferredXNextArgs a = {display, win, {0}, {0}};
+    pthread_t locked, normal;
+    CHECK(pthread_create(&locked, NULL, deferredXNextLockedWorker, &a) == 0,
+          "pthread_create failed");
+    for (int i = 0; i < 10000 && !displayLockHandoffPending(); i++)
+        SDL_Delay(1);
+    CHECK(displayLockHandoffPending(), "locked worker did not enter handoff");
+    CHECK(pthread_create(&normal, NULL, deferredXNextNormalWorker, &a) == 0,
+          "pthread_create failed");
+
+    XEvent out;
+    XNextEvent(display, &out);
+    CHECK(out.type == ClientMessage && out.xany.window == win,
+          "XNextEvent did not receive deferred dispatch event");
+    CHECK(SDL_AtomicGet(&a.lockedDone) && SDL_AtomicGet(&a.normalDone),
+          "XNextEvent did not flush deferred main dispatch");
+    pthread_join(locked, NULL);
+    pthread_join(normal, NULL);
+
+    XDestroyWindow(display, win);
+    XCloseDisplay(display);
+    printf("ok main_dispatch_deferred_xnext\n");
+    return 1;
+}
+
 /* Regression for the drained-off-main bug: convertEvent runs on whatever thread
  * drained the SDL queue, and XPending/XCheckTypedEvent let a SECOND client
  * thread drain it. A MAIN_DISPATCH thunk touches SDL and must run on the main
@@ -12028,7 +12215,8 @@ static void *drainRaceDrainer(void *p)
      * does not flush/present, so it does not add a second off-main
      * drawWindowDataToScreen racing the main thread's map. (XPending would, via
      * XFlush -- a separate pre-existing off-main-present concern, not what this
-     * test targets.) */
+     * test targets.)
+     */
     XEvent ev;
     while (!SDL_AtomicGet(&a->routerDone))
         XCheckTypedEvent(a->display, ClientMessage, &ev);
@@ -12089,6 +12277,8 @@ int main(void)
         } else {
             failures++;
         }
+        if (!test_off_thread_close_display_teardown())
+            failures++;
         if (!test_off_thread_drain_race())
             failures++;
         if (!test_off_thread_locked_map())
@@ -12096,6 +12286,8 @@ int main(void)
         if (!test_off_thread_lock_contention())
             failures++;
         if (!test_main_dispatch_handoff_order())
+            failures++;
+        if (!test_main_dispatch_deferred_xnext())
             failures++;
         if (!test_display_lock_threads())
             failures++;
@@ -12163,6 +12355,8 @@ int main(void)
     run_test("live_resize_reflow_hook", test_live_resize_reflow_hook);
     run_test("main_dispatch", test_main_dispatch);
     run_test("off_thread_window_calls", test_off_thread_window_calls);
+    if (!test_off_thread_close_display_teardown())
+        failures++;
     if (!test_off_thread_drain_race())
         failures++;
     if (!test_off_thread_locked_map())
@@ -12170,6 +12364,8 @@ int main(void)
     if (!test_off_thread_lock_contention())
         failures++;
     if (!test_main_dispatch_handoff_order())
+        failures++;
+    if (!test_main_dispatch_deferred_xnext())
         failures++;
     /* Threading last: XInitThreads is global and permanent (see the note above
      * test_display_lock_threads).

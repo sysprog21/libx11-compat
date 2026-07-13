@@ -48,5 +48,11 @@ void mainDispatchHandleEvent(SDL_Event *event);
  * forever.
  */
 void mainDispatchDropCmd(SDL_Event *event);
+/* Run any commands parked while a display-lock handoff was pending, now that it
+ * may have cleared. Called from the main-thread SDL drain so a handoff clearing
+ * with no new MAIN_DISPATCH event still flushes them. No-op off the main
+ * thread.
+ */
+void mainDispatchRunDeferred(void);
 
 #endif /* _MAIN_DISPATCH_H_ */

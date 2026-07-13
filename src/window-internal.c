@@ -4,6 +4,7 @@
 #include "window-internal.h"
 #include "drawing.h"
 #include "events.h"
+#include "main-dispatch.h"
 #include "display.h"
 #include "font.h"
 #include "image.h"
@@ -23,6 +24,23 @@ Window SCREEN_WINDOW = None;
 void (*glxDrawableDestroyedHook)(Window drawable) = NULL;
 
 static void ensureMappingListLock(void);
+
+struct windowOpArgs {
+    void (*fn)(Window);
+    Window window;
+};
+
+static void windowOpOnMain(void *p)
+{
+    struct windowOpArgs *a = (struct windowOpArgs *) p;
+    a->fn(a->window);
+}
+
+void runWindowOpOnMain(void (*fn)(Window), Window window)
+{
+    struct windowOpArgs a = {fn, window};
+    runOnMainThread(windowOpOnMain, &a);
+}
 
 unsigned long resolvedWindowBackgroundColor(Window window)
 {
@@ -188,8 +206,9 @@ Bool initScreenWindow(Display *display)
     return True;
 }
 
-void destroyScreenWindow(Display *display)
+static void destroyScreenWindowImpl(Display *display)
 {
+    requireMainEventThread("destroyScreenWindow");
     if (SCREEN_WINDOW != None) {
         size_t i;
         Window *children = GET_CHILDREN(SCREEN_WINDOW);
@@ -214,6 +233,20 @@ void destroyScreenWindow(Display *display)
         FREE_XID(SCREEN_WINDOW);
         SCREEN_WINDOW = None;
     }
+}
+
+static void destroyScreenWindowOnMain(void *p)
+{
+    destroyScreenWindowImpl((Display *) p);
+}
+
+void destroyScreenWindow(Display *display)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        runOnMainThread(destroyScreenWindowOnMain, display);
+        return;
+    }
+    destroyScreenWindowImpl(display);
 }
 
 static WindowSdlIdMapper *mappingListStart = NULL;
@@ -687,6 +720,13 @@ void releaseActiveGrabsForUnviewableWindow(Display *display, Window window)
 
 void destroyWindow(Display *display, Window window, Bool freeParentData)
 {
+    /* Tears down the SDL window/renderer (SDL_DestroyWindow /
+     * SDL_DestroyRenderer via unrealizeTopLevelWindow), main-thread-only on
+     * macOS. Reached only via the routed XDestroyWindow/XDestroySubwindows
+     * entry points and internal main-thread teardown/recursion, so assert the
+     * invariant at the SDL source.
+     */
+    requireMainEventThread("destroyWindow");
     flushTextStampsForWindow(window);
 
     /* Drain pre-cascade stale events for this window FIRST, before any

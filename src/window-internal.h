@@ -88,6 +88,17 @@ Bool configureWindow(Display *display,
  * silent off-main SDL crash on macOS. who names the caller for the diagnostic.
  */
 void requireMainEventThread(const char *who);
+
+/* Route a void(Window) operation to the main event thread when called off it,
+ * so its SDL calls run where macOS requires. On the main thread (the hot
+ * event-handling path) this costs one atomic load then a direct call. An op
+ * self-routes by passing itself: the routed invocation re-enters on the main
+ * thread, where the same guard now passes and the body runs. Used by the
+ * WM-state appliers, which XChangeProperty / XSetWMNormalHints can reach from a
+ * client worker thread.
+ */
+void runWindowOpOnMain(void (*fn)(Window), Window window);
+
 Window createInternalWindow(Display *display,
                             Window parent,
                             int x,
@@ -195,7 +206,7 @@ Bool windowIsModal(Window window);
  * sides are realized and the child is marked modal. Defers via
  * deferredTransientParent until both windows exist.
  */
-void applyTransientForRelationship(Display *display, Window window);
+void applyTransientForRelationship(Window window);
 
 /* Drop the deferred transient_for record and any live SDL_SetWindowModalFor
  * binding. Called from the WM_TRANSIENT_FOR property-delete path.

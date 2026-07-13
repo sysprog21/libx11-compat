@@ -36,6 +36,38 @@ static Bool isNetPropertyWithNoWindowSideEffects(Atom property)
            property == _NET_WM_STRUT_PARTIAL;
 }
 
+/* Push the stored window icon to SDL, routed to the main event thread when a
+ * client worker drives the property change (XChangeProperty / XDeleteProperty).
+ * The surface is read from the window struct, so the on-main run always applies
+ * the icon current at that point (NULL after a delete).
+ */
+static void applyWindowIconToSdl(Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyWindowIconToSdl, window);
+        return;
+    }
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    SDL_SetWindowIcon(windowStruct->sdlWindow, windowStruct->icon);
+}
+
+/* Drop SDL's border for menu / popup / dock window types, routed to the main
+ * event thread when a client worker sets _NET_WM_WINDOW_TYPE. Called only after
+ * the caller has decided the type wants no border.
+ */
+static void applyWindowBorderlessToSdl(Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyWindowBorderlessToSdl, window);
+        return;
+    }
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+    SDL_SetWindowBordered(GET_WINDOW_STRUCT(window)->sdlWindow, SDL_FALSE);
+}
+
 int XChangeProperty(Display *display,
                     Window window,
                     Atom property,
@@ -269,8 +301,7 @@ int XChangeProperty(Display *display,
             if (windowStruct->icon)
                 SDL_FreeSurface(windowStruct->icon);
             windowStruct->icon = icon;
-            if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
-                SDL_SetWindowIcon(windowStruct->sdlWindow, icon);
+            applyWindowIconToSdl(window);
         }
     }
     /* React to _NET_WM_WINDOW_TYPE: menu/popup/tooltip/splash/dock types
@@ -297,7 +328,7 @@ int XChangeProperty(Display *display,
             }
         }
         if (wantBorderless)
-            SDL_SetWindowBordered(windowStruct->sdlWindow, SDL_FALSE);
+            applyWindowBorderlessToSdl(window);
     }
     /* A Motif XmDialogShell writes _MOTIF_WM_HINTS during widget realization to
      * clear MWM_DECOR_BORDER or MWM_FUNC_RESIZE. The write handler forwards the
@@ -321,7 +352,8 @@ int XChangeProperty(Display *display,
          * raw XChangeProperty (as here) bypasses that path; decode the stored
          * property so the live-resize drag-end snap still sees the increments.
          * Unlike the resizable mirror above this runs regardless of mapped
-         * state, since the snap reads the cache lazily at drag end. */
+         * state, since the snap reads the cache lazily at drag end.
+         */
         cacheResizeIncrementsFromNormalHintsProperty(window);
     }
     /* WM_TRANSIENT_FOR establishes a parent / popup link (ICCCM 4.1.2.6). Plain
@@ -335,7 +367,7 @@ int XChangeProperty(Display *display,
         windowStruct->deferredTransientParent =
             *((Window *) windowProperty->data);
         windowStruct->deferredTransientApplied = False;
-        applyTransientForRelationship(display, window);
+        applyTransientForRelationship(window);
     }
     /* A direct write to _NET_WM_STATE drives both the SDL flag mirror
      * (fullscreen / maximized / above) and the modal transient_for pairing,
@@ -345,7 +377,7 @@ int XChangeProperty(Display *display,
      */
     if (property == _NET_WM_STATE && format == 32) {
         applyNetWmStateFromProperty(window);
-        applyTransientForRelationship(display, window);
+        applyTransientForRelationship(window);
     }
 
     /* Motif, GTK, and Qt set their window titles via XChangeProperty on WM_NAME
@@ -394,8 +426,7 @@ int XDeleteProperty(Display *display, Window window, Atom property)
         if (windowStruct->icon) {
             SDL_FreeSurface(windowStruct->icon);
             windowStruct->icon = NULL;
-            if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
-                SDL_SetWindowIcon(windowStruct->sdlWindow, NULL);
+            applyWindowIconToSdl(window);
         }
     }
     if (property == XA_WM_TRANSIENT_FOR)
@@ -416,7 +447,7 @@ int XDeleteProperty(Display *display, Window window, Atom property)
      */
     if (property == _NET_WM_STATE) {
         applyNetWmStateFromProperty(window);
-        applyTransientForRelationship(display, window);
+        applyTransientForRelationship(window);
     }
     return 1;
 }

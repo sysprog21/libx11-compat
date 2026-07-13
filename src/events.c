@@ -256,6 +256,7 @@ void pumpEventsSafe(void)
 
     SDL_PumpEvents();
     consumePumpWakeByte();
+    mainDispatchRunDeferred();
 }
 
 static Uint32 xtWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
@@ -1290,6 +1291,10 @@ static int drainSdlEventsToPutBack(Display *display)
      * XNextEvent loop (which holds no lock) via the existing re-queue path.
      */
     LockDisplay(display);
+    /* Run any dispatch commands parked while a handoff was pending; the handoff
+     * may have cleared since the last drain even if no new event arrived.
+     */
+    mainDispatchRunDeferred();
     int qlen = 0;
     getEventQueueLength(&qlen);
     if (qlen <= 0) {
@@ -3744,7 +3749,8 @@ int convertEvent(Display *display,
                     /* Put it back for the main thread. The drain already
                      * removed it from the SDL queue, so on re-queue failure it
                      * is gone: drop the command instead, or the worker blocking
-                     * on it would hang forever (there is no timeout). */
+                     * on it would hang forever (there is no timeout).
+                     */
                     if (SDL_PushEvent(sdlEvent) <= 0) {
                         LOG("main-dispatch: re-queue from non-main drain "
                             "failed "
@@ -4985,6 +4991,10 @@ static Bool checkTypedEvent(Display *display,
         pumpEventsSafe();
     int qlen = 0;
     LockDisplay(display);
+    /* Flush dispatch commands parked while a handoff was pending, so a client
+     * pumping only through XCheckTypedEvent still drives them.
+     */
+    mainDispatchRunDeferred();
     if (removeMatchingPutBackEvent(display, w, type, mask, event, predicate)) {
         UnlockDisplay(display);
         return True;

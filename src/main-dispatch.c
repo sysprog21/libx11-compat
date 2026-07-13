@@ -48,7 +48,18 @@ typedef struct MainDispatchCmd {
     pthread_cond_t cond;
     int done;
     int lockHandoff;
+    /* Links this command on the main-thread-local deferred list while a display
+     * lock handoff by another worker is pending. Touched only on the main
+     * thread.
+     */
+    struct MainDispatchCmd *deferNext;
 } MainDispatchCmd;
+
+/* Non-handoff-owner commands parked while a handoff is pending, run once it
+ * clears. Main-thread-only (mainDispatchHandleEvent runs only on the main
+ * thread, and mainDispatchRunDeferred guards on it), so no lock is needed.
+ */
+static MainDispatchCmd *deferredCmds = NULL;
 
 /* Lazily register the shared user-event type. Two first-callers may each call
  * SDL_RegisterEvents; the CAS keeps the first id and the loser's is abandoned
@@ -91,7 +102,8 @@ void runOnMainThread(void (*fn)(void *), void *arg)
     }
 
     MainDispatchCmd cmd = {
-        fn, arg, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0,
+        fn, arg,  PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0,
+        0,  NULL,
     };
 
     /* Shed any display lock this worker holds (an app-level XLockDisplay, or an
@@ -142,6 +154,13 @@ void runOnMainThread(void (*fn)(void *), void *arg)
         pthread_cond_wait(&cmd.cond, &cmd.mutex);
     pthread_mutex_unlock(&cmd.mutex);
     displayLockReacquire(lockDepth);
+    /* Reacquiring cleared this thread's handoff, so any non-owner commands the
+     * main thread parked during it can run now. Nudge the main thread to drain
+     * and flush them (mainDispatchRunDeferred) even if no other event is
+     * pending.
+     */
+    if (lockDepth > 0)
+        wakeEventPipeForExternalEvent(NULL);
     pthread_mutex_destroy(&cmd.mutex);
     pthread_cond_destroy(&cmd.cond);
 }
@@ -158,23 +177,52 @@ static void completeCmd(MainDispatchCmd *cmd)
     pthread_mutex_unlock(&cmd->mutex);
 }
 
+/* Run parked commands whose deferring handoff has cleared. Main-thread-only;
+ * the per-command re-check of displayLockHandoffPending stops if a fresh
+ * handoff starts mid-flush so a newly-parked op is not run inside it.
+ */
+static void runDeferredCmds(void)
+{
+    while (deferredCmds && !displayLockHandoffPending()) {
+        MainDispatchCmd *cmd = deferredCmds;
+        deferredCmds = cmd->deferNext;
+        cmd->fn(cmd->arg);
+        completeCmd(cmd);
+    }
+}
+
 void mainDispatchHandleEvent(SDL_Event *event)
 {
+    /* A prior handoff may have cleared since the last drain; flush anything it
+     * had parked before handling this event.
+     */
+    runDeferredCmds();
     MainDispatchCmd *cmd = (MainDispatchCmd *) event->user.data1;
     if (!cmd->lockHandoff && displayLockHandoffPending()) {
-        /* Defer a non-handoff-owner thunk until the pending handoff clears, so
-         * it does not interleave the owner's critical section. If the re-queue
-         * fails (SDL queue full/disabled), drop the op rather than hang the
-         * worker. */
-        if (SDL_PushEvent(event) <= 0) {
-            LOG("main-dispatch: SDL_PushEvent failed while deferring (%s)\n",
-                SDL_GetError());
-            completeCmd(cmd);
-        }
+        /* Non-owner op while a handoff is pending: park it on the main-thread
+         * list rather than re-queue it to the SDL event queue. Re-queuing kept
+         * the event drainable, so the main loop would spin on it (and under
+         * priority inversion starve the worker that must clear the handoff)
+         * until the handoff cleared. Parking runs it once, when the handoff
+         * clears (runDeferredCmds, driven by the handoff-owner's post-reacquire
+         * wake and, on real drivers, the pump-wake timer).
+         */
+        cmd->deferNext = deferredCmds;
+        deferredCmds = cmd;
         return;
     }
     cmd->fn(cmd->arg);
     completeCmd(cmd);
+}
+
+/* Drive parked deferred commands from a main-thread drain, so a handoff that
+ * clears while no new MAIN_DISPATCH event arrives still flushes them. A no-op
+ * off the main thread and when nothing is parked.
+ */
+void mainDispatchRunDeferred(void)
+{
+    if (libx11CompatOnMainEventThread())
+        runDeferredCmds();
 }
 
 /* Complete a MAIN_DISPATCH command WITHOUT running its thunk, to unblock the

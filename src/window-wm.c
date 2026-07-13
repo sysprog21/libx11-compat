@@ -21,6 +21,7 @@
 
 #include "net-atoms.h"
 #include "window.h"
+#include "events.h"
 
 typedef struct NetWmStateSet {
     Bool modal;
@@ -93,6 +94,10 @@ Bool topLevelHasMotifFunctionHints(Window window)
 
 void applyMotifWmHintsFromProperty(Window window)
 {
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyMotifWmHintsFromProperty, window);
+        return;
+    }
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
         return;
 
@@ -162,9 +167,12 @@ Bool windowIsModal(Window window)
     return False;
 }
 
-void applyTransientForRelationship(Display *display, Window window)
+void applyTransientForRelationship(Window window)
 {
-    (void) display;
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyTransientForRelationship, window);
+        return;
+    }
     if (!IS_TYPE(window, WINDOW))
         return;
 
@@ -231,6 +239,10 @@ void applyTransientForRelationship(Display *display, Window window)
 
 void clearTransientForRelationship(Window window)
 {
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(clearTransientForRelationship, window);
+        return;
+    }
     if (!IS_TYPE(window, WINDOW))
         return;
 
@@ -245,6 +257,10 @@ void clearTransientForRelationship(Window window)
 
 void applyNetWmStateFromProperty(Window window)
 {
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyNetWmStateFromProperty, window);
+        return;
+    }
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
         return;
 
@@ -303,7 +319,7 @@ void applyNetWmStateAction(Display *display,
     if (currentlyOn == desiredOn && prop) {
         applyNetWmStateFromProperty(window);
         if (stateAtom == _NET_WM_STATE_MODAL)
-            applyTransientForRelationship(display, window);
+            applyTransientForRelationship(window);
         return; /* property already matches; avoid useless writes */
     }
 
@@ -351,5 +367,5 @@ void applyNetWmStateAction(Display *display,
 
     /* Modal hint changed: reapply transient pairing so SDL learns about it. */
     if (stateAtom == _NET_WM_STATE_MODAL)
-        applyTransientForRelationship(display, window);
+        applyTransientForRelationship(window);
 }

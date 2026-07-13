@@ -11,6 +11,7 @@
 #include "window.h"
 #include "errors.h"
 #include "events.h"
+#include "main-dispatch.h"
 #include "replay.h"
 #include "colors.h"
 #include "drawing.h"
@@ -135,10 +136,18 @@ static void compatLockDisplay(Display *dpy)
 static void compatUnlockDisplay(Display *dpy)
 {
     (void) dpy;
+    SDL_threadID tid = SDL_ThreadID();
     pthread_mutex_lock(&displayLock.mutex);
-    if (--displayLock.depth == 0) {
-        displayLock.owner = 0;
-        pthread_cond_broadcast(&displayLock.cond);
+    /* Only the owner may unlock, and only at a positive depth. The replaced
+     * PTHREAD_MUTEX_RECURSIVE returned EPERM on a non-owner or over-unlock; the
+     * monitor mirrors that by ignoring it, rather than decrementing another
+     * thread's depth, clearing owner mid-critical-section, or underflowing.
+     */
+    if (displayLock.owner == tid && displayLock.depth > 0) {
+        if (--displayLock.depth == 0) {
+            displayLock.owner = 0;
+            pthread_cond_broadcast(&displayLock.cond);
+        }
     }
     pthread_mutex_unlock(&displayLock.mutex);
 }
@@ -1069,18 +1078,13 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
                     (unsigned char *) &data, NumPropSizeElements);
 }
 
-void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
+/* Apply size hints to the SDL window so user resizes are clamped. X11
+ * 'border_width' lives inside the window's geometry, so SDL minimum / maximum
+ * can use min/max_width/height directly without adding border to either side.
+ * Runs on the main event thread only (XSetWMNormalHints routes it there).
+ */
+static void applyWmNormalHintsSdl(Window w, XSizeHints *hints)
 {
-    XSetWMSizeHints(dpy, w, hints, XA_WM_NORMAL_HINTS);
-
-    /* Apply size hints to the SDL window so user resizes are clamped. X11
-     * 'border_width' lives inside the window's geometry, so SDL minimum /
-     * maximum can use min/max_width/height directly without adding border to
-     * either side.
-     */
-    if (!hints || !IS_MAPPED_TOP_LEVEL_WINDOW(w))
-        return;
-
     SDL_Window *sdlWindow = GET_WINDOW_STRUCT(w)->sdlWindow;
 
     /* Clear stale constraints when a flag disappears: passing 0 tells SDL there
@@ -1101,6 +1105,35 @@ void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
         SDL_SetWindowMaximumSize(sdlWindow, 0, 0);
     }
     applyNormalHintsResizableFromProperty(w);
+}
+
+struct wmNormalHintsArgs {
+    Window window;
+    XSizeHints *hints;
+};
+
+static void wmNormalHintsSdlOnMain(void *p)
+{
+    struct wmNormalHintsArgs *a = (struct wmNormalHintsArgs *) p;
+    applyWmNormalHintsSdl(a->window, a->hints);
+}
+
+void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
+{
+    XSetWMSizeHints(dpy, w, hints, XA_WM_NORMAL_HINTS);
+
+    if (!hints || !IS_MAPPED_TOP_LEVEL_WINDOW(w))
+        return;
+
+    /* The hints pointer stays valid for the whole call: an off-main worker
+     * blocks in runOnMainThread until the main thread has read it.
+     */
+    if (!libx11CompatOnMainEventThread()) {
+        struct wmNormalHintsArgs a = {w, hints};
+        runOnMainThread(wmNormalHintsSdlOnMain, &a);
+        return;
+    }
+    applyWmNormalHintsSdl(w, hints);
 }
 
 Bool topLevelResizableFromNormalHints(Window window)
@@ -1138,6 +1171,10 @@ Bool topLevelResizableFromNormalHints(Window window)
 
 void applyNormalHintsResizableFromProperty(Window window)
 {
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyNormalHintsResizableFromProperty, window);
+        return;
+    }
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
         return;
 

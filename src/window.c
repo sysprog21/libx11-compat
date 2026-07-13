@@ -26,7 +26,19 @@
  * in window-internal.c, share the one guard.
  */
 
-int XDestroyWindow(Display *display, Window window)
+/* destroyWindow tears down the SDL window/renderer (SDL_DestroyWindow,
+ * SDL_DestroyRenderer), main-thread-only on macOS, and reads the window tree,
+ * so XDestroyWindow/XDestroySubwindows route their whole body to the main
+ * thread when called off it. Shared args struct; on the main thread it is a
+ * direct call.
+ */
+struct destroyArgs {
+    Display *display;
+    Window window;
+    int rc;
+};
+
+static int destroyWindowEntry(Display *display, Window window)
 {
     // https://tronche.com/gui/x/xlib/window/XDestroyWindow.html
     SET_X_SERVER_REQUEST(display, X_DestroyWindow);
@@ -35,6 +47,22 @@ int XDestroyWindow(Display *display, Window window)
         return 0;
     destroyWindow(display, window, True);
     return 1;
+}
+
+static void destroyWindowOnMain(void *p)
+{
+    struct destroyArgs *a = (struct destroyArgs *) p;
+    a->rc = destroyWindowEntry(a->display, a->window);
+}
+
+int XDestroyWindow(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct destroyArgs a = {display, window, 0};
+        runOnMainThread(destroyWindowOnMain, &a);
+        return a.rc;
+    }
+    return destroyWindowEntry(display, window);
 }
 
 static Bool moveChildToTop(Display *display, Window window)
@@ -305,7 +333,7 @@ static void replayDeferredWmProperties(Display *display, Window window)
     applyMotifWmHintsFromProperty(window);
     applyNormalHintsResizableFromProperty(window);
     applyNetWmStateFromProperty(window);
-    applyTransientForRelationship(display, window);
+    applyTransientForRelationship(window);
 
     /* This window may itself be the deferred parent for one or more
      * earlier-realized modal children. Walk SCREEN_WINDOW's top-level siblings
@@ -321,7 +349,7 @@ static void replayDeferredWmProperties(Display *display, Window window)
                 continue;
 
             if (GET_WINDOW_STRUCT(sibling)->deferredTransientParent == window)
-                applyTransientForRelationship(display, sibling);
+                applyTransientForRelationship(sibling);
         }
     }
 }
@@ -566,7 +594,7 @@ Window createInternalWindow(Display *display,
                             depth, clazz, visual, valueMask, attributes, True);
 }
 
-int XDestroySubwindows(Display *display, Window window)
+static int destroySubwindowsImpl(Display *display, Window window)
 {
     SET_X_SERVER_REQUEST(display, X_DestroyWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
@@ -576,6 +604,22 @@ int XDestroySubwindows(Display *display, Window window)
         destroyWindow(display, child, True);
     }
     return 1;
+}
+
+static void destroySubwindowsOnMain(void *p)
+{
+    struct destroyArgs *a = (struct destroyArgs *) p;
+    a->rc = destroySubwindowsImpl(a->display, a->window);
+}
+
+int XDestroySubwindows(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct destroyArgs a = {display, window, 0};
+        runOnMainThread(destroySubwindowsOnMain, &a);
+        return a.rc;
+    }
+    return destroySubwindowsImpl(display, window);
 }
 
 /* Off-main-thread router for the configure choke. configureWindow touches SDL
@@ -620,7 +664,8 @@ int XConfigureWindow(Display *display,
 {
     // https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
     /* TYPE_CHECK runs inside configureWindow on the main thread (see there),
-     * not here on a possibly-worker thread. */
+     * not here on a possibly-worker thread.
+     */
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
     return configureWindowRouted(display, window, value_mask, values);
 }
@@ -1680,7 +1725,8 @@ int XMoveResizeWindow(Display *display,
     /* One combined configure, not XMoveWindow + XResizeWindow: real X applies
      * the geometry atomically (a single ConfigureNotify). Two calls also meant
      * two main-thread handoffs off-thread, exposing a half-applied
-     * position/size between them. */
+     * position/size between them.
+     */
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
     XWindowChanges changes;
     changes.x = x;

@@ -622,6 +622,25 @@ SDL_WRAP(SDL_bool,
           Uint32 *Bmask,
           Uint32 *Amask),
          (format, bpp, Rmask, Gmask, Bmask, Amask))
+/* Non-blocking single-event dequeue. Composed over the wrapped SDL_PumpEvents /
+ * SDL_PeepEvents so it honors the side queue and pipe-drain model, rather than
+ * dlsym'ing the host SDL_PollEvent, which would bypass them. Mirrors real SDL:
+ * pump once, then take one event. A NULL event is a non-removing "is one
+ * pending" probe (SDL_PEEKEVENT), matching SDL; only a real pointer dequeues.
+ */
+int SDLCALL SDL_PollEvent(SDL_Event *event)
+{
+    SDL_PumpEvents();
+    if (!event)
+        return SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_FIRSTEVENT,
+                              SDL_LASTEVENT) > 0
+                   ? 1
+                   : 0;
+    return SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_FIRSTEVENT,
+                          SDL_LASTEVENT) > 0
+               ? 1
+               : 0;
+}
 SDL_WRAP_VOID(SDL_PumpEvents, (void), ())
 int SDLCALL SDL_PushEvent(SDL_Event *event)
 {
