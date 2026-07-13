@@ -20,11 +20,13 @@
 #include <fontconfig/fontconfig.h>
 
 #include "drawing.h"
+#include "display.h"
 #include "events.h"
 #include "gc.h"
 #include "mac-live-resize.h"
 #include "image.h"
 #include "input.h"
+#include "main-dispatch.h"
 #include "path/compose.h"
 #include "path/edges.h"
 #include "path/path.h"
@@ -4751,7 +4753,8 @@ static int test_events(Display *display)
      * and X11 geometry (checked above as 48x40) equals the logical points. True
      * 2x promotion is exercised manually on Retina plus the xwpe resize smoke
      * test; here we lock in the no-op 1.0 path so the pixel==point invariant
-     * cannot silently regress. */
+     * cannot silently regress.
+     */
     CHECK(GET_WINDOW_STRUCT(window)->hiDpiScaleX == 1.0 &&
               GET_WINDOW_STRUCT(window)->hiDpiScaleY == 1.0,
           "HiDPI scale should be 1.0 under the unit-test SDL driver");
@@ -4766,7 +4769,8 @@ static int test_events(Display *display)
      * resizing larger than the current 48x40 backing. A same-size or shrinking
      * resize intentionally preserves the overlap-copied content (avoiding the
      * black flash during the macOS modal resize loop), so it is not the case
-     * that guards this stale-pixel invariant. */
+     * that guards this stale-pixel invariant.
+     */
     resizeEvent.window.data1 = 52;
     resizeEvent.window.data2 = 44;
     CHECK(convertEvent(display, &resizeEvent, &out, True) == 0,
@@ -6335,7 +6339,8 @@ static int test_snap_axis_to_increment(Display *display)
 {
     (void) display; /* pure arithmetic; no X connection needed */
     /* Non-multiple rounds DOWN, anchored at base: base 80 + 8*i. 207 -> 80 +
-     * ((207-80)/8)*8 = 80 + (127/8)*8 = 80 + 15*8 = 200. */
+     * ((207-80)/8)*8 = 80 + (127/8)*8 = 80 + 15*8 = 200.
+     */
     CHECK(libx11CompatSnapAxisToIncrement(207, 8, 80, 40) == 200,
           "snap: 207 with base 80 inc 8 should round down to 200");
     /* Exact multiple is unchanged: 80 + 8*15 = 200. */
@@ -6347,25 +6352,30 @@ static int test_snap_axis_to_increment(Display *display)
           "snap: one below a multiple should round down");
     /* Zero base (PBaseSize absent) anchors at 0: (1730/font)*font. With inc 12,
      * 1730 -> (1730/12)*12 = 144*12 = 1728. This is the xwpe remainder-band
-     * case: a 1730px window snaps to 1728, killing the 2px band. */
+     * case: a 1730px window snaps to 1728, killing the 2px band.
+     */
     CHECK(libx11CompatSnapAxisToIncrement(1730, 12, 0, 12) == 1728,
           "snap: zero-base 1730 inc 12 should snap to 1728");
     /* Minimum clamp: rounding down would fall below min, and min sits above the
      * base+inc floor, so min wins. base 0 inc 20, current 30 -> (30/20)*20 =
-     * 20, below min 50; base+inc is 20, so 50 (>= 20) is the final result. */
+     * 20, below min 50; base+inc is 20, so 50 (>= 20) is the final result.
+     */
     CHECK(libx11CompatSnapAxisToIncrement(30, 20, 0, 50) == 50,
           "snap: result below min should clamp to min");
     /* Base size (i == 0) is reachable: a size in [base, base+inc) rounds down
-     * to base, not up to base+inc. base 80 inc 8, current 84 -> 80 + (4/8)*8
-     * = 80. */
+     * to base, not up to base+inc. base 80 inc 8, current 84 -> 80 + (4/8)*8 =
+     * 80.
+     */
     CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 0) == 80,
           "snap: a size within one increment of base rounds down to base");
     /* Both clamps active: pick the larger (min beats base+inc when min bigger).
-     * base 80 inc 8 gives base+inc 88; min 100 is larger, so 100 wins. */
+     * base 80 inc 8 gives base+inc 88; min 100 is larger, so 100 wins.
+     */
     CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 100) == 100,
           "snap: min above base+inc should take precedence");
     /* Guard: non-positive increment is a no-op (returns current unchanged), so
-     * a client that never published PResizeInc is never resized. */
+     * a client that never published PResizeInc is never resized.
+     */
     CHECK(libx11CompatSnapAxisToIncrement(137, 0, 0, 0) == 137,
           "snap: zero increment should leave the size unchanged");
     return 1;
@@ -10396,7 +10406,8 @@ static int test_grab_release_on_unviewable(Display *display)
 
 /* Records the arguments the live-resize reflow hook was invoked with, so the
  * dispatch seam can be exercised without the macOS run-loop observer or a real
- * SDL window surface (neither exists under the dummy driver used in CI). */
+ * SDL window surface (neither exists under the dummy driver used in CI).
+ */
 static int liveResizeReflowCalls;
 static int liveResizeReflowLastW;
 static int liveResizeReflowLastH;
@@ -10411,12 +10422,14 @@ static void test_live_resize_reflow_recorder(int newPixelWidth,
 
 /* Number of Displays the shim currently has open; XOpenDisplay/XCloseDisplay
  * maintain it. Used below to observe that a re-entrant XCloseDisplay is
- * deferred (count unchanged) and only performed by the drain (count drops). */
+ * deferred (count unchanged) and only performed by the drain (count drops).
+ */
 extern int numDisplaysOpen;
 
 /* Re-entrancy recorder: runs as a live-resize reflow callback, i.e. inside a
  * present frame, and re-enters XCloseDisplay on a throwaway display to exercise
- * the deferred-close seam. */
+ * the deferred-close seam.
+ */
 static Display *liveResizeReentrantCloseTarget;
 static int liveResizeReentrantSawInPresent;
 static int liveResizeReentrantCountDuringClose;
@@ -10431,7 +10444,8 @@ static void test_live_resize_reentrant_close(int newPixelWidth,
     if (liveResizeReentrantCloseTarget) {
         XCloseDisplay(liveResizeReentrantCloseTarget);
         /* If the close were NOT deferred it would have torn the display down
-         * here, dropping the open count; capture it to assert deferral. */
+         * here, dropping the open count; capture it to assert deferral.
+         */
         liveResizeReentrantCountDuringClose = numDisplaysOpen;
     }
 }
@@ -10481,7 +10495,8 @@ static int test_live_resize_reflow_hook(Display *display)
     }
 
     /* Phase 1 re-entrancy / deferred-close seam. Outside any present frame the
-     * in-present flag is false and the drain is a safe no-op. */
+     * in-present flag is false and the drain is a safe no-op.
+     */
     if (libx11CompatInLiveResizePresent()) {
         fprintf(stderr,
                 "in-live-resize-present true outside a present frame\n");
@@ -10492,7 +10507,8 @@ static int test_live_resize_reflow_hook(Display *display)
     /* A reflow callback that re-enters XCloseDisplay (as a client quitting
      * mid-drag would) must NOT tear the display down from inside the observer
      * frame: the shim detects the in-present state and defers. Use a throwaway
-     * second display so the drained close cannot disturb the suite's own. */
+     * second display so the drained close cannot disturb the suite's own.
+     */
     Display *victim = XOpenDisplay(NULL);
     if (victim == NULL) {
         fprintf(stderr,
@@ -10515,7 +10531,8 @@ static int test_live_resize_reflow_hook(Display *display)
         return 0;
     }
     /* Deferred: the re-entrant close left the open count untouched, both at the
-     * moment of the call and after the present frame unwound. */
+     * moment of the call and after the present frame unwound.
+     */
     if (liveResizeReentrantCountDuringClose != openBefore ||
         numDisplaysOpen != openBefore) {
         fprintf(stderr,
@@ -11642,6 +11659,415 @@ static int test_display_lock_threads(void)
     return 1;
 }
 
+/* runOnMainThread must run its thunk on the main event thread (the one that
+ * captured ownership at the first XOpenDisplay), whether the caller is that
+ * thread (inline) or a worker (round-trip through the SDL event queue). The
+ * worker blocks inside runOnMainThread until the main thread drains the queued
+ * event, so the main thread here must pump (XPending) until the thunk has run
+ * or the two deadlock.
+ */
+struct dispatchProbe {
+    SDL_threadID ranOn;
+    SDL_atomic_t ran;
+};
+
+static void dispatchProbeFn(void *p)
+{
+    struct dispatchProbe *probe = (struct dispatchProbe *) p;
+    /* Publish ranOn before ran: a correct dispatch runs this on the main thread
+     * and the main-thread reader sees both, but if a regression ran it on the
+     * worker the SDL_AtomicSet release orders ranOn so the reader still
+     * observes the wrong id deterministically instead of racing it.
+     */
+    probe->ranOn = SDL_ThreadID();
+    SDL_AtomicSet(&probe->ran, 1);
+}
+
+static void *dispatchWorker(void *p)
+{
+    runOnMainThread(dispatchProbeFn, p);
+    return NULL;
+}
+
+static int test_main_dispatch(Display *display)
+{
+    SDL_threadID mainId = SDL_ThreadID();
+
+    /* Inline path: on the main thread, the thunk runs immediately on the caller
+     * with no queueing.
+     */
+    struct dispatchProbe inline_probe = {0, {0}};
+    runOnMainThread(dispatchProbeFn, &inline_probe);
+    CHECK(SDL_AtomicGet(&inline_probe.ran), "inline dispatch did not run");
+    CHECK(inline_probe.ranOn == mainId, "inline dispatch ran on wrong thread");
+
+    /* Round-trip path: a worker's thunk must execute on the main thread, not
+     * the worker.
+     */
+    struct dispatchProbe probe = {0, {0}};
+    pthread_t worker;
+    CHECK(pthread_create(&worker, NULL, dispatchWorker, &probe) == 0,
+          "pthread_create failed");
+    /* Pump until the queued thunk has run. Cap the spin so a broken dispatch
+     * fails instead of hanging the suite.
+     */
+    for (int i = 0; i < 100000 && !SDL_AtomicGet(&probe.ran); i++)
+        XPending(display);
+    /* Assert before joining: a broken dispatch leaves the worker blocked
+     * forever in runOnMainThread, so joining it would hang. CHECK returns on
+     * failure, leaking the blocked worker, which is fine for a test process
+     * about to exit non-zero.
+     */
+    CHECK(SDL_AtomicGet(&probe.ran), "off-thread dispatch never ran");
+    pthread_join(worker, NULL);
+    CHECK(probe.ranOn == mainId,
+          "off-thread thunk did not run on the main thread");
+    return 1;
+}
+
+/* XMapWindow and XStoreName touch SDL, so called from a worker thread they must
+ * route to the main thread rather than touch SDL directly. mapWindowImpl /
+ * storeNameImpl call requireMainEventThread() at their SDL sites, which aborts
+ * if a broken router let the SDL work reach a worker thread. The worker maps
+ * first, then stores a title, which drives XStoreName's mapped-top-level
+ * SDL_SetWindowTitle branch.
+ */
+struct offThreadWinArgs {
+    Display *display;
+    Window window;
+    SDL_atomic_t done;
+};
+
+static void *offThreadWinWorker(void *p)
+{
+    struct offThreadWinArgs *a = (struct offThreadWinArgs *) p;
+    XMapWindow(a->display, a->window);
+    XStoreName(a->display, a->window, "worker-title");
+    /* Raise/resize/move drive the newly-routed SDL branches off-thread; a
+     * broken router trips the requireMainEventThread / configureWindow abort
+     * guards.
+     */
+    XRaiseWindow(a->display, a->window);
+    XResizeWindow(a->display, a->window, 100, 70);
+    XMoveWindow(a->display, a->window, 8, 8);
+    XReparentWindow(a->display, a->window, DefaultRootWindow(a->display), 12,
+                    12);
+    SDL_AtomicSet(&a->done, 1);
+    return NULL;
+}
+
+static int test_off_thread_window_calls(Display *display)
+{
+    Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
+                                     80, 60, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+
+    struct offThreadWinArgs a = {display, win, {0}};
+    pthread_t worker;
+    CHECK(pthread_create(&worker, NULL, offThreadWinWorker, &a) == 0,
+          "pthread_create failed");
+    /* Pump so the routed XMapWindow/XStoreName run on this (main) thread. Cap
+     * the spin so a broken router fails instead of hanging (see
+     * test_main_dispatch).
+     */
+    for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++)
+        XPending(display);
+    CHECK(SDL_AtomicGet(&a.done), "off-thread window calls never completed");
+    pthread_join(worker, NULL);
+
+    /* The routed XMapWindow must actually have mapped the window. */
+    XWindowAttributes attrs;
+    CHECK(XGetWindowAttributes(display, win, &attrs),
+          "XGetWindowAttributes failed");
+    CHECK(attrs.map_state != IsUnmapped,
+          "off-thread XMapWindow did not map the window");
+    XDestroyWindow(display, win);
+    return 1;
+}
+
+/* Regression for the deadlock a naive router would cause: a worker holds
+ * XLockDisplay across a routed XMapWindow/XUnmapWindow. The main thread needs
+ * that same process-global lock to drain the SDL queue and run the handoff, so
+ * unless runOnMainThread sheds the worker's lock while it blocks, the main
+ * thread wedges in LockDisplay and the whole thing hangs. This needs the lock
+ * hooks installed, so XInitThreads must precede the display open; it opens its
+ * own display for that (ignoring the run_test one). XInitThreads is global and
+ * idempotent, so calling it here and again in test_display_lock_threads is
+ * fine.
+ */
+struct lockedMapArgs {
+    Display *display;
+    Window window;
+    SDL_atomic_t done;
+};
+
+static void *lockedMapWorker(void *p)
+{
+    struct lockedMapArgs *a = (struct lockedMapArgs *) p;
+    XLockDisplay(a->display);
+    XMapWindow(a->display, a->window);
+    /* Store under the lock while mapped: drives XStoreName's SDL_SetWindowTitle
+     * branch through the handoff with the display lock held.
+     */
+    XStoreName(a->display, a->window, "locked-title");
+    XUnmapWindow(a->display, a->window);
+    XUnlockDisplay(a->display);
+    SDL_AtomicSet(&a->done, 1);
+    return NULL;
+}
+
+static int test_off_thread_locked_map(void)
+{
+    CHECK(XInitThreads() != 0, "XInitThreads failed");
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay failed");
+    CHECK(display->lock_fns != NULL, "lock hooks not installed");
+
+    Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
+                                     70, 50, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+
+    struct lockedMapArgs a = {display, win, {0}};
+    pthread_t worker;
+    CHECK(pthread_create(&worker, NULL, lockedMapWorker, &a) == 0,
+          "pthread_create failed");
+    /* Pump so the routed calls run here. If the deadlock fix regressed, the
+     * worker holds the lock while blocked and this XPending wedges in
+     * LockDisplay (a hang, surfaced as a CI timeout) rather than returning.
+     */
+    for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++)
+        XPending(display);
+    CHECK(SDL_AtomicGet(&a.done),
+          "worker holding XLockDisplay across a routed map never completed");
+    pthread_join(worker, NULL);
+
+    XDestroyWindow(display, win);
+    XCloseDisplay(display);
+    printf("ok off_thread_locked_map\n");
+    return 1;
+}
+
+/* Exercises the handoff gate under contention: one worker holds XLockDisplay
+ * and routes (map/unmap), which sheds the lock for the handoff, while a second
+ * worker competes for the same lock. The gate must let the main thread run the
+ * thunk and make the contender wait out the holder's critical section, without
+ * deadlocking. A regressed gate either deadlocks (this hangs -> CI/TSan
+ * timeout) or races (TSan flags it). Both workers loop so the shed/reacquire
+ * path is hit repeatedly.
+ */
+struct contendArgs {
+    Display *display;
+    Window window;
+    int routes; /* holder routes under the lock; contender just reads under it
+                 */
+    SDL_atomic_t done;
+};
+
+static void *contendWorker(void *p)
+{
+    struct contendArgs *a = (struct contendArgs *) p;
+    for (int i = 0; i < 50; i++) {
+        XLockDisplay(a->display);
+        if (a->routes) {
+            XMapWindow(a->display, a->window);
+            XUnmapWindow(a->display, a->window);
+        } else {
+            XWindowAttributes attrs;
+            XGetWindowAttributes(a->display, a->window, &attrs);
+        }
+        XUnlockDisplay(a->display);
+    }
+    SDL_AtomicSet(&a->done, 1);
+    return NULL;
+}
+
+static int test_off_thread_lock_contention(void)
+{
+    CHECK(XInitThreads() != 0, "XInitThreads failed");
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay failed");
+    CHECK(display->lock_fns != NULL, "lock hooks not installed");
+
+    Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
+                                     60, 40, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+
+    struct contendArgs holder = {display, win, 1, {0}};
+    struct contendArgs contender = {display, win, 0, {0}};
+    pthread_t t1, t2;
+    CHECK(pthread_create(&t1, NULL, contendWorker, &holder) == 0,
+          "pthread_create failed");
+    CHECK(pthread_create(&t2, NULL, contendWorker, &contender) == 0,
+          "pthread_create failed");
+    /* Pump so the holder's handoffs run on this thread. A deadlocked gate
+     * wedges XPending in LockDisplay (hang -> timeout); a working gate drains
+     * promptly.
+     */
+    for (int i = 0; i < 2000000 && !(SDL_AtomicGet(&holder.done) &&
+                                     SDL_AtomicGet(&contender.done));
+         i++)
+        XPending(display);
+    CHECK(SDL_AtomicGet(&holder.done) && SDL_AtomicGet(&contender.done),
+          "lock-contention workers did not both finish");
+    pthread_join(t1, NULL);
+    pthread_join(t2, NULL);
+
+    XDestroyWindow(display, win);
+    XCloseDisplay(display);
+    printf("ok off_thread_lock_contention\n");
+    return 1;
+}
+
+struct handoffOrderArgs {
+    Display *display;
+    SDL_atomic_t interleaved;
+    SDL_atomic_t handoffDone;
+    SDL_atomic_t normalDone;
+};
+
+static void handoffOrderLockedThunk(void *p)
+{
+    struct handoffOrderArgs *a = (struct handoffOrderArgs *) p;
+    SDL_AtomicSet(&a->handoffDone, 1);
+}
+
+static void handoffOrderNormalThunk(void *p)
+{
+    struct handoffOrderArgs *a = (struct handoffOrderArgs *) p;
+    if (displayLockHandoffPending())
+        SDL_AtomicSet(&a->interleaved, 1);
+    SDL_AtomicSet(&a->normalDone, 1);
+}
+
+static void *handoffOrderNormalWorker(void *p)
+{
+    runOnMainThread(handoffOrderNormalThunk, p);
+    return NULL;
+}
+
+static void *handoffOrderLockedWorker(void *p)
+{
+    struct handoffOrderArgs *a = (struct handoffOrderArgs *) p;
+    XLockDisplay(a->display);
+    runOnMainThread(handoffOrderLockedThunk, p);
+    XUnlockDisplay(a->display);
+    return NULL;
+}
+
+static int test_main_dispatch_handoff_order(void)
+{
+    CHECK(XInitThreads() != 0, "XInitThreads failed");
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay failed");
+    CHECK(display->lock_fns != NULL, "lock hooks not installed");
+
+    struct handoffOrderArgs a = {display, {0}, {0}, {0}};
+    pthread_t normal, locked;
+    CHECK(pthread_create(&normal, NULL, handoffOrderNormalWorker, &a) == 0,
+          "pthread_create failed");
+    SDL_Delay(10);
+    CHECK(pthread_create(&locked, NULL, handoffOrderLockedWorker, &a) == 0,
+          "pthread_create failed");
+    for (int i = 0; i < 10000 && !displayLockHandoffPending(); i++)
+        SDL_Delay(1);
+    CHECK(displayLockHandoffPending(), "locked worker did not enter handoff");
+
+    for (int i = 0; i < 100000 && !(SDL_AtomicGet(&a.handoffDone) &&
+                                    SDL_AtomicGet(&a.normalDone));
+         i++)
+        XPending(display);
+    CHECK(SDL_AtomicGet(&a.handoffDone) && SDL_AtomicGet(&a.normalDone),
+          "handoff-order workers did not both finish");
+    pthread_join(normal, NULL);
+    pthread_join(locked, NULL);
+    CHECK(!SDL_AtomicGet(&a.interleaved),
+          "normal dispatch ran during a display-lock handoff");
+
+    XCloseDisplay(display);
+    printf("ok main_dispatch_handoff_order\n");
+    return 1;
+}
+
+/* Regression for the drained-off-main bug: convertEvent runs on whatever thread
+ * drained the SDL queue, and XPending/XCheckTypedEvent let a SECOND client
+ * thread drain it. A MAIN_DISPATCH thunk touches SDL and must run on the main
+ * thread only, so when a non-main thread drains it, convertEvent must put it
+ * back rather than run it (which would trip requireMainEventThread's abort, or
+ * crash off-main without the guard). One worker routes map/unmap (no
+ * XLockDisplay, so the handoff gate does not cover it); a second worker hammers
+ * XPending to steal the events; the main thread also pumps. A regression aborts
+ * the process; the fix routes every thunk back to the main thread.
+ *
+ * Needs XInitThreads: without it LockDisplay is a no-op and the two concurrent
+ * drains race the compound drain-convert-refill that T1 serialized under
+ * LockDisplay (which is undefined multi-thread Xlib use anyway). So it opens
+ * its own display after XInitThreads, like test_off_thread_locked_map.
+ */
+struct drainRaceArgs {
+    Display *display;
+    Window window;
+    SDL_atomic_t routerDone;
+};
+
+static void *drainRaceRouter(void *p)
+{
+    struct drainRaceArgs *a = (struct drainRaceArgs *) p;
+    for (int i = 0; i < 30; i++) {
+        XMapWindow(a->display, a->window);
+        XUnmapWindow(a->display, a->window);
+    }
+    SDL_AtomicSet(&a->routerDone, 1);
+    return NULL;
+}
+
+static void *drainRaceDrainer(void *p)
+{
+    struct drainRaceArgs *a = (struct drainRaceArgs *) p;
+    /* XCheckTypedEvent drains the SDL queue and runs convertEvent (so it can
+     * steal the router's MAIN_DISPATCH events and exercise the re-push), but
+     * does not flush/present, so it does not add a second off-main
+     * drawWindowDataToScreen racing the main thread's map. (XPending would, via
+     * XFlush -- a separate pre-existing off-main-present concern, not what this
+     * test targets.) */
+    XEvent ev;
+    while (!SDL_AtomicGet(&a->routerDone))
+        XCheckTypedEvent(a->display, ClientMessage, &ev);
+    return NULL;
+}
+
+static int test_off_thread_drain_race(void)
+{
+    CHECK(XInitThreads() != 0, "XInitThreads failed");
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay failed");
+    CHECK(display->lock_fns != NULL, "lock hooks not installed");
+
+    Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
+                                     50, 40, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+
+    struct drainRaceArgs a = {display, win, {0}};
+    pthread_t router, drainer;
+    CHECK(pthread_create(&router, NULL, drainRaceRouter, &a) == 0,
+          "pthread_create failed");
+    CHECK(pthread_create(&drainer, NULL, drainRaceDrainer, &a) == 0,
+          "pthread_create failed");
+    /* Main pumps so the routed thunks run here; the drainer steals some events
+     * and must re-queue them rather than run them off-main.
+     */
+    for (int i = 0; i < 5000000 && !SDL_AtomicGet(&a.routerDone); i++)
+        XPending(display);
+    CHECK(SDL_AtomicGet(&a.routerDone),
+          "router did not complete under a concurrent off-main drainer");
+    pthread_join(router, NULL);
+    pthread_join(drainer, NULL);
+
+    XDestroyWindow(display, win);
+    XCloseDisplay(display);
+    printf("ok off_thread_drain_race\n");
+    return 1;
+}
+
 int main(void)
 {
     /* Race gate: LIBX11_COMPAT_THREAD_TEST_ONLY runs just the threading test so
@@ -11649,6 +12075,28 @@ int main(void)
      * (CFLAGS_EXTRA=-fsanitize=thread LDLIBS_EXTRA=-fsanitize=thread).
      */
     if (getenv("LIBX11_COMPAT_THREAD_TEST_ONLY")) {
+        /* main_dispatch first (no XInitThreads needed): it hops a worker thread
+         * to the main thread, exercising the ownership-globals atomics and the
+         * per-request condvar under TSan.
+         */
+        Display *dispatchDisplay = XOpenDisplay(NULL);
+        if (dispatchDisplay) {
+            if (!test_main_dispatch(dispatchDisplay))
+                failures++;
+            if (!test_off_thread_window_calls(dispatchDisplay))
+                failures++;
+            XCloseDisplay(dispatchDisplay);
+        } else {
+            failures++;
+        }
+        if (!test_off_thread_drain_race())
+            failures++;
+        if (!test_off_thread_locked_map())
+            failures++;
+        if (!test_off_thread_lock_contention())
+            failures++;
+        if (!test_main_dispatch_handoff_order())
+            failures++;
         if (!test_display_lock_threads())
             failures++;
         return failures == 0 ? 0 : 1;
@@ -11713,6 +12161,16 @@ int main(void)
              test_sibling_occlusion_shape_extends_outside_frame);
     run_test("overlap_pointer_routing", test_overlap_pointer_routing);
     run_test("live_resize_reflow_hook", test_live_resize_reflow_hook);
+    run_test("main_dispatch", test_main_dispatch);
+    run_test("off_thread_window_calls", test_off_thread_window_calls);
+    if (!test_off_thread_drain_race())
+        failures++;
+    if (!test_off_thread_locked_map())
+        failures++;
+    if (!test_off_thread_lock_contention())
+        failures++;
+    if (!test_main_dispatch_handoff_order())
+        failures++;
     /* Threading last: XInitThreads is global and permanent (see the note above
      * test_display_lock_threads).
      */

@@ -14,11 +14,17 @@
 #include "image.h"
 #include "input.h"
 #include "input-method.h"
+#include "main-dispatch.h"
 #include "net-atoms.h"
 #include "replay.h"
 #include "replay-target.h"
 #include "visual.h"
 #include "window.h"
+
+/* requireMainEventThread is declared in window-internal.h (pulled in via
+ * window.h) so realizeTopLevelWindow above its definition, and configureWindow
+ * in window-internal.c, share the one guard.
+ */
 
 int XDestroyWindow(Display *display, Window window)
 {
@@ -85,6 +91,11 @@ static Bool hasUnmappedAncestor(Window window)
 
 static Bool realizeTopLevelWindow(Display *display, Window window)
 {
+    /* SDL_CreateWindow and the renderer setup below are main-thread-only on
+     * macOS. Reached only from mapWindowImpl and XReparentWindow, both of which
+     * route to the main thread; this asserts that invariant at the SDL source.
+     */
+    requireMainEventThread("realizeTopLevelWindow");
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (windowStruct->sdlWindow)
         return True;
@@ -103,6 +114,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         windowStruct->eventMask & KeyReleaseMask) {
         flags |= SDL_WINDOW_INPUT_FOCUS;
     }
+
     /* Ask SDL to create a HiDPI-aware backing on hosts that report a fractional
      * or 2x display scale. Without this on Apple Silicon the OS upscales the
      * SDL framebuffer at display time (the "fuzzy non-Retina look" -
@@ -231,7 +243,8 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
             /* Software-present windows have no accelerated renderer, so the
              * SDL_GetWindowSurface binding is safe here. Skip it for
              * accelerated windows: it would bind a framebuffer renderer that
-             * collides with presentRenderer. */
+             * collides with presentRenderer.
+             */
             SDL_Surface *winSurface = SDL_GetWindowSurface(sdlWindow);
             if (winSurface) {
                 physW = winSurface->w;
@@ -245,6 +258,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
                 (double) physW / (double) windowStruct->w;
             windowStruct->hiDpiScaleY =
                 (double) physH / (double) windowStruct->h;
+
             /* The font engine scaled glyphs and metrics by the display-global
              * HiDPI factor probed at XOpenDisplay. That factor and this
              * per-window ratio come from the same host display, so on a
@@ -346,11 +360,13 @@ static void unrealizeTopLevelWindow(Window window)
         windowStruct->glxMetalView = NULL;
     }
 #endif
+
     /* Tear down the per-window accelerated present resources before the SDL
      * window they are bound to. realizeTopLevelWindow rebuilds presentRenderer
      * on the next map, so leaving these live would leak the renderer and tie
      * its streaming texture to a destroyed SDL_Window. Texture first (owned by
-     * the renderer), then the renderer, then the CPU readback scratch. */
+     * the renderer), then the renderer, then the CPU readback scratch.
+     */
     if (windowStruct->presentTexture) {
         SDL_DestroyTexture(windowStruct->presentTexture);
         windowStruct->presentTexture = NULL;
@@ -376,7 +392,8 @@ static void unrealizeTopLevelWindow(Window window)
      * leaving the physical size here would feed physical dims in as logical on
      * remap and grow the window by the HiDPI factor on every unmap/map cycle.
      * The next realize re-derives the scale, so reset it to 1.0. No-op at scale
-     * 1.0 (Linux / CI dummy). */
+     * 1.0 (Linux / CI dummy).
+     */
     if (windowStruct->hiDpiScaleX > 0.0 && windowStruct->hiDpiScaleY > 0.0 &&
         (windowStruct->hiDpiScaleX != 1.0 ||
          windowStruct->hiDpiScaleY != 1.0)) {
@@ -561,15 +578,51 @@ int XDestroySubwindows(Display *display, Window window)
     return 1;
 }
 
+/* Off-main-thread router for the configure choke. configureWindow touches SDL
+ * (SDL_SetWindowPosition/Size) and pumps, so a worker thread runs it on the
+ * main thread. XConfigureWindow / XMoveWindow / XResizeWindow all funnel here;
+ * XMoveResizeWindow inherits via XMoveWindow + XResizeWindow. Internal
+ * event-driven callers already run on the main thread and call configureWindow
+ * directly. The XWindowChanges pointer lives on the caller's stack, valid for
+ * the whole exchange because the worker blocks until the handoff completes.
+ */
+struct configureArgs {
+    Display *display;
+    Window window;
+    unsigned int mask;
+    XWindowChanges *values;
+    Bool rc;
+};
+
+static void configureOnMain(void *p)
+{
+    struct configureArgs *a = (struct configureArgs *) p;
+    a->rc = configureWindow(a->display, a->window, a->mask, a->values);
+}
+
+static Bool configureWindowRouted(Display *display,
+                                  Window window,
+                                  unsigned int mask,
+                                  XWindowChanges *values)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct configureArgs a = {display, window, mask, values, False};
+        runOnMainThread(configureOnMain, &a);
+        return a.rc;
+    }
+    return configureWindow(display, window, mask, values);
+}
+
 int XConfigureWindow(Display *display,
                      Window window,
                      unsigned int value_mask,
                      XWindowChanges *values)
 {
     // https://tronche.com/gui/x/xlib/window/XConfigureWindow.html
+    /* TYPE_CHECK runs inside configureWindow on the main thread (see there),
+     * not here on a possibly-worker thread. */
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
-    TYPE_CHECK(window, WINDOW, display, 0);
-    return configureWindow(display, window, value_mask, values);
+    return configureWindowRouted(display, window, value_mask, values);
 }
 
 Status XReconfigureWMWindow(Display *display,
@@ -583,13 +636,42 @@ Status XReconfigureWMWindow(Display *display,
     return 1;
 }
 
-Status XIconifyWindow(Display *display, Window window, int screen_number)
+static Status iconifyWindowImpl(Display *display,
+                                Window window,
+                                int screen_number)
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XIconifyWindow.html
+    (void) screen_number;
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
+    if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+        requireMainEventThread("XIconifyWindow");
         SDL_MinimizeWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
+    }
     return 1;
+}
+
+/* Off-main-thread router: XIconifyWindow calls SDL_MinimizeWindow. */
+struct iconifyArgs {
+    Display *display;
+    Window window;
+    int screen_number;
+    Status rc;
+};
+
+static void iconifyOnMain(void *p)
+{
+    struct iconifyArgs *a = (struct iconifyArgs *) p;
+    a->rc = iconifyWindowImpl(a->display, a->window, a->screen_number);
+}
+
+Status XIconifyWindow(Display *display, Window window, int screen_number)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct iconifyArgs a = {display, window, screen_number, 0};
+        runOnMainThread(iconifyOnMain, &a);
+        return a.rc;
+    }
+    return iconifyWindowImpl(display, window, screen_number);
 }
 
 Status XSetWMColormapWindows(Display *display,
@@ -668,9 +750,30 @@ int XMapRaised(Display *display, Window window)
     return result;
 }
 
-int XMapWindow(Display *display, Window window)
+/* Enforce the "SDL work runs on the main event thread" invariant
+ * unconditionally (not via assert, which NDEBUG would compile out, turning a
+ * controlled failure into a silent off-thread SDL crash on macOS). A trip means
+ * an SDL-touching entry point reached a worker thread without routing through
+ * runOnMainThread.
+ */
+void requireMainEventThread(const char *who)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        LOG("%s: SDL work reached a non-main thread; aborting instead of "
+            "crashing off-main\n",
+            who);
+        abort();
+    }
+}
+
+static int mapWindowImpl(Display *display, Window window)
 {
     // https://tronche.com/gui/x/xlib/window/XMapWindow.html
+    /* Creates/shows/raises SDL windows and calls drawWindowDataToScreen, all
+     * main-thread-only on macOS; the router below guarantees we are on the main
+     * thread here.
+     */
+    requireMainEventThread("XMapWindow");
     SET_X_SERVER_REQUEST(display, X_MapWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
     if (GET_WINDOW_STRUCT(window)->mapState == Mapped)
@@ -795,7 +898,8 @@ int XMapWindow(Display *display, Window window)
          * 150ms safety cap may still be pending) so this mandatory
          * present-before-show is not swallowed by drawWindowDataToScreen's
          * coalesce early-return, which would leave the freshly mapped window
-         * unpresented. No-op when nothing is coalescing. */
+         * unpresented. No-op when nothing is coalescing.
+         */
         endCoalesceClientRepaint();
         drawWindowDataToScreen();
         SDL_ShowWindow(windowStruct->sdlWindow);
@@ -809,6 +913,34 @@ int XMapWindow(Display *display, Window window)
     printWindowsHierarchy();
 #endif
     return 1;
+}
+
+/* Off-main-thread router: XMapWindow creates and shows SDL windows and mutates
+ * the window tree, so a client worker thread runs the whole body on the main
+ * thread. On the main thread it is a direct call. Internal recursive maps
+ * (XMapSubwindows, mapRequestedChildren) already run on the main thread and so
+ * hit the direct path with no extra round-trip.
+ */
+struct mapWindowArgs {
+    Display *display;
+    Window window;
+    int rc;
+};
+
+static void mapWindowOnMain(void *p)
+{
+    struct mapWindowArgs *a = (struct mapWindowArgs *) p;
+    a->rc = mapWindowImpl(a->display, a->window);
+}
+
+int XMapWindow(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct mapWindowArgs a = {display, window, 0};
+        runOnMainThread(mapWindowOnMain, &a);
+        return a.rc;
+    }
+    return mapWindowImpl(display, window);
 }
 
 /* Core unmap bookkeeping shared by XUnmapWindow and the
@@ -838,6 +970,13 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
     invalidateVisibleRegionForTopLevel(window);
     postVisibilityForWindowAndSiblings(display, window);
     if (windowStruct->sdlWindow) {
+        /* SDL_DestroyRenderer / unrealizeTopLevelWindow are main-thread-only on
+         * macOS. Guard at the SDL source, not just the XUnmapWindow router: the
+         * win_gravity=UnmapGravity configure path also reaches here and does
+         * not route (broader off-thread configure is deferred), so this catches
+         * it too if it ever runs off-main.
+         */
+        requireMainEventThread("XUnmapWindow");
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
         windowStruct->sdlRenderer = NULL;
         if (sdlRenderer) {
@@ -857,9 +996,12 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
     }
 }
 
-int XUnmapWindow(Display *display, Window window)
+static int unmapWindowImpl(Display *display, Window window)
 {
     // https://tronche.com/gui/x/xlib/window/XUnmapWindow.html
+    /* The main-thread guard lives in unmapWindowInternal, at the SDL teardown
+     * itself, so it also protects the win_gravity=UnmapGravity caller.
+     */
     SET_X_SERVER_REQUEST(display, X_UnmapWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
     if (window == SCREEN_WINDOW) {
@@ -870,7 +1012,43 @@ int XUnmapWindow(Display *display, Window window)
     return 1;
 }
 
-int XMapSubwindows(Display *display, Window window)
+/* Off-main-thread router, the teardown counterpart to XMapWindow: an app that
+ * maps a top-level from a worker thread will unmap it from the same thread, so
+ * both must run on the main thread. Routed off-thread today: map, unmap, raise,
+ * store-name. Broader ops (resize, move, configure, reparent) stay
+ * main-thread-only pending the wider lock integration in T1 phase 2; no current
+ * workload drives them off-thread.
+ */
+struct unmapWindowArgs {
+    Display *display;
+    Window window;
+    int rc;
+};
+
+static void unmapWindowOnMain(void *p)
+{
+    struct unmapWindowArgs *a = (struct unmapWindowArgs *) p;
+    a->rc = unmapWindowImpl(a->display, a->window);
+}
+
+int XUnmapWindow(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct unmapWindowArgs a = {display, window, 0};
+        runOnMainThread(unmapWindowOnMain, &a);
+        return a.rc;
+    }
+    return unmapWindowImpl(display, window);
+}
+
+/* XMap/XUnmapSubwindows walk the parent's child array and (un)map each child.
+ * The walk (children.length + a memcpy of GET_CHILDREN) reads the tree, so off
+ * a worker thread it would race a concurrent main-thread reallocation of that
+ * same array (add/remove child). Route the whole body to the main thread so the
+ * walk and the per-child (un)maps run there, serialized with tree mutation; on
+ * the main thread it is a direct call and each child hop takes the inline path.
+ */
+static int mapSubwindowsImpl(Display *display, Window window)
 {
     SET_X_SERVER_REQUEST(display, X_MapWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
@@ -889,7 +1067,7 @@ int XMapSubwindows(Display *display, Window window)
     return 1;
 }
 
-int XUnmapSubwindows(Display *display, Window window)
+static int unmapSubwindowsImpl(Display *display, Window window)
 {
     SET_X_SERVER_REQUEST(display, X_UnmapWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
@@ -908,6 +1086,44 @@ int XUnmapSubwindows(Display *display, Window window)
     return 1;
 }
 
+struct subwindowsArgs {
+    Display *display;
+    Window window;
+    int rc;
+};
+
+static void mapSubwindowsOnMain(void *p)
+{
+    struct subwindowsArgs *a = (struct subwindowsArgs *) p;
+    a->rc = mapSubwindowsImpl(a->display, a->window);
+}
+
+static void unmapSubwindowsOnMain(void *p)
+{
+    struct subwindowsArgs *a = (struct subwindowsArgs *) p;
+    a->rc = unmapSubwindowsImpl(a->display, a->window);
+}
+
+int XMapSubwindows(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct subwindowsArgs a = {display, window, 0};
+        runOnMainThread(mapSubwindowsOnMain, &a);
+        return a.rc;
+    }
+    return mapSubwindowsImpl(display, window);
+}
+
+int XUnmapSubwindows(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct subwindowsArgs a = {display, window, 0};
+        runOnMainThread(unmapSubwindowsOnMain, &a);
+        return a.rc;
+    }
+    return unmapSubwindowsImpl(display, window);
+}
+
 Status XWithdrawWindow(Display *display, Window window, int screen_number)
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XWithdrawWindow.html
@@ -916,11 +1132,17 @@ Status XWithdrawWindow(Display *display, Window window, int screen_number)
     return 1;
 }
 
-int XStoreName(Display *display, Window window, _Xconst char *window_name)
+static int storeNameImpl(Display *display,
+                         Window window,
+                         _Xconst char *window_name)
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XStoreName.html
     TYPE_CHECK(window, WINDOW, display, 0);
     if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+        /* SDL_SetWindowTitle is a main-thread-only call on macOS; the router
+         * below guarantees we are on the main thread by the time we get here.
+         */
+        requireMainEventThread("XStoreName");
         SDL_SetWindowTitle(GET_WINDOW_STRUCT(window)->sdlWindow, window_name);
     } else {
         size_t len = strlen(window_name) + 1;
@@ -936,6 +1158,33 @@ int XStoreName(Display *display, Window window, _Xconst char *window_name)
     return 1;
 }
 
+/* Off-main-thread router: XStoreName touches SDL (SDL_SetWindowTitle) and reads
+ * the window tree, so a client worker thread runs the whole body on the main
+ * thread. On the main thread it is a direct call.
+ */
+struct storeNameArgs {
+    Display *display;
+    Window window;
+    _Xconst char *window_name;
+    int rc;
+};
+
+static void storeNameOnMain(void *p)
+{
+    struct storeNameArgs *a = (struct storeNameArgs *) p;
+    a->rc = storeNameImpl(a->display, a->window, a->window_name);
+}
+
+int XStoreName(Display *display, Window window, _Xconst char *window_name)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct storeNameArgs a = {display, window, window_name, 0};
+        runOnMainThread(storeNameOnMain, &a);
+        return a.rc;
+    }
+    return storeNameImpl(display, window, window_name);
+}
+
 int XSetIconName(Display *display, Window window, _Xconst char *icon_name)
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XSetIconName.html
@@ -949,12 +1198,12 @@ int XSetIconName(Display *display, Window window, _Xconst char *icon_name)
 int XMoveWindow(Display *display, Window window, int x, int y)
 {
     // https://tronche.com/gui/x/xlib/window/XMoveWindow.html
+    /* TYPE_CHECK runs inside configureWindow on the main thread, not here. */
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
-    TYPE_CHECK(window, WINDOW, display, 0);
     XWindowChanges changes;
     changes.x = x;
     changes.y = y;
-    return configureWindow(display, window, CWX | CWY, &changes);
+    return configureWindowRouted(display, window, CWX | CWY, &changes);
 }
 
 int XResizeWindow(Display *display,
@@ -963,21 +1212,26 @@ int XResizeWindow(Display *display,
                   unsigned int height)
 {
     // https://tronche.com/gui/x/xlib/window/XResizeWindow.html
+    /* TYPE_CHECK runs inside configureWindow on the main thread, not here. */
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
-    TYPE_CHECK(window, WINDOW, display, 0);
     XWindowChanges changes;
     changes.width = width;
     changes.height = height;
-    return configureWindow(display, window, CWWidth | CWHeight, &changes);
+    return configureWindowRouted(display, window, CWWidth | CWHeight, &changes);
 }
 
-int XReparentWindow(Display *display,
-                    Window window,
-                    Window parent,
-                    int x,
-                    int y)
+static int reparentWindowImpl(Display *display,
+                              Window window,
+                              Window parent,
+                              int x,
+                              int y)
 {
     // https://tronche.com/gui/x/xlib/window-and-session-manager/XReparentWindow.html
+    /* May realize/unrealize the SDL window and show it (SDL_CreateWindow,
+     * SDL_ShowWindow, drawWindowDataToScreen), main-thread-only on macOS; the
+     * router below guarantees we are on the main thread here.
+     */
+    requireMainEventThread("XReparentWindow");
     SET_X_SERVER_REQUEST(display, X_ReparentWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
     TYPE_CHECK(parent, WINDOW, display, 0);
@@ -1010,6 +1264,7 @@ int XReparentWindow(Display *display,
      * cannot fail under OOM.
      */
     int oldX = windowStruct->x, oldY = windowStruct->y;
+
     /* Reparenting relocates the window's cells in (and possibly between) shared
      * top-level backings, so drop its text stamps for both the old and the new
      * top-level. Flush before detach to resolve the old top-level.
@@ -1021,6 +1276,7 @@ int XReparentWindow(Display *display,
         addChildToWindow(oldParent, window);
         return 0;
     }
+
     windowStruct->x = x;
     windowStruct->y = y;
     flushTextStampsForWindow(window);
@@ -1031,6 +1287,7 @@ int XReparentWindow(Display *display,
      * one.
      */
     invalidateVisibleRegionForTopLevel(window);
+
     /* Reparenting a mapped window under an unmapped parent makes it unviewable
      * without an XUnmapWindow, so release any active grab it held here too.
      */
@@ -1091,6 +1348,38 @@ int XReparentWindow(Display *display,
     return 1;
 }
 
+/* Off-main-thread router: XReparentWindow can realize a new SDL top-level and
+ * show it, so a worker thread runs the whole body on the main thread.
+ */
+struct reparentArgs {
+    Display *display;
+    Window window;
+    Window parent;
+    int x;
+    int y;
+    int rc;
+};
+
+static void reparentOnMain(void *p)
+{
+    struct reparentArgs *a = (struct reparentArgs *) p;
+    a->rc = reparentWindowImpl(a->display, a->window, a->parent, a->x, a->y);
+}
+
+int XReparentWindow(Display *display,
+                    Window window,
+                    Window parent,
+                    int x,
+                    int y)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct reparentArgs a = {display, window, parent, x, y, 0};
+        runOnMainThread(reparentOnMain, &a);
+        return a.rc;
+    }
+    return reparentWindowImpl(display, window, parent, x, y);
+}
+
 int indexInWindowList(Window *windowList, int numWindows, Window window)
 {
     int i;
@@ -1134,21 +1423,50 @@ Bool XTranslateCoordinates(Display *display,
  * window-internal.h which window.c already pulls in via window.h.
  */
 
-
-int XRaiseWindow(Display *display, Window window)
+static int raiseWindowImpl(Display *display, Window window)
 {
     // https://tronche.com/gui/x/xlib/window/XRaiseWindow.html
     SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
     TYPE_CHECK(window, WINDOW, display, 0);
-    if (IS_MAPPED_TOP_LEVEL_WINDOW(window))
+    if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+        requireMainEventThread("XRaiseWindow");
         SDL_RaiseWindow(GET_WINDOW_STRUCT(window)->sdlWindow);
+    }
     moveChildToTop(display, window);
     postVisibilityForWindowAndSiblings(display, window);
+
     /* Re-offer so the replay target module sees the raise: at-root selection
      * picks the most recently offered window as topmost.
      */
     offerReplayTargetForWindow(window);
     return 1;
+}
+
+/* Off-main-thread router. XMapRaised maps then raises, so leaving XRaiseWindow
+ * unrouted would make an off-thread XMapRaised map safely and then crash in
+ * SDL_RaiseWindow on the worker; route it too so the map/raise pair is
+ * coherent.
+ */
+struct raiseWindowArgs {
+    Display *display;
+    Window window;
+    int rc;
+};
+
+static void raiseWindowOnMain(void *p)
+{
+    struct raiseWindowArgs *a = (struct raiseWindowArgs *) p;
+    a->rc = raiseWindowImpl(a->display, a->window);
+}
+
+int XRaiseWindow(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct raiseWindowArgs a = {display, window, 0};
+        runOnMainThread(raiseWindowOnMain, &a);
+        return a.rc;
+    }
+    return raiseWindowImpl(display, window);
 }
 
 int XLowerWindow(Display *display, Window window)
@@ -1359,11 +1677,18 @@ int XMoveResizeWindow(Display *display,
                       unsigned int height)
 {
     // https://tronche.com/gui/x/xlib/window/XMoveResizeWindow.html
-    if (XMoveWindow(display, window, x, y) &&
-        XResizeWindow(display, window, width, height)) {
-        return 1;
-    }
-    return 0;
+    /* One combined configure, not XMoveWindow + XResizeWindow: real X applies
+     * the geometry atomically (a single ConfigureNotify). Two calls also meant
+     * two main-thread handoffs off-thread, exposing a half-applied
+     * position/size between them. */
+    SET_X_SERVER_REQUEST(display, X_ConfigureWindow);
+    XWindowChanges changes;
+    changes.x = x;
+    changes.y = y;
+    changes.width = width;
+    changes.height = height;
+    return configureWindowRouted(display, window,
+                                 CWX | CWY | CWWidth | CWHeight, &changes);
 }
 
 int XSetWindowBorderWidth(Display *display, Window window, unsigned int width)
@@ -1390,6 +1715,7 @@ Status XQueryTree(Display *display,
     *parent_return = GET_PARENT(window);
     size_t total = GET_WINDOW_STRUCT(window)->children.length;
     Window *source = GET_CHILDREN(window);
+
     /* Internal windows (the hidden clipboard requestor) are library plumbing
      * and must not surface to a client walking the tree. Copy only the real
      * ones.
@@ -1397,6 +1723,7 @@ Status XQueryTree(Display *display,
     Window *out = malloc(sizeof(Window) * total);
     if (!out && total > 0)
         return 0;
+
     unsigned int kept = 0;
     for (size_t i = 0; i < total; i++) {
         if (IS_TYPE(source[i], WINDOW) &&

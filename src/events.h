@@ -33,6 +33,13 @@
  * replay engine's focus-at verb.
  */
 #define FOCUS_AT_EVENT_CODE 6
+/* Run an arbitrary thunk on the main event thread. user.data1 carries a
+ * MainDispatchCmd pointer (see src/main-dispatch.c) that lives on the blocked
+ * worker's stack. Off-main-thread Xlib entry points that touch SDL route their
+ * whole body through this so window-tree mutation and SDL calls both run on the
+ * SDL-owning thread; the worker blocks until the main thread has run the thunk.
+ */
+#define MAIN_DISPATCH_EVENT_CODE 7
 
 #define HAS_EVENT_MASK(window, mask) \
     ((GET_WINDOW_STRUCT(window)->eventMask & mask) == mask)
@@ -41,6 +48,12 @@ int initEventPipe(Display *display);
 void closeEventPipe(Display *display);
 void captureMainEventThreadIfUnset(void);
 void releaseMainEventThread(void);
+/* True when the current thread is the captured main event thread, or when no
+ * main thread has been captured yet (still single-threaded). runOnMainThread
+ * and the SDL-touching entry points that route through it test this to decide
+ * whether to run inline or hop to the main thread.
+ */
+Bool libx11CompatOnMainEventThread(void);
 /* Refresh SDL's cached input state (mouse buttons, position, modifiers) when
  * the caller is on the main event thread. XQueryPointer relies on this so a
  * client busy-polling pointer state, like xwpe's button-release wait, observes
@@ -104,8 +117,8 @@ void scaleSdlPointToPixels(Window sdlWindow,
                            int *outY);
 
 /* Snap one axis of a physical-pixel size DOWN to the nearest whole resize
- * increment the ICCCM way: size = base + i * inc for i >= 0. The base size
- * (i == 0) is a valid result and is preserved; the result never drops below the
+ * increment the ICCCM way: size = base + i * inc for i >= 0. The base size (i
+ * == 0) is a valid result and is preserved; the result never drops below the
  * client's declared minimum. A real window manager quantizes user resizes to
  * these increments; there is none here, so the drag-end snap
  * (snapTopLevelToResizeIncrements) replays it. Pure arithmetic, exposed so it

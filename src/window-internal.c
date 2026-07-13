@@ -1344,6 +1344,7 @@ static Bool restackWindow(Display *display,
     Window parent = GET_PARENT(window);
     if (parent == None)
         return True;
+
     Array *children = &GET_WINDOW_STRUCT(parent)->children;
     ssize_t index = findInArray(children, (void *) window);
     if (index < 0)
@@ -1455,7 +1456,8 @@ static void postMovedWindowExposure(Display *display, Window window)
 /* Returns True when it has already posted a full-window Expose for a mapped
  * top-level window, so the caller can skip its own redundant full-window
  * Expose. False otherwise (non-top-level, or the band-only top-left path where
- * the caller's full-window Expose is still wanted). */
+ * the caller's full-window Expose is still wanted).
+ */
 static Bool postResizeExpose(Display *display,
                              Window window,
                              int oldWidth,
@@ -1522,7 +1524,8 @@ static Bool postResizeExpose(Display *display,
 
     /* Mapped top-level: the growth-band exposure has the same top-left anchor
      * assumption as the band clear above, so for a bit gravity this path does
-     * not model, expose the whole window instead of the right/bottom bands. */
+     * not model, expose the whole window instead of the right/bottom bands.
+     */
     if (clearWholeWindow) {
         SDL_Rect fullWindow = {0, 0, (int) windowStruct->w,
                                (int) windowStruct->h};
@@ -1593,11 +1596,12 @@ void resizeWindowTexture(Window window)
                            GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(windowRenderer);
+
     /* Carry the overlapping region of the previous backing into the new one
-     * before the client repaints. On a live resize the client (e.g. xwpe)
-     * needs a few frames to reflow and redraw its grid at the new size; without
-     * this copy the freshly-cleared backing shows the background colour for
-     * those frames, which reads as a flicker/flash during the drag. Copying the
+     * before the client repaints. On a live resize the client (e.g. xwpe) needs
+     * a few frames to reflow and redraw its grid at the new size; without this
+     * copy the freshly-cleared backing shows the background colour for those
+     * frames, which reads as a flicker/flash during the drag. Copying the
      * common top-left region keeps the last-good content on screen until the
      * repaint lands. Only pixels outside the overlap stay at the background.
      */
@@ -1709,8 +1713,23 @@ Bool configureWindow(Display *display,
                      unsigned long value_mask,
                      XWindowChanges *values)
 {
+    /* Touches SDL (SDL_SetWindowPosition/Size) and pumps. Reached only via
+     * configureWindowRouted and internal main-thread event handling, so assert
+     * the main-thread invariant at the SDL source.
+     */
+    requireMainEventThread("configureWindow");
+    /* Validate here, on the main thread, rather than in the XConfigureWindow /
+     * XMoveWindow / XResizeWindow entry points: those run on the calling
+     * worker, where reading the window's WindowStruct would race a concurrent
+     * main-thread destroy. Running it on main serializes it with tree mutation.
+     * Side effect (deliberate): on a bad window the client X error handler that
+     * TYPE_CHECK's handleError dispatches now runs on the main thread rather
+     * than the calling worker. Client handlers are thread-agnostic in practice.
+     */
+    TYPE_CHECK(window, WINDOW, display, False);
     if (window == SCREEN_WINDOW)
         return True;
+
     /* A move, resize, or restack relocates this window's cells in the shared
      * top-level backing, so any text stamps recorded for them are now stale.
      */
@@ -1788,14 +1807,14 @@ Bool configureWindow(Display *display,
                  * suppressor and pump synchronously to let the filter drop the
                  * echoed SDL events before disarming. Without this a client
                  * XResizeWindow would deliver two ConfigureNotifies.
-                 */
-                /* width/height are physical X11 pixels (top-levels are promoted
+                 * width/height are physical X11 pixels (top-levels are promoted
                  * to the backing size). SDL_SetWindowSize/GetWindowSize speak
                  * logical points, so convert through the cached per-axis HiDPI
                  * scale the same way snapTopLevelToResizeIncrements does;
                  * otherwise a 2x-Retina XResizeWindow would request a window
                  * twice the intended size and then record the logical size as
-                 * physical. No-op at scale 1.0 (Linux / CI dummy). */
+                 * physical. No-op at scale 1.0 (Linux / CI dummy).
+                 */
                 double scaleX = windowStruct->hiDpiScaleX > 0.0
                                     ? windowStruct->hiDpiScaleX
                                     : 1.0;
@@ -1864,7 +1883,8 @@ Bool configureWindow(Display *display,
                 postResizeExpose(display, window, oldWidth, oldHeight);
             /* Skip this full-window Expose when postResizeExpose already
              * emitted one (the mapped top-level whole-window-clear path), so
-             * the client does not receive two identical full-window exposes. */
+             * the client does not receive two identical full-window exposes.
+             */
             if (isMappedTopLevelWindow && !postedFullWindowExpose) {
                 SDL_Rect fullWindow = {
                     0,

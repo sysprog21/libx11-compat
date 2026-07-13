@@ -22,10 +22,12 @@ void initWindowStruct(WindowStruct *windowStruct,
                       Pixmap backgroundPixmap);
 Bool initScreenWindow(Display *display);
 Window getWindowFromId(Uint32 sdlWindowId);
+
 /* Resolve a window's effective background colour, walking up through
  * ParentRelative backgrounds, with an opaque alpha forced on. Used by the
  * present path to fill the margin newly exposed during a live host resize so it
- * shows a stable background colour instead of flickering garbage. */
+ * shows a stable background colour instead of flickering garbage.
+ */
 unsigned long resolvedWindowBackgroundColor(Window window);
 size_t collectMappedOverrideRedirectWindows(Window *out, size_t max);
 void destroyScreenWindow(Display *display);
@@ -79,6 +81,13 @@ Bool configureWindow(Display *display,
                      Window window,
                      unsigned long value_mask,
                      XWindowChanges *values);
+
+/* Abort unless running on the main event thread. Enforces the "SDL work runs on
+ * the main thread" invariant at the SDL sources in the window layer;
+ * unconditional (not assert) so NDEBUG cannot turn a controlled abort into a
+ * silent off-main SDL crash on macOS. who names the caller for the diagnostic.
+ */
+void requireMainEventThread(const char *who);
 Window createInternalWindow(Display *display,
                             Window parent,
                             int x,

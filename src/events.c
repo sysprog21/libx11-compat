@@ -6,7 +6,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <X11/Xlib.h>
-#include "X11/XKBlib.h"
+#include <X11/XKBlib.h>
+#include <X11/Xlibint.h>
+
 #include "sdl-compat.h"
 #include "events.h"
 #include "selection.h"
@@ -23,10 +25,10 @@
 #include "mac-live-resize.h"
 #include "window-internal.h"
 #include "replay-target.h"
+#include "main-dispatch.h"
 #include "snapshot.h"
 #include "state-snapshot.h"
 #include "timeline.h"
-#include "X11/Xlibint.h"
 
 static int eventFds[2] = {-1, -1};
 #define READ_EVENT_FD eventFds[0]
@@ -61,11 +63,20 @@ static SDL_mutex *eventQueueLengthLock = NULL;
  *
  * Lock order (outermost first); acquire only left-to-right, never the reverse:
  *   LockDisplay > eventPipeGlobalLock > trackedDisplaysLock
- *     > { putBackEventsLock, eventQueueLengthLock }
- * The last two are leaves and are never held at the same time (each is taken
- * and released within a single helper). onSdlEvent (the SDL-thread producer)
- * takes only eventQueueLengthLock and never LockDisplay, which is what keeps
- * the coarse lock off the SDL thread and the whole order acyclic.
+ *     > { putBackEventsLock, eventQueueLengthLock, activePointerWindowLock }
+ * Those three are leaves and are never held at the same time (each is taken and
+ * released within a single helper). onSdlEvent (the SDL-thread producer) takes
+ * only eventQueueLengthLock and never LockDisplay, which is what keeps the
+ * coarse lock off the SDL thread and the whole order acyclic.
+ *
+ * The T2 off-main-thread dispatch adds two more, both below LockDisplay and
+ * never inverting it: LockDisplay is now the DisplayLock monitor in
+ * src/display.c (its internal monitor mutex is a leaf, held only inside
+ * compat{Lock,Unlock}Display and the handoff helpers, never across other
+ * locks); and each runOnMainThread call has a per-request cmd mutex/cond on the
+ * worker stack, taken only after the worker has shed the display lock, so it is
+ * a strict leaf that never nests under LockDisplay. The mainEventThreadId
+ * ownership id is a lock-free atomic and takes no part in the order.
  */
 static SDL_mutex *putBackEventsLock = NULL;
 static SDL_mutex *trackedDisplaysLock = NULL;
@@ -136,24 +147,50 @@ static Bool pointerHoverIsWithin(Window window);
  */
 
 /* SDL_PumpEvents is only safe on the thread that owns SDL windows. XOpenDisplay
- * captures that owner before client threads can issue Xlib requests.
+ * captures that owner before client threads can issue Xlib requests. Written on
+ * the main thread at display open/close, read from client worker threads
+ * (onMainEventThread), so accessed atomically. One field, not an id plus a
+ * captured flag: 0 means "not captured yet" (still single-threaded). A single
+ * atomic id has no two-field ordering to get wrong -- the release store
+ * publishes it, the acquire load consumes it. Matches the __atomic style
+ * already used for request / lastEventSerial. 0 is never a real thread id, and
+ * the pre-atomic code already used it as the unset sentinel.
  */
 static SDL_threadID mainEventThreadId = 0;
-static Bool mainEventThreadCaptured = False;
 
 void captureMainEventThreadIfUnset(void)
 {
-    if (!mainEventThreadCaptured) {
-        mainEventThreadId = SDL_ThreadID();
-        mainEventThreadCaptured = True;
-    }
+    SDL_threadID self = SDL_ThreadID();
+    SDL_threadID expected = 0;
+
+    /* Set only while unset; if two threads race their first XOpenDisplay, the
+     * CAS deterministically anoints one as the owner.
+     */
+    __atomic_compare_exchange_n(&mainEventThreadId, &expected, self, False,
+                                __ATOMIC_RELEASE, __ATOMIC_RELAXED);
 }
 
 void releaseMainEventThread(void)
 {
-    /* Allow a later XOpenDisplay to capture a new owner thread. */
-    mainEventThreadCaptured = False;
-    mainEventThreadId = 0;
+    /* Allow a later XOpenDisplay to capture a new owner thread. Precondition
+     * (the standard Xlib one): no client thread issues Xlib calls during
+     * XCloseDisplay. Resetting the id to 0 means a straggler off-thread call
+     * after this point would see onMainEventThread() True and run its SDL work
+     * inline on the worker; that is a client teardown-ordering bug, not one
+     * this layer defends against.
+     */
+    __atomic_store_n(&mainEventThreadId, 0, __ATOMIC_RELEASE);
+}
+
+static Bool onMainEventThread(void)
+{
+    SDL_threadID owner = __atomic_load_n(&mainEventThreadId, __ATOMIC_ACQUIRE);
+    return owner == 0 || SDL_ThreadID() == owner;
+}
+
+Bool libx11CompatOnMainEventThread(void)
+{
+    return onMainEventThread();
 }
 
 /* The pump-wake timer (xtWakeTimerCallback) writes a single byte to the event
@@ -187,16 +224,18 @@ static void consumePumpWakeByte(void)
 
 void pumpEventsSafe(void)
 {
-    if (!mainEventThreadCaptured) {
-        /* Pre-initialization callers are still single-threaded. */
-        SDL_PumpEvents();
-        return;
-    }
-    if (SDL_ThreadID() != mainEventThreadId) {
+    /* onMainEventThread() is True both pre-capture (single-threaded, safe to
+     * pump) and on the captured owner thread; only a captured-but-wrong thread
+     * is turned away.
+     */
+    if (!onMainEventThread()) {
         LOG("SDL_PumpEvents skipped: called from thread %lu, main is %lu\n",
-            (unsigned long) SDL_ThreadID(), (unsigned long) mainEventThreadId);
+            (unsigned long) SDL_ThreadID(),
+            (unsigned long) __atomic_load_n(&mainEventThreadId,
+                                            __ATOMIC_RELAXED));
         return;
     }
+
     /* Never pump Cocoa while a live-resize present frame is unwinding. The
      * frame runs the client reflow (xwpe), whose repaint reaches XQueryPointer
      * / XFlush / XEventsQueued - each of which normally calls SDL_PumpEvents.
@@ -208,11 +247,13 @@ void pumpEventsSafe(void)
      * _resizeWithEvent). The observer already presents the frame; a nested pump
      * is never needed inside it and always unsafe, so suppress it. Still drain
      * any wake byte queued during the reflow, otherwise the pipe stays readable
-     * and keeps re-triggering the event loop after the drag ends. */
+     * and keeps re-triggering the event loop after the drag ends.
+     */
     if (libx11CompatInLiveResizePresent()) {
         consumePumpWakeByte();
         return;
     }
+
     SDL_PumpEvents();
     consumePumpWakeByte();
 }
@@ -238,6 +279,7 @@ static Uint32 xtWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
      */
     if (WRITE_EVENT_FD < 0)
         return interval;
+
     if (SDL_AtomicCAS(&pumpWakePending, 0, 1)) {
         char buffer = 'e';
         if (write(WRITE_EVENT_FD, &buffer, sizeof(buffer)) != sizeof(buffer))
@@ -523,6 +565,7 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
             event->window.windowID == SDL_GetWindowID(screenSdlWindow)) {
             return 0;
         }
+
         /* The screen (root) window is backed by an offscreen software renderer
          * and never owns an SDL_Window; every on-screen SDL window belongs to a
          * mapped top-level child (see realizeTopLevelWindow), so
@@ -537,10 +580,10 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
          * DISPLAY_CHANGED must also reach it on the SDL3 backend: moving a
          * window to a monitor with a different backing scale changes the
          * physical pixel geometry with no RESIZED, and the handler there
-         * re-promotes the window and reflows the client. Let those through,
-         * and only when they map to a known top-level; keep dropping
-         * everything else (MOVED included - a bare move needs no client reflow
-         * and, arriving asynchronously here, would inject spurious
+         * re-promotes the window and reflows the client. Let those through, and
+         * only when they map to a known top-level; keep dropping everything
+         * else (MOVED included - a bare move needs no client reflow and,
+         * arriving asynchronously here, would inject spurious
          * ConfigureNotifies).
          */
         Uint32 sub = XC_WINDOW_SUBEVENT(event);
@@ -560,6 +603,7 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
             Window resizeWindow = getWindowFromId(event->window.windowID);
             if (resizeWindow == None)
                 return 0;
+
             /* Drop the SDL resize echo of a client-initiated XResizeWindow:
              * configureWindow arms this flag around its SDL_SetWindowSize and
              * already posts the ConfigureNotify itself, so converting the
@@ -572,6 +616,7 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
             WindowStruct *rws = GET_WINDOW_STRUCT(resizeWindow);
             if (SDL_AtomicGet(&rws->suppressSdlResizeEcho))
                 return 0;
+
             /* The drag-end increment snap cannot pump (it runs inside the
              * present frame), so instead of the flag it records the exact
              * logical size it wrote via SDL_SetWindowSize. Drop any echo
@@ -614,7 +659,8 @@ static SDL_atomic_t liveResizeInPresent = {0};
  * teardown that would be unsafe from inside the CFRunLoop observer. The CAS on
  * liveResizeInPresent already prevents true re-entry, but increment/decrement
  * (not set 1/0) keeps the counter defensively correct and cheap.
- * Main-thread-only. */
+ * Main-thread-only.
+ */
 static int liveResizePresentDepth = 0;
 
 int libx11CompatInLiveResizePresent(void)
@@ -628,11 +674,12 @@ int libx11CompatInLiveResizePresent(void)
  * it on every drag tick makes the drag lurch. Instead we coalesce: while the
  * window keeps changing size we only re-present the last good frame (cheap,
  * ~5ms, so the drag stays fluid), and we run the costly reflow only once the
- * size has SETTLED (paused for a few ticks) or at drag end (forceReflow).
- * The tracking state (previous-tick pixel size + settle counter) lives per
+ * size has SETTLED (paused for a few ticks) or at drag end (forceReflow). The
+ * tracking state (previous-tick pixel size + settle counter) lives per
  * top-level on the WindowStruct, so two windows resizing at once do not
  * overwrite each other's coalesce state and each settles on its own. Reset when
- * a fresh drag arms the observer. Main-thread-only. */
+ * a fresh drag arms the observer. Main-thread-only.
+ */
 void libx11CompatResetLiveResizeCoalesce(void)
 {
     if (SCREEN_WINDOW == None || !IS_TYPE(SCREEN_WINDOW, WINDOW))
@@ -642,6 +689,7 @@ void libx11CompatResetLiveResizeCoalesce(void)
     for (size_t i = 0; i < count; i++) {
         if (!IS_TYPE(children[i], WINDOW))
             continue;
+
         WindowStruct *ws = GET_WINDOW_STRUCT(children[i]);
         ws->liveResizeLastSeenW = 0;
         ws->liveResizeLastSeenH = 0;
@@ -650,7 +698,8 @@ void libx11CompatResetLiveResizeCoalesce(void)
          * set: if that snap's echo was coalesced away the key never matched,
          * and a stale key could otherwise drop a genuine resize of this new
          * drag that happens to land on the same size. The snap sets it fresh
-         * each time. */
+         * each time.
+         */
         ws->snapEchoW = 0;
         ws->snapEchoH = 0;
     }
@@ -679,12 +728,14 @@ void libx11CompatInvokeLiveResizeReflow(int newPixelWidth, int newPixelHeight)
     LibX11CompatLiveResizeReflowFn fn = liveResizeReflowFn;
     if (!fn)
         return;
+
     /* Bracket the callback with the same in-present depth the observer path
      * sets around reflow(), so this test seam faithfully reproduces the
      * re-entrancy state a client callback sees
      * (libx11CompatInLiveResizePresent() true). The observer path additionally
      * drains any deferred close as its last action; callers of this seam drain
-     * explicitly via libx11CompatRunDeferredDisplayClose. */
+     * explicitly via libx11CompatRunDeferredDisplayClose.
+     */
     liveResizePresentDepth++;
     fn(newPixelWidth, newPixelHeight);
     liveResizePresentDepth--;
@@ -695,7 +746,8 @@ void libx11CompatInvokeLiveResizeReflow(int newPixelWidth, int newPixelHeight)
  * survives a hang, and every line is stamped with a monotonic millisecond clock
  * so ticks-per-second and per-phase costs can be read off directly. No-op and
  * zero cost when the env var is unset. Main-thread-only (matches the observer
- * path), so the lazy init needs no lock. */
+ * path), so the lazy init needs no lock.
+ */
 static uint64_t liveResizeNowNs(void)
 {
     struct timespec now;
@@ -791,28 +843,34 @@ int libx11CompatPresentDuringLiveResize(void)
  * this rounds the SDL window DOWN to the nearest whole increment (anchored at
  * base/min the ICCCM way) so the settled window is an exact number of cells and
  * no band survives. No-op unless the top-level published PResizeInc, so clients
- * that never set it are unaffected. Returns True if it changed the SDL size.
+ * that never set it are unaffected.
+ *
+ * Returns True if it changed the SDL size.
  *
  * The increments are cached in physical pixels (like ws->w/h); SDL sizing is in
  * logical points, so the snapped pixel size is divided by the per-axis HiDPI
  * scale before SDL_SetWindowSize. Uses the same echo-suppress + pump the
- * client-initiated resize path (configureWindow) uses so the snap does not
- * emit a duplicate ConfigureNotify.
+ * client-initiated resize path (configureWindow) uses so the snap does not emit
+ * a duplicate ConfigureNotify.
  */
 int libx11CompatSnapAxisToIncrement(int current, int inc, int base, int min)
 {
     if (inc <= 0)
         return current;
     int b = base > 0 ? base : 0;
+
     /* ICCCM size = base + i*inc for i >= 0. Round the step count down but never
      * below 0, so the base size itself (i == 0) is reachable instead of being
-     * bumped up a whole increment. */
+     * bumped up a whole increment.
+     */
     int steps = (current - b) / inc;
     if (steps < 0)
         steps = 0;
     int snapped = b + steps * inc;
+
     /* Honor the client's declared minimum, then guard against a degenerate
-     * non-positive window when the base is 0 and the size rounds to 0. */
+     * non-positive window when the base is 0 and the size rounds to 0.
+     */
     if (snapped < min)
         snapped = min;
     if (snapped <= 0)
@@ -851,7 +909,8 @@ static Bool snapTopLevelToResizeIncrements(Window window)
      * SIZE_CHANGED posts) so the deferred echo does not escape as a redundant
      * ConfigureNotify, while a genuine resize to any other size still passes.
      * The size key is self-limiting - the filter clears it on the matching
-     * RESIZED echo - and each snap overwrites it, so it cannot go stale. */
+     * RESIZED echo - and each snap overwrites it, so it cannot go stale.
+     */
     ws->snapEchoW = snappedLogicalW;
     ws->snapEchoH = snappedLogicalH;
     SDL_SetWindowSize(ws->sdlWindow, snappedLogicalW, snappedLogicalH);
@@ -862,7 +921,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
 {
     if (SCREEN_WINDOW == None || !IS_TYPE(SCREEN_WINDOW, WINDOW))
         return 0;
-    if (mainEventThreadCaptured && SDL_ThreadID() != mainEventThreadId)
+    if (!onMainEventThread())
         return 0;
     if (!SDL_AtomicCAS(&liveResizeInPresent, 0, 1)) {
         LR_TRACE("present\tre-entry-skipped");
@@ -876,6 +935,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
     size_t count = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
     Bool anyPending = False;
     Bool geometryChanged = False;
+
     /* Per-window, per-tick gate (reset at the top of each window iteration):
      * only mark a window for present (and thus incur the costly full-window
      * readback in drawWindowDataToScreen) when this tick actually produced new
@@ -885,12 +945,14 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
      * settled tick has nothing new to show, so re-presenting it only burns
      * ~40ms readback for an identical frame; skipping it keeps the run loop
      * from backing up on release, so the final snapped frame lands immediately
-     * instead of behind a queue of redundant presents. */
+     * instead of behind a queue of redundant presents.
+     */
     Bool presentThisTick = False;
     for (size_t i = 0; i < count; i++) {
         Window window = children[i];
         if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
             continue;
+
         presentThisTick = False;
         if (!reflow) {
             /* Mode 1 (no reflow hook): the client's draw loop is blocked for
@@ -907,6 +969,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
              */
             presentThisTick = True;
         }
+
         if (reflow) {
             /* At drag end, snap this top-level to whole resize increments the
              * way a real WM would, so the client settles on a whole-cell size.
@@ -914,9 +977,11 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
              * reads the snapped size and repaints the client to match, so the
              * snapped geometry and the client content stay consistent. Mid-drag
              * (forceReflow == 0) the window tracks the cursor freely; the
-             * settle happens once on release. */
+             * settle happens once on release.
+             */
             if (forceReflow)
                 snapTopLevelToResizeIncrements(window);
+
             /* The drag-end increment snap above ran for this top-level, so the
              * size read here already reflects the quantized geometry. Derive
              * the live drag size the SAME way the RESIZED ConfigureNotify
@@ -937,6 +1002,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
             SDL_GetWindowSize(ws->sdlWindow, &logicalW, &logicalH);
             int pixelW = (int) lround((double) logicalW * ws->hiDpiScaleX);
             int pixelH = (int) lround((double) logicalH * ws->hiDpiScaleY);
+
             /* Skip reflow at degenerate drag sizes. When a border is dragged
              * past the opposite edge macOS briefly reports a 1-point (a few
              * pixels) dimension; xwpe's reflow divides the area into its cell
@@ -949,12 +1015,14 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
             if (pixelW >= LIVE_RESIZE_MIN_PX && pixelH >= LIVE_RESIZE_MIN_PX) {
                 int oldWidth = 0, oldHeight = 0;
                 GET_WINDOW_DIMS(window, oldWidth, oldHeight);
+
                 /* Coalesce: track whether the window is still moving (its pixel
                  * size differs from the previous tick) and how long it has held
                  * one size. While it keeps moving we skip the costly reflow and
                  * only re-present, so the drag stays fluid; we reflow once the
                  * size settles (SETTLE_TICKS at rest) or at drag end
-                 * (forceReflow). ~16ms/tick, so ~2 ticks is a ~30ms pause. */
+                 * (forceReflow). ~16ms/tick, so ~2 ticks is a ~30ms pause.
+                 */
                 enum { LIVE_RESIZE_SETTLE_TICKS = 2 };
                 Bool moving = (pixelW != ws->liveResizeLastSeenW ||
                                pixelH != ws->liveResizeLastSeenH);
@@ -970,16 +1038,20 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
                 Bool doReflow = backingStale &&
                                 (forceReflow || ws->liveResizeSettleTicks >=
                                                     LIVE_RESIZE_SETTLE_TICKS);
+
                 /* Re-present only when something changed: a reflow will land
                  * new content, or the window is still moving so the upscaled
                  * stale backing must be refreshed, or this is the forced
                  * drag-end settle. A quiet, already-settled tick reuses the
-                 * identical frame, so skip its readback. */
+                 * identical frame, so skip its readback.
+                 */
                 if (doReflow || moving || forceReflow)
                     presentThisTick = True;
+
                 /* window=SDL logical points, backing=physical-pixel target the
                  * client draws into. A backing lagging the window is exactly
-                 * the un-sourced band (black right/bottom edge). */
+                 * the un-sourced band (black right/bottom edge).
+                 */
                 LR_TRACE(
                     "geom\twin_pt=%dx%d px=%dx%d backing=%dx%d "
                     "settle=%d%s%s",
@@ -991,6 +1063,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
                     ws->h = (unsigned int) pixelH;
                     uint64_t rtStart = liveResizeNowNs();
                     resizeWindowTexture(window);
+
                     /* The top-level's own cached visibleRegion is its (0,0,w,h)
                      * frame; it goes stale the moment ws->w/h grow here. The
                      * client's reflow copies its backbuf into the window
@@ -998,8 +1071,10 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
                      * that stale (smaller) region, so the newly-grown
                      * columns/rows would be clipped away and stay black.
                      * Invalidate it exactly as the drag-end RESIZED
-                     * ConfigureNotify path does. */
+                     * ConfigureNotify path does.
+                     */
                     invalidateVisibleRegionForTopLevel(window);
+
                     /* Hold the callback's intermediate XFlush presents so only
                      * its finished frame lands this tick.
                      */
@@ -1014,7 +1089,8 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
             } else {
                 /* Degenerate drag size: skip the reflow but re-present the
                  * last-good frame so the window stays visible while the border
-                 * is dragged past the opposite edge. */
+                 * is dragged past the opposite edge.
+                 */
                 presentThisTick = True;
                 LR_TRACE("geom\tdegenerate px=%dx%d (skip reflow)", pixelW,
                          pixelH);
@@ -1023,12 +1099,14 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
         /* Only incur the present readback when this tick produced new content.
          * A quiet, already-settled reflow tick reuses the identical frame, so
          * skipping its full-window readback keeps idle ticks near-free and lets
-         * the run loop drain instantly on release. */
+         * the run loop drain instantly on release.
+         */
         if (presentThisTick) {
             markWindowNeedsPresent(window);
             anyPending = True;
         }
     }
+
     if (anyPending) {
         /* Release the coalesce gate and present the finished frame. When a
          * reflow ran this tick, this flushes the client's complete repaint;
@@ -1041,10 +1119,12 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
         LR_TRACE("present\tdraw_ms=%.3f",
                  (double) (liveResizeNowNs() - presentStart) / 1.0e6);
     }
+
     /* Clear the in-present flags before draining any deferred close so the real
      * XCloseDisplay runs with liveResizePresentDepth back at 0. The drain is
      * the LAST action so the whole body (including the reflow callback) is
-     * bracketed by a nonzero depth. */
+     * bracketed by a nonzero depth.
+     */
     liveResizePresentDepth--;
     SDL_AtomicSet(&liveResizeInPresent, 0);
     libx11CompatRunDeferredDisplayClose();
@@ -1198,8 +1278,16 @@ static int drainSdlEventsToPutBack(Display *display)
      * and resetEventWakeups writes the wrong number of pipe wake bytes. The
      * lock is recursive and only live under XInitThreads, so convertEvent
      * nesting back through here is safe and a single-threaded client pays
-     * nothing. No pump runs here, so the lock is never held across a re-entrant
-     * SDL call.
+     * nothing.
+     *
+     * The convertEvent loop below can run a MAIN_DISPATCH thunk (a routed Xlib
+     * body, e.g. mapWindowImpl) that pumps SDL / presents, so unlike the
+     * original design this lock CAN be held across a re-entrant SDL call. That
+     * is safe: the lock is recursive and this (main) thread is its owner, so
+     * the thunk's nested Xlib entries just re-lock as the same owner, and the
+     * main thread never blocks in runOnMainThread from here (it runs the thunk
+     * inline). A future refinement could hoist such thunks out to the top-level
+     * XNextEvent loop (which holds no lock) via the existing re-queue path.
      */
     LockDisplay(display);
     int qlen = 0;
@@ -1455,6 +1543,7 @@ static Window selectPointerEventWindow(Display *display,
         GET_WINDOW_POS(clickTopLevel, tlx, tly);
         GET_WINDOW_DIMS(clickTopLevel, tlw, tlh);
         int localX = rootX - tlx, localY = rootY - tly;
+
         /* Only constrain to the reported top-level when the point is actually
          * inside it. A drag-release outside the captured window arrives with
          * that window's id but out-of-bounds coordinates; fall through to the
@@ -1795,6 +1884,7 @@ void discardQueuedEventsForWindow(Display *display, Window window)
         link = &node->next;
     }
     unlockPutBackEvents();
+
     while (removedPutBackEvents-- > 0)
         READ_EVENT_IN_PIPE(display);
 
@@ -1949,6 +2039,7 @@ int initEventPipe(Display *display)
     if (isFirstDisplay && xtWakeTimer == 0 && shouldStartXtWakeTimer()) {
         SDL_AtomicSet(&pumpWakePending, 0);
         xtWakeTimer = SDL_AddTimer(33, xtWakeTimerCallback, NULL);
+
         /* Keep the screen sharp during the macOS live-resize modal loop, where
          * SDL delivers no events (see libx11CompatPresentDuringLiveResize). A
          * run-loop observer drives the present on each drag tick. No-op on
@@ -2006,9 +2097,11 @@ void closeEventPipe(Display *display)
             SDL_RemoveTimer(xtWakeTimer);
             xtWakeTimer = 0;
         }
+
         /* Stop the observer unconditionally: it may have been armed even when
          * SDL_AddTimer failed (returned 0), so gating this on xtWakeTimer would
-         * leak a still-registered run-loop observer past the last display. */
+         * leak a still-registered run-loop observer past the last display.
+         */
         libx11CompatStopLiveResizeObserver();
         SDL_AtomicSet(&pumpWakePending, 0);
         destroyMutexSlot(&eventQueueLengthLock);
@@ -2583,10 +2676,12 @@ int convertEvent(Display *display,
         xEvent->xbutton.root = SCREEN_WINDOW;
         xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->button.timestamp);
         int sdlButtonX = sdlEvent->button.x, sdlButtonY = sdlEvent->button.y;
+
         /* XTest tags synthetic buttons with which == SDL_TOUCH_MOUSEID and
          * their coordinates are already X11 physical pixels; scaling again
          * would double them on Retina. Real hardware events carry SDL points
-         * and still need the scale (mirrors the motion/wheel handling). */
+         * and still need the scale (mirrors the motion/wheel handling).
+         */
         if (sdlEvent->button.which != SDL_TOUCH_MOUSEID)
             scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
                                   &sdlButtonX, &sdlButtonY);
@@ -2595,6 +2690,7 @@ int convertEvent(Display *display,
                                 &xEvent->xbutton.y_root);
         xEvent->xbutton.button = convertSdlMouseButton(sdlEvent->button.button);
         unsigned int buttonState = buttonMaskForXButton(xEvent->xbutton.button);
+
         /* Snapshot the pointer state under a single critical section.
          * pointerButtonState and activePointerWindow describe the same logical
          * "pointer is held in window X with buttons B" tuple; updating them in
@@ -2681,10 +2777,12 @@ int convertEvent(Display *display,
         xEvent->xmotion.root = SCREEN_WINDOW;
         xEvent->xmotion.time = XC_EVENT_TIME_MS(sdlEvent->motion.timestamp);
         int sdlMotionX = sdlEvent->motion.x, sdlMotionY = sdlEvent->motion.y;
+
         /* XTest tags synthetic motion with which == SDL_TOUCH_MOUSEID and its
          * coordinates are already X11 physical pixels; scaling again would
          * double them on Retina. Real hardware motion carries SDL points and
-         * still needs the scale. */
+         * still needs the scale.
+         */
         if (sdlEvent->motion.which != SDL_TOUCH_MOUSEID)
             scaleSdlPointToPixels(sdlMotionWindow, sdlMotionX, sdlMotionY,
                                   &sdlMotionX, &sdlMotionY);
@@ -2822,14 +2920,17 @@ int convertEvent(Display *display,
                     topLevelWindowLogicalPosition(
                         eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
+
                     /* A resize from the top/left edge moves the window origin.
                      * The size-only branch below never touches position, so
                      * persist the queried logical origin here (mirroring the
-                     * MOVED branch) to keep ws->x/y from going stale. */
+                     * MOVED branch) to keep ws->x/y from going stale.
+                     */
                     GET_WINDOW_STRUCT(eventWindow)->x = xEvent->xconfigure.x;
                     GET_WINDOW_STRUCT(eventWindow)->y = xEvent->xconfigure.y;
                 }
             }
+
             /* Option 1b: the X11 window and its backing track physical pixels,
              * so the present path is a 1:1 blit (no upscaling). A RESIZED event
              * carries the new *logical* size in data1/data2 on both SDL2 and
@@ -2893,6 +2994,7 @@ int convertEvent(Display *display,
                          * by SDL outside of configureWindow.
                          */
                         invalidateVisibleRegionForTopLevel(eventWindow);
+
                         /* How much of the backing to wipe depends on the
                          * top-level's bit gravity. ForgetGravity (the X
                          * default) discards all contents on resize, so clear
@@ -2931,11 +3033,13 @@ int convertEvent(Display *display,
                         postResizeConfigureForMappedChildren(
                             display, eventWindow, oldWidth, oldHeight, pixelW,
                             pixelH);
+
                         /* Re-expose the whole subtree so every mapped
                          * descendant repaints at the new size (whether or not
                          * it was cleared).
                          */
                         postFullWindowExpose(display, eventWindow);
+
                         /* The client is about to run its full repaint (clear
                          * the window, then redraw every cell) in response to
                          * this ConfigureNotify, issuing intermediate
@@ -2949,13 +3053,12 @@ int convertEvent(Display *display,
                 }
             } else if (eventWindow != None) {
                 /* Non-resize ConfigureNotify (e.g. MOVED): the size is
-                 * unchanged, so report the window's current PHYSICAL size
-                 * that the client already tracks (Option 1b keeps
-                 * windowStruct->w/h in physical pixels). SDL_GetWindowSize
-                 * returns *logical* points here, which on a HiDPI host is
-                 * half the physical size and would make the client shrink
-                 * its cell grid on a mere move. Use the cached physical
-                 * dimensions instead.
+                 * unchanged, so report the window's current PHYSICAL size that
+                 * the client already tracks (Option 1b keeps windowStruct->w/h
+                 * in physical pixels). SDL_GetWindowSize returns *logical*
+                 * points here, which on a HiDPI host is half the physical size
+                 * and would make the client shrink its cell grid on a mere
+                 * move. Use the cached physical dimensions instead.
                  */
                 GET_WINDOW_DIMS(eventWindow, xEvent->xconfigure.width,
                                 xEvent->xconfigure.height);
@@ -2969,9 +3072,9 @@ int convertEvent(Display *display,
             /* eventWindow came from getWindowFromId and can be None for an
              * untracked SDL window. The caller's XEvent is not zeroed and
              * FILL_STANDARD_VALUES does not touch these two fields, so set
-             * explicit defaults in that case rather than leaving stack
-             * garbage. One lookup otherwise feeds both the configure fields
-             * and the replay-target offer.
+             * explicit defaults in that case rather than leaving stack garbage.
+             * One lookup otherwise feeds both the configure fields and the
+             * replay-target offer.
              */
             if (eventWindow != None) {
                 WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
@@ -2992,7 +3095,8 @@ int convertEvent(Display *display,
              * ratio so the next resize's logical<->physical conversion and the
              * present blit use the new monitor's scale instead of a stale one.
              * This is event-driven and never runs on the resize fast path, so
-             * faked test resizes are unaffected. */
+             * faked test resizes are unaffected.
+             */
             if (eventWindow != None && compatSdlHasWindowSizeInPixels()) {
                 SDL_Window *movedWin =
                     SDL_GetWindowFromID(sdlEvent->window.windowID);
@@ -3009,6 +3113,7 @@ int convertEvent(Display *display,
                         movedWs->hiDpiScaleX = (double) pw / (double) lw;
                     if (lh > 0 && ph > 0)
                         movedWs->hiDpiScaleY = (double) ph / (double) lh;
+
                     /* The cached PResizeInc increments live in physical-pixel
                      * space (see WindowStruct), so a monitor move that changes
                      * the backing scale makes them stale: they still describe
@@ -3019,7 +3124,8 @@ int convertEvent(Display *display,
                      * quantising to the old cell, leaving a sub-cell remainder
                      * band. Rescale them by newScale/oldScale so the snap grid
                      * matches the destination monitor even without a
-                     * re-publish. */
+                     * re-publish.
+                     */
                     if (movedWs->hasResizeInc && oldScaleX > 0.0 &&
                         oldScaleY > 0.0) {
                         double rx = movedWs->hiDpiScaleX / oldScaleX;
@@ -3059,7 +3165,8 @@ int convertEvent(Display *display,
                      * the window to the new monitor's physical size and reflow
                      * the client here. The global font scale tracks the same
                      * host backing, so refresh it too; on a single-scale setup
-                     * the value is unchanged. */
+                     * the value is unchanged.
+                     */
                     if (pw > 0 && ph > 0) {
                         if (lw > 0)
                             compatSetGlobalHiDpiScale((double) pw /
@@ -3070,8 +3177,8 @@ int convertEvent(Display *display,
                         /* Republish the new scale on the root window before the
                          * re-promote below posts the ConfigureNotify, so a
                          * client re-deriving its font from the property during
-                         * that configure reads the destination monitor's
-                         * scale. */
+                         * that configure reads the destination monitor's scale.
+                         */
                         compatPublishHiDpiScaleProperty(display);
                         if (pw != (int) movedWs->w || ph != (int) movedWs->h) {
                             compatTrace(
@@ -3086,7 +3193,8 @@ int convertEvent(Display *display,
                              * (0,0,w,h) rect; the re-promote just grew the
                              * top-level, so invalidate it as the RESIZED
                              * ConfigureNotify path does or the added physical
-                             * columns/rows stay clipped and black. */
+                             * columns/rows stay clipped and black.
+                             */
                             invalidateVisibleRegionForTopLevel(eventWindow);
                         }
                     }
@@ -3136,12 +3244,13 @@ int convertEvent(Display *display,
                     display, eventWindow, xEvent->xcrossing.state,
                     XC_EVENT_TIME_MS(sdlEvent->window.timestamp));
             }
-            /* Keep pointerHoverWindow in sync with the SDL-level crossing
-             * that was just emitted; otherwise the next motion event's
+
+            /* Keep pointerHoverWindow in sync with the SDL-level crossing that
+             * was just emitted; otherwise the next motion event's
              * postPointerCrossingEvents would either fire a duplicate
-             * EnterNotify (state was None) or suppress a legitimate Enter
-             * after a leave/re-enter (state still pointed at the previous
-             * hover child).
+             * EnterNotify (state was None) or suppress a legitimate Enter after
+             * a leave/re-enter (state still pointed at the previous hover
+             * child).
              */
             lockActivePointerWindow();
             pointerHoverWindow = type == EnterNotify ? eventWindow : None;
@@ -3155,10 +3264,10 @@ int convertEvent(Display *display,
             LOG("Window %d gained keyboard focus\n", sdlEvent->window.windowID);
             type = FocusIn;
             if (eventWindow != None) {
-                /* Do not clobber a client XSetInputFocus target. Adopt the
-                 * host top-level only while focus is still
-                 * host/default-owned, and never when it already points at
-                 * this window or a descendant of it.
+                /* Do not clobber a client XSetInputFocus target. Adopt the host
+                 * top-level only while focus is still host/default-owned, and
+                 * never when it already points at this window or a descendant
+                 * of it.
                  */
                 Window currentFocus = getKeyboardFocus();
                 FocusKind currentFocusKind = getKeyboardFocusKind();
@@ -3192,8 +3301,8 @@ int convertEvent(Display *display,
                           display, eventWindow,
                           (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp))
                     : False;
-            /* Real X11 kills the client connection here. Route through the
-             * IO error hook so a client that installed one can intercept;
+            /* Real X11 kills the client connection here. Route through the IO
+             * error hook so a client that installed one can intercept;
              * otherwise it terminates.
              */
             if (!handledClose)
@@ -3208,14 +3317,13 @@ int convertEvent(Display *display,
         break;
     case SDL_QUIT: /**< User-requested quit */
         LOG("SDL_QUIT\n");
-        /* Cmd+Q, SIGTERM, or dock-quit. Prefer a graceful WM_DELETE to
-         * every top-level that advertises it, the way a window manager
-         * closes an app on logout, so the client shuts down through its own
-         * handler. Only when nothing handles the delete do we emulate a
-         * fatal IO error. Routing straight to triggerIOError ran the
-         * client's XIOErrorHandler; GDK's gdk_x_io_error crashes inside
-         * glib charset conversion on macOS, turning every quit into a
-         * segfault.
+        /* Cmd+Q, SIGTERM, or dock-quit. Prefer a graceful WM_DELETE to every
+         * top-level that advertises it, the way a window manager closes an app
+         * on logout, so the client shuts down through its own handler. Only
+         * when nothing handles the delete do we emulate a fatal IO error.
+         * Routing straight to triggerIOError ran the client's XIOErrorHandler;
+         * GDK's gdk_x_io_error crashes inside glib charset conversion on macOS,
+         * turning every quit into a segfault.
          */
         {
             Bool quitHandled = False;
@@ -3313,9 +3421,10 @@ int convertEvent(Display *display,
             clearPendingAsciiRing();
             type = KeyPress;
             FILL_STANDARD_VALUES(xkey);
-            /* Route the commit like a real key: an active keyboard grab
-             * wins over the focus window so IM text composed during a modal
-             * grab still reaches the grab holder.
+
+            /* Route the commit like a real key: an active keyboard grab wins
+             * over the focus window so IM text composed during a modal grab
+             * still reaches the grab holder.
              */
             Window imGrabWindow = getGrabbedKeyboardWindow();
             eventWindow =
@@ -3327,18 +3436,19 @@ int convertEvent(Display *display,
                 return -1;
             inputMethodHandlePreedit("", 0);
             unsigned long commitId = inputMethodSetCurrentText(text);
+
             /* No id means the commit was not queued (OOM, or a preedit-done
              * callback above cleared focus), so do not deliver a phantom IM
              * KeyPress that would look up as XLookupNone.
              */
             if (commitId == 0)
                 return -1;
+
             xEvent->xkey.root = SCREEN_WINDOW;
             xEvent->xkey.window = eventWindow;
 
             /* Carry the commit id so the lookup retrieves this exact commit
-             * regardless of delivery order; keycode stays 0 as the IM
-             * marker.
+             * regardless of delivery order; keycode stays 0 as the IM marker.
              */
             xEvent->xkey.subwindow = (Window) commitId;
             xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->text.timestamp);
@@ -3354,18 +3464,17 @@ int convertEvent(Display *display,
         {
 #ifdef LIBX11_COMPAT_SDL3
             /* SDL3 wheel deltas are floats carrying any sub-notch fraction
-             * directly in x/y, so accumulate them through the same notch
-             * filter the SDL2 precise path used.
+             * directly in x/y, so accumulate them through the same notch filter
+             * the SDL2 precise path used.
              */
             int wy = accumulateWheelNotch(0, sdlEvent->wheel.y, &wheelPreciseY);
             int wx = accumulateWheelNotch(0, sdlEvent->wheel.x, &wheelPreciseX);
 #else
             int wy = sdlEvent->wheel.y, wx = sdlEvent->wheel.x;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
-            /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y
-             * while leaving x/y at 0. Accumulate those fractions so smooth
-             * wheels do not turn each partial delta into a full X11 wheel
-             * click.
+            /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y while
+             * leaving x/y at 0. Accumulate those fractions so smooth wheels do
+             * not turn each partial delta into a full X11 wheel click.
              */
             wy = accumulateWheelNotch(wy, sdlEvent->wheel.preciseY,
                                       &wheelPreciseY);
@@ -3393,15 +3502,15 @@ int convertEvent(Display *display,
             Window sdlWheelWindow = getWindowFromId(sdlEvent->wheel.windowID);
             xEvent->xbutton.root = SCREEN_WINDOW;
             int mx = 0, my = 0;
-            /* SDL wheel events carry no coordinates. Use the injected
-             * position only for XTest-synthesized events (xtest.c tags them
-             * with wheel.which = SDL_TOUCH_MOUSEID); real hardware wheels
-             * keep the SDL_GetMouseState path so the user's physical cursor
-             * still wins after any XTest activity. The sentinel-based
-             * dispatch was a gemini-flagged fix to the earlier
-             * xtestHasInjectedPos-only check, which never reset and would
-             * have routed every later real wheel to the stale injected
-             * coords.
+
+            /* SDL wheel events carry no coordinates. Use the injected position
+             * only for XTest-synthesized events (xtest.c tags them with
+             * wheel.which = SDL_TOUCH_MOUSEID); real hardware wheels keep the
+             * SDL_GetMouseState path so the user's physical cursor still wins
+             * after any XTest activity. The sentinel-based dispatch was a
+             * gemini-flagged fix to the earlier xtestHasInjectedPos-only check,
+             * which never reset and would have routed every later real wheel to
+             * the stale injected coords.
              */
             Bool wheelInjected = False;
             if (sdlEvent->wheel.which == SDL_TOUCH_MOUSEID &&
@@ -3412,10 +3521,12 @@ int convertEvent(Display *display,
                 SDL_GetMouseState(&mx, &my);
             }
             xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->wheel.timestamp);
+
             /* Injected pointer coordinates are already X11 physical pixels
              * (from replayTargetReadPointer); only real SDL_GetMouseState
              * points need scaling. Matches the motion/button synthetic
-             * handling. */
+             * handling.
+             */
             if (!wheelInjected)
                 scaleSdlPointToPixels(sdlWheelWindow, mx, my, &mx, &my);
             translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
@@ -3449,12 +3560,12 @@ int convertEvent(Display *display,
              * compat appears as a no-op while the same replay driven via
              * xdotool against system X11 scrolls correctly.
              *
-             * Queue both ends at the put-back queue head (last enqueue ends
-             * up on top, so push Release first and Press second) and bail
-             * out with -1 so all consumer paths -- XNextEvent's main pump
-             * and the drainSdlEventsToPutBack drains -- pull them in the
-             * right order without the caller redundantly appending the
-             * Press behind the Release we already queued.
+             * Queue both ends at the put-back queue head (last enqueue ends up
+             * on top, so push Release first and Press second) and bail out with
+             * -1 so all consumer paths -- XNextEvent's main pump and the
+             * drainSdlEventsToPutBack drains -- pull them in the right order
+             * without the caller redundantly appending the Press behind the
+             * Release we already queued.
              */
             XEvent pressEvent = *xEvent;
             pressEvent.xbutton.type = ButtonPress;
@@ -3579,11 +3690,10 @@ int convertEvent(Display *display,
             LOG("convertEvent USEREVENT code=%d\n", sdlEvent->user.code);
             if (snapshotOwnsEventType(sdlEvent->type) &&
                 sdlEvent->user.code == SNAPSHOT_EVENT_CODE) {
-                /* Smoke snapshot pump: this branch runs on the main
-                 * (X-client) thread, the only place where
-                 * SDL_GetWindowSurface is allowed. snapshotHandleEvent
-                 * frees the path buffer and signals the replay thread so
-                 * its synchronous wait can return.
+                /* Smoke snapshot pump: this branch runs on the main (X-client)
+                 * thread, the only place where SDL_GetWindowSurface is allowed.
+                 * snapshotHandleEvent frees the path buffer and signals the
+                 * replay thread so its synchronous wait can return.
                  */
                 snapshotHandleEvent(sdlEvent);
                 return -1;
@@ -3591,10 +3701,9 @@ int convertEvent(Display *display,
             if (snapshotOwnsEventType(sdlEvent->type) &&
                 sdlEvent->user.code == RESIZE_EVENT_CODE) {
                 /* Replay-driven resize. SDL_SetWindowSize must run on the
-                 * thread that created the window; on macOS that's the
-                 * X-client main thread (the same one running here).
-                 * Synchronous round-trip via the same condvar the snapshot
-                 * path uses.
+                 * thread that created the window; on macOS that's the X-client
+                 * main thread (the same one running here). Synchronous
+                 * round-trip via the same condvar the snapshot path uses.
                  */
                 snapshotHandleResizeEvent(display, sdlEvent);
                 return -1;
@@ -3602,11 +3711,52 @@ int convertEvent(Display *display,
             if (snapshotOwnsEventType(sdlEvent->type) &&
                 sdlEvent->user.code == FOCUS_AT_EVENT_CODE) {
                 /* Replay-driven focus shift. getContainingWindow walks the
-                 * window tree and XSetInputFocus mutates global focus
-                 * state; both must run on the main thread to stay safe
-                 * against concurrent window-tree mutators.
+                 * window tree and XSetInputFocus mutates global focus state;
+                 * both must run on the main thread to stay safe against
+                 * concurrent window-tree mutators.
                  */
                 snapshotHandleFocusAtEvent(display, sdlEvent);
+                return -1;
+            }
+            if (mainDispatchOwnsEventType(sdlEvent->type) &&
+                sdlEvent->user.code == MAIN_DISPATCH_EVENT_CODE) {
+                /* An off-main-thread Xlib entry point routed its whole body
+                 * here so window-tree mutation and SDL calls both run on the
+                 * SDL-owning thread. Synchronous: the worker blocks until this
+                 * returns. A queued thunk can also be drained here during
+                 * window teardown (discardQueuedEventsForWindow runs the same
+                 * convertEvent path), so a routed op may run while its target
+                 * window is being destroyed; the routed bodies tolerate that
+                 * via TYPE_CHECK, which fails cleanly on a stale window.
+                 *
+                 * convertEvent runs on whatever thread drained the SDL queue,
+                 * and XPending / XEventsQueued / XCheckTypedEvent let a SECOND
+                 * client thread drain it. The display-lock handoff gate only
+                 * excludes other threads while the routing worker held an
+                 * XLockDisplay; a worker that routed without holding the lock
+                 * (the common case) leaves this unguarded. So the thunk touches
+                 * SDL and MUST run on the main thread only: if a non-main
+                 * thread drained it, put the event back and nudge the main
+                 * thread rather than run it here (which would abort via
+                 * requireMainEventThread, or crash off-main without the guard).
+                 */
+                if (!libx11CompatOnMainEventThread()) {
+                    /* Put it back for the main thread. The drain already
+                     * removed it from the SDL queue, so on re-queue failure it
+                     * is gone: drop the command instead, or the worker blocking
+                     * on it would hang forever (there is no timeout). */
+                    if (SDL_PushEvent(sdlEvent) <= 0) {
+                        LOG("main-dispatch: re-queue from non-main drain "
+                            "failed "
+                            "(%s), dropping\n",
+                            SDL_GetError());
+                        mainDispatchDropCmd(sdlEvent);
+                        return -1;
+                    }
+                    wakeEventPipeForExternalEvent(NULL);
+                    return -1;
+                }
+                mainDispatchHandleEvent(sdlEvent);
                 return -1;
             }
             if (stateSnapshotOwnsEventType(sdlEvent->type)) {
@@ -3746,12 +3896,11 @@ int convertEvent(Display *display,
                            sizeof(XMappingEvent));
                     break;
                 default:
-                    /* Extension events (e.g. ShmCompletion) come through
-                     * here. Contract: callers that enqueue an extension
-                     * event MUST allocate the full XEvent union, not just
-                     * the per-type struct -- otherwise this memcpy reads
-                     * past the end. See src/xshm.c XShmPutImage for the
-                     * only current caller.
+                    /* Extension events (e.g. ShmCompletion) come through here.
+                     * Contract: callers that enqueue an extension event MUST
+                     * allocate the full XEvent union, not just the per-type
+                     * struct -- otherwise this memcpy reads past the end. See
+                     * src/xshm.c XShmPutImage for the only current caller.
                      */
                     if (*((int *) allocEvent) >= LASTEvent) {
                         memcpy(xEvent, allocEvent, sizeof(XEvent));
@@ -3899,13 +4048,12 @@ int XNextEvent(Display *display, XEvent *event_return)
             pumpEventsSafe();
             if (sdlPeepEventsForXlibDrain(&event, 1, SDL_GETEVENT,
                                           SDL_FIRSTEVENT, SDL_LASTEVENT) != 1) {
-                /* Real X11 implicitly flushes the request queue when the
-                 * client blocks on input. If input is already queued,
-                 * handle it first so heavy readback/present work does not
-                 * sit in front of mouse and keyboard events. Reaching this
-                 * idle wait also marks the end of any coalesced repaint
-                 * burst, so release it here and present the final frame
-                 * once (a no-op when not coalescing).
+                /* Real X11 implicitly flushes the request queue when the client
+                 * blocks on input. If input is already queued, handle it first
+                 * so heavy readback/present work does not sit in front of mouse
+                 * and keyboard events. Reaching this idle wait also marks the
+                 * end of any coalesced repaint burst, so release it here and
+                 * present the final frame once (a no-op when not coalescing).
                  */
                 endCoalesceClientRepaint();
                 drawWindowDataToScreen();
@@ -3925,12 +4073,13 @@ int XNextEvent(Display *display, XEvent *event_return)
                                               SDL_FIRSTEVENT,
                                               SDL_LASTEVENT) != 1)
                     continue;
-                /* The present wake was already removed from SDL's queue
-                 * above. Drain its old pipe byte before pushing it back to
-                 * the tail, then let the normal path below drain the
-                 * interactive event's byte. The sequence keeps
-                 * select(ConnectionNumber) aligned with SDL's queue while
-                 * still keeping input ahead of deferred readback.
+
+                /* The present wake was already removed from SDL's queue above.
+                 * Drain its old pipe byte before pushing it back to the tail,
+                 * then let the normal path below drain the interactive event's
+                 * byte. The sequence keeps select(ConnectionNumber) aligned
+                 * with SDL's queue while still keeping input ahead of deferred
+                 * readback.
                  */
                 READ_EVENT_IN_PIPE(display);
                 SDL_PushEvent(&event);
@@ -3940,8 +4089,8 @@ int XNextEvent(Display *display, XEvent *event_return)
 
         /* Drain the wake-up byte the SDL filter wrote for this event so a
          * follow-up select(ConnectionNumber) reflects the real queue depth.
-         * With the non-blocking pipe, a stale qlen no longer forces
-         * XNextEvent to fabricate an Expose.
+         * With the non-blocking pipe, a stale qlen no longer forces XNextEvent
+         * to fabricate an Expose.
          */
         READ_EVENT_IN_PIPE(display);
         int convertResult = convertEvent(display, &event, event_return, True);
@@ -3959,10 +4108,9 @@ int XNextEvent(Display *display, XEvent *event_return)
         }
         LOG("Got unknown SDL event %d, dropping.\n", event.type);
         bumpEventSerial();
-        /* Do NOT fabricate a fake Expose: a wrong event type confuses
-         * Motif's translation tables and Xt's event dispatcher far worse
-         * than a brief spin in this loop. Wait for the next real event
-         * instead.
+        /* Do NOT fabricate a fake Expose: a wrong event type confuses Motif's
+         * translation tables and Xt's event dispatcher far worse than a brief
+         * spin in this loop. Wait for the next real event instead.
          */
     }
 }
@@ -4048,13 +4196,14 @@ Status XSendEvent(Display *display,
     // https://tronche.com/gui/x/xlib/event-handling/XSendEvent.html
     SET_X_SERVER_REQUEST(display, X_SendEvent);
     TYPE_CHECK(window, WINDOW, display, 0);
-    /* EWMH wire-protocol: ClientMessage to the root window with a
-     * recognized message_type drives an in-process WM action and is
-     * consumed. This must come BEFORE the acceptsEventMask walk because
-     * nothing in libx11-compat selects SubstructureNotifyMask |
-     * SubstructureRedirectMask on the root (the shim plays the WM role
-     * itself), so the walk would otherwise drop every EWMH request.
-     * Unrecognized message_types fall through to the regular walk.
+
+    /* EWMH wire-protocol: ClientMessage to the root window with a recognized
+     * message_type drives an in-process WM action and is consumed. This must
+     * come BEFORE the acceptsEventMask walk because nothing in libx11-compat
+     * selects SubstructureNotifyMask | SubstructureRedirectMask on the root
+     * (the shim plays the WM role itself), so the walk would otherwise drop
+     * every EWMH request. Unrecognized message_types fall through to the
+     * regular walk.
      */
     if (window == SCREEN_WINDOW && event_send &&
         event_send->type == ClientMessage &&
@@ -4103,19 +4252,19 @@ Bool XFilterEvent(XEvent *event, Window w)
     (void) w;
 
     /* The host input method consumes composition at the SDL layer before
-     * convertEvent ever runs: preedit keystrokes arrive as SDL_TEXTEDITING
-     * and are dropped with return -1, while committed text arrives as
-     * SDL_TEXTINPUT and is delivered as a synthetic KeyPress the client
-     * decodes with XmbLookupString. So no X event that reaches a client
-     * still needs input method filtering, and this must never swallow one.
+     * convertEvent ever runs: preedit keystrokes arrive as SDL_TEXTEDITING and
+     * are dropped with return -1, while committed text arrives as SDL_TEXTINPUT
+     * and is delivered as a synthetic KeyPress the client decodes with
+     * XmbLookupString. So no X event that reaches a client still needs input
+     * method filtering, and this must never swallow one.
      *
-     * An earlier version returned True for every KeyPress/KeyRelease
-     * whenever getKeyboardFocus() was None. That was wrong: host text-input
-     * focus can be live while the in-process WM has not assigned an X focus
-     * window (a single-window client like xwpe never calls XSetInputFocus),
-     * so clients that gate on XFilterEvent saw Enter, every other real key,
-     * and IM commits silently vanish. Key routing is decided in
-     * convertEvent; filtering is not this function's job here.
+     * An earlier version returned True for every KeyPress/KeyRelease whenever
+     * getKeyboardFocus() was None. That was wrong: host text-input focus can be
+     * live while the in-process WM has not assigned an X focus window (a
+     * single-window client like xwpe never calls XSetInputFocus), so clients
+     * that gate on XFilterEvent saw Enter, every other real key, and IM commits
+     * silently vanish. Key routing is decided in convertEvent; filtering is not
+     * this function's job here.
      */
     return False;
 }
@@ -4145,9 +4294,9 @@ int XFlush(Display *display)
 {
     // https://tronche.com/gui/x/xlib/event-handling/XFlush.html
     pumpEventsSafe();
-    /* Real X11 batches drawing on the server and flushes here.
-     * libx11-compat accumulates primitives in the renderer's back buffer
-     * and only presents on flush so partial frames don't reach the screen.
+    /* Real X11 batches drawing on the server and flushes here. libx11-compat
+     * accumulates primitives in the renderer's back buffer and only presents on
+     * flush so partial frames don't reach the screen.
      */
     drawWindowDataToScreen();
     return 1;
@@ -4191,9 +4340,9 @@ static int getVisibilityState(Window window)
 
 /* convertEvent() frees the delivered pointer after dispatch, so multi-cast
  * notify events (parent via SubstructureNotifyMask, self via
- * StructureNotifyMask) cannot share one allocation -- the second dispatch
- * would double-free. enqueueAlias clones src, patches the per-event "event"
- * field to identify the recipient, and enqueues the copy.
+ * StructureNotifyMask) cannot share one allocation -- the second dispatch would
+ * double-free. enqueueAlias clones src, patches the per-event "event" field to
+ * identify the recipient, and enqueues the copy.
  */
 static Bool enqueueAlias(Display *display,
                          const void *src,
@@ -4215,15 +4364,15 @@ static Bool enqueueAlias(Display *display,
     return True;
 }
 
-/* Fan-out helper for DestroyNotify, ConfigureNotify, MapNotify, UnmapNotify
- * and GravityNotify: each can be reported to the parent
- * (SubstructureNotify) and to the window itself (StructureNotify).
+/* Fan-out helper for DestroyNotify, ConfigureNotify, MapNotify, UnmapNotify and
+ * GravityNotify: each can be reported to the parent (SubstructureNotify) and to
+ * the window itself (StructureNotify).
  *
  *   FANOUT_FAIL     -- enqueue failed; event already freed, caller breaks.
  *   FANOUT_CONSUMED -- delivered to parent only; caller must NOT set
- * eventData (ownership transferred to the queue). FANOUT_KEEP     -- event
- * still owned by caller; it must store it in eventData so the self delivery
- * happens. The "event" field has been patched to self.
+ * eventData (ownership transferred to the queue). FANOUT_KEEP -- event still
+ * owned by caller; it must store it in eventData so the self delivery happens.
+ * The "event" field has been patched to self.
  */
 typedef enum { FANOUT_FAIL, FANOUT_CONSUMED, FANOUT_KEEP } FanoutResult;
 
@@ -4376,9 +4525,9 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         event.xexpose.count = exposeCount;
 
         /* Expose bursts are generated internally; queue them directly so Xt
-         * exposure compression can see the complete burst. Drain already
-         * queued SDL events first so this Expose does not jump ahead of
-         * older input/client/window events.
+         * exposure compression can see the complete burst. Drain already queued
+         * SDL events first so this Expose does not jump ahead of older
+         * input/client/window events.
          */
         drainSdlEventsToPutBack(display);
         if (!appendPutBackEvent(display, &event))
@@ -4479,8 +4628,8 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         GET_WINDOW_POS(eventWindow, event->x, event->y);
         event->override_redirect =
             GET_WINDOW_STRUCT(eventWindow)->overrideRedirect;
-        /* Deliver clones to every recipient except the last; the last keeps
-         * the original allocation via eventData.
+        /* Deliver clones to every recipient except the last; the last keeps the
+         * original allocation via eventData.
          */
         size_t i;
         for (i = 0; i + 1 < numRecipients; i++) {
@@ -4561,13 +4710,12 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         break;
     }
     case ClientMessage: {
-        /* calloc instead of malloc: the data union has five long slots and
-         * the spec lets clients consult any of them. malloc left
-         * data.l[1..4] full of heap bytes, which fed Xt's WM_DELETE_WINDOW
-         * handler garbage in the timestamp slot. send_event = True matches
-         * what real X servers stamp on synthesized ICCCM messages, so
-         * Motif's compare against e.send_event in WM_PROTOCOLS callbacks
-         * now sees the expected value.
+        /* calloc instead of malloc: the data union has five long slots and the
+         * spec lets clients consult any of them. malloc left data.l[1..4] full
+         * of heap bytes, which fed Xt's WM_DELETE_WINDOW handler garbage in the
+         * timestamp slot. send_event = True matches what real X servers stamp
+         * on synthesized ICCCM messages, so Motif's compare against
+         * e.send_event in WM_PROTOCOLS callbacks now sees the expected value.
          */
         XClientMessageEvent *event = calloc(1, sizeof(XClientMessageEvent));
         if (!event)
@@ -4739,9 +4887,9 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
 
     if (!eventData)
         return !eventNeeded;
-    /* enqueueEvent only owns the heap event once it actually pushes onto
-     * the SDL queue. If SDL_RegisterEvents has never succeeded the call
-     * fails without taking ownership, so free here to avoid a leak.
+    /* enqueueEvent only owns the heap event once it actually pushes onto the
+     * SDL queue. If SDL_RegisterEvents has never succeeded the call fails
+     * without taking ownership, so free here to avoid a leak.
      */
     Bool ok = enqueueEvent(display, eventWindow, eventData);
     if (!ok)
