@@ -11,9 +11,16 @@
 PREFIX ?= /usr/local
 DESTDIR ?=
 
-# Libraries a downstream links by their standard X11 SONAME (each gets a
-# libNAME.so -> libNAME-compat.so alias).
+# Libraries a downstream links by their standard X11 name (each gets a
+# libNAME.<ext> -> libNAME-compat.so alias so `-lX11` etc. resolve to the shim).
 XCOMPAT_INSTALL_ALIASED := X11 Xft Xext Xt Xmu Xaw Xpm Xinerama ICE SM
+# macOS `ld -lNAME` resolves libNAME.dylib, never libNAME.so, so the aliases
+# must be .dylib there; Linux uses .so. The real libraries keep their .so name
+# (and @rpath install_name) on both.
+XCOMPAT_ALIAS_EXT := so
+ifeq ($(UNAME_S),Darwin)
+XCOMPAT_ALIAS_EXT := dylib
+endif
 # Runtime-only wrappers libX11-compat dlopens; installed without an alias. Only
 # built for the SDL2 backend -- under SDL_BACKEND=sdl3 the stack links libSDL3
 # directly (SDL_USE_WRAPPER=0), so there is nothing to install.
@@ -34,7 +41,7 @@ install: $(XCOMPAT_INSTALL_LIB_FILES) $(UPSTREAM_HEADERS_STAMP)
 	$(Q)mkdir -p "$(DESTDIR)$(PREFIX)/lib" "$(DESTDIR)$(PREFIX)/include"
 	$(Q)for l in $(XCOMPAT_INSTALL_ALIASED); do \
 	    cp "$(OUT)/lib$$l-compat.so" "$(DESTDIR)$(PREFIX)/lib/" && \
-	    ln -sf "lib$$l-compat.so" "$(DESTDIR)$(PREFIX)/lib/lib$$l.so" || exit 1; \
+	    ln -sf "lib$$l-compat.so" "$(DESTDIR)$(PREFIX)/lib/lib$$l.$(XCOMPAT_ALIAS_EXT)" || exit 1; \
 	done
 	$(Q)for w in $(XCOMPAT_INSTALL_WRAPPERS); do \
 	    cp "$(OUT)/lib$$w.so" "$(DESTDIR)$(PREFIX)/lib/"; \
