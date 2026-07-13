@@ -8,7 +8,7 @@
 
 #define MAX_ATOM_VALUE ((Atom) UINT32_MAX)
 
-AtomStruct *atomStorageStart = NULL;
+static AtomStruct *atomStorageStart = NULL;
 static Atom lastUsedAtom = _NET_LAST_PREDEFINED;
 static AtomStruct preDefAtomStructResult;
 

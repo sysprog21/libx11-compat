@@ -5,7 +5,7 @@
 #include "display.h"
 
 typedef int (*errorHandlerFunction)(Display *, XErrorEvent *);
-errorHandlerFunction error_handler = defaultErrorHandler;
+static errorHandlerFunction error_handler = defaultErrorHandler;
 
 /* Per-Display last request code tracking. The upstream _XDisplay struct has no
  * request_code slot, so a side table keyed by Display* lets independent Display

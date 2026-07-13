@@ -33,6 +33,7 @@
 #include "state-snapshot.h"
 #include "timeline.h"
 #include "util.h"
+#include <pthread.h>
 
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
@@ -11473,8 +11474,186 @@ static int test_overlap_pointer_routing(Display *display)
     return 1;
 }
 
+/* Display locking under XInitThreads. Runs last, on its own display, because
+ * XInitThreads is process-global and permanent: every earlier test then
+ * exercises the single-threaded no-op lock path, and this one exercises the
+ * installed recursive lock. Proves (a) app-level XLockDisplay nests recursively
+ * without the non-recursive-mutex self-deadlock, (b) an app lock held across
+ * internal-locking calls (XPutBackEvent, XCheckTypedEvent) does not deadlock,
+ * and (c) N threads hammering the event queue stay consistent. Run under
+ * ThreadSanitizer (CFLAGS_EXTRA=-fsanitize=thread) for the race gate.
+ */
+#define LOCK_HAMMER_THREADS 4
+#define LOCK_HAMMER_ITERS 2000
+
+/* Fixed sentinel in message_type identifies an event this test pushed; the
+ * payload carries a self-consistent signature (data.l[1] == ~data.l[0], with
+ * data.l[0] the pushing thread's index) so a drained event that was torn,
+ * swapped across two in-flight events, or otherwise corrupted fails the check
+ * even though every thread pushes to the same window.
+ */
+#define LOCK_HAMMER_MARK 0x58314331L /* 'X1C1' */
+
+struct lockHammerArgs {
+    Display *display;
+    Window window;
+    int index;
+    /* Single-display phase asserts the returned event's window; the two-display
+     * phase does not, because the one shared SDL queue can cross-deliver a
+     * legitimately-signed event to the other display's drain.
+     */
+    int checkWindow;
+    int corrupt; /* written only by this thread's own slot; read after join */
+};
+
+static void *lockHammerThread(void *p)
+{
+    struct lockHammerArgs *a = (struct lockHammerArgs *) p;
+    Display *display = a->display;
+    for (int i = 0; i < LOCK_HAMMER_ITERS; i++) {
+        XEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = ClientMessage;
+        ev.xclient.window = a->window;
+        ev.xclient.format = 32;
+        ev.xclient.message_type = LOCK_HAMMER_MARK;
+        ev.xclient.data.l[0] = a->index;
+        ev.xclient.data.l[1] = ~(long) a->index;
+        XLockDisplay(display);
+        XPutBackEvent(display, &ev);
+        XUnlockDisplay(display);
+        /* Also route a copy through the SDL event queue so the XPending /
+         * XEventsQueued / XCheckTypedEvent drains below actually contend on
+         * drainSdlEventsToPutBack's SDL_PeepEvents path, not just the put-back
+         * list. XPutBackEvent alone leaves the SDL queue empty (qlen == 0).
+         */
+        XSendEvent(display, a->window, False, NoEventMask, &ev);
+
+        /* Another thread may drain this thread's event, so "found" is racy and
+         * not asserted. But anything returned that carries our sentinel must
+         * still be internally consistent: a broken lock corrupts the payload or
+         * mixes two events, and the signature check below catches it.
+         */
+        XEvent got;
+        if (XCheckTypedEvent(display, ClientMessage, &got) &&
+            got.xclient.message_type == LOCK_HAMMER_MARK &&
+            (got.type != ClientMessage || got.xclient.format != 32 ||
+             (a->checkWindow && got.xclient.window != a->window) ||
+             got.xclient.data.l[1] != ~got.xclient.data.l[0] ||
+             got.xclient.data.l[0] < 0 ||
+             got.xclient.data.l[0] >= LOCK_HAMMER_THREADS * 2))
+            a->corrupt = 1;
+        XPending(display);
+        XEventsQueued(display, QueuedAlready);
+    }
+    return NULL;
+}
+
+/* Spawn n threads over the pre-filled args, joining every one actually started
+ * (a mid-loop pthread_create failure must not leave a live thread reading a
+ * stack slot the caller is about to abandon).
+ *
+ * Returns 1 if all n started.
+ */
+static int runLockHammerBatch(pthread_t *threads,
+                              struct lockHammerArgs *args,
+                              int n)
+{
+    int created = 0;
+    for (int i = 0; i < n; i++) {
+        if (pthread_create(&threads[i], NULL, lockHammerThread, &args[i]) != 0)
+            break;
+        created++;
+    }
+    for (int i = 0; i < created; i++)
+        pthread_join(threads[i], NULL);
+    return created == n;
+}
+
+static int test_display_lock_threads(void)
+{
+    /* XInitThreads must precede XOpenDisplay: the lock hooks are read at open.
+     */
+    CHECK(XInitThreads() != 0, "XInitThreads failed");
+    Display *display = XOpenDisplay(NULL);
+    CHECK(display != NULL, "XOpenDisplay after XInitThreads failed");
+    CHECK(display->lock_fns != NULL,
+          "XInitThreads did not install display lock hooks");
+
+    /* Recursive re-entry from one thread must not deadlock. */
+    XLockDisplay(display);
+    XLockDisplay(display);
+    XUnlockDisplay(display);
+    XUnlockDisplay(display);
+
+    Window win = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0,
+                                     64, 64, 0, 0, 0);
+    CHECK(win != None, "XCreateSimpleWindow failed");
+
+    pthread_t threads[LOCK_HAMMER_THREADS * 2];
+    struct lockHammerArgs args[LOCK_HAMMER_THREADS * 2];
+
+    /* One display: N threads push events (XPutBackEvent + XSendEvent) and drain
+     * them (XCheckTypedEvent / XPending / XEventsQueued) under XLockDisplay,
+     * asserting per-thread event integrity including the window.
+     */
+    for (int i = 0; i < LOCK_HAMMER_THREADS; i++) {
+        args[i].display = display;
+        args[i].window = win;
+        args[i].index = i;
+        args[i].checkWindow = 1;
+        args[i].corrupt = 0;
+    }
+    CHECK(runLockHammerBatch(threads, args, LOCK_HAMMER_THREADS),
+          "pthread_create failed");
+    for (int i = 0; i < LOCK_HAMMER_THREADS; i++)
+        CHECK(!args[i].corrupt, "event queue returned a corrupted event");
+
+    /* Then a second display: exercise the event queue across two displays (the
+     * shared SDL queue plus per-display put-back lists) under contention, with
+     * threads split across both. The shared queue can cross-deliver, so the
+     * window is not asserted here.
+     */
+    Display *display2 = XOpenDisplay(NULL);
+    CHECK(display2 != NULL, "second XOpenDisplay failed");
+    Window win2 = XCreateSimpleWindow(display2, DefaultRootWindow(display2), 0,
+                                      0, 32, 32, 0, 0, 0);
+    CHECK(win2 != None, "second XCreateSimpleWindow failed");
+    for (int i = 0; i < LOCK_HAMMER_THREADS * 2; i++) {
+        int even = (i % 2) == 0;
+        args[i].display = even ? display : display2;
+        args[i].window = even ? win : win2;
+        args[i].index = i;       /* unique across all 2N threads */
+        args[i].checkWindow = 0; /* shared SDL queue may cross-deliver */
+        args[i].corrupt = 0;
+    }
+    CHECK(runLockHammerBatch(threads, args, LOCK_HAMMER_THREADS * 2),
+          "pthread_create failed (two-display)");
+    for (int i = 0; i < LOCK_HAMMER_THREADS * 2; i++)
+        CHECK(!args[i].corrupt,
+              "event queue returned a corrupted event "
+              "(two-display)");
+
+    XDestroyWindow(display2, win2);
+    XCloseDisplay(display2);
+    XDestroyWindow(display, win);
+    XCloseDisplay(display);
+    printf("ok display_lock_threads\n");
+    return 1;
+}
+
 int main(void)
 {
+    /* Race gate: LIBX11_COMPAT_THREAD_TEST_ONLY runs just the threading test so
+     * it can be driven under ThreadSanitizer without paying for the whole suite
+     * (CFLAGS_EXTRA=-fsanitize=thread LDLIBS_EXTRA=-fsanitize=thread).
+     */
+    if (getenv("LIBX11_COMPAT_THREAD_TEST_ONLY")) {
+        if (!test_display_lock_threads())
+            failures++;
+        return failures == 0 ? 0 : 1;
+    }
+
     run_test("smoke", test_smoke);
     run_test("timeline_counters", test_timeline_counters);
     run_test("timeline_wait_converge_idle", test_timeline_wait_converge_idle);
@@ -11534,5 +11713,10 @@ int main(void)
              test_sibling_occlusion_shape_extends_outside_frame);
     run_test("overlap_pointer_routing", test_overlap_pointer_routing);
     run_test("live_resize_reflow_hook", test_live_resize_reflow_hook);
+    /* Threading last: XInitThreads is global and permanent (see the note above
+     * test_display_lock_threads).
+     */
+    if (!test_display_lock_threads())
+        failures++;
     return failures == 0 ? 0 : 1;
 }

@@ -64,10 +64,20 @@ void compatPublishHiDpiScaleProperty(Display *display);
  */
 Bool compatSdlHasWindowSizeInPixels(void);
 
+/* request is bumped from every Xlib entry point and read for event serials, so
+ * the increment is a relaxed atomic to stay data-race free when multiple
+ * threads issue requests under XInitThreads. setLastRequestCode is already
+ * thread-safe (its own side-table mutex). Read request back with
+ * atomicLoadRequest.
+ */
 #define SET_X_SERVER_REQUEST(display, requestId)                \
     do {                                                        \
-        GET_DISPLAY(display)->request++;                        \
+        __atomic_add_fetch(&GET_DISPLAY(display)->request, 1,   \
+                           __ATOMIC_RELAXED);                   \
         setLastRequestCode(display, (unsigned char) requestId); \
     } while (0)
+
+#define atomicLoadRequest(display) \
+    __atomic_load_n(&GET_DISPLAY(display)->request, __ATOMIC_RELAXED)
 
 #endif  //_DISPLAY_H

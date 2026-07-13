@@ -102,6 +102,19 @@ static Bool match_im_commit(Display *dpy, XEvent *ev, char *arg)
     return ev->type == KeyPress && ev->xkey.keycode == 0;
 }
 
+/* Return type and value match onSdlEvent: XC_EVENTFILTER_RET is bool on the
+ * SDL3 backend and int on SDL2, and 1 converts cleanly to both. Using SDL_bool
+ * here built only against SDL3 and broke the SDL2 backend with an incompatible
+ * function pointer type.
+ */
+static XC_EVENTFILTER_RET passthrough_sdl_filter(void *userdata,
+                                                 SDL_Event *event)
+{
+    (void) userdata;
+    (void) event;
+    return 1;
+}
+
 int main(void)
 {
     Display *dpy = XOpenDisplay(NULL);
@@ -242,6 +255,18 @@ int main(void)
           "async ButtonRelease keeps root x");
     CHECK(async_release.xbutton.y_root == 145,
           "async ButtonRelease keeps root y");
+
+    SDL_SetEventFilter(passthrough_sdl_filter, NULL);
+    CHECK(XTestFakeMotionEvent(dpy, screen, 130, 145, 0) == 1,
+          "XTestFakeMotionEvent with client SDL filter");
+    expect_connection_readable(
+        dpy, "external XTest push woke X connection fd with client SDL filter");
+    XEvent filtered_motion =
+        next_event_of_type(dpy, MotionNotify, 32, "client-filter MotionNotify");
+    CHECK(filtered_motion.xmotion.x_root == 130,
+          "client-filter MotionNotify keeps root x");
+    CHECK(filtered_motion.xmotion.y_root == 145,
+          "client-filter MotionNotify keeps root y");
 
     CHECK(XTestFakeRelativeMotionEvent(dpy, 5, -3, 0) == 1,
           "relative-only XTestFakeRelativeMotionEvent");

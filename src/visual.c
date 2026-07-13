@@ -6,8 +6,8 @@
 #include "sdl-compat.h"
 #include "errors.h"
 
-Visual *VISUAL_LIST = NULL;
-size_t NUM_VISUALS = 0;
+static Visual *VISUAL_LIST = NULL;
+static size_t NUM_VISUALS = 0;
 static int VISUAL_DEPTH = 24;
 /* The shared Visual table is screen-0 visuals; a per-screen variant would need
  * a separate entry per screen. Keeping this a constant avoids global mutation
