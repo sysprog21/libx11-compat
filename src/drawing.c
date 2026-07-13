@@ -513,7 +513,7 @@ static Bool presentWindowAccelerated(Window win,
         SDL_RenderSetClipRect(screen, NULL) != 0) {
         LOG("SDL_RenderSet{Viewport,ClipRect}(NULL) failed in %s: %s\n",
             __func__, SDL_GetError());
-        return False;
+        goto fail;
     }
 
     /* Size the scratch to the largest rect this frame (w*h*4), but bound it by
@@ -543,7 +543,7 @@ static Bool presentWindowAccelerated(Window win,
         unsigned char *grown = realloc(child->presentReadback, need);
         if (!grown) {
             LOG("realloc(presentReadback) failed in %s\n", __func__);
-            return False;
+            goto fail;
         }
         child->presentReadback = grown;
         child->presentReadbackCap = need;
@@ -569,7 +569,7 @@ static Bool presentWindowAccelerated(Window win,
                                      child->presentReadback, pitch) != 0) {
                 LOG("SDL_RenderReadPixels failed in %s: %s\n", __func__,
                     SDL_GetError());
-                return False;
+                goto fail;
             }
             if (SDL_UpdateTexture(child->presentTexture, &band,
                                   child->presentReadback, pitch) != 0) {
@@ -578,7 +578,7 @@ static Bool presentWindowAccelerated(Window win,
                  * marking it presented and stranding stale pixels on screen. */
                 LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
                     SDL_GetError());
-                return False;
+                goto fail;
             }
         }
         framePixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
@@ -605,7 +605,7 @@ static Bool presentWindowAccelerated(Window win,
          * the dirty region set so the frame is retried instead of being marked
          * presented and permanently dropped. */
         LOG("SDL_RenderCopy failed in %s: %s\n", __func__, SDL_GetError());
-        return False;
+        goto fail;
     }
     SDL_RenderPresent(child->presentRenderer);
     *updateNs += monotonicNowNs() - updateStart;
@@ -618,6 +618,18 @@ static Bool presentWindowAccelerated(Window win,
     *presentedPixels += framePixels;
     timelineTapPresent(win, (size_t) nrects, framePixels);
     return True;
+
+fail:
+    /* Any failure after the SCREEN target was pointed at child->sdlTexture must
+     * restore the default target before returning: the caller relies on
+     * screenTargetMutated only for a single restore after the whole loop, so a
+     * later window taking the software path (which reads via
+     * SDL_RenderReadPixels on the SCREEN target) would otherwise sample this
+     * window's backing texture and produce a corrupt frame. The success path
+     * intentionally leaves the target on child->sdlTexture like the software
+     * path; only the dropped-frame paths reset it here. */
+    SDL_SetRenderTarget(screen, NULL);
+    return False;
 }
 
 void drawWindowDataToScreen()

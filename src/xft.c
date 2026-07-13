@@ -1479,11 +1479,13 @@ static void drawUtf8String(XftDraw *draw,
     if (!texture)
         return;
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-    /* TTF baked the glyph RGB from the requested colour; only the colour's
-     * alpha still needs to scale coverage, matching the old blendPixel
-     * multiply.
+    /* TTF_RenderUTF8_Blended already bakes the colour's alpha into the surface
+     * pixels (per-glyph coverage * colour alpha) on the SDL_ttf versions this
+     * links against, so the texture alpha comes solely from those pixels; an
+     * extra SDL_SetTextureAlphaMod(sdlColor.a) would multiply the colour alpha
+     * a second time and render translucent text too faintly. The core-font path
+     * (font.c) copies the blended texture the same way without an alpha mod.
      */
-    SDL_SetTextureAlphaMod(texture, sdlColor.a);
 #if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
     SDL_SetTextureScaleMode(texture, XC_SCALEMODE_LINEAR);
 #endif
