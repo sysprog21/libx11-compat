@@ -1,11 +1,28 @@
 #include "X11/Xlib.h"
 #include "X11/Xutil.h"
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "display.h"
 #include "drawing.h"
 #include "util.h"
+
+void compatTrace(const char *fmt, ...)
+{
+    const char *path = getenv("LIBX11_COMPAT_TRACE");
+    if (!path || !path[0])
+        return;
+    FILE *out = fopen(path, "a");
+    if (!out)
+        return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(out, fmt, args);
+    va_end(args);
+    fflush(out);
+    fclose(out);
+}
 
 Bool initArray(Array *a, size_t initialSize)
 {

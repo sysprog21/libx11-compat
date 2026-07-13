@@ -90,4 +90,28 @@ void clearActivePointerWindow(void);
 void clearPointerStateForWindow(Window window);
 void releaseButtonGrabsForWindow(Window window);
 
+/* Option 1b: SDL delivers pointer coordinates in logical points while X11
+ * window geometry is stored in physical pixels. Multiply an incoming SDL point
+ * by the target top-level's cached per-axis HiDPI ratio so the coordinate lands
+ * in X11 pixel space before any window/root translation. A no-op (ratio 1.0) on
+ * non-HiDPI hosts and under the CI dummy driver. Shared by the event delivery
+ * path and XQueryPointer so both agree on rounding and scale selection.
+ */
+void scaleSdlPointToPixels(Window sdlWindow,
+                           int inX,
+                           int inY,
+                           int *outX,
+                           int *outY);
+
+/* Snap one axis of a physical-pixel size DOWN to the nearest whole resize
+ * increment the ICCCM way: size = base + i * inc for i >= 0. The base size
+ * (i == 0) is a valid result and is preserved; the result never drops below the
+ * client's declared minimum. A real window manager quantizes user resizes to
+ * these increments; there is none here, so the drag-end snap
+ * (snapTopLevelToResizeIncrements) replays it. Pure arithmetic, exposed so it
+ * can be unit-tested without SDL. An inc <= 0 (client published no PResizeInc)
+ * is a defined no-op that returns current unchanged.
+ */
+int libx11CompatSnapAxisToIncrement(int current, int inc, int base, int min);
+
 #endif /* _EVENTS_H_ */

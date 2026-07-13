@@ -18,6 +18,7 @@
 #include "selection.h"
 #include "image.h"
 #include "input-method.h"
+#include "mac-live-resize.h"
 #include <X11/X.h>
 #include <X11/Xutil.h>
 #include <limits.h>
@@ -63,6 +64,114 @@ static const int releaseVersion = 1;
 static const int supportedDepths[] = {1, 16, 24, 32};
 #define COMPAT_LOGICAL_DPI 96.0f
 
+/* See compatGlobalHiDpiScale in display.h. Defaults to 1.0 so every path stays
+ * a no-op until the probe measures a real Retina/HiDPI backing.
+ */
+static double globalHiDpiScale = 1.0;
+
+double compatGlobalHiDpiScale(void)
+{
+    return globalHiDpiScale;
+}
+
+void compatSetGlobalHiDpiScale(double scale)
+{
+    if (scale > 0.0)
+        globalHiDpiScale = scale;
+}
+
+void compatPublishHiDpiScaleProperty(Display *display)
+{
+    if (!display || SCREEN_WINDOW == None)
+        return;
+    Atom scaleAtom = internalInternAtom(HIDPI_SCALE_PROPERTY_NAME);
+    if (scaleAtom == None)
+        return;
+    long fixed = lround(globalHiDpiScale * HIDPI_SCALE_PROPERTY_FIXED_POINT);
+    if (fixed < 0)
+        fixed = 0;
+    /* Format-32 properties are stored and returned as an array of long (the
+     * documented Xlib client convention, which this shim follows), so publish
+     * a long rather than a fixed-width 32-bit integer. */
+    XChangeProperty(display, SCREEN_WINDOW, scaleAtom, XA_CARDINAL, 32,
+                    PropModeReplace, (const unsigned char *) &fixed, 1);
+}
+
+Bool compatSdlHasWindowSizeInPixels(void)
+{
+#if defined(LIBX11_COMPAT_SDL3)
+    /* SDL3 always provides SDL_GetWindowSizeInPixels. */
+    return True;
+#elif SDL_VERSION_ATLEAST(2, 26, 0)
+    const char *force = getenv("LIBX11_COMPAT_NO_SIZE_IN_PIXELS");
+    if (force && force[0] == '1')
+        return False;
+    SDL_version linked;
+    SDL_GetVersion(&linked);
+    return SDL_VERSIONNUM(linked.major, linked.minor, linked.patch) >=
+                   SDL_VERSIONNUM(2, 26, 0)
+               ? True
+               : False;
+#else
+    return False;
+#endif
+}
+
+/* Measure the host HiDPI backing scale from a hidden throwaway window. SDL only
+ * exposes the Retina backing ratio through a live window (SDL_GetDisplayDPI is
+ * unreliable on macOS and SDL_GetDisplayContentScale reports 1.0), so create a
+ * 1x1 hidden ALLOW_HIGHDPI window, compare its pixel size to its point size,
+ * and destroy it. Leaves the scale at its 1.0 default on any failure or on the
+ * CI dummy driver where the two sizes match.
+ */
+static void probeGlobalHiDpiScale(void)
+{
+    /* Reset first so a later 1x session cannot inherit a prior Retina scale:
+     * globalHiDpiScale is process-lifetime, and the probe below only overwrites
+     * it on a pixel!=point mismatch, so without this a Retina-then-1x sequence
+     * (or the probe-failure early return) would keep the stale 2.0. */
+    globalHiDpiScale = 1.0;
+    SDL_Window *probe =
+        SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+                         1, 1, SDL_WINDOW_HIDDEN | SDL_WINDOW_ALLOW_HIGHDPI);
+    if (!probe) {
+        LOG("probeGlobalHiDpiScale: SDL_CreateWindow failed: %s\n",
+            SDL_GetError());
+        return;
+    }
+    int pointW = 0, pointH = 0, pixelW = 0, pixelH = 0;
+    SDL_GetWindowSize(probe, &pointW, &pointH);
+    if (compatSdlHasWindowSizeInPixels()) {
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+        SDL_GetWindowSizeInPixels(probe, &pixelW, &pixelH);
+#endif
+    }
+#if !defined(LIBX11_COMPAT_SDL3)
+    else {
+        /* SDL_GetWindowSizeInPixels is unavailable (SDL2 older than 2.26).
+         * Derive the backing size from a throwaway renderer's output size,
+         * which reports physical pixels on every SDL2 that ships a renderer.
+         * SDL3 always has SizeInPixels, so this fallback is never compiled
+         * there (its SDL2-only renderer API would not build). */
+        SDL_Renderer *probeRenderer =
+            SDL_CreateRenderer(probe, -1, SDL_RENDERER_ACCELERATED);
+        if (!probeRenderer)
+            probeRenderer = SDL_CreateRenderer(probe, -1, 0);
+        if (probeRenderer) {
+            SDL_GetRendererOutputSize(probeRenderer, &pixelW, &pixelH);
+            SDL_DestroyRenderer(probeRenderer);
+        }
+    }
+#endif
+    if (pointW > 0 && pixelW > 0 && pixelW != pointW)
+        compatSetGlobalHiDpiScale((double) pixelW / (double) pointW);
+    else if (pointH > 0 && pixelH > 0 && pixelH != pointH)
+        compatSetGlobalHiDpiScale((double) pixelH / (double) pointH);
+    LOG("probeGlobalHiDpiScale: point=(%dx%d) pixel=(%dx%d) scale=%.3f\n",
+        pointW, pointH, pixelW, pixelH, globalHiDpiScale);
+    SDL_DestroyWindow(probe);
+}
+
 static void applyScreenGeometryOverride(int *width, int *height)
 {
     const char *value = getenv("LIBX11_COMPAT_SCREEN_GEOMETRY");
@@ -79,9 +188,59 @@ static void applyScreenGeometryOverride(int *width, int *height)
     }
 }
 
+/* Queue of Display* handles closed re-entrantly from the live-resize observer;
+ * the real closes run after the observer frame unwinds via
+ * libx11CompatRunDeferredDisplayClose. A single slot would drop earlier closes
+ * if a reflow callback tore down more than one Display in the same frame, so
+ * keep them all. Main-thread-only, so no locking is needed. */
+static Display **pendingCloseDisplays = NULL;
+static size_t pendingCloseCount = 0;
+static size_t pendingCloseCapacity = 0;
+
+/* Fixed fallback used only when the dynamic queue above cannot grow (realloc
+ * failure). Deferring is mandatory for correctness here -- closing
+ * synchronously from inside the observer crashes -- so under OOM the close must
+ * still be recorded somewhere rather than silently dropped while XCloseDisplay
+ * reports success. A handful of slots covers any plausible per-frame teardown
+ * burst. */
+#define PENDING_CLOSE_FALLBACK_SLOTS 8
+static Display *pendingCloseFallback[PENDING_CLOSE_FALLBACK_SLOTS];
+static size_t pendingCloseFallbackCount = 0;
+
 int XCloseDisplay(Display *display)
 {
     // https://tronche.com/gui/x/xlib/display/XCloseDisplay.html
+    if (libx11CompatInLiveResizePresent()) {
+        /* Re-entered from the CFRunLoop live-resize observer (client reflow ran
+         * XCloseDisplay). Tearing down SDL / removing the run-loop observer
+         * from inside the observer's own callback crashes; defer the real close
+         * until the present frame unwinds. Queue the Display* and return
+         * cleanly. */
+        if (pendingCloseCount == pendingCloseCapacity) {
+            size_t newCap = pendingCloseCapacity ? pendingCloseCapacity * 2 : 4;
+            Display **grown = realloc(pendingCloseDisplays,
+                                      newCap * sizeof(*pendingCloseDisplays));
+            if (grown) {
+                pendingCloseDisplays = grown;
+                pendingCloseCapacity = newCap;
+            }
+        }
+        if (pendingCloseCount < pendingCloseCapacity) {
+            pendingCloseDisplays[pendingCloseCount++] = display;
+        } else if (pendingCloseFallbackCount < PENDING_CLOSE_FALLBACK_SLOTS) {
+            /* Dynamic queue is full and could not grow; keep the close in the
+             * static fallback so the deferred drain still tears it down. */
+            pendingCloseFallback[pendingCloseFallbackCount++] = display;
+        } else {
+            /* Both queues are exhausted under sustained OOM. Dropping the close
+             * leaks the Display, but the alternative (a synchronous close from
+             * inside the observer) crashes, so leak rather than crash. */
+            LOG("XCloseDisplay: deferred-close queues exhausted, leaking "
+                "Display %p\n",
+                (void *) display);
+        }
+        return 0;
+    }
     freeExtensionStorage(display);
     freeSelectionStorage(display);
     int screenIndex;
@@ -146,6 +305,39 @@ int XCloseDisplay(Display *display)
     }
     free(display);
     return 0;
+}
+
+/* Deferred-close drain (option i): run the real XCloseDisplay immediately after
+ * the live-resize present frame unwinds, in the SAME observer tick but after
+ * the in-present flag/atomic are cleared (so libx11CompatInLiveResizePresent()
+ * reads false and the full teardown runs). This is safe because
+ * libx11CompatStopLiveResizeObserver now defers CFRunLoopRemoveObserver when
+ * the observer callback is still on the stack (see mac-live-resize.c). Called
+ * from libx11CompatPresentDuringLiveResize as its last action. No-op otherwise.
+ */
+void libx11CompatRunDeferredDisplayClose(void)
+{
+    if (pendingCloseCount == 0 && pendingCloseFallbackCount == 0)
+        return;
+    /* Detach both queues before draining so any re-entrant XCloseDisplay during
+     * a teardown starts fresh lists instead of mutating the ones being walked.
+     */
+    Display **pending = pendingCloseDisplays;
+    size_t count = pendingCloseCount;
+    pendingCloseDisplays = NULL;
+    pendingCloseCount = 0;
+    pendingCloseCapacity = 0;
+    Display *fallback[PENDING_CLOSE_FALLBACK_SLOTS];
+    size_t fallbackCount = pendingCloseFallbackCount;
+    for (size_t i = 0; i < fallbackCount; i++)
+        fallback[i] = pendingCloseFallback[i];
+    pendingCloseFallbackCount = 0;
+    for (size_t i = 0; i < count; i++)
+        XCloseDisplay(
+            pending[i]); /* outside the present frame -> full teardown */
+    for (size_t i = 0; i < fallbackCount; i++)
+        XCloseDisplay(fallback[i]);
+    free(pending);
 }
 
 /* Set only while this library drives SDL_Init(VIDEO) from XOpenDisplay. When a
@@ -239,6 +431,10 @@ Display *XOpenDisplay(_Xconst char *display_name)
         ttfOwned = True;
     }
     if (numDisplaysOpen == 0) {
+        /* Probe the HiDPI backing scale before font storage initializes so the
+         * first XLoadFont already opens glyphs at the physical-pixel size.
+         */
+        probeGlobalHiDpiScale();
         if (!(initVisuals() && initColorStorage() && initFontStorage())) {
             fprintf(stderr,
                     "libX11-compat: visuals/colors/fonts init failed\n");
@@ -395,6 +591,12 @@ Display *XOpenDisplay(_Xconst char *display_name)
         /* Init the font search path */
         XSetFontPath(display, NULL, 0);
     }
+    /* Advertise the probed HiDPI backing scale on the root window so clients
+     * that render at a fixed point size can scale their glyphs to match the
+     * promoted physical-pixel geometry. Kept current on a monitor move by the
+     * SDL_WINDOWEVENT_DISPLAY_CHANGED handler.
+     */
+    compatPublishHiDpiScaleProperty(display);
     return display;
 }
 
@@ -667,6 +869,12 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
     if (hints->flags & PWinGravity)
         data.winGravity = hints->win_gravity;
 
+    /* The resize-increment cache is refreshed from the stored property on the
+     * XChangeProperty success path (window-property.c calls
+     * cacheResizeIncrementsFromNormalHintsProperty for
+     * WM_NORMAL_HINTS/format-32 there), so it stays correct without a second
+     * inline decode here that would also run even when the property write
+     * failed. */
     XChangeProperty(dpy, w, prop, XA_WM_SIZE_HINTS, 32, PropModeReplace,
                     (unsigned char *) &data, NumPropSizeElements);
 }
@@ -762,6 +970,56 @@ void applyNormalHintsResizableFromProperty(Window window)
 #else
     (void) resizable;
 #endif
+}
+
+void cacheResizeIncrementsFromNormalHintsProperty(Window window)
+{
+    if (!IS_TYPE(window, WINDOW))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    WindowProperty *prop =
+        findProperty(&windowStruct->properties, XA_WM_NORMAL_HINTS, NULL);
+    if (!prop || prop->dataFormat != 32 || prop->type != XA_WM_SIZE_HINTS ||
+        prop->dataLength < OldNumPropSizeElements || !prop->data) {
+        windowStruct->hasResizeInc = False;
+        return;
+    }
+
+    xPropSizeHints *sizeHints = (xPropSizeHints *) prop->data;
+    /* Mirror the cache the XSetWMSizeHints path populates from the XSizeHints
+     * struct (see the PResizeInc block there): only WM_NORMAL_HINTS governs
+     * live sizing and only PResizeInc requests cell snapping. ICCCM: when
+     * PBaseSize is absent the minimum size stands in for the base, so fall back
+     * to min_width/height (not 0) as the grid origin; a missing PMinSize
+     * defaults to 0 ("no minimum"). The base fields live only in the 18-element
+     * ICCCM-v1 payload (indices 15-16); a legacy 15-element write reaches here
+     * with dataLength == OldNumPropSizeElements, so treat PBaseSize as absent
+     * unless the full payload is present, or the read runs past the store. */
+    Bool haveBaseFields = (sizeHints->flags & PBaseSize) &&
+                          prop->dataLength >= NumPropSizeElements;
+    if ((sizeHints->flags & PResizeInc) && sizeHints->widthInc > 0 &&
+        sizeHints->heightInc > 0) {
+        windowStruct->hasResizeInc = True;
+        windowStruct->widthInc = (int) sizeHints->widthInc;
+        windowStruct->heightInc = (int) sizeHints->heightInc;
+        windowStruct->baseWidth =
+            haveBaseFields
+                ? (int) sizeHints->baseWidth
+                : ((sizeHints->flags & PMinSize) ? (int) sizeHints->minWidth
+                                                 : 0);
+        windowStruct->baseHeight =
+            haveBaseFields
+                ? (int) sizeHints->baseHeight
+                : ((sizeHints->flags & PMinSize) ? (int) sizeHints->minHeight
+                                                 : 0);
+        windowStruct->minWidth =
+            (sizeHints->flags & PMinSize) ? (int) sizeHints->minWidth : 0;
+        windowStruct->minHeight =
+            (sizeHints->flags & PMinSize) ? (int) sizeHints->minHeight : 0;
+    } else {
+        windowStruct->hasResizeInc = False;
+    }
 }
 
 Status XGetWMSizeHints(Display *dpy,

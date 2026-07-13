@@ -14,6 +14,12 @@ PUBLIC_API_RE = re.compile(
     r"XSync|XRender|XFixes|XDamage|XRR|glX)"
 )
 
+# libx11-compat exports a small set of non-Xlib shim hooks (all prefixed
+# libx11Compat) that clients such as the xwpe live-resize harness resolve at
+# runtime. They are not part of the Xlib ABI but are still an exported surface,
+# so track them in a dedicated manifest to catch accidental additions/removals.
+SHIM_API_RE = re.compile(r"^libx11Compat")
+
 # GLX is an optional build (GLX=0 in the makefiles compiles src/glx.c out). When
 # it is disabled the glX* symbols are neither exported nor expected, so drop them
 # from both sides of the comparison.
@@ -39,7 +45,7 @@ def run_nm(library: Path) -> str:
     raise SystemExit(f"failed to inspect exported symbols: {last_error}")
 
 
-def exported_public_symbols(library: Path) -> set[str]:
+def exported_symbols(library: Path, pattern: re.Pattern[str]) -> set[str]:
     symbols: set[str] = set()
     for line in run_nm(library).splitlines():
         fields = line.split()
@@ -50,20 +56,20 @@ def exported_public_symbols(library: Path) -> set[str]:
         if sys.platform == "darwin" and symbol.startswith("_"):
             symbol = symbol[1:]
 
-        if PUBLIC_API_RE.match(symbol):
+        if pattern.match(symbol):
             symbols.add(symbol)
 
     return symbols
 
 
-def manifest_symbols(path: Path) -> set[str]:
+def manifest_symbols(path: Path, pattern: re.Pattern[str], kind: str) -> set[str]:
     symbols: set[str] = set()
     for line_number, raw_line in enumerate(path.read_text().splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if not PUBLIC_API_RE.match(line):
-            raise SystemExit(f"{path}:{line_number}: not a public X11 API: {line}")
+        if not pattern.match(line):
+            raise SystemExit(f"{path}:{line_number}: not a {kind}: {line}")
         symbols.add(line)
     return symbols
 
@@ -72,6 +78,16 @@ def print_group(title: str, symbols: set[str]) -> None:
     print(title)
     for symbol in sorted(symbols):
         print(f"  {symbol}")
+
+
+def _diff_manifest(exported: set[str], covered: set[str], label: str) -> bool:
+    missing = exported - covered
+    stale = covered - exported
+    if missing:
+        print_group(f"Missing {label} coverage manifest entries:", missing)
+    if stale:
+        print_group(f"Stale {label} coverage manifest entries:", stale)
+    return bool(missing or stale)
 
 
 def main() -> int:
@@ -84,19 +100,32 @@ def main() -> int:
 
     library = Path(sys.argv[1])
     manifest = Path(sys.argv[2])
-    exported = _glx_filtered(exported_public_symbols(library))
-    covered = _glx_filtered(manifest_symbols(manifest))
+    exported = _glx_filtered(exported_symbols(library, PUBLIC_API_RE))
+    covered = _glx_filtered(manifest_symbols(manifest, PUBLIC_API_RE, "public X11 API"))
 
-    missing = exported - covered
-    stale = covered - exported
-    if missing or stale:
-        if missing:
-            print_group("Missing API coverage manifest entries:", missing)
-        if stale:
-            print_group("Stale API coverage manifest entries:", stale)
+    failed = _diff_manifest(exported, covered, "API")
+
+    # The libx11Compat* shim hooks are only exported on builds that compile the
+    # live-resize/present layer (macOS). When none are present (e.g. a Linux CI
+    # build), the shim manifest is expected to be empty and the check is a no-op.
+    shim_exported = exported_symbols(library, SHIM_API_RE)
+    shim_manifest_path = manifest.with_name("shim-symbols.txt")
+    shim_covered: set[str] = set()
+    if shim_manifest_path.exists():
+        shim_covered = manifest_symbols(
+            shim_manifest_path, SHIM_API_RE, "libx11Compat shim symbol"
+        )
+    if shim_exported or shim_covered:
+        if _diff_manifest(shim_exported, shim_covered, "shim"):
+            failed = True
+
+    if failed:
         return 1
 
-    print(f"API symbol coverage complete: {len(exported)} public exports")
+    print(
+        f"API symbol coverage complete: {len(exported)} public exports"
+        + (f", {len(shim_exported)} shim exports" if shim_exported else "")
+    )
     return 0
 
 

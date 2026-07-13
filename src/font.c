@@ -513,6 +513,79 @@ static int clampFontSize(int size)
     return size;
 }
 
+/* Scale a resolved 1x pixel size by the display-global HiDPI factor so glyphs
+ * render at the same physical size as before while filling the physical-pixel
+ * window geometry realizeTopLevelWindow promotes to. requestedFontSize itself
+ * stays unscaled because callers compare its result against literal 1x pixel
+ * sizes (the 14/16/19 fixed-font checks); only the open/metric paths take the
+ * scale. A no-op when the global factor is 1.0 (non-HiDPI hosts, CI dummy).
+ */
+static int hiDpiScaledPixelSize(int size)
+{
+    double scale = compatGlobalHiDpiScale();
+    if (scale <= 1.0)
+        return size;
+    /* size is already a resolved 1x pixel size bounded by requestedFontSize /
+     * clampFontSize, so re-applying the MAX_FONT_SIZE cap here would clamp the
+     * physical-pixel size back down and leave large fonts too small on Retina.
+     * Keep the MIN floor and only guard against int overflow from the multiply.
+     */
+    double scaled = (double) size * scale + 0.5;
+    if (scaled > (double) INT_MAX)
+        scaled = (double) INT_MAX;
+    int result = (int) scaled;
+    if (result < MIN_FONT_SIZE)
+        result = MIN_FONT_SIZE;
+    return result;
+}
+
+/* Nearest-integer HiDPI factor for the embedded 6x13 bitmap. The bitmap is
+ * painted one source pixel per integer-sized block (a fractional factor would
+ * blur the cell), so both the renderer and the metrics reported for
+ * bitmap-drawn fonts must use this same integer factor or the advance grid
+ * clients measure drifts from the pixels actually painted. A no-op at 1x.
+ */
+static int fixedBitmapHiDpiScale(void)
+{
+    double scale = compatGlobalHiDpiScale();
+    int rounded = scale > 1.0 ? (int) (scale + 0.5) : 1;
+    return rounded < 1 ? 1 : rounded;
+}
+
+/* Scale a 1x core font metric (ascent/descent/advance width) by the HiDPI
+ * factor so the metrics reported to clients match the HiDPI-scaled glyph
+ * rendering. A width of 0 means "not fixed width" and passes through unchanged.
+ */
+static short hiDpiScaledMetric(short value)
+{
+    double scale = compatGlobalHiDpiScale();
+    if (scale <= 1.0 || value == 0)
+        return value;
+    /* value returns as a short, so a large advance width scaled by a high
+     * factor can exceed SHRT_MAX and wrap negative. Clamp to the short range
+     * (both ends, since a negative advance is meaningless) before the cast. */
+    double scaled = (double) value * scale + (value > 0 ? 0.5 : -0.5);
+    if (scaled > (double) SHRT_MAX)
+        scaled = (double) SHRT_MAX;
+    else if (scaled < (double) SHRT_MIN)
+        scaled = (double) SHRT_MIN;
+    return (short) scaled;
+}
+
+/* Fixed-bitmap variant of hiDpiScaledMetric: fonts drawn by
+ * renderFixedBitmapText are painted at the nearest-integer factor, so their
+ * reported metrics must use the same integer factor rather than the raw
+ * fractional one. Otherwise, on a fractional backing scale (e.g. 1.5x) the
+ * client measures a 6*1.5=9px advance while glyphs paint in 6*round(1.5)=12px
+ * cells.
+ */
+static short fixedBitmapScaledMetric(short value)
+{
+    if (value == 0)
+        return value;
+    return (short) (value * fixedBitmapHiDpiScale());
+}
+
 static int decipointsToPixelSize(int decipoints)
 {
     /* Xvfb resolves wildcard-resolution XLFD requests against its 100 DPI
@@ -809,10 +882,10 @@ static Bool isMotifTimesIso14Fallback(const char *name)
     return requestedFontSize(name) == 14;
 }
 
-static Bool coreFontMetricsForName(const char *name,
-                                   short *ascent,
-                                   short *descent,
-                                   short *width)
+static Bool coreFontMetricsForNameRaw(const char *name,
+                                      short *ascent,
+                                      short *descent,
+                                      short *width)
 {
     if (!name)
         return False;
@@ -871,6 +944,38 @@ static Bool coreFontMetricsForName(const char *name,
         return True;
     }
     return False;
+}
+
+static Bool usesFixedFallbackFont(const char *name);
+
+/* HiDPI-aware wrapper over the 1x core metric table. Scaling here (rather than
+ * in applyCoreFontMetrics) makes the scaled values the single source of truth:
+ * XLoadFont caches them in CompatFont, so both the XFontStruct clients query
+ * and the image-string background box in drawImageString stay consistent with
+ * the HiDPI-scaled glyph rendering. A no-op when the global factor is 1.0.
+ *
+ * Fonts that render through the embedded 6x13 bitmap (usesFixedFallbackFont)
+ * are painted at the nearest-integer factor, so their metrics use the matching
+ * integer scaler; the other table entries render via TTF and keep the raw
+ * fractional scale.
+ */
+static Bool coreFontMetricsForName(const char *name,
+                                   short *ascent,
+                                   short *descent,
+                                   short *width)
+{
+    if (!coreFontMetricsForNameRaw(name, ascent, descent, width))
+        return False;
+    if (usesFixedFallbackFont(name)) {
+        *ascent = fixedBitmapScaledMetric(*ascent);
+        *descent = fixedBitmapScaledMetric(*descent);
+        *width = fixedBitmapScaledMetric(*width);
+        return True;
+    }
+    *ascent = hiDpiScaledMetric(*ascent);
+    *descent = hiDpiScaledMetric(*descent);
+    *width = hiDpiScaledMetric(*width);
+    return True;
 }
 
 static Bool usesFixedFallbackFont(const char *name)
@@ -1261,7 +1366,7 @@ Font XLoadFont(Display *display, _Xconst char *name)
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
-    int fontSize = requestedFontSize(name);
+    int fontSize = hiDpiScaledPixelSize(requestedFontSize(name));
     resource->ttf = TTF_OpenFont(fontEntry->filePath, fontSize);
     if (!resource->ttf) {
         free(resource);
@@ -1868,8 +1973,8 @@ char **XListFontsWithInfo(Display *display,
         FontCacheEntry *entry = findFontCacheEntryByName(names[i]);
         if (!entry)
             continue;
-        TTF_Font *font =
-            TTF_OpenFont(entry->filePath, requestedFontSize(names[i]));
+        TTF_Font *font = TTF_OpenFont(
+            entry->filePath, hiDpiScaledPixelSize(requestedFontSize(names[i])));
         if (!font)
             continue;
         fillFontStructFromTTF(display, None, font, &infos[i]);
@@ -2305,15 +2410,27 @@ static Bool renderFixedBitmapText(Drawable drawable,
     unsigned long foreground = colorWithOpaqueDefault(gContext->foreground);
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE, foreground);
 
-    /* Cap so (int)(len * FIXED_BITMAP_WIDTH) cannot overflow SDL_Rect's int
-     * width. Pathological inputs would otherwise wrap negative and either skip
+    /* When realizeTopLevelWindow promotes a window to physical pixels the core
+     * metrics reported for the fixed aliases are HiDPI-scaled, so the embedded
+     * 6x13 cell must be drawn at the same integer factor or the glyphs shrink
+     * and drift out of the advance grid clients measured. Nearest-integer
+     * scale keeps each source pixel a crisp square block. A no-op at 1x. The
+     * metrics reported by coreFontMetricsForName use this same factor via
+     * fixedBitmapScaledMetric, so measured advance == painted cell width.
+     */
+    const int scale = fixedBitmapHiDpiScale();
+    const int cellW = FIXED_BITMAP_WIDTH * scale;
+    const int cellH = FIXED_BITMAP_HEIGHT * scale;
+    const int ascent = FIXED_BITMAP_ASCENT * scale;
+
+    /* Cap so (int)(len * cellW) cannot overflow SDL_Rect's int width.
+     * Pathological inputs would otherwise wrap negative and either skip
      * clipping or paint outside the intended damage area.
      */
     size_t len = length;
-    if (len > (size_t) (INT_MAX / FIXED_BITMAP_WIDTH))
-        len = (size_t) (INT_MAX / FIXED_BITMAP_WIDTH);
-    SDL_Rect bounds = {x, y - FIXED_BITMAP_ASCENT,
-                       (int) (len * FIXED_BITMAP_WIDTH), FIXED_BITMAP_HEIGHT};
+    if (len > (size_t) (INT_MAX / cellW))
+        len = (size_t) (INT_MAX / cellW);
+    SDL_Rect bounds = {x, y - ascent, (int) (len * cellW), cellH};
     if (drawnBounds)
         *drawnBounds = bounds;
     ShapeGuard sg;
@@ -2329,12 +2446,12 @@ static Bool renderFixedBitmapText(Drawable drawable,
         int rectCount = 0;
         for (size_t i = 0; i < len && ok; i++) {
             const unsigned char ch = (unsigned char) string[i];
-            int charX = x + (int) i * FIXED_BITMAP_WIDTH;
+            int charX = x + (int) i * cellW;
             for (int row = 0; row < FIXED_BITMAP_HEIGHT && ok; row++) {
                 unsigned char bits = fixedBitmapFont.rows[ch][row];
                 /* Pack consecutive set bits on this row into a single SDL_Rect
                  * with w>1. A glyph with full ink on a row used to emit 6
-                 * rects; now it emits 1.
+                 * rects; now it emits 1. Each source pixel spans scale x scale.
                  */
                 int col = 0;
                 while (col < FIXED_BITMAP_WIDTH && ok) {
@@ -2348,7 +2465,8 @@ static Bool renderFixedBitmapText(Drawable drawable,
                     } while (col < FIXED_BITMAP_WIDTH &&
                              (bits & (0x80 >> col)));
                     rects[rectCount++] = (SDL_Rect) {
-                        charX + runStart, bounds.y + row, col - runStart, 1};
+                        charX + runStart * scale, bounds.y + row * scale,
+                        (col - runStart) * scale, scale};
                     if (rectCount == (int) ARRAY_LENGTH(rects))
                         ok = flushFixedBitmapRects(renderer, rects, &rectCount);
                 }

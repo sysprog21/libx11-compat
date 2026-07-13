@@ -51,10 +51,12 @@ STRICT_CFLAGS :=
 ifeq ($(STRICT),1)
   STRICT_CFLAGS += -Werror
 endif
-# SDL_COMPAT_LIBS comes from mk/sdl.mk.
+# SDL_COMPAT_LIBS comes from mk/sdl.mk. CoreFoundation on Darwin backs the
+# live-resize run-loop observer in src/mac-live-resize.c.
 LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm -pthread \
           $(if $(filter Linux,$(UNAME_S)),-ldl) \
-          $(if $(filter Darwin,$(UNAME_S)),$(if $(filter 1,$(GLX)),-lobjc))
+          $(if $(filter Darwin,$(UNAME_S)),-framework CoreFoundation) \
+          $(if $(filter Darwin,$(UNAME_S)),-lobjc)
 
 GREEN  := \033[0;32m
 BLUE   := \033[0;34m

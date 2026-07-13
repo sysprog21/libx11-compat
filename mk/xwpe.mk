@@ -1,5 +1,5 @@
 XWPE_URL := https://github.com/vejeta/xwpe
-XWPE_REVISION := e023dcf8af2cae102a97be29fb071b1354d0ba6b
+XWPE_REVISION := 88290d5bb17098c2071408d5a090eecf8f3aba02
 XWPE_CLONE_FLAGS ?= --filter=blob:none --no-checkout
 XWPE_SRC_DIR := $(OUT)/upstream/xwpe
 XWPE_SOURCE_STAMP := $(XWPE_SRC_DIR)/.source-stamp
@@ -110,6 +110,9 @@ $(XWPE_BIN): $(XWPE_SOURCE_STAMP) $(XWPE_PATCHES) $(PKGCONFIG_FILES) \
 	}
 
 XWPE_SMOKE_REGION ?= 0,0,900,650
+# The resize test grows the window to 1100x800, so it needs a wider capture
+# region than the fixed-geometry startup/input tests to sample the enlarged frame.
+XWPE_RESIZE_SMOKE_REGION ?= 0,0,1100,800
 xwpe_ui_lib_path = $(abspath $(OUT)):$(abspath $(XWPE_LIB_ALIASES))$(if $(SDL_RUNTIME_LIBDIR),:$(SDL_RUNTIME_LIBDIR))
 xwpe_ui_env = \
     --env DYLD_LIBRARY_PATH=$(xwpe_ui_lib_path)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
@@ -121,7 +124,8 @@ check-smoke-xwpe: $(UI_SMOKE_OUT_ROOT)/xwe-startup/.stamp \
                   $(UI_SMOKE_OUT_ROOT)/xwpe-startup/.stamp \
                   $(UI_SMOKE_OUT_ROOT)/xwpe-mouse-dialog/.stamp \
                   $(UI_SMOKE_OUT_ROOT)/xwpe-popup-close/.stamp \
-                  $(UI_SMOKE_OUT_ROOT)/xwpe-keyboard-edit/.stamp
+                  $(UI_SMOKE_OUT_ROOT)/xwpe-keyboard-edit/.stamp \
+                  $(UI_SMOKE_OUT_ROOT)/xwpe-resize/.stamp
 
 $(UI_SMOKE_OUT_ROOT)/xwe-startup/.stamp: FORCE $(XWPE_BIN)
 	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xwe-startup
@@ -204,6 +208,23 @@ $(UI_SMOKE_OUT_ROOT)/xwpe-keyboard-edit/.stamp: FORCE $(XWPE_BIN)
 	    --geometry $(UI_REPLAY_GEOMETRY) \
 	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
 	    --screenshot-region $(XWPE_SMOKE_REGION) \
+	    --in-process-snapshots \
+	    --offscreen \
+	    $(xwpe_ui_env)
+	$(Q)touch $@
+
+$(UI_SMOKE_OUT_ROOT)/xwpe-resize/.stamp: FORCE $(XWPE_BIN)
+	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xwpe-resize
+	$(Q)$(PYTHON) scripts/run-ui-replay.py \
+	    --name xwpe-resize \
+	    --app $(abspath $(XWPE_BIN)) \
+	    --workdir $(abspath $(XWPE_WORK_DIR)) \
+	    --replay tests/ui/replays/xwpe-resize.replay \
+	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xwpe-resize \
+	    --display $(UI_REPLAY_DISPLAY) \
+	    --geometry $(UI_REPLAY_GEOMETRY) \
+	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --screenshot-region $(XWPE_RESIZE_SMOKE_REGION) \
 	    --in-process-snapshots \
 	    --offscreen \
 	    $(xwpe_ui_env)

@@ -117,6 +117,10 @@ SDL_WRAP(
     (void *pixels, int width, int height, int depth, int pitch, Uint32 format),
     (pixels, width, height, depth, pitch, format))
 SDL_WRAP(SDL_Renderer *,
+         SDL_CreateRenderer,
+         (SDL_Window * window, int index, Uint32 flags),
+         (window, index, flags))
+SDL_WRAP(SDL_Renderer *,
          SDL_CreateSoftwareRenderer,
          (SDL_Surface * surface),
          (surface))
@@ -229,6 +233,30 @@ unsigned long sdlX11WindowHandle(SDL_Window *window)
     return 0;
 }
 #endif
+
+/* On macOS the live-resize path needs the SDL window's native NSWindow to reach
+ * its contentView CALayer (src/mac-live-resize.c). SDL_GetWindowWMInfo is not
+ * linked into the compat library directly (it is resolved from the real SDL2
+ * dylib through these wrapper thunks), and SDL_syswm.h drags in Cocoa types, so
+ * both are kept here and only the opaque NSWindow pointer is handed back (NULL
+ * when the window is not a Cocoa window, e.g. the dummy driver).
+ */
+#if defined(__APPLE__)
+#include <SDL_syswm.h>
+SDL_WRAP(SDL_bool,
+         SDL_GetWindowWMInfo,
+         (SDL_Window * window, SDL_SysWMinfo *info),
+         (window, info))
+void *sdlCocoaWindowHandle(SDL_Window *window)
+{
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (SDL_GetWindowWMInfo(window, &info) && info.subsystem == SDL_SYSWM_COCOA)
+        return (void *) info.info.cocoa.window;
+    return NULL;
+}
+#endif
+SDL_WRAP_VOID(SDL_GetVersion, (SDL_version * ver), (ver))
 SDL_WRAP(Uint32, SDL_GetWindowID, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_GetWindowPosition,
               (SDL_Window * window, int *x, int *y),
@@ -236,6 +264,15 @@ SDL_WRAP_VOID(SDL_GetWindowPosition,
 SDL_WRAP_VOID(SDL_GetWindowSize,
               (SDL_Window * window, int *w, int *h),
               (window, w, h))
+/* SDL_GetWindowSizeInPixels landed in SDL 2.26.0; older hosts (focal ships
+ * 2.0.10) lack the symbol, so the dlsym in probeGlobalHiDpiScale would resolve
+ * to NULL and calling through it would crash. Gate the thunk and let callers
+ * fall back to SDL_GetRendererOutputSize on older SDL. */
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+SDL_WRAP_VOID(SDL_GetWindowSizeInPixels,
+              (SDL_Window * window, int *w, int *h),
+              (window, w, h))
+#endif
 SDL_WRAP(int,
          SDL_GetRendererOutputSize,
          (SDL_Renderer * renderer, int *w, int *h),
@@ -703,6 +740,10 @@ SDL_WRAP_VOID(SDL_SetTextInputRect, (const SDL_Rect *rect), (rect))
 #else
 SDL_WRAP_VOID(SDL_SetTextInputRect, (SDL_Rect * rect), (rect))
 #endif
+SDL_WRAP(int,
+         SDL_SetTextureAlphaMod,
+         (SDL_Texture * texture, Uint8 alpha),
+         (texture, alpha))
 SDL_WRAP(int,
          SDL_SetTextureBlendMode,
          (SDL_Texture * texture, SDL_BlendMode blendMode),

@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdint.h>
 
 #include "window-internal.h"
@@ -23,7 +24,7 @@ void (*glxDrawableDestroyedHook)(Window drawable) = NULL;
 
 static void ensureMappingListLock(void);
 
-static unsigned long resolvedWindowBackgroundColor(Window window)
+unsigned long resolvedWindowBackgroundColor(Window window)
 {
     unsigned long color = 0;
     Window current = window;
@@ -58,6 +59,21 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->y = y;
     windowStruct->w = width;
     windowStruct->h = height;
+    windowStruct->hiDpiScaleX = 1.0;
+    windowStruct->hiDpiScaleY = 1.0;
+    windowStruct->hasResizeInc = False;
+    windowStruct->widthInc = 0;
+    windowStruct->heightInc = 0;
+    windowStruct->baseWidth = 0;
+    windowStruct->baseHeight = 0;
+    windowStruct->minWidth = 0;
+    windowStruct->minHeight = 0;
+    windowStruct->liveResizeLastSeenW = 0;
+    windowStruct->liveResizeLastSeenH = 0;
+    windowStruct->liveResizeSettleTicks = 0;
+    SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
+    windowStruct->snapEchoW = 0;
+    windowStruct->snapEchoH = 0;
     windowStruct->inputOnly = inputOnly;
     windowStruct->colormap = colormap;
     windowStruct->visual = visual;
@@ -81,6 +97,13 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->hasPresented = False;
     windowStruct->contentsMergedToParent = False;
     windowStruct->sdlRenderer = NULL;
+    windowStruct->presentRenderer = NULL;
+    windowStruct->presentTexture = NULL;
+    windowStruct->presentTexW = 0;
+    windowStruct->presentTexH = 0;
+    windowStruct->presentReadback = NULL;
+    windowStruct->presentReadbackCap = 0;
+    windowStruct->presentUsesSoftware = False;
     windowStruct->backgroundColor = backgroundColor;
     windowStruct->background = backgroundPixmap;
     windowStruct->colormapWindowsCount = -1;
@@ -714,6 +737,17 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     if (windowStruct->shapeClipMask)
         SDL_FreeSurface(windowStruct->shapeClipMask);
     free(windowStruct->colormapWindows);
+    /* Per-window accelerated present resources. The streaming texture belongs
+     * to presentRenderer, so destroy it first, then the renderer; both must go
+     * before SDL_DestroyWindow below since the renderer is bound to sdlWindow.
+     * The SCREEN-owned backing sdlTexture (destroyed further down) is unrelated
+     * to presentRenderer and must not be torn down through it.
+     */
+    if (windowStruct->presentTexture)
+        SDL_DestroyTexture(windowStruct->presentTexture);
+    if (windowStruct->presentRenderer)
+        SDL_DestroyRenderer(windowStruct->presentRenderer);
+    free(windowStruct->presentReadback);
     if (windowStruct->sdlRenderer) {
         invalidatePutImageStagingTexture(windowStruct->sdlRenderer);
         invalidateTextCacheForRenderer(windowStruct->sdlRenderer);
@@ -1400,14 +1434,47 @@ static void postMovedWindowExposure(Display *display, Window window)
     postExposeEvent(display, window, &expose, 1);
 }
 
-static void postResizeExpose(Display *display,
+/* Returns True when it has already posted a full-window Expose for a mapped
+ * top-level window, so the caller can skip its own redundant full-window
+ * Expose. False otherwise (non-top-level, or the band-only top-left path where
+ * the caller's full-window Expose is still wanted). */
+static Bool postResizeExpose(Display *display,
                              Window window,
                              int oldWidth,
                              int oldHeight)
 {
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (windowStruct->inputOnly)
-        return;
+        return False;
+
+    /* With ForgetGravity (the X default) the server discards all window
+     * contents on a resize, so wipe the whole non-top-level window to
+     * background before re-exposing it. A window that requested a retaining bit
+     * gravity (e.g. StaticGravity, which xwpe sets on its cells) keeps its old
+     * pixels: only the bands that newly appeared because a dimension grew need
+     * a clean background, and the previously visible region must be left
+     * intact. Wiping that retained region would blank content the client has
+     * not yet repainted; during the macOS modal resize loop the client's
+     * repaint lags a few frames, so that blank shows as a transient black
+     * flash. Preserving it until the reflow lands both removes the flash and
+     * matches real X11, which never erases the retained part of such a window
+     * on resize.
+     *
+     * The band optimization below models a top-left anchor only: it assumes the
+     * retained pixels stay pinned at (0,0) and the growth appears on the right
+     * and bottom edges. That holds for NorthWestGravity and StaticGravity (the
+     * only retaining gravity xwpe uses). Other anchors move the retained region
+     * to a different corner/edge (NorthEastGravity keeps the top-right, so the
+     * new band is on the left; CenterGravity splits both sides), and clearing
+     * the right/bottom bands there would erase live pixels and leave the real
+     * new band dirty. Rather than model every anchor, fall back to a
+     * full-window clear for any bit gravity this path does not model: always
+     * correct, just without the flash-avoidance optimization.
+     */
+    Bool topLeftAnchored = windowStruct->bitGravity == NorthWestGravity ||
+                           windowStruct->bitGravity == StaticGravity;
+    Bool clearWholeWindow = !topLeftAnchored;
+
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
         SDL_Rect fullWindow = {
             0,
@@ -1415,12 +1482,35 @@ static void postResizeExpose(Display *display,
             (int) windowStruct->w,
             (int) windowStruct->h,
         };
-        XClearArea(display, window, 0, 0, (unsigned int) fullWindow.w,
-                   (unsigned int) fullWindow.h, False);
+        if (clearWholeWindow) {
+            XClearArea(display, window, 0, 0, (unsigned int) fullWindow.w,
+                       (unsigned int) fullWindow.h, False);
+        } else {
+            if ((int) windowStruct->w > oldWidth) {
+                XClearArea(display, window, oldWidth, 0,
+                           (unsigned int) ((int) windowStruct->w - oldWidth),
+                           windowStruct->h, False);
+            }
+            if ((int) windowStruct->h > oldHeight) {
+                int width = MIN((int) windowStruct->w, oldWidth);
+                XClearArea(display, window, 0, oldHeight, (unsigned int) width,
+                           (unsigned int) ((int) windowStruct->h - oldHeight),
+                           False);
+            }
+        }
         postExposeEvent(display, window, &fullWindow, 1);
-        return;
+        return False;
     }
 
+    /* Mapped top-level: the growth-band exposure has the same top-left anchor
+     * assumption as the band clear above, so for a bit gravity this path does
+     * not model, expose the whole window instead of the right/bottom bands. */
+    if (clearWholeWindow) {
+        SDL_Rect fullWindow = {0, 0, (int) windowStruct->w,
+                               (int) windowStruct->h};
+        postExposeEvent(display, window, &fullWindow, 1);
+        return True;
+    }
     SDL_Rect rects[2];
     size_t count = 0;
     if ((int) windowStruct->w > oldWidth) {
@@ -1435,6 +1525,7 @@ static void postResizeExpose(Display *display,
     }
     if (count > 0)
         postExposeEvent(display, window, rects, count);
+    return False;
 }
 
 void freeWindowProperty(WindowProperty *property)
@@ -1484,6 +1575,24 @@ void resizeWindowTexture(Window window)
                            GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(windowRenderer);
+    /* Carry the overlapping region of the previous backing into the new one
+     * before the client repaints. On a live resize the client (e.g. xwpe)
+     * needs a few frames to reflow and redraw its grid at the new size; without
+     * this copy the freshly-cleared backing shows the background colour for
+     * those frames, which reads as a flicker/flash during the drag. Copying the
+     * common top-left region keeps the last-good content on screen until the
+     * repaint lands. Only pixels outside the overlap stay at the background.
+     */
+    int oldW = 0, oldH = 0;
+    if (SDL_QueryTexture(oldTexture, NULL, NULL, &oldW, &oldH) == 0 &&
+        oldW > 0 && oldH > 0) {
+        int copyW = oldW < (int) windowStruct->w ? oldW : (int) windowStruct->w;
+        int copyH = oldH < (int) windowStruct->h ? oldH : (int) windowStruct->h;
+        if (copyW > 0 && copyH > 0) {
+            SDL_Rect overlap = {0, 0, copyW, copyH};
+            SDL_RenderCopy(windowRenderer, oldTexture, &overlap, &overlap);
+        }
+    }
     windowStruct->sdlTexture = newTexture;
     windowStruct->needsPresent = True;
     windowStruct->hasPresentRect = False;
@@ -1655,8 +1764,37 @@ Bool configureWindow(Display *display,
         if ((unsigned int) width != windowStruct->w ||
             (unsigned int) height != windowStruct->h) {
             if (isMappedTopLevelWindow) {
-                SDL_SetWindowSize(windowStruct->sdlWindow, width, height);
-                SDL_GetWindowSize(windowStruct->sdlWindow, &width, &height);
+                /* SDL_SetWindowSize makes SDL post RESIZED/SIZE_CHANGED for
+                 * this window. This resize is client-initiated and already gets
+                 * its ConfigureNotify from the postEvent below, so arm the echo
+                 * suppressor and pump synchronously to let the filter drop the
+                 * echoed SDL events before disarming. Without this a client
+                 * XResizeWindow would deliver two ConfigureNotifies.
+                 */
+                /* width/height are physical X11 pixels (top-levels are promoted
+                 * to the backing size). SDL_SetWindowSize/GetWindowSize speak
+                 * logical points, so convert through the cached per-axis HiDPI
+                 * scale the same way snapTopLevelToResizeIncrements does;
+                 * otherwise a 2x-Retina XResizeWindow would request a window
+                 * twice the intended size and then record the logical size as
+                 * physical. No-op at scale 1.0 (Linux / CI dummy). */
+                double scaleX = windowStruct->hiDpiScaleX > 0.0
+                                    ? windowStruct->hiDpiScaleX
+                                    : 1.0;
+                double scaleY = windowStruct->hiDpiScaleY > 0.0
+                                    ? windowStruct->hiDpiScaleY
+                                    : 1.0;
+                int logicalWidth = (int) lround((double) width / scaleX);
+                int logicalHeight = (int) lround((double) height / scaleY);
+                SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 1);
+                SDL_SetWindowSize(windowStruct->sdlWindow, logicalWidth,
+                                  logicalHeight);
+                SDL_PumpEvents();
+                SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
+                SDL_GetWindowSize(windowStruct->sdlWindow, &logicalWidth,
+                                  &logicalHeight);
+                width = (int) lround((double) logicalWidth * scaleX);
+                height = (int) lround((double) logicalHeight * scaleY);
                 LOG("configureWindow: SDL reports actual=(%ux%u)\n",
                     (unsigned) width, (unsigned) height);
             }
@@ -1704,8 +1842,12 @@ Bool configureWindow(Display *display,
                                          oldHeight);
             postMovedWindowExposure(display, window);
         } else {
-            postResizeExpose(display, window, oldWidth, oldHeight);
-            if (isMappedTopLevelWindow) {
+            Bool postedFullWindowExpose =
+                postResizeExpose(display, window, oldWidth, oldHeight);
+            /* Skip this full-window Expose when postResizeExpose already
+             * emitted one (the mapped top-level whole-window-clear path), so
+             * the client does not receive two identical full-window exposes. */
+            if (isMappedTopLevelWindow && !postedFullWindowExpose) {
                 SDL_Rect fullWindow = {
                     0,
                     0,

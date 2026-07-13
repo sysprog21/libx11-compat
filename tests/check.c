@@ -22,6 +22,7 @@
 #include "drawing.h"
 #include "events.h"
 #include "gc.h"
+#include "mac-live-resize.h"
 #include "image.h"
 #include "input.h"
 #include "path/compose.h"
@@ -4744,12 +4745,29 @@ static int test_events(Display *display)
                      &textureWidth, &textureHeight);
     CHECK(textureWidth == 48 && textureHeight == 40,
           "backing texture did not resize to SDL dimensions");
+    /* Option 1b HiDPI promotion: under the unit-test SDL driver the window
+     * surface size equals its logical size, so the per-window scale stays 1.0
+     * and X11 geometry (checked above as 48x40) equals the logical points. True
+     * 2x promotion is exercised manually on Retina plus the xwpe resize smoke
+     * test; here we lock in the no-op 1.0 path so the pixel==point invariant
+     * cannot silently regress. */
+    CHECK(GET_WINDOW_STRUCT(window)->hiDpiScaleX == 1.0 &&
+              GET_WINDOW_STRUCT(window)->hiDpiScaleY == 1.0,
+          "HiDPI scale should be 1.0 under the unit-test SDL driver");
     GC resizeGc = XCreateGC(display, window, 0, NULL);
     CHECK(resizeGc != NULL, "resize backing GC creation failed");
     CHECK(XSetForeground(display, resizeGc, 0xFFFF0000),
           "resize backing red foreground failed");
     CHECK(XFillRectangle(display, window, resizeGc, 0, 0, 12, 12),
           "resize backing stale fill failed");
+    /* A resize that grows a dimension must wipe the subtree to background so no
+     * stale pixels from the old (smaller) frame survive: exercise that path by
+     * resizing larger than the current 48x40 backing. A same-size or shrinking
+     * resize intentionally preserves the overlap-copied content (avoiding the
+     * black flash during the macOS modal resize loop), so it is not the case
+     * that guards this stale-pixel invariant. */
+    resizeEvent.window.data1 = 52;
+    resizeEvent.window.data2 = 44;
     CHECK(convertEvent(display, &resizeEvent, &out, True) == 0,
           "second SDL resize did not convert to ConfigureNotify");
     SDL_Renderer *resizeRenderer = NULL;
@@ -6300,6 +6318,55 @@ static int test_normal_hints_resizable(Display *display)
               "normal-hints: WM_NORMAL_HINTS overrode Motif no-resize");
     }
     XDestroyWindow(display, motifOwned);
+    return 1;
+}
+
+/* The drag-end resize-increment snap (snapTopLevelToResizeIncrements) replays
+ * the ICCCM size = base + i * inc quantization a real WM performs, so a text-UI
+ * client whose grid is whole font cells settles on an exact number of cells and
+ * leaves no sub-cell remainder band. This exercises the pure axis arithmetic
+ * (libx11CompatSnapAxisToIncrement) directly, driver-independent: base
+ * anchoring, rounding DOWN to the nearest whole increment, and the two lower
+ * clamps (never below the declared minimum, never below one increment above
+ * base).
+ */
+static int test_snap_axis_to_increment(Display *display)
+{
+    (void) display; /* pure arithmetic; no X connection needed */
+    /* Non-multiple rounds DOWN, anchored at base: base 80 + 8*i. 207 -> 80 +
+     * ((207-80)/8)*8 = 80 + (127/8)*8 = 80 + 15*8 = 200. */
+    CHECK(libx11CompatSnapAxisToIncrement(207, 8, 80, 40) == 200,
+          "snap: 207 with base 80 inc 8 should round down to 200");
+    /* Exact multiple is unchanged: 80 + 8*15 = 200. */
+    CHECK(libx11CompatSnapAxisToIncrement(200, 8, 80, 80) == 200,
+          "snap: exact multiple should be preserved");
+    /* Just past a boundary drops to the boundary: 80 + 8*14 = 192; 199 -> 192.
+     */
+    CHECK(libx11CompatSnapAxisToIncrement(199, 8, 80, 40) == 192,
+          "snap: one below a multiple should round down");
+    /* Zero base (PBaseSize absent) anchors at 0: (1730/font)*font. With inc 12,
+     * 1730 -> (1730/12)*12 = 144*12 = 1728. This is the xwpe remainder-band
+     * case: a 1730px window snaps to 1728, killing the 2px band. */
+    CHECK(libx11CompatSnapAxisToIncrement(1730, 12, 0, 12) == 1728,
+          "snap: zero-base 1730 inc 12 should snap to 1728");
+    /* Minimum clamp: rounding down would fall below min, and min sits above the
+     * base+inc floor, so min wins. base 0 inc 20, current 30 -> (30/20)*20 =
+     * 20, below min 50; base+inc is 20, so 50 (>= 20) is the final result. */
+    CHECK(libx11CompatSnapAxisToIncrement(30, 20, 0, 50) == 50,
+          "snap: result below min should clamp to min");
+    /* Base size (i == 0) is reachable: a size in [base, base+inc) rounds down
+     * to base, not up to base+inc. base 80 inc 8, current 84 -> 80 + (4/8)*8
+     * = 80. */
+    CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 0) == 80,
+          "snap: a size within one increment of base rounds down to base");
+    /* Both clamps active: pick the larger (min beats base+inc when min bigger).
+     * base 80 inc 8 gives base+inc 88; min 100 is larger, so 100 wins. */
+    CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 100) == 100,
+          "snap: min above base+inc should take precedence");
+    /* Guard: non-positive increment is a no-op (returns current unchanged), so
+     * a client that never published PResizeInc is never resized. */
+    CHECK(libx11CompatSnapAxisToIncrement(137, 0, 0, 0) == 137,
+          "snap: zero increment should leave the size unchanged");
     return 1;
 }
 
@@ -10326,6 +10393,161 @@ static int test_grab_release_on_unviewable(Display *display)
     return 1;
 }
 
+/* Records the arguments the live-resize reflow hook was invoked with, so the
+ * dispatch seam can be exercised without the macOS run-loop observer or a real
+ * SDL window surface (neither exists under the dummy driver used in CI). */
+static int liveResizeReflowCalls;
+static int liveResizeReflowLastW;
+static int liveResizeReflowLastH;
+
+static void test_live_resize_reflow_recorder(int newPixelWidth,
+                                             int newPixelHeight)
+{
+    liveResizeReflowCalls++;
+    liveResizeReflowLastW = newPixelWidth;
+    liveResizeReflowLastH = newPixelHeight;
+}
+
+/* Number of Displays the shim currently has open; XOpenDisplay/XCloseDisplay
+ * maintain it. Used below to observe that a re-entrant XCloseDisplay is
+ * deferred (count unchanged) and only performed by the drain (count drops). */
+extern int numDisplaysOpen;
+
+/* Re-entrancy recorder: runs as a live-resize reflow callback, i.e. inside a
+ * present frame, and re-enters XCloseDisplay on a throwaway display to exercise
+ * the deferred-close seam. */
+static Display *liveResizeReentrantCloseTarget;
+static int liveResizeReentrantSawInPresent;
+static int liveResizeReentrantCountDuringClose;
+
+static void test_live_resize_reentrant_close(int newPixelWidth,
+                                             int newPixelHeight)
+{
+    (void) newPixelWidth;
+    (void) newPixelHeight;
+    /* The present frame must be active while a reflow callback runs. */
+    liveResizeReentrantSawInPresent = libx11CompatInLiveResizePresent();
+    if (liveResizeReentrantCloseTarget) {
+        XCloseDisplay(liveResizeReentrantCloseTarget);
+        /* If the close were NOT deferred it would have torn the display down
+         * here, dropping the open count; capture it to assert deferral. */
+        liveResizeReentrantCountDuringClose = numDisplaysOpen;
+    }
+}
+
+/* The live-resize reflow hook lets a client (xwpe) repaint real content into
+ * the grown area during a macOS modal resize drag, where its own event loop is
+ * blocked. Verify the shim's registration/dispatch seam: nothing is registered
+ * by default, registering flips Has() and routes Invoke() to the callback with
+ * the exact size once, and registering NULL clears it again.
+ */
+static int test_live_resize_reflow_hook(Display *display)
+{
+    (void) display;
+
+    /* No client opted in yet, so the present path keeps its fallback fill. */
+    if (libx11CompatHasLiveResizeReflow()) {
+        fprintf(stderr,
+                "reflow hook reported registered before any register\n");
+        return 0;
+    }
+    /* Invoking with nothing registered must be a safe no-op. */
+    libx11CompatInvokeLiveResizeReflow(10, 20);
+
+    liveResizeReflowCalls = 0;
+    liveResizeReflowLastW = liveResizeReflowLastH = -1;
+    libx11CompatRegisterLiveResizeReflow(test_live_resize_reflow_recorder);
+    if (!libx11CompatHasLiveResizeReflow()) {
+        fprintf(stderr, "reflow hook not reported registered after register\n");
+        return 0;
+    }
+
+    libx11CompatInvokeLiveResizeReflow(1234, 567);
+    if (liveResizeReflowCalls != 1 || liveResizeReflowLastW != 1234 ||
+        liveResizeReflowLastH != 567) {
+        fprintf(stderr, "reflow hook dispatch mismatch: calls=%d w=%d h=%d\n",
+                liveResizeReflowCalls, liveResizeReflowLastW,
+                liveResizeReflowLastH);
+        libx11CompatRegisterLiveResizeReflow(NULL);
+        return 0;
+    }
+
+    /* Unregister so later tests see a clean, opted-out state. */
+    libx11CompatRegisterLiveResizeReflow(NULL);
+    if (libx11CompatHasLiveResizeReflow()) {
+        fprintf(stderr, "reflow hook still registered after clearing\n");
+        return 0;
+    }
+
+    /* Phase 1 re-entrancy / deferred-close seam. Outside any present frame the
+     * in-present flag is false and the drain is a safe no-op. */
+    if (libx11CompatInLiveResizePresent()) {
+        fprintf(stderr,
+                "in-live-resize-present true outside a present frame\n");
+        return 0;
+    }
+    libx11CompatRunDeferredDisplayClose(); /* nothing pending -> no-op */
+
+    /* A reflow callback that re-enters XCloseDisplay (as a client quitting
+     * mid-drag would) must NOT tear the display down from inside the observer
+     * frame: the shim detects the in-present state and defers. Use a throwaway
+     * second display so the drained close cannot disturb the suite's own. */
+    Display *victim = XOpenDisplay(NULL);
+    if (victim == NULL) {
+        fprintf(stderr,
+                "reentrant-close: XOpenDisplay(victim) returned NULL\n");
+        return 0;
+    }
+    int openBefore = numDisplaysOpen;
+    liveResizeReentrantCloseTarget = victim;
+    liveResizeReentrantSawInPresent = -1;
+    liveResizeReentrantCountDuringClose = -1;
+    libx11CompatRegisterLiveResizeReflow(test_live_resize_reentrant_close);
+    libx11CompatInvokeLiveResizeReflow(100, 200);
+    libx11CompatRegisterLiveResizeReflow(NULL);
+    liveResizeReentrantCloseTarget = NULL;
+
+    if (liveResizeReentrantSawInPresent != 1) {
+        fprintf(stderr,
+                "reentrant-close: reflow ran outside a present frame\n");
+        libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
+        return 0;
+    }
+    /* Deferred: the re-entrant close left the open count untouched, both at the
+     * moment of the call and after the present frame unwound. */
+    if (liveResizeReentrantCountDuringClose != openBefore ||
+        numDisplaysOpen != openBefore) {
+        fprintf(stderr,
+                "reentrant-close: display closed instead of deferred "
+                "(during=%d after=%d expected=%d)\n",
+                liveResizeReentrantCountDuringClose, numDisplaysOpen,
+                openBefore);
+        libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
+        return 0;
+    }
+    if (libx11CompatInLiveResizePresent()) {
+        fprintf(stderr, "reentrant-close: still in present after unwind\n");
+        libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
+        return 0;
+    }
+    /* The drain now performs the deferred close exactly once. */
+    libx11CompatRunDeferredDisplayClose();
+    if (numDisplaysOpen != openBefore - 1) {
+        fprintf(stderr,
+                "reentrant-close: drain did not close once (open=%d "
+                "expected=%d)\n",
+                numDisplaysOpen, openBefore - 1);
+        return 0;
+    }
+    /* A second drain must be a no-op (nothing left pending). */
+    libx11CompatRunDeferredDisplayClose();
+    if (numDisplaysOpen != openBefore - 1) {
+        fprintf(stderr, "reentrant-close: second drain was not a no-op\n");
+        return 0;
+    }
+    return 1;
+}
+
 static int run_test(const char *name, int (*test)(Display *))
 {
     Display *display = XOpenDisplay(NULL);
@@ -11298,6 +11520,7 @@ int main(void)
              test_ewmh_close_window_clientmessage);
     run_test("mwm_hints_apply", test_mwm_hints_apply);
     run_test("normal_hints_resizable", test_normal_hints_resizable);
+    run_test("snap_axis_to_increment", test_snap_axis_to_increment);
     run_test("xrm", test_xrm);
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);
@@ -11310,5 +11533,6 @@ int main(void)
     run_test("sibling_occlusion_shape_extends_outside_frame",
              test_sibling_occlusion_shape_extends_outside_frame);
     run_test("overlap_pointer_routing", test_overlap_pointer_routing);
+    run_test("live_resize_reflow_hook", test_live_resize_reflow_hook);
     return failures == 0 ? 0 : 1;
 }

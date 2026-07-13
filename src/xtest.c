@@ -99,6 +99,13 @@ int XTestFakeMotionEvent(Display *display,
     ev.type = SDL_MOUSEMOTION;
     ev.motion.timestamp = XC_NOW_EVENT_TS();
     ev.motion.windowID = winId;
+    /* Tag the event as synthetic so convertEvent's SDL_MOUSEMOTION handler
+     * skips scaleSdlPointToPixels: localX/localY come from
+     * replayTargetTranslateRoot and are already in X11 physical pixels, so
+     * scaling again would double them on Retina. SDL_TOUCH_MOUSEID is the
+     * documented "not a real mouse" sentinel and never collides with a
+     * device-driven which value (mirrors the wheel path). */
+    ev.motion.which = SDL_TOUCH_MOUSEID;
     ev.motion.x = localX;
     ev.motion.y = localY;
     return pushFakeEvent(display, &ev);
@@ -124,6 +131,9 @@ int XTestFakeRelativeMotionEvent(Display *display,
     ev.type = SDL_MOUSEMOTION;
     ev.motion.timestamp = XC_NOW_EVENT_TS();
     ev.motion.windowID = winId;
+    /* Synthetic marker; see XTestFakeMotionEvent. newX/newY are accumulated in
+     * X11 physical pixels, so convertEvent must not scale them again. */
+    ev.motion.which = SDL_TOUCH_MOUSEID;
     ev.motion.x = newX;
     ev.motion.y = newY;
     ev.motion.xrel = x;
@@ -193,6 +203,10 @@ int XTestFakeButtonEvent(Display *display,
     ev.button.button = (Uint8) sdlButton;
     XC_EVENT_SET_BUTTON_PRESSED(&ev, is_press);
     ev.button.clicks = 1;
+    /* Synthetic marker; see XTestFakeMotionEvent. curX/curY come from
+     * replayTargetReadPointer in X11 physical pixels, so convertEvent must not
+     * scale them again. */
+    ev.button.which = SDL_TOUCH_MOUSEID;
     ev.button.x = curX;
     ev.button.y = curY;
     return pushFakeEvent(display, &ev);

@@ -212,8 +212,9 @@ but each exercises behavior that small examples do not reach.
 
 - [xwpe](https://github.com/vejeta/xwpe): the X Window Programming Environment builds against `libX11-compat` and the SDL_ttf-backed `libXft-compat`.
   This editor workload exercises Xrm option parsing, core window/event paths, XIM key lookup, selections, Xft/fontconfig fallback, and an older terminal-style UI rendered through Xlib.
+  The capture below shows GPU-composited Xft glyphs and pixel-exact live resize on a HiDPI display, with syntax highlighting and clangd-driven inlay hints and semantic colours.
 
-  <a href="assets/xwpe.png"><img src="assets/xwpe.png" alt="xwpe running through libx11-compat on macOS" width="420"></a>
+  <a href="assets/xwpe.png"><img src="assets/xwpe.png" alt="xwpe running through libx11-compat on macOS, showing syntax highlighting and clangd inlay hints on a HiDPI display" width="420"></a>
 
   ```sh
   make xwpe                              # build xwpe (depends on Xft shim)
