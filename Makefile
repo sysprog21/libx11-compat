@@ -49,4 +49,5 @@ include mk/upstream-headers.mk
 include mk/format.mk
 include mk/help.mk
 include mk/angle.mk
+include mk/install.mk
 include mk/deps.mk
