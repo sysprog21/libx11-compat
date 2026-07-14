@@ -32,7 +32,7 @@ The status column uses three buckets:
 | Geometry and bitmap I/O  | Functional | Xorg `XParseGeometry`; `XReadBitmapFile` / `XWriteBitmapFile` round-trip XBM payloads. |
 | MIT-SHM                  | Partial    | `XShmQueryExtension` returns `True`; `XShmAttach`/`XShmDetach` succeed without a real SHM segment; `XShmPutImage`/`XShmGetImage` route to the regular image APIs; `shared_pixmaps` is reported `False`. |
 | XSync, XShape            | Stub       | Conformant unsupported returns (`False` / `BadImplementation` / `None`). |
-| GLX, Xcms, input methods | Stub       | Quiet capability probes; deeper calls log via `WARN_UNIMPLEMENTED` in debug builds. |
+| GLX, Xcms, input methods | Stub       | Quiet capability probes; deeper calls log via `WARN_UNIMPLEMENTED` in debug builds, or in release builds when `LIBX11_COMPAT_WARN_UNIMPLEMENTED` is set. |
 
 ## Surface notes worth knowing before porting
 
@@ -64,4 +64,6 @@ Because the library runs in-process, several X server facilities have no direct 
   Pixmap-heavy clients run best when they reuse pixmaps and minimize `XGetImage` round-trips.
 
 Capability probes are intentionally quiet so that downstream code does not need to be modified to silence warnings.
-Deeper unsupported calls log through `WARN_UNIMPLEMENTED` in debug builds, which makes missing behavior actionable without log spam in release builds.
+Deeper unsupported calls log through `WARN_UNIMPLEMENTED`, which makes missing behavior actionable without log spam.
+Debug builds always emit the hit; release builds stay a no-op by default but log on demand when the `LIBX11_COMPAT_WARN_UNIMPLEMENTED` environment variable is set to a non-empty, non-`0` value.
+This opt-in path surfaces unimplemented-call coverage against a real app without a debug rebuild.

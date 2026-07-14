@@ -1,0 +1,8 @@
+{
+  "menu_open_ms": {
+    "median_ms": 20
+  },
+  "scroll_settle_ms": {
+    "median_ms": 20
+  }
+}

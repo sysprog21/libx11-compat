@@ -221,6 +221,20 @@ but each exercises behavior that small examples do not reach.
   build/xwpe/source/xwpe                 # launch from the build tree
   ```
 
+- [Magic](http://opencircuitdesign.com/magic/): the [RTimothyEdwards/magic](https://github.com/RTimothyEdwards/magic) VLSI layout editor is the toolkit's first Tcl/Tk workload, with a private Tcl/Tk built alongside it (`mk/tcltk.mk`) so the port carries its own TkX11 rather than depending on a system Tk.
+  It drives Magic's Tk UI over an Xlib-drawn layout canvas: the menu bar, layer palette, DRC toggle, and the `tut11d` tutorial cell, plus scrolling and resize redraw.
+  With Magic's OpenGL graphics enabled it also opens Magic's 3D render window, so the 2D Tk editor and a live 3D view of the same cell render together with no X server.
+  `MAGIC_OPENGL=auto` (the default) resolves per platform: on macOS it enables OpenGL once ANGLE is present, which a fresh checkout fetches and builds with `make fetch-angle build-angle` (the `build-angle` target requires the sources fetched first); on Linux it enables OpenGL when a `GL`/`GLU` header+link probe succeeds and drives Magic through the host's desktop GL/GLU. Opt out with `MAGIC_OPENGL=0`.
+  On the macOS/ANGLE path the 3D view runs through the in-tree GLX-over-EGL / gl4es stack with no desktop-GL driver present; the Linux path instead relies on the host's desktop GL.
+  See [GLX and OpenGL](#glx-and-opengl) for that path and its limits.
+
+  <a href="assets/magic.png"><img src="assets/magic.png" alt="Magic VLSI layout editor and 3D render window running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make magic                                   # build Magic + private Tcl/Tk
+  CAD_ROOT=build/magic/install/lib build/magic/install/bin/magic -d OGL
+  ```
+
 The value of these ports is not that they replace a real X11, Motif, or Qt2 install today,
 but that they keep legacy Xlib clients building and running on platforms where no X server is available while migration is in progress.
 

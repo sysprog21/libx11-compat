@@ -24,3 +24,5 @@ libx11CompatSideQueueEventRemoved
 libx11CompatSnapAxisToIncrement
 libx11CompatStartLiveResizeObserver
 libx11CompatStopLiveResizeObserver
+libx11CompatWarnUnimplemented
+libx11CompatWarpTargetGlobal

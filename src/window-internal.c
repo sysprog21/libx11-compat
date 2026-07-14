@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 
@@ -79,6 +80,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->h = height;
     windowStruct->hiDpiScaleX = 1.0;
     windowStruct->hiDpiScaleY = 1.0;
+    windowStruct->hiDpiPromoted = False;
     windowStruct->hasResizeInc = False;
     windowStruct->widthInc = 0;
     windowStruct->heightInc = 0;
@@ -90,6 +92,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->liveResizeLastSeenH = 0;
     windowStruct->liveResizeSettleTicks = 0;
     SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
+    SDL_AtomicSet(&windowStruct->suppressSdlShowMap, 0);
     windowStruct->snapEchoW = 0;
     windowStruct->snapEchoH = 0;
     windowStruct->inputOnly = inputOnly;
@@ -162,6 +165,16 @@ void initWindowStruct(WindowStruct *windowStruct,
 #endif /* DEBUG_WINDOWS */
 }
 
+void destroyWindowRenderer(SDL_Renderer *renderer)
+{
+    if (!renderer)
+        return;
+    invalidatePutImageStagingTexture(renderer);
+    invalidateTextCacheForRenderer(renderer);
+    invalidateStippleStampsForRenderer(renderer);
+    SDL_DestroyRenderer(renderer);
+}
+
 /* Screen window handles */
 
 Bool initScreenWindow(Display *display)
@@ -221,9 +234,7 @@ static void destroyScreenWindowImpl(Display *display)
          * across a display close/reopen.
          */
         releaseActiveGrabsForUnviewableWindow(display, SCREEN_WINDOW);
-        invalidatePutImageStagingTexture(windowStruct->sdlRenderer);
-        invalidateTextCacheForRenderer(windowStruct->sdlRenderer);
-        SDL_DestroyRenderer(windowStruct->sdlRenderer);
+        destroyWindowRenderer(windowStruct->sdlRenderer);
         windowStruct->sdlRenderer = NULL;
         SDL_DestroyWindow(windowStruct->sdlWindow);
         freeArray(&windowStruct->children);
@@ -338,9 +349,24 @@ void registerWindowMapping(Window window, Uint32 sdlWindowId)
     unlockMappingList();
 }
 
-void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn)
+static int clampToIntRange(int64_t v)
 {
-    int x = 0, y = 0;
+    if (v > INT_MAX)
+        return INT_MAX;
+    if (v < INT_MIN)
+        return INT_MIN;
+    return (int) v;
+}
+
+/* Accumulate in int64 so a deeply nested tree or a hostile window position
+ * cannot wrap before the result is clamped, matching this file's overflow
+ * discipline for hostile geometry (see rectDistanceSq).
+ */
+static void windowAbsoluteOrigin64(Window window,
+                                   int64_t *xReturn,
+                                   int64_t *yReturn)
+{
+    int64_t x = 0, y = 0;
     while (window != None && window != SCREEN_WINDOW) {
         int wx = 0, wy = 0;
         GET_WINDOW_POS(window, wx, wy);
@@ -352,6 +378,14 @@ void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn)
     *yReturn = y;
 }
 
+void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn)
+{
+    int64_t x = 0, y = 0;
+    windowAbsoluteOrigin64(window, &x, &y);
+    *xReturn = clampToIntRange(x);
+    *yReturn = clampToIntRange(y);
+}
+
 void translateWindowPoint(Window sourceWindow,
                           Window destinationWindow,
                           int sourceX,
@@ -359,12 +393,14 @@ void translateWindowPoint(Window sourceWindow,
                           int *destinationXReturn,
                           int *destinationYReturn)
 {
-    int sourceAbsX = 0, sourceAbsY = 0;
-    int destAbsX = 0, destAbsY = 0;
-    windowAbsoluteOrigin(sourceWindow, &sourceAbsX, &sourceAbsY);
-    windowAbsoluteOrigin(destinationWindow, &destAbsX, &destAbsY);
-    *destinationXReturn = sourceAbsX + sourceX - destAbsX;
-    *destinationYReturn = sourceAbsY + sourceY - destAbsY;
+    int64_t sourceAbsX = 0, sourceAbsY = 0;
+    int64_t destAbsX = 0, destAbsY = 0;
+    windowAbsoluteOrigin64(sourceWindow, &sourceAbsX, &sourceAbsY);
+    windowAbsoluteOrigin64(destinationWindow, &destAbsX, &destAbsY);
+    *destinationXReturn =
+        clampToIntRange(sourceAbsX + (int64_t) sourceX - destAbsX);
+    *destinationYReturn =
+        clampToIntRange(sourceAbsY + (int64_t) sourceY - destAbsY);
 }
 
 /* Decoration offset of the decorated top-level whose logical rectangle contains
@@ -446,6 +482,54 @@ static Bool decoratedWindowOffsetAt(int logicalX,
     return False;
 }
 
+static Bool decoratedWindowHostAnchorAt(int logicalX,
+                                        int logicalY,
+                                        int *rootX,
+                                        int *rootY,
+                                        int *hostX,
+                                        int *hostY)
+{
+    if (!decoratedWindowOffsetAt(logicalX, logicalY, hostX, hostY))
+        return False;
+
+    *rootX = logicalX;
+    *rootY = logicalY;
+    WindowStruct *screenStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    Window nearest = None;
+    int64_t nearestDistSq = 0;
+    for (size_t i = screenStruct->children.length; i-- > 0;) {
+        Window child = children[i];
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+        if (!childStruct->sdlWindow || childStruct->overrideRedirect)
+            continue;
+        int rx = childStruct->x, ry = childStruct->y;
+        int rw = (int) childStruct->w, rh = (int) childStruct->h;
+        if ((int64_t) logicalX >= rx &&
+            (int64_t) logicalX < (int64_t) rx + rw &&
+            (int64_t) logicalY >= ry &&
+            (int64_t) logicalY < (int64_t) ry + rh) {
+            *rootX = rx;
+            *rootY = ry;
+            SDL_GetWindowPosition(childStruct->sdlWindow, hostX, hostY);
+            return True;
+        }
+        int64_t distSq = rectDistanceSq(logicalX, logicalY, rx, ry, rw, rh);
+        if (nearest == None || distSq < nearestDistSq) {
+            nearest = child;
+            nearestDistSq = distSq;
+        }
+    }
+    if (nearest != None) {
+        WindowStruct *nearestStruct = GET_WINDOW_STRUCT(nearest);
+        *rootX = nearestStruct->x;
+        *rootY = nearestStruct->y;
+        SDL_GetWindowPosition(nearestStruct->sdlWindow, hostX, hostY);
+        return True;
+    }
+    return False;
+}
+
 void topLevelWindowHostPosition(Window window,
                                 int logicalX,
                                 int logicalY,
@@ -456,6 +540,27 @@ void topLevelWindowHostPosition(Window window,
     *hostY = logicalY;
     if (!IS_TOP_LEVEL(window) || !GET_WINDOW_STRUCT(window)->overrideRedirect)
         return;
+
+    WindowStruct *ws = GET_WINDOW_STRUCT(window);
+    /* Only promoted windows carry physical-pixel geometry; a self-scaling
+     * toolkit records a >1 backing ratio but keeps X11 geometry logical, so
+     * effectiveHiDpiScale collapses it to 1.0 and this transform is skipped.
+     */
+    double sx = effectiveHiDpiScaleX(ws);
+    double sy = effectiveHiDpiScaleY(ws);
+    if (sx > 1.0 || sy > 1.0) {
+        int rootX = 0, rootY = 0, anchorHostX = 0, anchorHostY = 0;
+        if (decoratedWindowHostAnchorAt(logicalX, logicalY, &rootX, &rootY,
+                                        &anchorHostX, &anchorHostY)) {
+            *hostX = clampToIntRange(
+                (int64_t) anchorHostX +
+                (int64_t) lround(((double) logicalX - rootX) / sx));
+            *hostY = clampToIntRange(
+                (int64_t) anchorHostY +
+                (int64_t) lround(((double) logicalY - rootY) / sy));
+            return;
+        }
+    }
 
     int offsetX = 0, offsetY = 0;
     if (decoratedWindowOffsetAt(logicalX, logicalY, &offsetX, &offsetY)) {
@@ -482,6 +587,22 @@ void topLevelWindowLogicalPosition(Window window,
      */
     int wx = 0, wy = 0;
     GET_WINDOW_POS(window, wx, wy);
+    WindowStruct *ws = GET_WINDOW_STRUCT(window);
+    double sx = effectiveHiDpiScaleX(ws);
+    double sy = effectiveHiDpiScaleY(ws);
+    if (sx > 1.0 || sy > 1.0) {
+        int rootX = 0, rootY = 0, anchorHostX = 0, anchorHostY = 0;
+        if (decoratedWindowHostAnchorAt(wx, wy, &rootX, &rootY, &anchorHostX,
+                                        &anchorHostY)) {
+            *logicalX = clampToIntRange(
+                (int64_t) rootX +
+                (int64_t) lround(((double) hostX - anchorHostX) * sx));
+            *logicalY = clampToIntRange(
+                (int64_t) rootY +
+                (int64_t) lround(((double) hostY - anchorHostY) * sy));
+            return;
+        }
+    }
     int offsetX = 0, offsetY = 0;
     if (decoratedWindowOffsetAt(wx, wy, &offsetX, &offsetY)) {
         *logicalX -= offsetX;
@@ -797,14 +918,16 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      */
     if (windowStruct->presentTexture)
         SDL_DestroyTexture(windowStruct->presentTexture);
+    /* presentRenderer is destroyed directly, not through destroyWindowRenderer:
+     * the put-image, text, and stipple caches only ever build textures on the
+     * window sdlRenderer (getWindowRenderer) or the SCREEN renderer, never on
+     * presentRenderer, so there is nothing to invalidate here. Route it through
+     * destroyWindowRenderer if a cache ever starts keying on presentRenderer.
+     */
     if (windowStruct->presentRenderer)
         SDL_DestroyRenderer(windowStruct->presentRenderer);
     free(windowStruct->presentReadback);
-    if (windowStruct->sdlRenderer) {
-        invalidatePutImageStagingTexture(windowStruct->sdlRenderer);
-        invalidateTextCacheForRenderer(windowStruct->sdlRenderer);
-        SDL_DestroyRenderer(windowStruct->sdlRenderer);
-    }
+    destroyWindowRenderer(windowStruct->sdlRenderer);
     if (windowStruct->sdlTexture)
         SDL_DestroyTexture(windowStruct->sdlTexture);
 
@@ -1695,9 +1818,7 @@ Bool mergeWindowDrawables(Window parent, Window child)
     childWindowStruct->sdlTexture = NULL;
     childWindowStruct->contentsMergedToParent = True;
     if (childWindowStruct->sdlRenderer) {
-        invalidatePutImageStagingTexture(childWindowStruct->sdlRenderer);
-        invalidateTextCacheForRenderer(childWindowStruct->sdlRenderer);
-        SDL_DestroyRenderer(childWindowStruct->sdlRenderer);
+        destroyWindowRenderer(childWindowStruct->sdlRenderer);
         childWindowStruct->sdlRenderer = NULL;
     }
     return True;
@@ -1817,20 +1938,24 @@ Bool configureWindow(Display *display,
     }
     if (HAS_VALUE(value_mask, CWWidth) || HAS_VALUE(value_mask, CWHeight)) {
         int width = oldWidth, height = oldHeight;
-        if (HAS_VALUE(value_mask, CWWidth)) {
+        /* A zero or negative width/height is a protocol BadValue. Report it so
+         * a client that installed its own error handler still learns of the bad
+         * request. The default handler is non-fatal, and toolkits routinely
+         * configure a not-yet-sized widget this way during setup, so
+         * terminating here would be worse than ignoring the request. A resize
+         * must be atomic though: reject the whole request before touching
+         * either dimension, so a bad width can never leave a valid height half
+         * applied.
+         */
+        if ((HAS_VALUE(value_mask, CWWidth) && values->width <= 0) ||
+            (HAS_VALUE(value_mask, CWHeight) && values->height <= 0)) {
+            handleError(0, display, window, 0, BadValue, 0);
+            return False;
+        }
+        if (HAS_VALUE(value_mask, CWWidth))
             width = values->width;
-            if (width <= 0) {
-                handleError(0, display, None, 0, BadValue, 0);
-                return False;
-            }
-        }
-        if (HAS_VALUE(value_mask, CWHeight)) {
+        if (HAS_VALUE(value_mask, CWHeight))
             height = values->height;
-            if (height <= 0) {
-                handleError(0, display, None, 0, BadValue, 0);
-                return False;
-            }
-        }
 #ifdef DEBUG_WINDOWS
         printWindowsHierarchy();
 #endif
@@ -1849,18 +1974,16 @@ Bool configureWindow(Display *display,
                  * XResizeWindow would deliver two ConfigureNotifies.
                  * width/height are physical X11 pixels (top-levels are promoted
                  * to the backing size). SDL_SetWindowSize/GetWindowSize speak
-                 * logical points, so convert through the cached per-axis HiDPI
-                 * scale the same way snapTopLevelToResizeIncrements does;
+                 * logical points, so convert through the top-level's effective
+                 * HiDPI scale the same way snapTopLevelToResizeIncrements does;
                  * otherwise a 2x-Retina XResizeWindow would request a window
                  * twice the intended size and then record the logical size as
-                 * physical. No-op at scale 1.0 (Linux / CI dummy).
+                 * physical. Self-scaling toolkits such as Motif/Tk keep logical
+                 * geometry, so effectiveHiDpiScale returns 1.0 and the
+                 * conversion is a no-op, as at scale 1.0 (Linux / CI dummy).
                  */
-                double scaleX = windowStruct->hiDpiScaleX > 0.0
-                                    ? windowStruct->hiDpiScaleX
-                                    : 1.0;
-                double scaleY = windowStruct->hiDpiScaleY > 0.0
-                                    ? windowStruct->hiDpiScaleY
-                                    : 1.0;
+                double scaleX = effectiveHiDpiScaleX(windowStruct);
+                double scaleY = effectiveHiDpiScaleY(windowStruct);
                 int logicalWidth = (int) lround((double) width / scaleX);
                 int logicalHeight = (int) lround((double) height / scaleY);
                 SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 1);

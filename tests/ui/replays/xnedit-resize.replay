@@ -1,0 +1,17 @@
+# XNEdit resize smoke: editor text starts readable and stays readable after a
+# host resize. This catches HiDPI regressions where Motif/XNEdit logical window
+# geometry is accidentally promoted after SDL emits a resize event.
+delay 3000
+wait-window "XNEdit|xnedit|xnedit-resize" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial xnedit-editor-font.json
+
+resize 900 640
+delay 300
+wait-converge 200 2 50 200 15000
+screenshot resized
+assert-image resized common-visible.json
+assert-image resized xnedit-editor-font.json
+assert-exit running

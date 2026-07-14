@@ -1,6 +1,8 @@
 #include <X11/Xlib.h>
+#include <dlfcn.h>
 #include <limits.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,8 +12,6 @@
 #include "drawing.h"
 #include "errors.h"
 #include "events.h"
-#include "font.h"
-#include "image.h"
 #include "input.h"
 #include "input-method.h"
 #include "main-dispatch.h"
@@ -25,6 +25,155 @@
  * window.h) so realizeTopLevelWindow above its definition, and configureWindow
  * in window-internal.c, share the one guard.
  */
+
+static void replayDeferredWmProperties(Display *display, Window window);
+
+#if defined(__APPLE__)
+struct DarwinProcessSerialNumber {
+    uint32_t highLongOfPSN;
+    uint32_t lowLongOfPSN;
+};
+
+typedef void *(*ObjcGetClassFn)(const char *);
+typedef void *(*SelRegisterNameFn)(const char *);
+typedef void *(*ObjcMsgSendIdFn)(void *, void *);
+typedef void (*ObjcMsgSendVoidFn)(void *, void *);
+typedef void (*ObjcMsgSendVoidIdFn)(void *, void *, void *);
+typedef void (*ObjcMsgSendVoidIntFn)(void *, void *, long);
+typedef void (*ObjcMsgSendVoidBoolFn)(void *, void *, signed char);
+typedef signed char (*ObjcMsgSendBoolIntFn)(void *, void *, unsigned long);
+
+struct DarwinObjcRuntime {
+    ObjcGetClassFn getClass;
+    SelRegisterNameFn sel;
+    void *msgSend;
+};
+
+static struct DarwinObjcRuntime cachedObjcRuntime;
+static Bool cachedObjcRuntimeOk;
+static pthread_once_t objcRuntimeOnce = PTHREAD_ONCE_INIT;
+
+static void resolveObjcRuntimeOnce(void)
+{
+    (void) dlopen("/System/Library/Frameworks/AppKit.framework/AppKit",
+                  RTLD_LAZY | RTLD_LOCAL);
+    void *objc = dlopen("/usr/lib/libobjc.A.dylib", RTLD_LAZY | RTLD_LOCAL);
+
+    struct DarwinObjcRuntime *runtime = &cachedObjcRuntime;
+    runtime->getClass = (ObjcGetClassFn) dlsym(RTLD_DEFAULT, "objc_getClass");
+    runtime->sel = (SelRegisterNameFn) dlsym(RTLD_DEFAULT, "sel_registerName");
+    runtime->msgSend = dlsym(RTLD_DEFAULT, "objc_msgSend");
+    if (objc) {
+        if (!runtime->getClass)
+            runtime->getClass = (ObjcGetClassFn) dlsym(objc, "objc_getClass");
+        if (!runtime->sel)
+            runtime->sel = (SelRegisterNameFn) dlsym(objc, "sel_registerName");
+        if (!runtime->msgSend)
+            runtime->msgSend = dlsym(objc, "objc_msgSend");
+    }
+    cachedObjcRuntimeOk = runtime->getClass && runtime->sel && runtime->msgSend;
+}
+
+static Bool loadObjcRuntime(struct DarwinObjcRuntime *runtime)
+{
+    /* Callers hit this on every top-level map (activate, order-front), and the
+     * resolved runtime never changes, so resolve the frameworks and symbols
+     * once. Repeating the dlopen per map churned handle refcounts for no gain.
+     */
+    pthread_once(&objcRuntimeOnce, resolveObjcRuntimeOnce);
+    *runtime = cachedObjcRuntime;
+    return cachedObjcRuntimeOk;
+}
+
+static void activateHostApplication(void)
+{
+    static Bool transformed = False;
+
+    if (!transformed) {
+        void *applicationServices = dlopen(
+            "/System/Library/Frameworks/ApplicationServices.framework/"
+            "ApplicationServices",
+            RTLD_LAZY | RTLD_LOCAL);
+        if (applicationServices) {
+            typedef int (*GetCurrentProcessFn)(
+                struct DarwinProcessSerialNumber *);
+            typedef int (*TransformProcessTypeFn)(
+                const struct DarwinProcessSerialNumber *, unsigned int);
+            typedef int (*SetFrontProcessFn)(
+                const struct DarwinProcessSerialNumber *);
+
+            GetCurrentProcessFn getCurrentProcess = (GetCurrentProcessFn) dlsym(
+                applicationServices, "GetCurrentProcess");
+            TransformProcessTypeFn transformProcessType =
+                (TransformProcessTypeFn) dlsym(applicationServices,
+                                               "TransformProcessType");
+            SetFrontProcessFn setFrontProcess = (SetFrontProcessFn) dlsym(
+                applicationServices, "SetFrontProcess");
+
+            if (getCurrentProcess && transformProcessType && setFrontProcess) {
+                struct DarwinProcessSerialNumber psn;
+                if (getCurrentProcess(&psn) == 0) {
+                    if (transformProcessType(&psn, 1) == 0)
+                        transformed = True;
+                    (void) setFrontProcess(&psn);
+                }
+            }
+            /* The resolved symbols are only used above, so drop the handle
+             * rather than leak a reference on every activation. Gated on
+             * !transformed so a successful transform never reopens it.
+             */
+            dlclose(applicationServices);
+        }
+    }
+
+    struct DarwinObjcRuntime objc;
+    if (!loadObjcRuntime(&objc))
+        return;
+
+    void *nsApplication = objc.getClass("NSApplication");
+    if (!nsApplication)
+        return;
+
+    void *app = ((ObjcMsgSendIdFn) objc.msgSend)(nsApplication,
+                                                 objc.sel("sharedApplication"));
+    if (app) {
+        ((ObjcMsgSendVoidIntFn) objc.msgSend)(
+            app, objc.sel("setActivationPolicy:"), 0);
+        ((ObjcMsgSendVoidFn) objc.msgSend)(app, objc.sel("finishLaunching"));
+        ((ObjcMsgSendVoidIdFn) objc.msgSend)(app, objc.sel("unhide:"), NULL);
+        ((ObjcMsgSendVoidBoolFn) objc.msgSend)(
+            app, objc.sel("activateIgnoringOtherApps:"), 1);
+    }
+
+    void *nsRunningApplication = objc.getClass("NSRunningApplication");
+    if (!nsRunningApplication)
+        return;
+
+    void *currentApplication = ((ObjcMsgSendIdFn) objc.msgSend)(
+        nsRunningApplication, objc.sel("currentApplication"));
+    if (!currentApplication)
+        return;
+
+    (void) ((ObjcMsgSendBoolIntFn) objc.msgSend)(
+        currentApplication, objc.sel("activateWithOptions:"), 3);
+}
+
+static void orderNativeWindowFront(SDL_Window *sdlWindow)
+{
+    struct DarwinObjcRuntime objc;
+    if (!loadObjcRuntime(&objc))
+        return;
+
+    void *nativeWindow = sdlCocoaWindowHandle(sdlWindow);
+    if (!nativeWindow)
+        return;
+
+    ((ObjcMsgSendVoidIdFn) objc.msgSend)(
+        nativeWindow, objc.sel("makeKeyAndOrderFront:"), NULL);
+    ((ObjcMsgSendVoidFn) objc.msgSend)(nativeWindow,
+                                       objc.sel("orderFrontRegardless"));
+}
+#endif
 
 /* destroyWindow tears down the SDL window/renderer (SDL_DestroyWindow,
  * SDL_DestroyRenderer), main-thread-only on macOS, and reads the window tree,
@@ -94,6 +243,51 @@ static void offerReplayTargetForWindow(Window window)
     }
 }
 
+static void showTopLevelWindow(Display *display, Window window, Bool raise)
+{
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    if (!windowStruct || !windowStruct->sdlWindow)
+        return;
+
+    windowStruct->needsPresent = True;
+    /* Release any coalesce gate a prior host-resize burst left armed so this
+     * mandatory present-before-show is not swallowed by
+     * drawWindowDataToScreen's coalesce early-return, which would leave the
+     * freshly mapped window unpresented. No-op when nothing is coalescing.
+     */
+    endCoalesceClientRepaint();
+    drawWindowDataToScreen();
+#if defined(__APPLE__)
+    if (raise)
+        activateHostApplication();
+#endif
+    /* The map paths that call this already post an explicit MapNotify; arm the
+     * one-shot so the MapNotify the coming SDL SHOWN echo would synthesize is
+     * dropped in convertEvent rather than delivered a second time.
+     */
+    SDL_AtomicSet(&windowStruct->suppressSdlShowMap, 1);
+    SDL_ShowWindow(windowStruct->sdlWindow);
+    if (raise)
+        SDL_RaiseWindow(windowStruct->sdlWindow);
+#if defined(__APPLE__)
+    if (raise)
+        orderNativeWindowFront(windowStruct->sdlWindow);
+#endif
+    pumpEventsSafe();
+#if defined(__APPLE__)
+    if (raise)
+        activateHostApplication();
+#endif
+
+    /* macOS may not retain an SDL_UpdateWindowSurface done while the native
+     * window was hidden. Present once more after ShowWindow so the first mapped
+     * frame reaches the compositor without waiting for an expose or alt-tab.
+     */
+    markWindowNeedsPresent(window);
+    drawWindowDataToScreen();
+    replayDeferredWmProperties(display, window);
+}
+
 static void postVisibilityForWindowAndSiblings(Display *display, Window window)
 {
     Window parent = GET_PARENT(window);
@@ -115,6 +309,31 @@ static Bool hasUnmappedAncestor(Window window)
         parent = GET_PARENT(parent);
     }
     return False;
+}
+
+/* Whether to promote a top-level's X11 geometry from logical points to physical
+ * pixels on a HiDPI backing (see the promotion block in realizeTopLevelWindow).
+ * Fixed-pixel clients (Athena, raw Xlib such as xwpe) draw at literal X pixel
+ * coordinates and need the promotion to render crisply at native resolution.
+ * Toolkits such as Tk and Motif lay widgets out in logical points, so promoting
+ * their X11 geometry behind their back double-scales and the layout settles
+ * wrong. They still use a HiDPI SDL backing; the present path scales their
+ * logical backing to it.
+ *
+ * Detect toolkits that lay out at fixed logical geometry by their linked entry
+ * points, the same way the GLX layer probes gl4es. Self-scaling toolkits
+ * (Tk/Motif) and Xt/Athena apps (xcircuit) settle their layout wrong when their
+ * X11 geometry is promoted behind their back, so they take the uniform-upscale
+ * present path instead. Qt 2.3 (Osiris) is not caught by these probes and stays
+ * on the promotion path.
+ *
+ * This must stay in lockstep with coreFontsUseHiDpiScale: an app that is not
+ * promoted must not have its core fonts scaled either, or the font scale and
+ * the present upscale compound and the text comes out twice too large.
+ */
+static Bool compatHiDpiPromoteEnabled(void)
+{
+    return compatHiDpiPromoteToolkits();
 }
 
 static Bool realizeTopLevelWindow(Display *display, Window window)
@@ -153,6 +372,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
      * silently ignores the flag on displays without high-DPI, so leaving it
      * always-on is safe.
      */
+    Bool promoteHiDpi = compatHiDpiPromoteEnabled();
     flags |= SDL_WINDOW_ALLOW_HIGHDPI;
     int hostX = windowStruct->x, hostY = windowStruct->y;
     topLevelWindowHostPosition(window, windowStruct->x, windowStruct->y, &hostX,
@@ -166,9 +386,10 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         "realizeTopLevelWindow: window=%lu requestedSize=(%ux%u) "
         "globalScale=%.3f\n",
         window, windowStruct->w, windowStruct->h, compatGlobalHiDpiScale());
-    SDL_Window *sdlWindow =
-        SDL_CreateWindow(windowStruct->windowName, hostX, hostY,
-                         windowStruct->w, windowStruct->h, flags);
+    int createW = (int) windowStruct->w;
+    int createH = (int) windowStruct->h;
+    SDL_Window *sdlWindow = SDL_CreateWindow(windowStruct->windowName, hostX,
+                                             hostY, createW, createH, flags);
     if (!sdlWindow) {
         LOG("SDL_CreateWindow failed in %s: %s\n", __func__, SDL_GetError());
         handleError(0, display, None, 0, BadMatch, 0);
@@ -177,6 +398,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
 
     registerWindowMapping(window, SDL_GetWindowID(sdlWindow));
     windowStruct->sdlWindow = sdlWindow;
+    windowStruct->hiDpiPromoted = promoteHiDpi;
 
     /* Decide the present path for this window's lifetime, before anything calls
      * SDL_GetWindowSurface: SDL_GetWindowSurface binds a hidden framebuffer
@@ -201,6 +423,9 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         windowStruct->presentRenderer =
             xc_CreateRenderer(sdlWindow, XC_RENDERER_ACCELERATED);
         if (windowStruct->presentRenderer) {
+            SDL_RenderSetScale(windowStruct->presentRenderer, 1.0f, 1.0f);
+            SDL_RenderSetViewport(windowStruct->presentRenderer, NULL);
+            SDL_RenderSetClipRect(windowStruct->presentRenderer, NULL);
             windowStruct->presentUsesSoftware = False;
         } else {
             LOG("xc_CreateRenderer(accelerated) failed for window %lu: %s; "
@@ -222,25 +447,23 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     if (windowStruct->icon)
         SDL_SetWindowIcon(windowStruct->sdlWindow, windowStruct->icon);
 
-    /* Prime the X backing store while the native window is still hidden.
-     * XMapWindow will present and show it after map/expose state is ready.
-     */
-    (void) getWindowRenderer(window);
-
     /* Option 1b: promote X11 geometry to physical pixels. SDL created the
      * window from logical points; on Retina the actual backing is 2x. The
      * physical size is the size drawWindowDataToScreen presents against:
      * SDL_GetRendererOutputSize for accelerated windows (the renderer
      * drawable), or the SDL window surface for software windows (which cannot
-     * use a renderer). getWindowRenderer above already primed the backing
-     * texture at the logical size; resizeWindowTexture re-creates it at the
-     * promoted pixel geometry (it reads windowStruct->w/h). Falls through as a
-     * no-op when the query fails or the host is non-HiDPI (ratio 1.0, e.g. the
-     * CI dummy driver, which also takes the software branch).
+     * use a renderer). This must happen before getWindowRenderer creates the X
+     * backing texture; otherwise popup/dialog backing starts at 1x and only
+     * later gets stretched to the physical window. Falls through as a no-op
+     * when the query fails or the host is non-HiDPI (ratio 1.0, e.g. the CI
+     * dummy driver). Self-scaling toolkits still record the ratio for the
+     * present path but leave X11 geometry logical.
      */
     {
         int physW = 0, physH = 0;
+        int logicalW = 0, logicalH = 0;
         Bool haveSize = False;
+        SDL_GetWindowSize(sdlWindow, &logicalW, &logicalH);
         /* Prefer SDL_GetWindowSizeInPixels: it reports the window's physical
          * backing size directly and does not depend on a renderer or the
          * SDL_GetWindowSurface software binding. On sdl2-compat over SDL3 the
@@ -280,13 +503,10 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
                 haveSize = (physW > 0 && physH > 0);
             }
         }
-        if (haveSize && physW > 0 && physH > 0 && windowStruct->w > 0 &&
-            windowStruct->h > 0) {
-            windowStruct->hiDpiScaleX =
-                (double) physW / (double) windowStruct->w;
-            windowStruct->hiDpiScaleY =
-                (double) physH / (double) windowStruct->h;
-
+        if (haveSize && physW > 0 && physH > 0 && logicalW > 0 &&
+            logicalH > 0) {
+            windowStruct->hiDpiScaleX = (double) physW / (double) logicalW;
+            windowStruct->hiDpiScaleY = (double) physH / (double) logicalH;
             /* The font engine scaled glyphs and metrics by the display-global
              * HiDPI factor probed at XOpenDisplay. That factor and this
              * per-window ratio come from the same host display, so on a
@@ -306,11 +526,24 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
                 window, physW, physH, windowStruct->w, windowStruct->h,
                 windowStruct->hiDpiScaleX, windowStruct->hiDpiScaleY,
                 compatGlobalHiDpiScale());
-            if (physW != (int) windowStruct->w ||
-                physH != (int) windowStruct->h) {
+            if (promoteHiDpi && (physW != (int) windowStruct->w ||
+                                 physH != (int) windowStruct->h)) {
                 windowStruct->w = (unsigned int) physW;
                 windowStruct->h = (unsigned int) physH;
-                resizeWindowTexture(window); /* re-size backing to pixels */
+                if (windowStruct->overrideRedirect) {
+                    int scaledHostX = windowStruct->x;
+                    int scaledHostY = windowStruct->y;
+                    topLevelWindowHostPosition(window, windowStruct->x,
+                                               windowStruct->y, &scaledHostX,
+                                               &scaledHostY);
+                    compatTrace(
+                        "realizeTopLevelWindow: window=%lu reposition "
+                        "override host=(%d,%d)\n",
+                        window, scaledHostX, scaledHostY);
+                    SDL_SetWindowPosition(sdlWindow, scaledHostX, scaledHostY);
+                }
+                if (windowStruct->sdlTexture)
+                    resizeWindowTexture(window);
                 compatTrace(
                     "realizeTopLevelWindow: window=%lu PROMOTED to "
                     "(%ux%u)\n",
@@ -318,6 +551,11 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
             }
         }
     }
+
+    /* Prime the X backing store while the native window is still hidden.
+     * XMapWindow will present and show it after map/expose state is ready.
+     */
+    (void) getWindowRenderer(window);
 
     return True;
 }
@@ -422,7 +660,8 @@ static void unrealizeTopLevelWindow(Window window)
      * The next realize re-derives the scale, so reset it to 1.0. No-op at scale
      * 1.0 (Linux / CI dummy).
      */
-    if (windowStruct->hiDpiScaleX > 0.0 && windowStruct->hiDpiScaleY > 0.0 &&
+    if (windowStruct->hiDpiPromoted && windowStruct->hiDpiScaleX > 0.0 &&
+        windowStruct->hiDpiScaleY > 0.0 &&
         (windowStruct->hiDpiScaleX != 1.0 ||
          windowStruct->hiDpiScaleY != 1.0)) {
         windowStruct->w = (unsigned int) lround((double) windowStruct->w /
@@ -432,6 +671,7 @@ static void unrealizeTopLevelWindow(Window window)
     }
     windowStruct->hiDpiScaleX = 1.0;
     windowStruct->hiDpiScaleY = 1.0;
+    windowStruct->hiDpiPromoted = False;
 }
 
 Window XCreateSimpleWindow(Display *display,
@@ -938,18 +1178,7 @@ static int mapWindowImpl(Display *display, Window window)
         /* Render first into the hidden SDL_Window so the user never sees an
          * empty frame, then show + raise.
          */
-        windowStruct->needsPresent = True;
-        /* Release any coalesce gate a prior host-resize burst left armed (its
-         * 150ms safety cap may still be pending) so this mandatory
-         * present-before-show is not swallowed by drawWindowDataToScreen's
-         * coalesce early-return, which would leave the freshly mapped window
-         * unpresented. No-op when nothing is coalescing.
-         */
-        endCoalesceClientRepaint();
-        drawWindowDataToScreen();
-        SDL_ShowWindow(windowStruct->sdlWindow);
-        SDL_RaiseWindow(windowStruct->sdlWindow);
-        replayDeferredWmProperties(display, window);
+        showTopLevelWindow(display, window, True);
     }
 
     // SDL_UpdateWindowSurface(GET_WINDOW_STRUCT(window)->sdlWindow);
@@ -1022,13 +1251,17 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
          * it too if it ever runs off-main.
          */
         requireMainEventThread("XUnmapWindow");
+        /* Report the unmap before tearing down the SDL window. A client that
+         * selected StructureNotifyMask (Tk wraps every toplevel, and its
+         * WaitForEvent blocks up to 2 seconds for the UnmapNotify when it
+         * withdraws a window, e.g. closing a menu) otherwise never learns the
+         * window went away and stalls on that timeout. The non-SDL child branch
+         * below already posts it; the top-level path must too.
+         */
+        postEvent(display, window, UnmapNotify, fromConfigure);
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
         windowStruct->sdlRenderer = NULL;
-        if (sdlRenderer) {
-            invalidatePutImageStagingTexture(sdlRenderer);
-            invalidateTextCacheForRenderer(sdlRenderer);
-            SDL_DestroyRenderer(sdlRenderer);
-        }
+        destroyWindowRenderer(sdlRenderer);
         unrealizeTopLevelWindow(window);
     } else if (GET_WINDOW_STRUCT(GET_PARENT(window))->mapState != UnMapped) {
         postEvent(display, window, UnmapNotify, fromConfigure);
@@ -1371,17 +1604,7 @@ static int reparentWindowImpl(Display *display,
              * child was already considered mapped before reparent.
              */
             if (windowStruct->sdlWindow) {
-                windowStruct->needsPresent = True;
-                /* Release any coalesce gate a prior host-resize burst left
-                 * armed so this mandatory present-before-show is not swallowed
-                 * by drawWindowDataToScreen's coalesce early-return (which
-                 * would leave hasPresented False). No-op when nothing is
-                 * coalescing.
-                 */
-                endCoalesceClientRepaint();
-                drawWindowDataToScreen();
-                SDL_ShowWindow(windowStruct->sdlWindow);
-                replayDeferredWmProperties(display, window);
+                showTopLevelWindow(display, window, False);
             }
         }
     }

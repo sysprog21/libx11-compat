@@ -1,5 +1,6 @@
 #include "X11/Xlib.h"
 #include "X11/Xutil.h"
+#include <dlfcn.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,6 +23,90 @@ void compatTrace(const char *fmt, ...)
     va_end(args);
     fflush(out);
     fclose(out);
+}
+
+int libx11CompatWarnUnimplemented(void)
+{
+    /* No cache: this runs only on cold unimplemented-call paths, so re-reading
+     * the env each time costs nothing meaningful and avoids a static-init data
+     * race under threads.
+     */
+    const char *value = getenv("LIBX11_COMPAT_WARN_UNIMPLEMENTED");
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static Bool loadedLibraryHasSymbol(const char *soname, const char *symbol)
+{
+#ifdef RTLD_NOLOAD
+    void *handle = dlopen(soname, RTLD_LAZY | RTLD_NOLOAD);
+    if (!handle)
+        return False;
+    /* RTLD_NOLOAD still bumps the library refcount, and these probes run
+     * repeatedly on cold font/realize paths, so drop the reference once the
+     * presence check is done. Only the boolean matters, not keeping it mapped.
+     */
+    Bool present = dlsym(handle, symbol) != NULL;
+    dlclose(handle);
+    return present;
+#else
+    (void) soname;
+    (void) symbol;
+    return False;
+#endif
+}
+
+Bool compatSelfScalingToolkitLoaded(void)
+{
+    if (dlsym(RTLD_DEFAULT, "Tk_MainWindow") ||
+        dlsym(RTLD_DEFAULT, "XmStringCreateLocalized"))
+        return True;
+    static const char *tkLibs[] = {"libtk8.6.dylib", "libtk8.6.so", "libtk.so"};
+    static const char *xmLibs[] = {"libXm.5.dylib", "libXm.so.5", "libXm.dylib",
+                                   "libXm.so"};
+    for (size_t i = 0; i < ARRAY_LENGTH(tkLibs); i++)
+        if (loadedLibraryHasSymbol(tkLibs[i], "Tk_MainWindow"))
+            return True;
+    for (size_t i = 0; i < ARRAY_LENGTH(xmLibs); i++)
+        if (loadedLibraryHasSymbol(xmLibs[i], "XmStringCreateLocalized"))
+            return True;
+    return False;
+}
+
+Bool compatGtkCoreFontToolkitLoaded(void)
+{
+    if (dlsym(RTLD_DEFAULT, "gdk_font_load"))
+        return True;
+    static const char *gtkLibs[] = {"libgtk1.dylib", "libgtk1.so",
+                                    "libgtk.dylib", "libgtk.so"};
+    for (size_t i = 0; i < ARRAY_LENGTH(gtkLibs); i++)
+        if (loadedLibraryHasSymbol(gtkLibs[i], "gdk_font_load"))
+            return True;
+    return False;
+}
+
+/* X Toolkit Intrinsics apps (Athena, Xaw, xcircuit's Xw) lay widgets out at
+ * fixed pixel geometry using core-font metrics, so promoting their X11 geometry
+ * clusters the widgets into the top-left quadrant of the 2x window and scaling
+ * their core fonts double-scales the text. Detect Xt like the other toolkits so
+ * they take the uniform-upscale path instead. Motif is Xt too but is caught
+ * first by compatSelfScalingToolkitLoaded.
+ */
+Bool compatXtToolkitLoaded(void)
+{
+    if (dlsym(RTLD_DEFAULT, "XtCreateWidget"))
+        return True;
+    static const char *xtLibs[] = {"libXt.6.dylib", "libXt.dylib", "libXt.so.6",
+                                   "libXt.so"};
+    for (size_t i = 0; i < ARRAY_LENGTH(xtLibs); i++)
+        if (loadedLibraryHasSymbol(xtLibs[i], "XtCreateWidget"))
+            return True;
+    return False;
+}
+
+Bool compatHiDpiPromoteToolkits(void)
+{
+    return !compatSelfScalingToolkitLoaded() &&
+           !compatGtkCoreFontToolkitLoaded() && !compatXtToolkitLoaded();
 }
 
 Bool initArray(Array *a, size_t initialSize)

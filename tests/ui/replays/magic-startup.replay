@@ -1,0 +1,19 @@
+# Magic layout startup and resize smoke: the Tcl/TkX11 layout window must come
+# up against the private Tcl/Tk plus libx11-compat stack, load the local fixture,
+# and paint its scmos layer fills (green ndiffusion, red and brown diffusion) in
+# quantity. It must then survive a top-level resize and re-render, exercising the
+# libx11-compat ConfigureNotify and backing-texture resize path. The layer-color
+# coverage assertion distinguishes a loaded layout from an empty-but-colorful
+# magic grid window (which renders many colors but none of the layer fills); the
+# changed-region assertion proves the resize caused a real re-render.
+delay 1500
+wait-window "magic" 15000
+wait-converge 200 2 50 200 20000
+screenshot initial
+assert-image initial magic-layout-visible.json
+resize 800 600
+delay 300
+wait-converge 200 2 50 200 20000
+screenshot resized
+assert-image resized magic-layout-resized.json
+assert-exit running

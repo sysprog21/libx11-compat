@@ -268,6 +268,111 @@ static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
 #endif
 }
 
+/* Clamp an int64 coordinate to the int range SDL and the X protocol use, so a
+ * hostile client-supplied offset cannot wrap on the way to SDL_WarpMouseGlobal.
+ */
+static int clampToIntRange(int64_t v)
+{
+    if (v > INT_MAX)
+        return INT_MAX;
+    if (v < INT_MIN)
+        return INT_MIN;
+    return (int) v;
+}
+
+/* Walk from `window` up to its top-level (the window whose parent is the root),
+ * accumulating each intermediate window's physical-pixel offset into offX and
+ * offY and returning the top-level through topReturn. Child window geometry
+ * lives in the same physical-pixel space as the promoted HiDPI backing. The
+ * accumulators are int64 so a client-supplied localX/localY seed cannot
+ * overflow before the caller clamps.
+ *
+ * Returns False when `window` is the root, detached, or has no realized
+ * top-level.
+ */
+static Bool warpTopLevelOffset(Window window,
+                               int64_t *offX,
+                               int64_t *offY,
+                               Window *topReturn)
+{
+    if (window == None || window == SCREEN_WINDOW || !IS_TYPE(window, WINDOW))
+        return False;
+    Window top = window;
+    while (top != None && top != SCREEN_WINDOW &&
+           GET_PARENT(top) != SCREEN_WINDOW) {
+        int px = 0, py = 0;
+        GET_WINDOW_POS(top, px, py);
+        *offX += px;
+        *offY += py;
+        top = GET_PARENT(top);
+    }
+    if (top == None || top == SCREEN_WINDOW || !IS_TYPE(top, WINDOW) ||
+        !GET_WINDOW_STRUCT(top)->sdlWindow)
+        return False;
+    *topReturn = top;
+    return True;
+}
+
+/* Map a physical-pixel point (localX, localY) in `window` to the logical global
+ * screen coordinate SDL_WarpMouseGlobal expects. The top-level's on-screen
+ * origin is its real SDL window position (logical points); the accumulated
+ * physical interior offset is scaled back to logical by the top-level's
+ * effective HiDPI ratio (a no-op at scale 1.0).
+ *
+ * Returns False when the window has no realized top-level SDL window.
+ */
+Bool libx11CompatWarpTargetGlobal(Window window,
+                                  int localX,
+                                  int localY,
+                                  int *globalX,
+                                  int *globalY)
+{
+    int64_t offX = localX, offY = localY;
+    Window top = None;
+    if (!warpTopLevelOffset(window, &offX, &offY, &top))
+        return False;
+    WindowStruct *topWs = GET_WINDOW_STRUCT(top);
+    int hostX = 0, hostY = 0;
+    SDL_GetWindowPosition(topWs->sdlWindow, &hostX, &hostY);
+    double sx = effectiveHiDpiScaleX(topWs);
+    double sy = effectiveHiDpiScaleY(topWs);
+    *globalX = clampToIntRange((int64_t) hostX + llround((double) offX / sx));
+    *globalY = clampToIntRange((int64_t) hostY + llround((double) offY / sy));
+    return True;
+}
+
+/* Approximate inverse of libx11CompatWarpTargetGlobal: logical global ->
+ * physical local in `window`, applying the same SDL-logical-to-X-physical
+ * scaling the event path uses. Rounding leaves it inexact by up to a pixel
+ * under fractional HiDPI, which is fine for the coarse source-rectangle
+ * containment test it feeds.
+ *
+ * Returns False when the window has no realized top-level.
+ */
+static Bool warpGlobalToWindowLocal(Window window,
+                                    int globalX,
+                                    int globalY,
+                                    int *localX,
+                                    int *localY)
+{
+    int64_t childOffX = 0, childOffY = 0;
+    Window top = None;
+    if (!warpTopLevelOffset(window, &childOffX, &childOffY, &top))
+        return False;
+    WindowStruct *topWs = GET_WINDOW_STRUCT(top);
+    int hostX = 0, hostY = 0;
+    SDL_GetWindowPosition(topWs->sdlWindow, &hostX, &hostY);
+    double sx = effectiveHiDpiScaleX(topWs);
+    double sy = effectiveHiDpiScaleY(topWs);
+    *localX = clampToIntRange(
+        llround((double) ((int64_t) globalX - (int64_t) hostX) * sx) -
+        childOffX);
+    *localY = clampToIntRange(
+        llround((double) ((int64_t) globalY - (int64_t) hostY) * sy) -
+        childOffY);
+    return True;
+}
+
 int XWarpPointer(Display *display,
                  Window src_window,
                  Window dest_window,
@@ -280,27 +385,35 @@ int XWarpPointer(Display *display,
 {
     // https://tronche.com/gui/x/xlib/input/XWarpPointer.html
     SET_X_SERVER_REQUEST(display, X_WarpPointer);
-    int curr_x = 0, curr_y = 0;
-    if (dest_window == None) {
+
+    /* Spec: when src_window is set, only warp if the pointer currently sits
+     * inside the source rectangle (in src_window coordinates); a zero
+     * width/height means "to the edge of src_window". A window we cannot map
+     * (no realized top-level) is treated as non-gating rather than silently
+     * suppressing the warp.
+     */
+    if (src_window != None) {
+        int gx = 0, gy = 0;
 #if SDL_VERSION_ATLEAST(2, 0, 4)
-        SDL_GetGlobalMouseState(&curr_x, &curr_y);
+        SDL_GetGlobalMouseState(&gx, &gy);
 #else
-        SDL_GetMouseState(&curr_x, &curr_y);
+        SDL_GetMouseState(&gx, &gy);
 #endif
-    } else {
-        if (src_window != None) {
-            int gx, gy;
-#if SDL_VERSION_ATLEAST(2, 0, 4)
-            SDL_GetGlobalMouseState(&gx, &gy);
-#else
-            SDL_GetMouseState(&gx, &gy);
-#endif
-            /* Spec: the source rectangle is in src_window coordinates, and a
-             * zero width/height means "to the edge of src_window".
+        int local_x = 0, local_y = 0;
+        Bool haveLocal;
+        if (src_window == SCREEN_WINDOW) {
+            /* A root source rectangle is expressed in root/screen coordinates;
+             * queryPointerRootPosition reports the live pointer in that same
+             * space (scaled through the focus window), which is not the raw SDL
+             * global point once a top-level is independently hosted.
              */
-            int local_x, local_y;
-            XTranslateCoordinates(display, SCREEN_WINDOW, src_window, gx, gy,
-                                  &local_x, &local_y, NULL);
+            queryPointerRootPosition(display, &local_x, &local_y);
+            haveLocal = True;
+        } else {
+            haveLocal =
+                warpGlobalToWindowLocal(src_window, gx, gy, &local_x, &local_y);
+        }
+        if (haveLocal) {
             unsigned int w = src_width, h = src_height;
             if (w == 0 || h == 0) {
                 unsigned int win_w, win_h;
@@ -324,36 +437,72 @@ int XWarpPointer(Display *display,
             if (dx < 0 || dx >= (int64_t) w || dy < 0 || dy >= (int64_t) h)
                 return 1;
         }
-        if (dest_window == SCREEN_WINDOW) {
-#if SDL_VERSION_ATLEAST(2, 0, 4)
-            SDL_GetGlobalMouseState(&curr_x, &curr_y);
-#else
-            SDL_GetMouseState(&curr_x, &curr_y);
-#endif
+    }
+
+    /* Resolve the destination to a logical global screen point for SDL. */
+    int64_t finalX = 0, finalY = 0;
+    if (dest_window == None || dest_window == SCREEN_WINDOW) {
+        /* A relative move (dest_window None) and an absolute root move both
+         * land in root coordinates, so resolve them through one path. Root
+         * coordinates are physical X11 pixels, not SDL global points once a
+         * top-level's host position or HiDPI scale differs, so route the point
+         * through the top-level that contains it and let
+         * libx11CompatWarpTargetGlobal apply that window's host position and
+         * scale. Fall back to the raw point when no window contains it (bare
+         * root).
+         */
+        int rootX, rootY;
+        if (dest_window == None) {
+            /* The relative offset is in root space (physical pixels), so add it
+             * to the live root position, not to the SDL logical global point.
+             * Adding a physical delta to a logical point would mis-scale the
+             * move on a HiDPI top-level. queryPointerRootPosition already
+             * reports the pointer in pixel-space root coordinates.
+             */
+            int curRootX = 0, curRootY = 0;
+            queryPointerRootPosition(display, &curRootX, &curRootY);
+            rootX = clampToIntRange((int64_t) curRootX + (int64_t) dest_x);
+            rootY = clampToIntRange((int64_t) curRootY + (int64_t) dest_y);
         } else {
-            XTranslateCoordinates(display, SCREEN_WINDOW, dest_window, 0, 0,
-                                  &curr_x, &curr_y, NULL);
+            rootX = dest_x;
+            rootY = dest_y;
+        }
+        Window target = getContainingWindow(SCREEN_WINDOW, rootX, rootY);
+        int gX = 0, gY = 0, lx = 0, ly = 0;
+        Window child = None;
+        if (target != None && target != SCREEN_WINDOW &&
+            XTranslateCoordinates(display, SCREEN_WINDOW, target, rootX, rootY,
+                                  &lx, &ly, &child) &&
+            libx11CompatWarpTargetGlobal(target, lx, ly, &gX, &gY)) {
+            finalX = gX;
+            finalY = gY;
+        } else {
+            finalX = rootX;
+            finalY = rootY;
+        }
+    } else {
+        int gX = 0, gY = 0;
+        if (libx11CompatWarpTargetGlobal(dest_window, dest_x, dest_y, &gX,
+                                         &gY)) {
+            finalX = gX;
+            finalY = gY;
+        } else {
+            /* No realized top-level; fall back to treating the destination as a
+             * root-relative logical point rather than dropping the warp.
+             */
+            finalX = dest_x;
+            finalY = dest_y;
         }
     }
 
-    /* Compute final pointer in int64 and clamp to SDL's int arg range so
-     * callers cannot drive an overflow into the warp call.
-     */
-    int64_t finalX = (int64_t) curr_x + (int64_t) dest_x;
-    int64_t finalY = (int64_t) curr_y + (int64_t) dest_y;
-    if (finalX > INT_MAX)
-        finalX = INT_MAX;
-    if (finalX < INT_MIN)
-        finalX = INT_MIN;
-    if (finalY > INT_MAX)
-        finalY = INT_MAX;
-    if (finalY < INT_MIN)
-        finalY = INT_MIN;
+    /* Clamp to SDL's int arg range so callers cannot drive an overflow. */
+    int warpX = clampToIntRange(finalX);
+    int warpY = clampToIntRange(finalY);
 #if SDL_VERSION_ATLEAST(2, 0, 4)
-    if (SDL_WarpMouseGlobal((int) finalX, (int) finalY) != 0)
+    if (SDL_WarpMouseGlobal(warpX, warpY) != 0)
         LOG("Warning: SDL_WarpMouseGlobal failed: %s", SDL_GetError());
 #else
-    SDL_WarpMouseInWindow(SDL_GetMouseFocus(), (int) finalX, (int) finalY);
+    SDL_WarpMouseInWindow(SDL_GetMouseFocus(), warpX, warpY);
 #endif
     return 1;
 }

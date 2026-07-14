@@ -357,8 +357,8 @@ def wait_process_alive(proc, timeout_ms):
 
     The internal replay backend has no X server to query, so wait-window
     degrades into a fixed-duration alive check. Returning after the first
-    sleep tick (the prior behavior) collapsed every wait-window into a
-    100 ms delay regardless of timeout_ms.
+    sleep tick collapsed every wait-window into a 100 ms delay regardless of
+    timeout_ms.
     """
     deadline = time.time() + timeout_ms / 1000.0
     while time.time() < deadline:
@@ -736,6 +736,38 @@ def dark_mask_stats(img, dark_threshold):
     return dark, total
 
 
+def dark_row_runs(img, dark_threshold, min_row_dark_ratio):
+    rgb = img.convert("RGB")
+    raw = rgb.tobytes()
+    width = max(1, rgb.width)
+    row_stride = width * 3
+    runs = []
+    start = None
+    for y in range(rgb.height):
+        row_dark = 0
+        row_start = y * row_stride
+        row_end = row_start + row_stride
+        for offset in range(row_start, row_end, 3):
+            if (
+                raw[offset] <= dark_threshold
+                and raw[offset + 1] <= dark_threshold
+                and raw[offset + 2] <= dark_threshold
+            ):
+                row_dark += 1
+        active = row_dark / width >= min_row_dark_ratio
+        if active and start is None:
+            start = y
+        elif not active and start is not None:
+            runs.append(y - start)
+            start = None
+    if start is not None:
+        runs.append(rgb.height - start)
+    # Return every run and let the rule's min_run_height / max_run_height bounds
+    # decide what counts. Dropping 1px runs here made a default rule
+    # (min_run_height=1, min_runs=1) impossible to satisfy on a 1px active run.
+    return runs
+
+
 def dense_dark_rows(img, dark_threshold, max_row_ratio):
     rgb = img.convert("RGB")
     raw = rgb.tobytes()
@@ -778,11 +810,29 @@ def assert_state(rule_path, state_path):
     """Apply a state-matcher rule file against a UiSnapshot JSON file.
 
     The rule schema is intentionally narrow so a failing assertion can be
-    explained without a debugger: each matcher names a single field of the
-    snapshot (focused_window, pointer_grab, keyboard_grab,
-    mapped_window_count, popup_window_count, window_count, event_queue_depth)
-    or a per-window predicate (wm_class_present, window_with_size,
-    window_with_geometry).
+    explained without a debugger. Each matcher is one of:
+
+      Scalar-field matchers naming a single snapshot field (focused_window,
+      pointer_grab, keyboard_grab, mapped_window_count, popup_window_count,
+      window_count, event_queue_depth):
+        {"type": "equal", "field": ..., "expected": ...}
+        {"type": "leq",   "field": ..., "max": ...}
+        {"type": "geq",   "field": ..., "min": ...}
+
+      Per-window predicates over snapshot["windows"]:
+        {"type": "wm_class_present", "wm_class": ...}
+        {"type": "window_with_size", "w": ..., "h": ...}
+        {"type": "window_with_geometry", ...}  exact match on any of wm_class,
+            wm_name, x, y, w, h, map_state, and the shape_* fields.
+        {"type": "window_with_geometry_range", ...}  exact match on wm_class,
+            wm_name, map_state, plus inclusive bounds via <field>_min /
+            <field>_max for each of x, y, w, h (any subset).
+
+      Grab and property matchers:
+        {"type": "grab_released"}  pointer_grab and keyboard_grab must be 0.
+        {"type": "property_unchanged", "between": [baseline_json, ...], ...}
+        {"type": "window_geometry_changed", ...}
+        {"type": "property_changed_to", ...}
     """
     if not rule_path.exists():
         raise ReplayError(f"state-rule file not found: {rule_path}")
@@ -855,6 +905,32 @@ def assert_state(rule_path, state_path):
                     f"{field}={value!r}" for field, value in expected.items()
                 )
                 failures.append(f"no window with geometry {detail}")
+        elif rule_type == "window_with_geometry_range":
+            exact_fields = ("wm_class", "wm_name", "map_state")
+            range_fields = ("x", "y", "w", "h")
+            exact = {field: rule[field] for field in exact_fields if field in rule}
+
+            def in_range(entry):
+                for field, value in exact.items():
+                    if entry.get(field) != value:
+                        return False
+                for field in range_fields:
+                    actual = entry.get(field)
+                    if actual is None:
+                        return False
+                    min_key = f"{field}_min"
+                    max_key = f"{field}_max"
+                    if min_key in rule and actual < rule[min_key]:
+                        return False
+                    if max_key in rule and actual > rule[max_key]:
+                        return False
+                return True
+
+            if not any(in_range(entry) for entry in snap.get("windows", [])):
+                detail = " ".join(
+                    f"{key}={value!r}" for key, value in rule.items() if key != "type"
+                )
+                failures.append(f"no window with geometry range {detail}")
         elif rule_type == "grab_released":
             for field in ("pointer_grab", "keyboard_grab"):
                 if snap.get(field, 0) != 0:
@@ -1040,6 +1116,20 @@ def assert_image(rule_path, image_path, screenshots, assertion_base):
         if rule_type == "non_empty":
             if image_path.stat().st_size <= 0 or img.width <= 0 or img.height <= 0:
                 failures.append("image is empty")
+        elif rule_type == "min_size":
+            min_w = int(rule.get("width", 1))
+            min_h = int(rule.get("height", 1))
+            if img.width < min_w or img.height < min_h:
+                failures.append(
+                    f"image size {img.width}x{img.height} below {min_w}x{min_h}"
+                )
+        elif rule_type == "max_size":
+            max_w = int(rule.get("width", 999999))
+            max_h = int(rule.get("height", 999999))
+            if img.width > max_w or img.height > max_h:
+                failures.append(
+                    f"image size {img.width}x{img.height} above {max_w}x{max_h}"
+                )
         elif rule_type == "not_all_black":
             extrema = img.convert("RGB").getextrema()
             if max(channel[1] for channel in extrema) <= 8:
@@ -1062,6 +1152,22 @@ def assert_image(rule_path, image_path, screenshots, assertion_base):
                     f"region dark ratio {ratio:.5f} above "
                     f"{float(rule.get('max_dark_ratio', 0.35)):.5f}"
                 )
+        elif rule_type == "dark_row_run_height":
+            region = crop(img, assertion_rect(rule, img)).convert("RGB")
+            runs = dark_row_runs(
+                region,
+                int(rule.get("dark_threshold", 96)),
+                float(rule.get("min_row_dark_ratio", 0.01)),
+            )
+            min_runs = int(rule.get("min_runs", 1))
+            min_h = int(rule.get("min_run_height", 1))
+            max_h = int(rule.get("max_run_height", 9999))
+            good = [height for height in runs if min_h <= height <= max_h]
+            if len(good) < min_runs:
+                failures.append(
+                    f"dark row runs {runs} did not include {min_runs} "
+                    f"runs in [{min_h}, {max_h}]"
+                )
         elif rule_type == "region_min_unique_colors":
             region = crop(img, assertion_rect(rule, img)).convert("RGB")
             raw = region.tobytes()
@@ -1069,6 +1175,31 @@ def assert_image(rule_path, image_path, screenshots, assertion_base):
             expected = int(rule.get("min_unique_colors", 2))
             if len(colors) < expected:
                 failures.append(f"region unique colors {len(colors)} below {expected}")
+        elif rule_type == "region_min_color_coverage":
+            # Fraction of pixels matching any of a set of target colors within a
+            # per-channel tolerance. Unlike unique-color counts, this detects
+            # that specific expected content (e.g. named layer fills) is present
+            # in quantity, so a differently-rendered-but-still-colorful frame
+            # cannot pass. Tolerance absorbs SDL2/SDL3 color-conversion drift.
+            region = crop(img, assertion_rect(rule, img)).convert("RGB")
+            raw = region.tobytes()
+            targets = [tuple(int(c) for c in color) for color in rule.get("colors", [])]
+            tol = int(rule.get("tolerance", 24))
+            total = max(1, len(raw) // 3)
+            hit = 0
+            for offset in range(0, len(raw), 3):
+                r, g, b = raw[offset], raw[offset + 1], raw[offset + 2]
+                if any(
+                    abs(r - tr) <= tol and abs(g - tg) <= tol and abs(b - tb) <= tol
+                    for tr, tg, tb in targets
+                ):
+                    hit += 1
+            ratio = hit / total
+            expected_ratio = float(rule.get("min_ratio", 0.05))
+            if ratio < expected_ratio:
+                failures.append(
+                    f"target-color coverage {ratio:.4f} below {expected_ratio:.4f}"
+                )
         elif rule_type == "changed_region":
             baseline_name = rule.get("baseline")
             if baseline_name not in screenshots:

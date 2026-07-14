@@ -709,6 +709,57 @@ Bool XkbQueryExtension(Display *dpy,
     return True;
 }
 
+/* TkX11 (and other XKB-aware toolkits) open their connection through
+ * XkbOpenDisplay rather than XOpenDisplay so the XKB event/error bases are
+ * reported in one call. Mirror the stock Xlib control flow: validate the
+ * caller's requested library version first, open the display, probe the
+ * synthetic XKB extension, and hand back the same bases XkbQueryExtension
+ * reports. The version handshake must run before opening the display so an
+ * incompatible caller is rejected with XkbOD_BadLibraryVersion rather than
+ * having its requested version silently overwritten by XkbQueryExtension.
+ */
+Display *XkbOpenDisplay(_Xconst char *name,
+                        int *ev_rtrn,
+                        int *err_rtrn,
+                        int *major_rtrn,
+                        int *minor_rtrn,
+                        int *reason)
+{
+    /* Real Xlib runs XkbLibraryVersion on the caller-supplied major/minor
+     * before anything else. Only the major version must match; mismatch means
+     * the caller was built against an incompatible XKB library. The pointers
+     * are optional and only carry a version handshake when both are supplied,
+     * so a caller passing just one (as an output slot) is not a version request
+     * and must not be rejected.
+     */
+    if (major_rtrn && minor_rtrn &&
+        (*major_rtrn != XkbMajorVersion || *minor_rtrn > XkbMinorVersion)) {
+        if (major_rtrn)
+            *major_rtrn = XkbMajorVersion;
+        if (minor_rtrn)
+            *minor_rtrn = XkbMinorVersion;
+        if (reason)
+            *reason = XkbOD_BadLibraryVersion;
+        return NULL;
+    }
+    Display *dpy = XOpenDisplay(name);
+    if (!dpy) {
+        if (reason)
+            *reason = XkbOD_ConnectionRefused;
+        return NULL;
+    }
+    if (!XkbQueryExtension(dpy, NULL, ev_rtrn, err_rtrn, major_rtrn,
+                           minor_rtrn)) {
+        if (reason)
+            *reason = XkbOD_NonXkbServer;
+        XCloseDisplay(dpy);
+        return NULL;
+    }
+    if (reason)
+        *reason = XkbOD_Success;
+    return dpy;
+}
+
 int XkbTranslateKeySym(Display *dpy,
                        KeySym *sym_rtrn,
                        unsigned int mods,

@@ -263,17 +263,62 @@ static SDL_Surface *composeOverlayPopups(SDL_Surface *target, Window targetWin)
             }
             SDL_BlitSurface(target, NULL, composed, NULL);
         }
-        /* 1:1 X-logical to surface pixel mapping, correct on the Xvfb CI path.
-         * A HiDPI host would need the surface-to-logical scale folded into the
-         * offset; blit clipping handles popups that fall partly or wholly
-         * outside the target rect.
+        /* Relative popup origin in the composed target's space, in int64_t so
+         * two extreme opposite-sign coordinates cannot overflow the subtraction
+         * (UB) before the range checks below; the SDL_Rect fields are int, so
+         * narrow only once the popup is known to intersect. This uses a 1:1
+         * X-logical to backing-pixel mapping, correct on the Xvfb / scale-1.0
+         * CI path; a HiDPI host would need the target's surface-to-logical
+         * scale folded into the offset, which the snapshot path does not yet
+         * model.
          */
+        int64_t relX = (int64_t) childStruct->x - targetStruct->x;
+        int64_t relY = (int64_t) childStruct->y - targetStruct->y;
+        int64_t right = relX + childSurface->w;
+        int64_t bottom = relY + childSurface->h;
+        /* Reject popups that share no pixels with the composed target instead
+         * of letting a fully-left/top popup silently blit-clip to nothing while
+         * a fully-right/bottom one drives an expansion. A popup is visible only
+         * if it overlaps [0, composed->w) x [0, composed->h).
+         */
+        if (right <= 0 || bottom <= 0 || relX >= composed->w ||
+            relY >= composed->h) {
+            SDL_FreeSurface(childSurface);
+            continue;
+        }
         SDL_Rect dst = {
-            .x = childStruct->x - targetStruct->x,
-            .y = childStruct->y - targetStruct->y,
+            .x = (int) relX,
+            .y = (int) relY,
             .w = childSurface->w,
             .h = childSurface->h,
         };
+        /* Expand the canvas to cover right/bottom overflow, but cap the growth
+         * at the display extent so a popup mapped far off-screen cannot request
+         * an oversized SDL_CreateRGBSurfaceWithFormat allocation. Left/top
+         * overflow is handled by SDL_BlitSurface, which clips a negative dst.
+         */
+        WindowStruct *screenStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+        int64_t capW = screenStruct ? (int64_t) screenStruct->w : right;
+        int64_t capH = screenStruct ? (int64_t) screenStruct->h : bottom;
+        if (capW < composed->w)
+            capW = composed->w;
+        if (capH < composed->h)
+            capH = composed->h;
+        if (right > capW)
+            right = capW;
+        if (bottom > capH)
+            bottom = capH;
+        if (right > composed->w || bottom > composed->h) {
+            int expandedW = right > composed->w ? (int) right : composed->w;
+            int expandedH = bottom > composed->h ? (int) bottom : composed->h;
+            SDL_Surface *expanded = SDL_CreateRGBSurfaceWithFormat(
+                0, expandedW, expandedH, 32, XC_SURFACE_FMT_ENUM(composed));
+            if (expanded) {
+                SDL_BlitSurface(composed, NULL, expanded, NULL);
+                SDL_FreeSurface(composed);
+                composed = expanded;
+            }
+        }
         SDL_BlitSurface(childSurface, NULL, composed, &dst);
         SDL_FreeSurface(childSurface);
     }

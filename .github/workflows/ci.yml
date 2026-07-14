@@ -1811,6 +1811,88 @@ jobs:
         if: ${{ !cancelled() }}
         run: ccache --show-stats
 
+  # ---- Magic VLSI layout startup smoke ----
+  # Builds a repo-private Tcl/TkX11 8.6.10 plus RTimothyEdwards/magic against
+  # libx11-compat and runs the replay-driven layout startup smoke. Kept in its
+  # own job (like mosaic) so the heavier, network-dependent private Tcl/Tk plus
+  # Magic build does not slow the core PR gate. No Xvfb: the smoke drives SDL's
+  # offscreen dummy driver and captures via the in-process snapshot path.
+  # MAGIC_OPENGL=0 gates the 2D TkX11 layout window, not the optional 3D OpenGL
+  # display. Built with gcc, matching the local and node11 validation; Magic
+  # 8.3's pre-C99 idioms are already softened to warnings for it.
+  magic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # python3-pil backs the smoke's image assertions (magic-layout-visible /
+        # magic-layout-resized). SDL2 stack plus pixman is the compat boundary.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc ccache make pkg-config python3 python3-pil \
+            libsdl2-dev libsdl2-ttf-dev libpixman-1-dev
+
+      - name: Cache upstream sources, Tcl/Tk tarballs, and Magic clone
+        # One cache over build/upstream covers the staged upstream headers, the
+        # private Tcl/Tk source tarballs, and the pinned Magic checkout. Keyed on
+        # the fragments that pin them so a patch or revision bump re-primes it.
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+          key: magic-upstream-v1-${{ runner.os }}-${{ hashFiles('mk/magic.mk', 'mk/tcltk.mk', 'compat/magic-patches/**', 'scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            magic-upstream-v1-${{ runner.os }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-magic-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-magic-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          ccache --max-size=800M
+          ccache --zero-stats
+          echo "CC=ccache gcc" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for Magic)
+        # Prime the upstream stamp serially before the parallel build, matching
+        # the other workload jobs on a cold cache.
+        run: |
+          make build/upstream/include/.upstream-stamp
+          make -j"$(nproc)"
+
+      - name: Build Magic and run the layout startup smoke
+        id: magic
+        # check-magic-no-unexpected-stubs builds the private Tcl/Tk plus Magic,
+        # runs the magic-startup replay (loads the fixture, asserts the scmos
+        # layer fills render, then resizes and re-renders), and scans the log for
+        # unexpected unimplemented Xlib calls. Not parallelized: Magic's autotools
+        # build is not -j clean.
+        run: make check-magic-no-unexpected-stubs MAGIC_OPENGL=0
+
+      - name: Upload Magic UI smoke artifacts on failure
+        if: ${{ failure() && steps.magic.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: magic-ui-smoke
+          path: build/ui-smoke/magic-startup
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
   # ---- Native SDL3 backend build + regression tests ----
   # ubuntu-24.04 ships no SDL3 in its repos (SDL3 GA'd after noble), and no
   # GitHub runner image or readily-available PPA carries libsdl3-dev for

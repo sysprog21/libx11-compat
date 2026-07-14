@@ -431,6 +431,28 @@ int main(void)
     const FcChar8 text[] = "Hello";
     XftDrawStringUtf8(draw, &color, font, 4, 20, text,
                       (int) strlen((const char *) text));
+    Region split = XCreateRegion();
+    XRectangle splitRects[2] = {
+        {.x = 160, .y = 0, .width = 8, .height = 8},
+        {.x = 176, .y = 0, .width = 8, .height = 8},
+    };
+    if (!split || !XUnionRectWithRegion(&splitRects[0], split, split) ||
+        !XUnionRectWithRegion(&splitRects[1], split, split) ||
+        !XftDrawSetClip(draw, split)) {
+        fprintf(stderr, "XftDrawSetClip(split) failed\n");
+        if (split)
+            XDestroyRegion(split);
+        XftDrawDestroy(draw);
+        XftColorFree(display, DefaultVisual(display, screen),
+                     DefaultColormap(display, screen), &color);
+        XftFontClose(display, varargFont);
+        XftFontClose(display, font);
+        XFreePixmap(display, pixmap);
+        XCloseDisplay(display);
+        return 1;
+    }
+    XftDrawRect(draw, &color, 160, 0, 24, 8);
+    XDestroyRegion(split);
     XRectangle clip = {4, 0, 24, 32};
     if (!XftDrawSetClipRectangles(draw, 0, 0, &clip, 1)) {
         fprintf(stderr, "XftDrawSetClipRectangles failed\n");
@@ -443,11 +465,30 @@ int main(void)
         XCloseDisplay(display);
         return 1;
     }
+    Region empty = XCreateRegion();
+    if (!empty || !XftDrawSetClip(draw, empty)) {
+        fprintf(stderr, "XftDrawSetClip(empty) failed\n");
+        if (empty)
+            XDestroyRegion(empty);
+        XftDrawDestroy(draw);
+        XftColorFree(display, DefaultVisual(display, screen),
+                     DefaultColormap(display, screen), &color);
+        XftFontClose(display, varargFont);
+        XftFontClose(display, font);
+        XFreePixmap(display, pixmap);
+        XCloseDisplay(display);
+        return 1;
+    }
     XftDrawStringUtf8(draw, &color, font, 80, 20, text,
                       (int) strlen((const char *) text));
+    XDestroyRegion(empty);
     XImage *image =
         XGetImage(display, pixmap, 0, 0, 256, 32, AllPlanes, ZPixmap);
     int ok = has_neutral_dark_pixel(image) &&
+             has_dark_pixel_in_rect(image, 4, 0, 24, 32) &&
+             has_dark_pixel_in_rect(image, 160, 0, 8, 8) &&
+             !has_dark_pixel_in_rect(image, 168, 0, 8, 8) &&
+             has_dark_pixel_in_rect(image, 176, 0, 8, 8) &&
              !has_dark_pixel_in_rect(image, 80, 0, 80, 32);
     if (image)
         XDestroyImage(image);
@@ -460,8 +501,8 @@ int main(void)
     XCloseDisplay(display);
     if (!ok) {
         fprintf(stderr,
-                "Xft draw produced no neutral dark pixels - black text "
-                "rendered in the wrong color channel\n");
+                "Xft draw/clip regression: missing dark pixels, wrong color "
+                "channel, or split region gap was painted\n");
         return 1;
     }
     return 0;

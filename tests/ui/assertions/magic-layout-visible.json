@@ -1,0 +1,12 @@
+{
+  "assertions": [
+    { "type": "non_empty" },
+    { "type": "not_all_black" },
+    {
+      "type": "region_min_color_coverage",
+      "colors": [[66, 213, 66], [220, 95, 95], [120, 81, 29]],
+      "tolerance": 20,
+      "min_ratio": 0.15
+    }
+  ]
+}

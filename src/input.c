@@ -68,6 +68,23 @@ static const struct {
     {osfXK_Delete, "osfDelete"},
 };
 
+/* The Pointer_ButtonN keysyms (0xfee9..0xfeed) name mouse buttons for keyboard
+ * pointer control. The generated KEY_SYM_LIST omits them, but toolkits that
+ * bind mouse buttons through XStringToKeysym need them: Magic's macro command
+ * turns "Button1" into "Pointer_Button1" and binds the result, so without these
+ * names the binding silently fails and a click resolves to an unbound 0xfee9.
+ */
+static const struct {
+    KeySym keysym;
+    const char *name;
+} pointerKeysyms[] = {
+    {XK_Pointer_Button1, "Pointer_Button1"},
+    {XK_Pointer_Button2, "Pointer_Button2"},
+    {XK_Pointer_Button3, "Pointer_Button3"},
+    {XK_Pointer_Button4, "Pointer_Button4"},
+    {XK_Pointer_Button5, "Pointer_Button5"},
+};
+
 Window getKeyboardFocus()
 {
     LOG("GET keyboard focus is %lu\n", keyboardFocus);
@@ -334,6 +351,11 @@ KeySym XStringToKeysym(_Xconst char *string)
         if (strcmp(osfKeysyms[i].name, string) == 0)
             return osfKeysyms[i].keysym;
     }
+    for (size_t i = 0; i < sizeof(pointerKeysyms) / sizeof(pointerKeysyms[0]);
+         i++) {
+        if (strcmp(pointerKeysyms[i].name, string) == 0)
+            return pointerKeysyms[i].keysym;
+    }
     if (!strcmp(string, "KDelete"))
         return XK_Delete;
     for (size_t i = 0; i < KEY_SYM_LIST_LENGTH; i++) {
@@ -349,6 +371,11 @@ char *XKeysymToString(KeySym keysym)
     for (size_t i = 0; i < sizeof(osfKeysyms) / sizeof(osfKeysyms[0]); i++) {
         if (osfKeysyms[i].keysym == keysym)
             return (char *) osfKeysyms[i].name;
+    }
+    for (size_t i = 0; i < sizeof(pointerKeysyms) / sizeof(pointerKeysyms[0]);
+         i++) {
+        if (pointerKeysyms[i].keysym == keysym)
+            return (char *) pointerKeysyms[i].name;
     }
     for (size_t i = 0; i < KEY_SYM_LIST_LENGTH; i++) {
         if (KEY_SYM_LIST[i].keySym == keysym)

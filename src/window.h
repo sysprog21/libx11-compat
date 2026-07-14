@@ -100,12 +100,11 @@ typedef struct {
      * two are mutually exclusive on one window): presentUsesSoftware is set
      * True when the accelerated renderer cannot be created (dummy/headless
      * driver) or the kill switch forces it, and the window then keeps the
-     * software path unchanged.
-     * presentTexture is a STREAMING RGBA8888 texture on presentRenderer sized
-     * presentTexW x presentTexH, kept up to date by uploading only dirty rects;
-     * presentReadback is the per-window CPU scratch (grown on demand, sized by
-     * presentReadbackCap) that SDL_RenderReadPixels fills before the upload.
-     * All torn down in destroyWindow.
+     * software path unchanged. presentTexture is a STREAMING RGBA8888 texture
+     * on presentRenderer sized presentTexW x presentTexH, kept up to date by
+     * uploading only dirty rects; presentReadback is the per-window CPU scratch
+     * (grown on demand, sized by presentReadbackCap) that SDL_RenderReadPixels
+     * fills before the upload. All torn down in destroyWindow.
      */
     SDL_Renderer *presentRenderer;
     SDL_Texture *presentTexture;
@@ -118,17 +117,15 @@ typedef struct {
     int x, y;
     /* The dimensions of this window. */
     unsigned int w, h;
-    /* Physical-pixel / SDL-logical-point ratio for this top-level window,
-     * cached so mouse-coordinate scaling and resize handling do not re-query
-     * SDL every event. Under Option 1b the X11 geometry (w/h above) is stored
-     * in physical pixels while SDL mouse events arrive in logical points;
-     * multiply incoming SDL point coords by these to reach X11 pixel space. 1.0
-     * on non-HiDPI hosts and under the SDL dummy driver used in CI, so this is
-     * a no-op there. Set at realize time from the SDL window surface size and
-     * refreshed on every resize.
+    /* Physical-pixel / SDL-logical-point ratio for this top-level window.
+     * hiDpiPromoted says whether this window's X11 geometry (w/h above) uses
+     * those physical pixels. Self-scaling toolkits such as Motif/Tk keep X11
+     * geometry in logical pixels, so resize and pointer paths must ignore the
+     * cached ratio even if the host display is HiDPI.
      */
     double hiDpiScaleX;
     double hiDpiScaleY;
+    Bool hiDpiPromoted;
     /* Cached WM_NORMAL_HINTS resize increments (ICCCM PResizeInc), in the same
      * physical-pixel space as w/h. A real window manager snaps user resizes to
      * these; there is none here, so the shim replays that behaviour at drag end
@@ -149,7 +146,8 @@ typedef struct {
      * shared global would make neither ever settle). liveResizeLastSeen* is
      * this window's pixel size on the previous observer tick;
      * liveResizeSettleTicks counts consecutive ticks at that same size. Reset
-     * when a fresh drag arms the observer. */
+     * when a fresh drag arms the observer.
+     */
     int liveResizeLastSeenW;
     int liveResizeLastSeenH;
     int liveResizeSettleTicks;
@@ -162,13 +160,22 @@ typedef struct {
      * the filter can run on SDL's event thread.
      */
     SDL_atomic_t suppressSdlResizeEcho;
+    /* One-shot: armed by showTopLevelWindow before SDL_ShowWindow. A mapped
+     * top-level already posts an explicit MapNotify next to the show, so the
+     * MapNotify that the SDL SHOWN echo would synthesize in convertEvent is
+     * redundant; delivering both makes Xt/Tk map handlers run twice. Cleared
+     * when that SHOWN is converted. Atomic because the flag is set on the
+     * caller thread and read on the event thread.
+     */
+    SDL_atomic_t suppressSdlShowMap;
     /* Logical (point) size the drag-end increment snap last wrote via
      * SDL_SetWindowSize. That snap runs inside the live-resize present frame
      * and cannot pump to flush the echo, so it cannot use the flag above;
      * instead the filter drops resize echoes whose payload matches this size
      * (both the RESIZED and SIZE_CHANGED posts) and clears the key on the
      * matching RESIZED so it cannot suppress a later genuine resize. Zero when
-     * no snap is pending. Only touched on the main/event thread. */
+     * no snap is pending. Only touched on the main/event thread.
+     */
     int snapEchoW;
     int snapEchoH;
     Bool inputOnly;
@@ -228,6 +235,22 @@ typedef struct {
     unsigned long debugId;
 #endif /* DEBUG_WINDOWS */
 } WindowStruct;
+
+/* Effective device-pixel scale for coordinate conversions, or 1.0 when the
+ * window is not HiDPI-promoted (a self-scaling toolkit keeps X11 geometry in
+ * logical points, so its ratio must be ignored). Single-sources the "promoted
+ * and valid ratio" test that pointer, resize, and geometry paths would
+ * otherwise each spell out.
+ */
+static inline double effectiveHiDpiScaleX(const WindowStruct *ws)
+{
+    return ws->hiDpiPromoted && ws->hiDpiScaleX > 0.0 ? ws->hiDpiScaleX : 1.0;
+}
+
+static inline double effectiveHiDpiScaleY(const WindowStruct *ws)
+{
+    return ws->hiDpiPromoted && ws->hiDpiScaleY > 0.0 ? ws->hiDpiScaleY : 1.0;
+}
 
 #include "window-internal.h"
 

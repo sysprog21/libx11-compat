@@ -35,6 +35,22 @@ typedef struct {
      */
     SDL_Surface *readback;
     Bool readbackDirty;
+    /* Cached stipple stamp. A pixmap used as a GC stipple gets turned into a
+     * foreground/background-colored, alpha-keyed tile texture in
+     * renderStippleRects; magic reuses the same stipple across many fills, so
+     * memoize it here keyed by the resolved colors, opaque flag, and the
+     * renderer it was built for. SDL textures are owned by one renderer, so a
+     * stipple filled into a second top-level window (a different renderer) must
+     * rebuild rather than reuse a texture the other renderer cannot draw. Tied
+     * to the pixmap lifetime, so invalidation is just "drop it whenever the
+     * pixmap content is marked dirty or the pixmap is freed" - no separate
+     * cache to keep coherent.
+     */
+    SDL_Texture *stippleStamp;
+    SDL_Renderer *stampRenderer;
+    unsigned long stampFg;
+    unsigned long stampBg;
+    Bool stampOpaque;
 } PixmapStruct;
 
 #define LOCK_SURFACE(surface)  \
@@ -108,6 +124,8 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
 SDL_Surface *getPixmapSurfaceRect(Pixmap pixmap, const SDL_Rect *source);
 void markPixmapReadbackDirty(Drawable drawable);
 void freePixmapReadback(PixmapStruct *pixmap);
+void freePixmapStippleStamp(PixmapStruct *pixmap);
+void invalidateStippleStampsForRenderer(SDL_Renderer *renderer);
 /* Test hook: count of SDL_RenderReadPixels issued to refresh pixmap caches. */
 extern unsigned long x11compat_pixmap_readback_reads;
 /* Number of clip iterations to perform when drawing into "d" through "gc". Each
@@ -149,13 +167,15 @@ Bool libx11CompatForceSoftwarePresent(void);
  * renderer whose SDL_RenderReadPixels never reflects what was drawn, so a
  * driver-name check is insufficient; this probes the readback capability once
  * on a throwaway window and caches the verdict. realizeTopLevelWindow forces
- * the SDL_GetWindowSurface software present when this returns False. */
+ * the SDL_GetWindowSurface software present when this returns False.
+ */
 Bool libx11CompatAcceleratedPresentUsable(void);
 /* Coalesce a client repaint burst so its intermediate XFlush/XSync presents do
  * not reach the screen (see the deadline notes in drawing.c). begin arms the
  * hold at the point a host-resize ConfigureNotify is produced; end presents the
  * final frame once and disarms, called when the client returns to its idle
- * input wait. */
+ * input wait.
+ */
 void beginCoalesceClientRepaint(void);
 void endCoalesceClientRepaint(void);
 Bool presentWakeOwnsEventType(Uint32 eventType);

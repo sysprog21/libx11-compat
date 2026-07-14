@@ -1,0 +1,22 @@
+{
+  "_comment": "XNEdit fixture editor text should remain readable. The crop covers the first lines of the edit area; too-small fonts drop the dark-pixel ratio below this floor.",
+  "assertions": [
+    {
+      "type": "region_non_background",
+      "display_size": [900, 650],
+      "display_rect": [0, 30, 300, 105],
+      "dark_threshold": 96,
+      "min_dark_ratio": 0.02
+    },
+    {
+      "type": "dark_row_run_height",
+      "display_size": [900, 650],
+      "display_rect": [0, 30, 300, 105],
+      "dark_threshold": 96,
+      "min_row_dark_ratio": 0.01,
+      "min_run_height": 9,
+      "max_run_height": 16,
+      "min_runs": 3
+    }
+  ]
+}

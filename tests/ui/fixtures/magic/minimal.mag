@@ -1,0 +1,12 @@
+magic
+tech scmos
+timestamp 0
+<< metal1 >>
+rect 0 0 8 8
+<< metal2 >>
+rect 4 4 12 12
+<< polysilicon >>
+rect -6 0 -2 10
+<< ndiffusion >>
+rect -6 -8 8 -2
+<< end >>

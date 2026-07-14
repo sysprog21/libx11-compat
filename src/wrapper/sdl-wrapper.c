@@ -267,7 +267,8 @@ SDL_WRAP_VOID(SDL_GetWindowSize,
 /* SDL_GetWindowSizeInPixels landed in SDL 2.26.0; older hosts (focal ships
  * 2.0.10) lack the symbol, so the dlsym in probeGlobalHiDpiScale would resolve
  * to NULL and calling through it would crash. Gate the thunk and let callers
- * fall back to SDL_GetRendererOutputSize on older SDL. */
+ * fall back to SDL_GetRendererOutputSize on older SDL.
+ */
 #if SDL_VERSION_ATLEAST(2, 26, 0)
 SDL_WRAP_VOID(SDL_GetWindowSizeInPixels,
               (SDL_Window * window, int *w, int *h),
@@ -727,6 +728,10 @@ SDL_WRAP(int,
          SDL_RenderSetViewport,
          (SDL_Renderer * renderer, const SDL_Rect *rect),
          (renderer, rect))
+SDL_WRAP(int,
+         SDL_RenderSetScale,
+         (SDL_Renderer * renderer, float scaleX, float scaleY),
+         (renderer, scaleX, scaleY))
 SDL_WRAP_VOID(SDL_RestoreWindow, (SDL_Window * window), (window))
 SDL_WRAP_VOID(SDL_SetCursor, (SDL_Cursor * cursor), (cursor))
 SDL_WRAP(int, SDL_SetClipboardText, (const char *text), (text))

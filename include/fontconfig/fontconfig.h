@@ -83,6 +83,7 @@ typedef struct _FcValue {
 #define FC_RGBA "rgba"
 #define FC_MINSPACE "minspace"
 #define FC_CHARSET "charset"
+#define FC_MATRIX "matrix"
 #define FC_COLOR "color"
 #define FC_RENDER "render"
 #define FC_NAMELANG "namelang"
@@ -139,9 +140,13 @@ FcFontSet *FcFontSort(FcConfig *config,
                       FcCharSet **csp,
                       FcResult *result);
 void FcFontSetDestroy(FcFontSet *set);
+FcPattern *FcFontRenderPrepare(FcConfig *config,
+                               FcPattern *pat,
+                               FcPattern *font);
 FcCharSet *FcCharSetCreate(void);
 FcBool FcCharSetAddChar(FcCharSet *charset, FcChar32 ucs4);
 FcBool FcCharSetHasChar(const FcCharSet *charset, FcChar32 ucs4);
+FcCharSet *FcCharSetCopy(FcCharSet *src);
 void FcCharSetDestroy(FcCharSet *charset);
 FcObjectSet *FcObjectSetCreate(void);
 FcBool FcObjectSetAdd(FcObjectSet *os, const char *object);
@@ -182,5 +187,9 @@ FcResult FcPatternGetBool(const FcPattern *pattern,
                           const char *object,
                           int n,
                           FcBool *b);
+FcResult FcPatternGetCharSet(const FcPattern *pattern,
+                             const char *object,
+                             int n,
+                             FcCharSet **c);
 
 #endif /* FONTCONFIG_FONTCONFIG_H */

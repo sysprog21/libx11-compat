@@ -116,6 +116,19 @@ void scaleSdlPointToPixels(Window sdlWindow,
                            int *outX,
                            int *outY);
 
+/* Map a physical-pixel point local to `window` to the logical global screen
+ * coordinate SDL_WarpMouseGlobal expects, routing through the top-level's real
+ * SDL window position and effective HiDPI scale.
+ *
+ * Returns False when the window has no realized top-level SDL window. Exposed
+ * for XWarpPointer and its test.
+ */
+Bool libx11CompatWarpTargetGlobal(Window window,
+                                  int localX,
+                                  int localY,
+                                  int *globalX,
+                                  int *globalY);
+
 /* Snap one axis of a physical-pixel size DOWN to the nearest whole resize
  * increment the ICCCM way: size = base + i * inc for i >= 0. The base size (i
  * == 0) is a valid result and is preserved; the result never drops below the

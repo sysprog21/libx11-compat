@@ -66,6 +66,7 @@ int main(void)
     int zeroOnly[] = {GLX_RED_SIZE, None, None};
     (void) glXChooseVisual(dpy, screen, zeroOnly);
     (void) glXMakeCurrent(dpy, None, NULL);
+    glXUseXFont(None, 0, 0, 0);
     (void) glXGetProcAddress((const unsigned char *) "glClear");
     CHECK(glXGetProcAddressARB(NULL) == NULL, "glXGetProcAddressARB(NULL)");
 
@@ -96,6 +97,8 @@ int main(void)
     CHECK(glXGetProcAddress(
               (const unsigned char *) "glXCreateContextAttribsARB") != NULL,
           "glXGetProcAddress resolves a glX* entry point without a provider");
+    CHECK(glXGetProcAddress((const unsigned char *) "glXUseXFont") != NULL,
+          "glXGetProcAddress resolves glXUseXFont");
     CHECK(glXGetProcAddress((const unsigned char *) "glXNoSuchEntry") == NULL,
           "glXGetProcAddress returns NULL for an unknown glX name");
 

@@ -1,0 +1,19 @@
+{
+  "_comment": "Covers the Text Fonts dialog body where HiDPI core-font metric mismatches caused overlapping labels and clipped text fields.",
+  "assertions": [
+    { "type": "not_all_black" },
+    {
+      "type": "region_min_unique_colors",
+      "display_size": [900, 650],
+      "display_rect": [0, 80, 820, 360],
+      "min_unique_colors": 8
+    },
+    {
+      "type": "region_max_dark_ratio",
+      "display_size": [900, 650],
+      "display_rect": [0, 80, 820, 360],
+      "dark_threshold": 32,
+      "max_dark_ratio": 0.35
+    }
+  ]
+}

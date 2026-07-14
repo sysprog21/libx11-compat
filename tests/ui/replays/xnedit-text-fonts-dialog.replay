@@ -1,0 +1,20 @@
+# XNEdit Text Fonts dialog smoke. This dialog exposed core-font metric
+# mismatches on HiDPI: labels/text fields grew larger than their Motif rows.
+delay 3000
+wait-window "XNEdit|xnedit|Untitled" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+
+target-motion 210 14
+button 1 press
+delay 200
+target-motion 210 250
+button 1 release
+delay 1000
+state-snapshot text-fonts-dialog
+assert-state text-fonts-dialog xnedit-text-fonts-dialog-state.json
+target latest
+screenshot text-fonts-dialog
+assert-image text-fonts-dialog xnedit-text-fonts-dialog.json
+assert-exit running

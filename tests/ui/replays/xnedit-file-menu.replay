@@ -1,0 +1,22 @@
+# XNEdit File menu popup range smoke. The menu is an override-redirect
+# top-level, so the regular startup/fixture screenshots do not exercise the
+# coordinate and backing-size path that HiDPI menu regressions break.
+delay 3000
+wait-window "XNEdit|xnedit|Untitled" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+state-snapshot initial
+
+target-motion 18 14
+delay 30
+button 1 press
+delay 200
+target-motion 18 52
+delay 150
+state-snapshot file-menu
+assert-state file-menu xnedit-file-menu-state.json
+screenshot file-menu
+assert-image file-menu xnedit-file-menu.json
+button 1 release
+assert-exit running

@@ -150,65 +150,72 @@ xnedit_ui_env = \
 ## Run replay-based XNEdit smoke checks against libx11-compat
 check-smoke-xnedit: $(UI_SMOKE_OUT_ROOT)/xnedit-startup/.stamp \
                     $(UI_SMOKE_OUT_ROOT)/xnedit-fixture/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-resize/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-resize-file-menu/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-file-menu/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-preferences-menu/.stamp \
+                    $(UI_SMOKE_OUT_ROOT)/xnedit-text-fonts-dialog/.stamp \
                     $(UI_SMOKE_OUT_ROOT)/xnedit-typing/.stamp
 
-$(UI_SMOKE_OUT_ROOT)/xnedit-startup/.stamp: FORCE $(XNEDIT_BIN)
-	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-startup
-	$(Q)$(PYTHON) scripts/run-ui-replay.py \
-	    --name xnedit-startup \
-	    --app $(abspath $(XNEDIT_BIN)) \
-	    --app-arg=-svrname --app-arg=xnedit-startup \
-	    --app-arg=-geometry --app-arg=$(XNEDIT_SMOKE_GEOMETRY) \
-	    --workdir $(abspath $(XNEDIT_WORK_DIR))/source \
-	    --replay tests/ui/replays/xnedit-startup.replay \
-	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-startup \
-	    --display $(UI_REPLAY_DISPLAY) \
-	    --geometry $(UI_REPLAY_GEOMETRY) \
-	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
-	    --screenshot-region $(XNEDIT_SMOKE_REGION) \
-	    --in-process-snapshots \
-	    $(UI_REPLAY_XVFB) \
-	    $(xnedit_ui_env)
-	$(Q)touch $@
+# Every runner drives the same UI_REPLAY_DISPLAY and, under --xvfb, unlinks the
+# shared /tmp/.X<display>-lock before starting its own Xvfb. Running them in
+# parallel (make -j check-smoke-xnedit) makes them fight over that display and
+# fail nondeterministically. GNU Make 3.81 has no per-target .NOTPARALLEL, so
+# serialize the scenarios with an order-only chain: each stamp waits for the
+# prior one without treating its timestamp as a rebuild trigger.
+$(UI_SMOKE_OUT_ROOT)/xnedit-fixture/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-startup/.stamp
+$(UI_SMOKE_OUT_ROOT)/xnedit-resize/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-fixture/.stamp
+$(UI_SMOKE_OUT_ROOT)/xnedit-resize-file-menu/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-resize/.stamp
+$(UI_SMOKE_OUT_ROOT)/xnedit-file-menu/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-resize-file-menu/.stamp
+$(UI_SMOKE_OUT_ROOT)/xnedit-preferences-menu/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-file-menu/.stamp
+$(UI_SMOKE_OUT_ROOT)/xnedit-text-fonts-dialog/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-preferences-menu/.stamp
+$(UI_SMOKE_OUT_ROOT)/xnedit-typing/.stamp: | $(UI_SMOKE_OUT_ROOT)/xnedit-text-fonts-dialog/.stamp
 
-$(UI_SMOKE_OUT_ROOT)/xnedit-fixture/.stamp: FORCE $(XNEDIT_BIN) $(XNEDIT_FIXTURE)
-	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-fixture
-	$(Q)$(PYTHON) scripts/run-ui-replay.py \
-	    --name xnedit-fixture \
-	    --app $(abspath $(XNEDIT_BIN)) \
-	    --app-arg=-svrname --app-arg=xnedit-fixture \
-	    --app-arg=-geometry --app-arg=$(XNEDIT_SMOKE_GEOMETRY) \
-	    --app-arg=$(XNEDIT_FIXTURE) \
-	    --workdir $(abspath $(XNEDIT_WORK_DIR))/source \
-	    --replay tests/ui/replays/xnedit-fixture.replay \
-	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-fixture \
-	    --display $(UI_REPLAY_DISPLAY) \
-	    --geometry $(UI_REPLAY_GEOMETRY) \
-	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
-	    --screenshot-region $(XNEDIT_SMOKE_REGION) \
+# One smoke scenario is one run-ui-replay.py invocation that only varies by
+# scenario name, an optional fixture app-arg, and an optional timeline latency
+# pass. Factor the recipe into a macro so a new scenario is one call, not a
+# copied 20-line block. Call with:
+#   $1 scenario suffix (stamp dir and --name are xnedit-$1, replay is
+#      tests/ui/replays/xnedit-$1.replay, latency baseline is
+#      tests/ui/baselines/xnedit-$1-latency.json)
+#   $2 extra order/build prerequisites (e.g. the fixture file), or empty
+#   $3 extra app-arg lines (e.g. the fixture argument), or empty
+#   $4 non-empty enables --timeline plus the mine-timeline-latency.py pass
+define xnedit_smoke_target
+$$(UI_SMOKE_OUT_ROOT)/xnedit-$(1)/.stamp: FORCE $$(XNEDIT_BIN) $(2)
+	$$(Q)rm -rf $$(abspath $$(UI_SMOKE_OUT_ROOT))/xnedit-$(1)
+	$$(Q)$$(PYTHON) scripts/run-ui-replay.py \
+	    --name xnedit-$(1) \
+	    --app $$(abspath $$(XNEDIT_BIN)) \
+	    --app-arg=-svrname --app-arg=xnedit-$(1) \
+	    --app-arg=-geometry --app-arg=$$(XNEDIT_SMOKE_GEOMETRY) \
+	    $(3) \
+	    --workdir $$(abspath $$(XNEDIT_WORK_DIR))/source \
+	    --replay tests/ui/replays/xnedit-$(1).replay \
+	    --out-root $$(abspath $$(UI_SMOKE_OUT_ROOT))/xnedit-$(1) \
+	    --display $$(UI_REPLAY_DISPLAY) \
+	    --geometry $$(UI_REPLAY_GEOMETRY) \
+	    --screenshot-command $$(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --screenshot-region $$(XNEDIT_SMOKE_REGION) \
 	    --in-process-snapshots \
-	    $(UI_REPLAY_XVFB) \
-	    $(xnedit_ui_env)
-	$(Q)touch $@
+	    $(if $(4),--timeline) \
+	    $$(UI_REPLAY_XVFB) \
+	    $$(xnedit_ui_env)
+$(if $(4),	$$(Q)$$(PYTHON) scripts/mine-timeline-latency.py \
+	    $$(abspath $$(UI_SMOKE_OUT_ROOT))/xnedit-$(1)/timeline.jsonl \
+	    --out $$(abspath $$(UI_SMOKE_OUT_ROOT))/xnedit-$(1)/latency.json \
+	    --baseline tests/ui/baselines/xnedit-$(1)-latency.json)
+	$$(Q)touch $$@
+endef
 
-$(UI_SMOKE_OUT_ROOT)/xnedit-typing/.stamp: FORCE $(XNEDIT_BIN)
-	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-typing
-	$(Q)$(PYTHON) scripts/run-ui-replay.py \
-	    --name xnedit-typing \
-	    --app $(abspath $(XNEDIT_BIN)) \
-	    --app-arg=-svrname --app-arg=xnedit-typing \
-	    --app-arg=-geometry --app-arg=$(XNEDIT_SMOKE_GEOMETRY) \
-	    --workdir $(abspath $(XNEDIT_WORK_DIR))/source \
-	    --replay tests/ui/replays/xnedit-typing.replay \
-	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/xnedit-typing \
-	    --display $(UI_REPLAY_DISPLAY) \
-	    --geometry $(UI_REPLAY_GEOMETRY) \
-	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
-	    --screenshot-region $(XNEDIT_SMOKE_REGION) \
-	    --in-process-snapshots \
-	    $(UI_REPLAY_XVFB) \
-	    $(xnedit_ui_env)
-	$(Q)touch $@
+$(eval $(call xnedit_smoke_target,startup))
+$(eval $(call xnedit_smoke_target,fixture,$(XNEDIT_FIXTURE),--app-arg=$(XNEDIT_FIXTURE)))
+$(eval $(call xnedit_smoke_target,resize,$(XNEDIT_FIXTURE),--app-arg=$(XNEDIT_FIXTURE)))
+$(eval $(call xnedit_smoke_target,resize-file-menu,$(XNEDIT_FIXTURE),--app-arg=$(XNEDIT_FIXTURE)))
+$(eval $(call xnedit_smoke_target,file-menu,,,timeline))
+$(eval $(call xnedit_smoke_target,preferences-menu,,,timeline))
+$(eval $(call xnedit_smoke_target,text-fonts-dialog))
+$(eval $(call xnedit_smoke_target,typing))
 
 XNEDIT_DIFF_REMOTE ?= node11
 XNEDIT_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-xnedit-differential

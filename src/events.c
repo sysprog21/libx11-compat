@@ -848,11 +848,11 @@ int libx11CompatPresentDuringLiveResize(void)
  *
  * Returns True if it changed the SDL size.
  *
- * The increments are cached in physical pixels (like ws->w/h); SDL sizing is in
- * logical points, so the snapped pixel size is divided by the per-axis HiDPI
- * scale before SDL_SetWindowSize. Uses the same echo-suppress + pump the
- * client-initiated resize path (configureWindow) uses so the snap does not emit
- * a duplicate ConfigureNotify.
+ * The increments are cached in the same X11 geometry space as ws->w/h; SDL
+ * sizing is in logical points. Promoted windows convert through the HiDPI
+ * ratio, logical toolkit windows use a 1:1 conversion, using the same
+ * echo-suppress + pump the client-initiated resize path (configureWindow) uses
+ * so the snap does not emit a duplicate ConfigureNotify.
  */
 int libx11CompatSnapAxisToIncrement(int current, int inc, int base, int min)
 {
@@ -887,16 +887,16 @@ static Bool snapTopLevelToResizeIncrements(Window window)
 
     int logicalW = 0, logicalH = 0;
     SDL_GetWindowSize(ws->sdlWindow, &logicalW, &logicalH);
-    int pixelW = (int) lround((double) logicalW * ws->hiDpiScaleX);
-    int pixelH = (int) lround((double) logicalH * ws->hiDpiScaleY);
+    double sx = effectiveHiDpiScaleX(ws);
+    double sy = effectiveHiDpiScaleY(ws);
+    int pixelW = (int) lround((double) logicalW * sx);
+    int pixelH = (int) lround((double) logicalH * sy);
 
     int snappedW = libx11CompatSnapAxisToIncrement(pixelW, ws->widthInc,
                                                    ws->baseWidth, ws->minWidth);
     int snappedH = libx11CompatSnapAxisToIncrement(
         pixelH, ws->heightInc, ws->baseHeight, ws->minHeight);
 
-    double sx = ws->hiDpiScaleX > 0.0 ? ws->hiDpiScaleX : 1.0;
-    double sy = ws->hiDpiScaleY > 0.0 ? ws->hiDpiScaleY : 1.0;
     int snappedLogicalW = (int) lround((double) snappedW / sx);
     int snappedLogicalH = (int) lround((double) snappedH / sy);
     if (snappedLogicalW == logicalW && snappedLogicalH == logicalH)
@@ -986,23 +986,24 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
             /* The drag-end increment snap above ran for this top-level, so the
              * size read here already reflects the quantized geometry. Derive
              * the live drag size the SAME way the RESIZED ConfigureNotify
-             * handler does: logical points from SDL_GetWindowSize times the
-             * cached per-axis HiDPI scale. The rest of the pipeline (backing
-             * texture, the client's font metrics, the 1:1 present) is all in
-             * physical pixels, so the drag-tick geometry must be too.
-             * Re-querying SDL_GetWindowSurface here instead returns a size in
-             * logical points on a Retina host, which would make the client
-             * compute its cell grid against physical font metrics in a
-             * logical-sized window and present a mismatched blit - the glyphs
-             * come out distorted. Using the canonical formula keeps every drag
-             * tick identical to the drag-end configure, so the grid and backing
-             * stay in one coordinate space.
+             * handler does: logical points from SDL_GetWindowSize, promoted to
+             * physical pixels only for clients whose X11 geometry uses the
+             * backing scale. Self-scaling toolkits such as Motif/Tk remain in
+             * logical pixels. Re-querying SDL_GetWindowSurface here instead
+             * returns a size in logical points on a Retina host, which would
+             * make the client compute its cell grid against physical font
+             * metrics in a logical-sized window and present a mismatched blit -
+             * the glyphs come out distorted. Using the canonical formula keeps
+             * every drag tick identical to the drag-end configure, so the grid
+             * and backing stay in one coordinate space.
              */
             WindowStruct *ws = GET_WINDOW_STRUCT(window);
             int logicalW = 0, logicalH = 0;
             SDL_GetWindowSize(ws->sdlWindow, &logicalW, &logicalH);
-            int pixelW = (int) lround((double) logicalW * ws->hiDpiScaleX);
-            int pixelH = (int) lround((double) logicalH * ws->hiDpiScaleY);
+            double sx = effectiveHiDpiScaleX(ws);
+            double sy = effectiveHiDpiScaleY(ws);
+            int pixelW = (int) lround((double) logicalW * sx);
+            int pixelH = (int) lround((double) logicalH * sy);
 
             /* Skip reflow at degenerate drag sizes. When a border is dragged
              * past the opposite edge macOS briefly reports a 1-point (a few
@@ -1468,8 +1469,9 @@ void scaleSdlPointToPixels(Window sdlWindow,
     double sx = 1.0, sy = 1.0;
     if (sdlWindow != None && sdlWindow != SCREEN_WINDOW &&
         IS_TYPE(sdlWindow, WINDOW)) {
-        sx = GET_WINDOW_STRUCT(sdlWindow)->hiDpiScaleX;
-        sy = GET_WINDOW_STRUCT(sdlWindow)->hiDpiScaleY;
+        WindowStruct *ws = GET_WINDOW_STRUCT(sdlWindow);
+        sx = effectiveHiDpiScaleX(ws);
+        sy = effectiveHiDpiScaleY(ws);
     }
     *outX = (int) lround((double) inX * sx);
     *outY = (int) lround((double) inY * sy);
@@ -2648,10 +2650,16 @@ int convertEvent(Display *display,
         xEvent->xkey.subwindow = None;
         xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         int pointerX = 0, pointerY = 0;
-        if (!replayTargetReadPointer(&pointerX, &pointerY))
+        /* Injected/replay coordinates are already X11 physical pixels; only
+         * real SDL_GetMouseState points need scaling. Mirrors the
+         * button/motion/wheel synthetic handling; scaling twice would double
+         * the reported x/y on a promoted Retina window.
+         */
+        if (!replayTargetReadPointer(&pointerX, &pointerY)) {
             SDL_GetMouseState(&pointerX, &pointerY);
-        scaleSdlPointToPixels(sdlKeyWindow, pointerX, pointerY, &pointerX,
-                              &pointerY);
+            scaleSdlPointToPixels(sdlKeyWindow, pointerX, pointerY, &pointerX,
+                                  &pointerY);
+        }
         translateSdlPointToRoot(display, sdlKeyWindow, pointerX, pointerY,
                                 &xEvent->xkey.x_root, &xEvent->xkey.y_root);
         translateRootPointToWindow(display, SCREEN_WINDOW, eventWindow,
@@ -2850,8 +2858,17 @@ int convertEvent(Display *display,
         case SDL_WINDOWEVENT_SHOWN:
             LOG("Window %d shown\n", sdlEvent->window.windowID);
             if (eventWindow != None) {
-                GET_WINDOW_STRUCT(eventWindow)->mapState = Mapped;
+                WindowStruct *shownStruct = GET_WINDOW_STRUCT(eventWindow);
+                shownStruct->mapState = Mapped;
                 markWindowNeedsPresent(eventWindow);
+                /* Drop the echo when showTopLevelWindow already posted an
+                 * explicit MapNotify for this show; delivering both runs Xt/Tk
+                 * map handlers twice. One-shot: clear as it is consumed.
+                 */
+                if (SDL_AtomicGet(&shownStruct->suppressSdlShowMap)) {
+                    SDL_AtomicSet(&shownStruct->suppressSdlShowMap, 0);
+                    return 0;
+                }
             }
             type = MapNotify;
             FILL_STANDARD_VALUES(xmap);
@@ -2938,17 +2955,19 @@ int convertEvent(Display *display,
 
             /* Option 1b: the X11 window and its backing track physical pixels,
              * so the present path is a 1:1 blit (no upscaling). A RESIZED event
-             * carries the new *logical* size in data1/data2 on both SDL2 and
-             * SDL3; the physical pixel size is that logical size times the
-             * per-window HiDPI scale cached at realize time. We deliberately do
-             * NOT re-query the live SDL surface/renderer here: resize events
-             * can be faked in tests where the SDL window is never actually
-             * resized (resizeWindowTexture documents the same constraint), and
-             * the cached scale is constant for a given display. On non-HiDPI
-             * hosts and under the CI dummy driver the scale is 1.0, so pixels
-             * equal points. SDL3 additionally fires
-             * SDL_WINDOWEVENT_SIZE_CHANGED as PIXEL_SIZE_CHANGED; it is still
-             * ignored for geometry, RESIZED remains the trigger.
+             * carries the new logical size in data1/data2 on both SDL2 and
+             * SDL3. Promote it to physical pixels only for windows whose X11
+             * geometry opted into that space (effectiveHiDpiScale); Motif/Tk
+             * keep logical geometry so their widget/font layout does not shrink
+             * after a host resize. We deliberately do NOT re-query the live SDL
+             * surface/renderer here: resize events can be faked in tests where
+             * the SDL window is never actually resized (resizeWindowTexture
+             * documents the same constraint), and the cached scale is constant
+             * for a given display. On non-HiDPI hosts and under the CI dummy
+             * driver the scale is 1.0, so pixels equal points. SDL3
+             * additionally fires SDL_WINDOWEVENT_SIZE_CHANGED as
+             * PIXEL_SIZE_CHANGED; it is still ignored for geometry, RESIZED
+             * remains the trigger.
              */
             Bool logicalResize =
                 XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED;
@@ -2962,8 +2981,9 @@ int convertEvent(Display *display,
                 int logicalH = sdlEvent->window.data2;
                 double scaleX = 1.0, scaleY = 1.0;
                 if (eventWindow != None) {
-                    scaleX = GET_WINDOW_STRUCT(eventWindow)->hiDpiScaleX;
-                    scaleY = GET_WINDOW_STRUCT(eventWindow)->hiDpiScaleY;
+                    WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
+                    scaleX = effectiveHiDpiScaleX(ws);
+                    scaleY = effectiveHiDpiScaleY(ws);
                 }
                 int pixelW = (int) lround((double) logicalW * scaleX);
                 int pixelH = (int) lround((double) logicalH * scaleY);
@@ -3058,12 +3078,12 @@ int convertEvent(Display *display,
                 }
             } else if (eventWindow != None) {
                 /* Non-resize ConfigureNotify (e.g. MOVED): the size is
-                 * unchanged, so report the window's current PHYSICAL size that
-                 * the client already tracks (Option 1b keeps windowStruct->w/h
-                 * in physical pixels). SDL_GetWindowSize returns *logical*
-                 * points here, which on a HiDPI host is half the physical size
-                 * and would make the client shrink its cell grid on a mere
-                 * move. Use the cached physical dimensions instead.
+                 * unchanged, so report the window's current cached X11 geometry
+                 * that the client already tracks (promoted physical pixels, or
+                 * logical pixels for Motif/Tk). SDL_GetWindowSize returns
+                 * logical points here, which on a HiDPI host is half a promoted
+                 * window's physical size and would make the client shrink its
+                 * cell grid on a mere move. Use the cached dimensions instead.
                  */
                 GET_WINDOW_DIMS(eventWindow, xEvent->xconfigure.width,
                                 xEvent->xconfigure.height);
@@ -3131,8 +3151,8 @@ int convertEvent(Display *display,
                      * matches the destination monitor even without a
                      * re-publish.
                      */
-                    if (movedWs->hasResizeInc && oldScaleX > 0.0 &&
-                        oldScaleY > 0.0) {
+                    if (movedWs->hiDpiPromoted && movedWs->hasResizeInc &&
+                        oldScaleX > 0.0 && oldScaleY > 0.0) {
                         double rx = movedWs->hiDpiScaleX / oldScaleX;
                         double ry = movedWs->hiDpiScaleY / oldScaleY;
                         if (rx > 0.0 && rx != 1.0) {
@@ -3160,31 +3180,31 @@ int convertEvent(Display *display,
                         "cachedPhys=(%ux%u)\n",
                         eventWindow, lw, lh, pw, ph, movedWs->hiDpiScaleX,
                         movedWs->hiDpiScaleY, movedWs->w, movedWs->h);
-#if defined(LIBX11_COMPAT_SDL3)
-                    /* SDL2 follows a DISPLAY_CHANGED with a SIZE_CHANGED that
-                     * reflows geometry using the scale just refreshed above.
-                     * The SDL3 backend delivers no such geometry event for a
-                     * bare monitor move, so the window keeps the previous
-                     * monitor's physical pixel dimensions (over- or
-                     * under-promoted) and the present mis-scales. Re-promote
-                     * the window to the new monitor's physical size and reflow
-                     * the client here. The global font scale tracks the same
-                     * host backing, so refresh it too; on a single-scale setup
-                     * the value is unchanged.
+                    /* The global font scale tracks the same host backing as
+                     * this window, so refresh it and republish the root
+                     * property on both backends; a client re-deriving its font
+                     * from _LIBX11_COMPAT_HIDPI_SCALE (xwpe) would otherwise
+                     * read the source monitor's stale scale after the move. On
+                     * a single-scale setup the value is unchanged.
                      */
-                    if (pw > 0 && ph > 0) {
+                    if (movedWs->hiDpiPromoted && pw > 0 && ph > 0) {
                         if (lw > 0)
                             compatSetGlobalHiDpiScale((double) pw /
                                                       (double) lw);
                         else if (lh > 0)
                             compatSetGlobalHiDpiScale((double) ph /
                                                       (double) lh);
-                        /* Republish the new scale on the root window before the
-                         * re-promote below posts the ConfigureNotify, so a
-                         * client re-deriving its font from the property during
-                         * that configure reads the destination monitor's scale.
-                         */
                         compatPublishHiDpiScaleProperty(display);
+#if defined(LIBX11_COMPAT_SDL3)
+                        /* SDL2 follows a DISPLAY_CHANGED with a SIZE_CHANGED
+                         * that reflows geometry using the scale refreshed
+                         * above. The SDL3 backend delivers no such geometry
+                         * event for a bare monitor move, so the window keeps
+                         * the previous monitor's physical pixel dimensions
+                         * (over- or under-promoted) and the present mis-scales.
+                         * Re-promote to the new monitor's physical size and
+                         * reflow the client here.
+                         */
                         if (pw != (int) movedWs->w || ph != (int) movedWs->h) {
                             compatTrace(
                                 "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
@@ -3202,8 +3222,8 @@ int convertEvent(Display *display,
                              */
                             invalidateVisibleRegionForTopLevel(eventWindow);
                         }
-                    }
 #endif
+                    }
                 }
             }
             return -1;
@@ -4154,6 +4174,7 @@ Bool enqueueEvent(Display *display, Window eventWindow, void *event)
 {
     Uint32 sendEventType = getInternalEventType();
     if (sendEventType != ((Uint32) -1)) {
+        int qlenBefore = displayEventQueueLength(display);
         SDL_Event sdlEvent;
         SDL_zero(sdlEvent);
         sdlEvent.type = sendEventType;
@@ -4169,6 +4190,8 @@ Bool enqueueEvent(Display *display, Window eventWindow, void *event)
                 eventWindow);
             return False;
         }
+        if (displayEventQueueLength(display) <= qlenBefore)
+            ENQUEUE_EVENT_IN_PIPE(display);
         return True;
     }
     LOG("Failed to send event: SDL_RegisterEvents failed!");
@@ -4300,6 +4323,7 @@ int XFlush(Display *display)
 {
     // https://tronche.com/gui/x/xlib/event-handling/XFlush.html
     pumpEventsSafe();
+    drainSdlEventsToPutBack(display);
     /* Real X11 batches drawing on the server and flushes here. libx11-compat
      * accumulates primitives in the renderer's back buffer and only presents on
      * flush so partial frames don't reach the screen.

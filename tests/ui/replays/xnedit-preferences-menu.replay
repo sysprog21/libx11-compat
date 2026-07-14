@@ -1,0 +1,22 @@
+# XNEdit Preferences menu popup range smoke. This is the tall Motif menu that
+# exposed Retina backing-size regressions as a gray left/top half with black
+# right/bottom padding.
+delay 3000
+wait-window "XNEdit|xnedit|Untitled" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+state-snapshot initial
+
+target-motion 210 14
+delay 30
+button 1 press
+delay 200
+target-motion 210 250
+delay 150
+state-snapshot preferences-menu
+assert-state preferences-menu xnedit-preferences-menu-state.json
+screenshot preferences-menu
+assert-image preferences-menu xnedit-preferences-menu.json
+button 1 release
+assert-exit running
