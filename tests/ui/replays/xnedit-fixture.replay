@@ -4,4 +4,5 @@ wait-window "XNEdit|xnedit|xnedit-fixture" 8000
 wait-converge 200 2 50 200 15000
 screenshot fixture
 assert-image fixture common-visible.json
+assert-image fixture xnedit-editor-font.json
 assert-exit running

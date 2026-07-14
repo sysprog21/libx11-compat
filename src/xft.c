@@ -1,4 +1,5 @@
 #include <X11/Xft/Xft.h>
+#include <X11/Xregion.h>
 #include <X11/Xutil.h>
 #include "sdl-ttf-compat.h"
 #include <ctype.h>
@@ -116,6 +117,7 @@ struct _XftDraw {
     Colormap colormap;
     XftClipRect *clipRects;
     int clipRectCount;
+    Bool clipSet;
 };
 
 typedef struct {
@@ -570,6 +572,19 @@ void FcCharSetDestroy(FcCharSet *charset)
     free(charset);
 }
 
+/* Deep copy. Real fontconfig ref-counts and returns the same object; our
+ * FcCharSet is unshared, so callers (Tk stores one per face and destroys it
+ * independently) get their own copy.
+ */
+FcCharSet *FcCharSetCopy(FcCharSet *src)
+{
+    /* Delegate to the shared deep-copy. The NULL guard stays here because
+     * copyCharSet maps a NULL source to a universal set, whereas FcCharSetCopy
+     * of NULL must stay NULL.
+     */
+    return src ? copyCharSet(src) : NULL;
+}
+
 FcResult FcPatternGetString(const FcPattern *pattern,
                             const char *object,
                             int n,
@@ -632,6 +647,21 @@ FcResult FcPatternGetBool(const FcPattern *pattern,
         return FcResultTypeMismatch;
     if (b)
         *b = entry->value.b;
+    return FcResultMatch;
+}
+
+FcResult FcPatternGetCharSet(const FcPattern *pattern,
+                             const char *object,
+                             int n,
+                             FcCharSet **c)
+{
+    FcPatternEntry *entry = findPatternEntry(pattern, object, n);
+    if (!entry)
+        return FcResultNoMatch;
+    if (entry->type != FcTypeCharSet)
+        return FcResultTypeMismatch;
+    if (c)
+        *c = entry->value.c;
     return FcResultMatch;
 }
 
@@ -806,6 +836,40 @@ void FcFontSetDestroy(FcFontSet *set)
         FcPatternDestroy(set->fonts[i]);
     free(set->fonts);
     free(set);
+}
+
+/* Produce the pattern to actually render: the resolved font augmented with the
+ * requested size and DPI, matching what real fontconfig returns so the caller
+ * opens the font at the size it asked for. config is unused (no config db).
+ */
+FcPattern *FcFontRenderPrepare(FcConfig *config,
+                               FcPattern *pat,
+                               FcPattern *font)
+{
+    (void) config;
+    if (!font)
+        return NULL;
+    FcPattern *result = FcPatternDuplicate(font);
+    if (!result || !pat)
+        return result;
+    double d;
+    int i;
+    if (FcPatternGetDouble(pat, FC_PIXEL_SIZE, 0, &d) == FcResultMatch) {
+        FcPatternDel(result, FC_PIXEL_SIZE);
+        FcPatternAddDouble(result, FC_PIXEL_SIZE, d);
+    }
+    if (FcPatternGetDouble(pat, FC_SIZE, 0, &d) == FcResultMatch) {
+        FcPatternDel(result, FC_SIZE);
+        FcPatternAddDouble(result, FC_SIZE, d);
+    } else if (FcPatternGetInteger(pat, FC_SIZE, 0, &i) == FcResultMatch) {
+        FcPatternDel(result, FC_SIZE);
+        FcPatternAddInteger(result, FC_SIZE, i);
+    }
+    if (FcPatternGetInteger(pat, FC_DPI, 0, &i) == FcResultMatch) {
+        FcPatternDel(result, FC_DPI);
+        FcPatternAddInteger(result, FC_DPI, i);
+    }
+    return result;
 }
 
 static double patternDoubleField(FcPattern *pattern, const char *field)
@@ -1097,6 +1161,63 @@ XftFont *XftFontOpenXlfd(Display *dpy, int screen, const char *xlfd)
     return XftFontOpenName(dpy, screen, xlfd);
 }
 
+/* Parse an X Logical Font Description into a pattern (family plus pixel size).
+ * XLFD fields are dash-separated: -foundry-family-weight-slant-setwidth-
+ * addstyle-pixelsize-pointsize-... A non-XLFD string is taken as a family name.
+ * ignore_scalable / complete tune real fontconfig heuristics we do not model.
+ */
+FcPattern *XftXlfdParse(const char *xlfd_orig,
+                        FcBool ignore_scalable,
+                        FcBool complete)
+{
+    (void) ignore_scalable;
+    (void) complete;
+    FcPattern *pattern = FcPatternCreate();
+    if (!pattern)
+        return NULL;
+    if (!xlfd_orig || xlfd_orig[0] != '-') {
+        FcPatternAddString(
+            pattern, FC_FAMILY,
+            (const FcChar8 *) (xlfd_orig && xlfd_orig[0] ? xlfd_orig : "Sans"));
+        return pattern;
+    }
+    char *copy = xftStrdup(xlfd_orig);
+    if (!copy) {
+        FcPatternDestroy(pattern);
+        return NULL;
+    }
+    char *tokens[14] = {0};
+    int nt = 0;
+    tokens[nt++] = copy; /* leading empty field before the first dash */
+    for (char *q = copy; *q && nt < 14; q++) {
+        if (*q == '-') {
+            *q = '\0';
+            tokens[nt++] = q + 1;
+        }
+    }
+    const char *family =
+        (nt > 2 && tokens[2][0] && strcmp(tokens[2], "*")) ? tokens[2] : "Sans";
+    FcPatternAddString(pattern, FC_FAMILY, (const FcChar8 *) family);
+    if (nt > 7 && tokens[7][0]) {
+        long px = strtol(tokens[7], NULL, 10);
+        if (px >= 1 && px <= 256)
+            FcPatternAddDouble(pattern, FC_PIXEL_SIZE, (double) px);
+    }
+    free(copy);
+    return pattern;
+}
+
+/* Enumerate the font families this backend can render. The variadic pattern and
+ * object-set selectors real XftListFonts takes are ignored; callers use this to
+ * populate a family list and get the shim's Monospace / Sans / Serif set.
+ */
+FcFontSet *XftListFonts(Display *dpy, int screen, ...)
+{
+    (void) dpy;
+    (void) screen;
+    return FcFontList(NULL, NULL, NULL);
+}
+
 XftFont *XftFontOpen(Display *dpy, int screen, ...)
 {
     FcPattern *pattern = FcPatternCreate();
@@ -1193,6 +1314,7 @@ Bool XftDrawSetClipRectangles(XftDraw *draw,
         free(draw->clipRects);
         draw->clipRects = NULL;
         draw->clipRectCount = 0;
+        draw->clipSet = True;
         return True;
     }
     if (!rects || (size_t) n > SIZE_MAX / sizeof(XftClipRect))
@@ -1213,6 +1335,41 @@ Bool XftDrawSetClipRectangles(XftDraw *draw,
     free(draw->clipRects);
     draw->clipRects = newRects;
     draw->clipRectCount = n;
+    draw->clipSet = True;
+    return True;
+}
+
+Bool XftDrawSetClip(XftDraw *draw, Region region)
+{
+    if (!draw)
+        return False;
+    if (!region) {
+        free(draw->clipRects);
+        draw->clipRects = NULL;
+        draw->clipRectCount = 0;
+        draw->clipSet = False;
+        return True;
+    }
+    if (region->numRects <= 0)
+        return XftDrawSetClipRectangles(draw, 0, 0, NULL, 0);
+    if (region->numRects > INT_MAX ||
+        (size_t) region->numRects > SIZE_MAX / sizeof(XftClipRect))
+        return False;
+    XftClipRect *newRects =
+        malloc(sizeof(XftClipRect) * (size_t) region->numRects);
+    if (!newRects)
+        return False;
+    for (long i = 0; i < region->numRects; i++) {
+        BOX *box = &region->rects[i];
+        newRects[i].x = box->x1;
+        newRects[i].y = box->y1;
+        newRects[i].width = box->x2 - box->x1;
+        newRects[i].height = box->y2 - box->y1;
+    }
+    free(draw->clipRects);
+    draw->clipRects = newRects;
+    draw->clipRectCount = (int) region->numRects;
+    draw->clipSet = True;
     return True;
 }
 
@@ -1506,13 +1663,20 @@ static void drawUtf8String(XftDraw *draw,
     for (int clip = 0; clip < clipCount; clip++) {
         if (!setGcClipForIteration(renderer, NULL, clip, draw->drawable))
             continue;
-        if (draw->clipRectCount <= 0) {
+        /* No clip set means draw unclipped; a clip that was set but holds no
+         * rects is an empty region, so nothing is visible and the glyph is
+         * skipped. Only clipRectCount alone cannot tell these apart.
+         */
+        if (!draw->clipSet) {
             SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
             continue;
         }
+        if (draw->clipRectCount <= 0)
+            continue;
         /* Xft clip rects share the drawable/viewport space of the base+sibling
          * clip just installed, so intersect each one with that clip (read back
-         * from the renderer) and copy per rect. */
+         * from the renderer) and copy per rect.
+         */
         SDL_bool baseClipEnabled = SDL_RenderIsClipEnabled(renderer);
         SDL_Rect baseClip;
         if (baseClipEnabled)
@@ -1531,7 +1695,8 @@ static void drawUtf8String(XftDraw *draw,
     clearRendererClip(renderer);
     /* If the post-draw shape composite failed, masked-out pixels may still be
      * on the renderer; skip the present so the next draw recomposes from a
-     * fresh baseline rather than flashing stale output (mirrors image.c). */
+     * fresh baseline rather than flashing stale output (mirrors image.c).
+     */
     Bool shapeOk = shapeGuardEnd(&sg);
     SDL_DestroyTexture(texture);
     if (shapeOk)
@@ -1765,6 +1930,24 @@ void XftDrawGlyphs(XftDraw *draw,
     free(text);
 }
 
+/* Draw glyphs that each carry their own font and position. Tk uses this to lay
+ * out a line that mixes fonts (fallback glyphs). Render one at a time through
+ * the single-font path; the runs Tk passes are short.
+ */
+void XftDrawGlyphFontSpec(XftDraw *draw,
+                          const XftColor *color,
+                          const XftGlyphFontSpec *glyphs,
+                          int len)
+{
+    if (!draw || !color || !glyphs)
+        return;
+    for (int i = 0; i < len; i++) {
+        FT_UInt glyph = glyphs[i].glyph;
+        XftDrawGlyphs(draw, color, glyphs[i].font, glyphs[i].x, glyphs[i].y,
+                      &glyph, 1);
+    }
+}
+
 /* Fill an axis-aligned rectangle on `draw`'s drawable using the caller's
  * XftColor. Maps to XFillRectangle through a one-shot GC so the call always
  * routes through the libx11-compat surface (the X Render Composite path is not
@@ -1783,7 +1966,7 @@ void XftDrawRect(XftDraw *draw,
     if (!gc)
         return;
     XSetForeground(draw->display, gc, color->pixel);
-    if (draw->clipRectCount == 0) {
+    if (!draw->clipSet) {
         XFillRectangle(draw->display, draw->drawable, gc, x, y, width, height);
         XFreeGC(draw->display, gc);
         return;

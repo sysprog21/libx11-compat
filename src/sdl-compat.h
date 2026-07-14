@@ -29,7 +29,9 @@
  * install a converting wrapper below.
  */
 #define SDL_ENABLE_OLD_NAMES
+#define SDL_MAIN_HANDLED
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
 #include <stdbool.h>
 
 /* SDL2's headers transitively dragged in the libc declarations (stdlib, string)
@@ -278,7 +280,8 @@ static inline SDL_Renderer *xc_CreateRenderer(SDL_Window *win, Uint32 flags)
     return SDL_CreateRenderer(win, NULL);
 }
 /* SDL3 dropped the SDL_RENDERER_* flag word; xc_CreateRenderer ignores flags
- * there, so this token is only a portable spelling for the call site. */
+ * there, so this token is only a portable spelling for the call site.
+ */
 #define XC_RENDERER_ACCELERATED 0u
 
 /* SDL3 flipped the success convention (int 0 -> bool true) for these calls, but
@@ -329,6 +332,13 @@ static inline int xc_RenderSetViewport(SDL_Renderer *renderer,
                                        const SDL_Rect *rect)
 {
     return SDL_SetRenderViewport(renderer, rect) ? 0 : -1;
+}
+
+static inline int xc_RenderSetScale(SDL_Renderer *renderer,
+                                    float scaleX,
+                                    float scaleY)
+{
+    return SDL_SetRenderScale(renderer, scaleX, scaleY) ? 0 : -1;
 }
 
 static inline int xc_LockSurface(SDL_Surface *surface)
@@ -480,6 +490,8 @@ static inline int xc_QueryTexture(SDL_Texture *texture,
 #define SDL_RenderGetClipRect xc_RenderGetClipRect
 #undef SDL_RenderSetViewport
 #define SDL_RenderSetViewport xc_RenderSetViewport
+#undef SDL_RenderSetScale
+#define SDL_RenderSetScale xc_RenderSetScale
 
 #define SDL_SetRenderTarget xc_SetRenderTarget
 #define SDL_LockSurface xc_LockSurface

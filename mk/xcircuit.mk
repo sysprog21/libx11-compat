@@ -16,16 +16,19 @@ XCIRCUIT_RPATH_FLAGS :=
 ifeq ($(UNAME_S),Linux)
   XCIRCUIT_RPATH_FLAGS += -Wl,-rpath,$(abspath $(OUT)) \
       -Wl,-rpath,$(abspath $(XCIRCUIT_LIB_ALIASES)) \
+      -Wl,-rpath,$(abspath $(TCLTK_LIBDIR)) \
       -Wl,-rpath-link,$(abspath $(OUT))
 endif
 ifeq ($(UNAME_S),Darwin)
   XCIRCUIT_RPATH_FLAGS += -Wl,-rpath,$(abspath $(OUT)) \
-      -Wl,-rpath,$(abspath $(XCIRCUIT_LIB_ALIASES))
+      -Wl,-rpath,$(abspath $(XCIRCUIT_LIB_ALIASES)) \
+      -Wl,-rpath,$(abspath $(TCLTK_LIBDIR))
 endif
 
 XCIRCUIT_CPPFLAGS := \
     -I$(abspath include) \
     -I$(abspath $(OUT)/upstream/include) \
+    -I$(abspath $(TCLTK_PREFIX))/include \
     -I$(abspath include/libxt-build)
 # resources.h / Button.c use caddr_t, which glibc gates behind
 # _DEFAULT_SOURCE. Apple's libc exposes it unconditionally via
@@ -50,7 +53,7 @@ ifeq ($(UNAME_S),Linux)
   XCIRCUIT_CFLAGS += -Wno-error=incompatible-pointer-types
 endif
 XCIRCUIT_LDFLAGS := -L$(abspath $(XCIRCUIT_LIB_ALIASES)) \
-    -L$(abspath $(OUT)) $(XCIRCUIT_RPATH_FLAGS)
+    -L$(abspath $(TCLTK_LIBDIR)) -L$(abspath $(OUT)) $(XCIRCUIT_RPATH_FLAGS)
 
 $(XCIRCUIT_SOURCE_STAMP): mk/xcircuit.mk
 	@echo "  GIT     $(XCIRCUIT_URL)"
@@ -98,7 +101,7 @@ endif
 xcircuit: $(XCIRCUIT_BIN)
 
 $(XCIRCUIT_BIN): $(XCIRCUIT_SOURCE_STAMP) $(XCIRCUIT_PATCHES) $(PKGCONFIG_FILES) \
-    $(XCIRCUIT_LIB_ALIASES_STAMP)
+    $(XCIRCUIT_LIB_ALIASES_STAMP) $(TCLTK_TK_BUILD_STAMP)
 	@mkdir -p $(XCIRCUIT_BUILD_DIR)
 	$(Q)rm -f $(XCIRCUIT_LOG)
 	$(Q)rm -rf $(XCIRCUIT_WORK_DIR)
@@ -113,6 +116,31 @@ $(XCIRCUIT_BIN): $(XCIRCUIT_SOURCE_STAMP) $(XCIRCUIT_PATCHES) $(PKGCONFIG_FILES)
 	$(Q)set -e; for patch in $(XCIRCUIT_PATCHES); do \
 	    patch -d $(XCIRCUIT_WORK_DIR) -p1 < "$$patch"; \
 	done
+	# The staged source is a git checkout where every file carries one commit
+	# mtime, so make sees a Makefile.am as no older than its Makefile.in and
+	# fires xcircuit's maintainer-mode rule (cd . && automake-1.16 --foreign),
+	# which is not installed here. Touch the autotools byproducts newer than
+	# their .am/.ac sources so no aclocal/automake/autoconf/autoheader
+	# regeneration runs during the build.
+	#
+	# But only when no patch edits an autotools source. If a patch changes a
+	# Makefile.am, configure.in, or *.m4, touching the stale generated output
+	# (Makefile.in, configure, config.h.in) newer than its patched source would
+	# hide that change: the byproduct looks up to date and never regenerates, so
+	# the patch is silently dropped. In that case skip the touch and let the
+	# maintainer-mode rules rebuild the byproducts from the patched source. The
+	# diff-header pattern matches both git-format and plain unified headers.
+	$(Q)set -e; touch_ok=1; \
+	for patch in $(XCIRCUIT_PATCHES); do \
+	    if grep -Eq '^(\+\+\+|---) .*[/ ](Makefile\.am|configure\.(ac|in)|[^/ ]+\.m4)([[:space:]]|$$)' "$$patch"; then \
+	        echo "  SKIP    autotools mtime touch ($$patch edits an autotools source)"; \
+	        touch_ok=0; \
+	    fi; \
+	done; \
+	if [ "$$touch_ok" = 1 ]; then \
+	    find $(XCIRCUIT_WORK_DIR) \( -name aclocal.m4 -o -name configure \
+	        -o -name config.h.in -o -name 'Makefile.in' \) -exec touch {} +; \
+	fi
 	@echo "  CONF    xcircuit"
 	$(Q)cd $(XCIRCUIT_WORK_DIR) && \
 	    PKG_CONFIG_PATH=$(abspath $(PKGCONFIG_DIR)) \
@@ -121,7 +149,8 @@ $(XCIRCUIT_BIN): $(XCIRCUIT_SOURCE_STAMP) $(XCIRCUIT_PATCHES) $(PKGCONFIG_FILES)
 	    CFLAGS='$(XCIRCUIT_CFLAGS)' \
 	    LDFLAGS='$(XCIRCUIT_LDFLAGS)' \
 	    ./configure --prefix=$(abspath $(XCIRCUIT_BUILD_DIR))/install \
-	        --without-tcl \
+	        --with-tcl=$(abspath $(TCLTK_LIBDIR)) \
+	        --with-tk=$(abspath $(TCLTK_LIBDIR)) \
 	        --without-cairo \
 	        --without-python \
 	        --with-xpm=$(abspath $(OUT)) \
@@ -133,7 +162,7 @@ $(XCIRCUIT_BIN): $(XCIRCUIT_SOURCE_STAMP) $(XCIRCUIT_PATCHES) $(PKGCONFIG_FILES)
 	            exit 1; \
 	        }
 	@echo "  MAKE    xcircuit"
-	$(Q)$(MAKE) -C $(XCIRCUIT_WORK_DIR) \
+	$(Q)env -u MAKEFLAGS -u MFLAGS $(MAKE) -C $(XCIRCUIT_WORK_DIR) tcl \
 	    librarydir=$(abspath $(XCIRCUIT_WORK_DIR))/lib \
 	    scriptsdir=$(abspath $(XCIRCUIT_WORK_DIR))/lib \
 	    >> $(XCIRCUIT_LOG) 2>&1 || { \
@@ -141,6 +170,24 @@ $(XCIRCUIT_BIN): $(XCIRCUIT_SOURCE_STAMP) $(XCIRCUIT_PATCHES) $(PKGCONFIG_FILES)
 	    tail -60 $(XCIRCUIT_LOG) >&2; \
 	    exit 1; \
 	}
+	$(Q)ln -sf ../xcircexec $(XCIRCUIT_WORK_DIR)/lib/xcircexec
+	$(Q)ln -sf ../xcircdnull $(XCIRCUIT_WORK_DIR)/lib/xcircdnull
+	$(Q)ln -sf ../../xcircexec $(XCIRCUIT_WORK_DIR)/lib/tcl/xcircexec
+	$(Q)ln -sf ../../xcircdnull $(XCIRCUIT_WORK_DIR)/lib/tcl/xcircdnull
+ifeq ($(UNAME_S),Darwin)
+	$(Q)ln -sf xcircuit.dylib $(XCIRCUIT_WORK_DIR)/lib/tcl/xcircuit.so
+endif
+	$(Q)printf '%s\n' \
+	    '#!/bin/sh' \
+	    '# Resolve the launcher through PATH when invoked without a slash, so' \
+	    '# dirname does not collapse to the caller cwd and the lib dir is found.' \
+	    'self=$$0' \
+	    'case $$self in */*) ;; *) self=$$(command -v -- "$$self") ;; esac' \
+	    'dir=$$(CDPATH= cd -- "$$(dirname -- "$$self")" && pwd)' \
+	    'export XCIRCUIT_LIB_DIR="$$dir/lib"' \
+	    'exec "$$dir/lib/tcl/xcircuit.sh" "$$@"' \
+	    > $(XCIRCUIT_BIN)
+	$(Q)chmod 0755 $(XCIRCUIT_BIN)
 
 XCIRCUIT_DIFF_REMOTE ?= node11
 XCIRCUIT_DIFF_REMOTE_ROOT ?= /tmp/libx11-compat-xcircuit-differential

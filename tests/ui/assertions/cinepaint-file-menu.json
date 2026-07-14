@@ -1,0 +1,12 @@
+{
+  "assertions": [
+    {"type": "min_size", "width": 442, "height": 200},
+    {"type": "max_size", "width": 520, "height": 260},
+    {
+      "type": "region_non_background",
+      "rect": [4, 156, 130, 18],
+      "dark_threshold": 96,
+      "min_dark_ratio": 0.2
+    }
+  ]
+}

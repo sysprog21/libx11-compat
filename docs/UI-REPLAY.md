@@ -148,8 +148,13 @@ the assertion with an explicit error.
 |---|---|---|
 | `non_empty` | _none_ | Fail when the file is zero bytes or the image has no pixels. |
 | `not_all_black` | _none_ | Fail when every channel maxes at <= 8. |
+| `min_size` | `width` (default 1), `height` (default 1) | Fail when the image is narrower than `width` or shorter than `height` pixels. |
+| `max_size` | `width` (default 999999), `height` (default 999999) | Fail when the image is wider than `width` or taller than `height` pixels. |
 | `region_non_background` | `rect` or `display_rect`+`display_size`, `dark_threshold` (default 96), `min_dark_ratio` (default 0.001) | Fail when fewer than `min_dark_ratio` of pixels in the region are at or below the dark threshold. |
 | `region_max_dark_ratio` | `rect` (or display_rect/display_size), `dark_threshold` (default 32), `max_dark_ratio` (default 0.35) | Inverse of the above. |
+| `dark_row_run_height` | `rect` (or display_rect/display_size), `dark_threshold` (default 96), `min_row_dark_ratio` (default 0.01), `min_run_height` (default 1), `max_run_height` (default 9999), `min_runs` (default 1) | Fail when text-like dark row runs do not include enough rows in the expected pixel-height range. Each optional field may be omitted; the defaults accept runs of any height (`min_run_height`/`max_run_height`) and require at least one qualifying run (`min_runs`). |
+| `region_min_unique_colors` | `rect` (or display_rect/display_size), `min_unique_colors` (default 2) | Fail when the region contains fewer than `min_unique_colors` distinct RGB colors. |
+| `region_min_color_coverage` | `rect` (or display_rect/display_size), `colors` (list of `[r, g, b]` targets), `tolerance` (default 24), `min_ratio` (default 0.05) | Fail when fewer than `min_ratio` of region pixels match any target color within `tolerance` per channel. Detects that specific expected content (for example named layer fills) is present in quantity; the tolerance absorbs SDL2/SDL3 color-conversion drift. |
 | `changed_region` | `baseline` (screenshot name), `rect` (or display_rect/display_size), `min_changed_ratio` (default 0.01) | Fail when fewer than `min_changed_ratio` of pixels differ vs the baseline. |
 | `reference_diff` | `reference` (path), `rect`, `max_changed_ratio` (default 0.35) | Fail when more than `max_changed_ratio` of pixels differ vs the on-disk reference. |
 | `stale_text` | `rect`, `dark_threshold` (default 80), `max_row_dark_ratio` (default 0.42), `max_dense_rows` (default 18) | Heuristic for stale ghost text; counts rows whose dark pixel ratio exceeds `max_row_dark_ratio`. |

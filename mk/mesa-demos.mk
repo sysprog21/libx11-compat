@@ -59,6 +59,22 @@ MESA_DEMOS_GL4ES := 1
 endif
 endif
 
+# gl.h/glext.h/glxext.h are pristine upstream headers the demos compile against
+# (the lib itself uses none of them). Fetch them into third_party/ at build time
+# rather than vendoring: glext.h/glxext.h from the Khronos OpenGL-Registry, gl.h
+# from Mesa, each pinned; cached under third_party/ so only the first demo build
+# needs the network. GL/glx.h stays in include/ -- it is our own hand-trimmed API
+# contract, not an upstream copy. Each header self-fetches, so deleting one
+# refetches just it. The fetch rule sits outside the GLX=1 gate below so Magic's
+# macOS OpenGL user libs can pull the headers when the demo block is off; only
+# building the demos themselves is GLX-gated.
+GL_HDR_CACHE := third_party/gl-headers
+GL_HDR_FILES := $(GL_HDR_CACHE)/GL/gl.h $(GL_HDR_CACHE)/GL/glext.h \
+    $(GL_HDR_CACHE)/GL/glxext.h
+$(GL_HDR_FILES): scripts/fetch-gl-headers.sh scripts/opengl-registry-pin.txt \
+    scripts/mesa-pin.txt
+	$(Q)scripts/fetch-gl-headers.sh $(GL_HDR_CACHE) $(@F)
+
 ifdef MESA_DEMOS_GL4ES
 $(MESA_DEMOS_BUILD_DIR):
 	@mkdir -p $@
@@ -66,20 +82,6 @@ $(MESA_DEMOS_BUILD_DIR):
 # ANGLE GLESv2 dylib the macOS build links and runs against (empty on Linux, which
 # uses the system Mesa GLESv2 instead).
 MESA_DEMOS_ANGLE := $(if $(filter Darwin,$(UNAME_S)),$(OUT)/angle/libGLESv2.dylib)
-
-# gl.h/glext.h/glxext.h are pristine upstream headers the demos compile against
-# (the lib itself uses none of them). Fetch them into third_party/ at build time
-# rather than vendoring: glext.h/glxext.h from the Khronos OpenGL-Registry, gl.h
-# from Mesa, each pinned; cached under third_party/ so only the first demo build
-# needs the network. GL/glx.h stays in include/ -- it is our own hand-trimmed API
-# contract, not an upstream copy. Each header self-fetches, so deleting one
-# refetches just it.
-GL_HDR_CACHE := third_party/gl-headers
-GL_HDR_FILES := $(GL_HDR_CACHE)/GL/gl.h $(GL_HDR_CACHE)/GL/glext.h \
-    $(GL_HDR_CACHE)/GL/glxext.h
-$(GL_HDR_FILES): scripts/fetch-gl-headers.sh scripts/opengl-registry-pin.txt \
-    scripts/mesa-pin.txt
-	$(Q)scripts/fetch-gl-headers.sh $(GL_HDR_CACHE) $(@F)
 
 # libgl4es.a exports all ~979 desktop gl* (kept general so any unmodified client
 # links), but a given demo calls only a handful and needs to EXPOSE only the few

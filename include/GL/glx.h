@@ -127,6 +127,7 @@ extern Bool glXMakeContextCurrent(Display *dpy,
                                   GLXDrawable read,
                                   GLXContext ctx);
 extern void glXSwapBuffers(Display *dpy, GLXDrawable drawable);
+extern void glXUseXFont(Font font, int first, int count, int listBase);
 extern void glXSwapIntervalEXT(Display *dpy,
                                GLXDrawable drawable,
                                int interval);

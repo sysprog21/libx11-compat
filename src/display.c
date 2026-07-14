@@ -30,6 +30,19 @@
 #define SDL_HINT_VIDEO_X11_XKB "SDL_VIDEO_X11_XKB"
 #endif
 
+/* Toolkits like Tk read $DISPLAY (and abort with "no display name and no
+ * $DISPLAY environment variable") before ever calling into this layer, which
+ * then ignores the value and drives SDL in process. Default DISPLAY to :0 at
+ * library load, before any such check runs, so a client works with no DISPLAY
+ * set. XOpenDisplay does the same setenv, but that is too late for the
+ * toolkit's own pre-flight check. Only sets it when unset (setenv overwrite
+ * flag 0).
+ */
+__attribute__((constructor)) static void libx11CompatDefaultDisplay(void)
+{
+    setenv("DISPLAY", ":0", 0);
+}
+
 /* Lock hooks installed by libX11's locking.c when XInitThreads runs.
  * libx11-compat holds the function-pointer storage so display open/close can
  * invoke them without dragging in upstream XlibInt.c. The storage is
@@ -572,14 +585,27 @@ Display *XOpenDisplay(_Xconst char *display_name)
     Bool sdlOwned = False;
     Bool ttfOwned = False;
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-#ifndef LIBX11_COMPAT_SDL3
-        /* SDL3's SDL_SetMainReady lives in the separate SDL3_main helper, not
-         * libSDL3; this library drives SDL_Init itself and does not need it.
+        /* libX11-compat initializes SDL from XOpenDisplay, not SDL_main. Tell
+         * SDL its platform main bootstrap has already been handled before
+         * SDL_Init runs.
          */
         SDL_SetMainReady();
-#endif
         SDL_SetHint(SDL_HINT_VIDEO_X11_XKB, "0");
         SDL_SetHint("SDL_IME_SHOW_UI", "1");
+        SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "0");
+        SDL_SetHint("SDL_WINDOW_ACTIVATE_WHEN_SHOWN", "1");
+        SDL_SetHint("SDL_WINDOW_ACTIVATE_WHEN_RAISED", "1");
+
+        /* SDL3 posts SDL_EVENT_QUIT when the last window closes. In an
+         * in-process X layer the client owns its windows and its lifetime: a
+         * toolkit routinely leaves zero mapped windows for an instant (Tk
+         * withdraws and recreates a toplevel while posting a modal dialog such
+         * as tk_getOpenFile), and a spurious quit there tore the whole client
+         * down mid-dialog. The client still exits through XCloseDisplay, an
+         * explicit quit, or a real window-close (handled separately), so hold
+         * this off. Named literal: the macro is SDL3-only.
+         */
+        SDL_SetHint("SDL_QUIT_ON_LAST_WINDOW_CLOSE", "0");
 
         /* On macOS, the click that activates a background window is consumed by
          * activation and never seen by the app. Click-through routes that first

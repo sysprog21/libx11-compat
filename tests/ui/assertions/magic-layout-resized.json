@@ -1,0 +1,11 @@
+{
+  "assertions": [
+    { "type": "not_all_black" },
+    {
+      "type": "changed_region",
+      "baseline": "initial",
+      "rect": [0, 0, 400, 300],
+      "min_changed_ratio": 0.08
+    }
+  ]
+}

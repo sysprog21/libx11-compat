@@ -1,0 +1,19 @@
+{
+  "_comment": "Display-space crop around XNEdit's File popup in the 900x650 smoke capture. It catches missing menus, misplaced popups, and the HiDPI backing regression where the popup range is mostly black.",
+  "assertions": [
+    {
+      "type": "changed_region",
+      "baseline": "initial",
+      "display_size": [900, 650],
+      "display_rect": [0, 22, 260, 360],
+      "min_changed_ratio": 0.02
+    },
+    {
+      "type": "region_max_dark_ratio",
+      "display_size": [900, 650],
+      "display_rect": [0, 22, 260, 360],
+      "dark_threshold": 32,
+      "max_dark_ratio": 0.45
+    }
+  ]
+}

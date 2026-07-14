@@ -71,3 +71,14 @@ XID_Struct *getXidStruct(XID id)
         return &invalidResource;
     return &resourceSlots[index].resource;
 }
+
+void forEachXidResourceOfType(XResourceType type,
+                              void (*visit)(void *data, void *ctx),
+                              void *ctx)
+{
+    for (size_t i = 0; i < resourceSlotCapacity; i++) {
+        if (resourceSlots[i].allocated &&
+            resourceSlots[i].resource.type == type)
+            visit(resourceSlots[i].resource.dataPointer, ctx);
+    }
+}

@@ -1,0 +1,27 @@
+# XNEdit resize + popup smoke: after a host resize, editor text and the File
+# menu must still render at the expected range instead of falling back to a
+# half-sized HiDPI backing.
+delay 3000
+wait-window "XNEdit|xnedit|xnedit-resize-file-menu" 8000
+wait-converge 200 2 50 200 15000
+screenshot initial
+assert-image initial common-visible.json
+
+resize 900 640
+delay 300
+wait-converge 200 2 50 200 15000
+screenshot resized
+assert-image resized common-visible.json
+assert-image resized xnedit-editor-font.json
+
+target-motion 18 14
+button 1 press
+delay 200
+target-motion 18 52
+delay 150
+state-snapshot file-menu
+assert-state file-menu xnedit-file-menu-state.json
+screenshot file-menu
+assert-image file-menu xnedit-file-menu.json
+button 1 release
+assert-exit running

@@ -27,15 +27,24 @@ endif
 BENCH_BINS := $(OUT)/tests/bench-paths
 
 # Every compat test goes through libX11-compat, which dlopens the host SDL.
-# SDL_RUNTIME_LIBDIR (mk/sdl.mk) is the prefix lib dir needed on the loader
-# path so an sdl2-compat libSDL2 can resolve its transitive libSDL3; build/
-# stays first so the compat sonames win. Empty when SDL is undetected.
-ifeq ($(strip $(SDL_RUNTIME_LIBDIR)),)
-  TEST_RUNTIME_ENV :=
+# Test binaries already embed build/ as an rpath on Darwin; keep build/ out of
+# DYLD_LIBRARY_PATH so the shared libGL.dylib does not get preloaded into SDL's
+# non-GL GUI stack by accident. Linux still needs build/ on LD_LIBRARY_PATH.
+ifeq ($(UNAME_S),Darwin)
+  ifeq ($(strip $(SDL_RUNTIME_LIBDIR)),)
+    TEST_RUNTIME_ENV :=
+  else
+    TEST_RUNTIME_ENV := \
+      DYLD_LIBRARY_PATH=$(SDL_RUNTIME_LIBDIR)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH}
+  endif
 else
-  TEST_RUNTIME_ENV := \
-    DYLD_LIBRARY_PATH=$(abspath $(OUT)):$(SDL_RUNTIME_LIBDIR)$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
-    LD_LIBRARY_PATH=$(abspath $(OUT)):$(SDL_RUNTIME_LIBDIR)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
+  ifeq ($(strip $(SDL_RUNTIME_LIBDIR)),)
+    TEST_RUNTIME_ENV := \
+      LD_LIBRARY_PATH=$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
+  else
+    TEST_RUNTIME_ENV := \
+      LD_LIBRARY_PATH=$(abspath $(OUT)):$(SDL_RUNTIME_LIBDIR)$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
+  endif
 endif
 
 .PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths

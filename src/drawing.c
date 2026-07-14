@@ -40,14 +40,16 @@ static SDL_atomic_t presentWakeEventType = {-1};
  * idle input wait) presents once and clears the deadline; the deadline itself
  * is a safety cap so a client that never idles still repaints. Nanoseconds
  * since the monotonic clock; 0 means no coalescing in effect. Stored as two
- * 32-bit halves because SDL_atomic_t is 32-bit. */
+ * 32-bit halves because SDL_atomic_t is 32-bit.
+ */
 static SDL_atomic_t coalesceDeadlineHiNs = {0};
 static SDL_atomic_t coalesceDeadlineLoNs = {0};
 
 /* Upper bound on how long a single client repaint burst may withhold presents.
  * Comfortably longer than the observed xwpe reflow (a few frames) yet short
  * enough that a misbehaving client recovers in well under a human-perceptible
- * stall. */
+ * stall.
+ */
 #define COALESCE_CLIENT_REPAINT_MAX_MS 150
 
 static unsigned long opaqueColorIfAlphaUnset(unsigned long color);
@@ -117,8 +119,8 @@ static int dirtyRectCap(void)
  * buffer never exceeds the cap (its only larger-than-cap case is a single
  * scanline wider than the cap, which must fit whole - 32 KiB even at 8K width,
  * far under this cap). 8 MiB holds a 2048-wide rect in one band and any
- * narrower rect in correspondingly more rows per band.
- * Hard-clamped to at least one MiB when read from the env.
+ * narrower rect in correspondingly more rows per band. Hard-clamped to at least
+ * one MiB when read from the env.
  */
 #define PRESENT_READBACK_CAP_DEFAULT (8u * 1024u * 1024u)
 
@@ -292,7 +294,8 @@ static void coalesceDeadlineSet(uint64_t ns)
 
 /* True while a client repaint burst is being coalesced (deadline in the
  * future). Expires itself once the safety cap passes so a stuck client still
- * presents on the next draw. */
+ * presents on the next draw.
+ */
 static Bool coalesceActive(void)
 {
     uint64_t deadline = coalesceDeadlineGet();
@@ -345,7 +348,8 @@ Bool libx11CompatAcceleratedPresentUsable(void)
      * read it back, and require the pixel to round-trip. Cache the verdict so
      * every realizeTopLevelWindow reuses it. A failed probe drives the
      * SDL_GetWindowSurface software present, which does not depend on renderer
-     * readback and matches the pre-accelerated behaviour. */
+     * readback and matches the pre-accelerated behaviour.
+     */
     static int cached = -1;
     if (cached >= 0)
         return cached ? True : False;
@@ -370,7 +374,8 @@ Bool libx11CompatAcceleratedPresentUsable(void)
              * between SDL2 and SDL3, so leave them unchecked as the accelerated
              * present does; the readback comparison below is the real gate.
              * Read exactly one pixel with a matching pitch so the readback
-             * cannot overrun the single-Uint32 destination. */
+             * cannot overrun the single-Uint32 destination.
+             */
             if (SDL_SetRenderTarget(probeRenderer, probeTex) == 0) {
                 SDL_SetRenderDrawColor(probeRenderer, 0x12, 0x34, 0x56, 0xFF);
                 SDL_RenderClear(probeRenderer);
@@ -379,7 +384,8 @@ Bool libx11CompatAcceleratedPresentUsable(void)
                                          (int) sizeof(readPixel)) == 0) {
                     /* RGBA8888 packs R in the most-significant byte. Compare
                      * the colour channels only; ignore alpha so a driver that
-                     * drops it still passes. */
+                     * drops it still passes.
+                     */
                     cached = ((readPixel >> 24) & 0xFF) == 0x12 &&
                                      ((readPixel >> 16) & 0xFF) == 0x34 &&
                                      ((readPixel >> 8) & 0xFF) == 0x56
@@ -435,7 +441,8 @@ static Bool presentWindowAccelerated(Window win,
     SDL_Rect bounds = {0, 0, bw, bh};
 
     /* Lazily (re)create the streaming texture to match the current backing.
-     * Single owner: no separate hook in resizeWindowTexture is needed. */
+     * Single owner: no separate hook in resizeWindowTexture is needed.
+     */
     if (!child->presentTexture || child->presentTexW != bw ||
         child->presentTexH != bh) {
         if (child->presentTexture)
@@ -454,7 +461,8 @@ static Bool presentWindowAccelerated(Window win,
         child->presentTexH = bh;
         /* A freshly (re)created streaming texture holds no prior content, so
          * the whole backing must be re-read this frame regardless of the dirty
-         * region carried over from the old size. */
+         * region carried over from the old size.
+         */
         child->fullyDirty = True;
     }
 
@@ -554,7 +562,8 @@ static Bool presentWindowAccelerated(Window win,
     for (int r = 0; r < nrects; r++) {
         int pitch = rects[r].w * 4;
         /* Rows that fit the scratch in one band (>=1: guaranteed by the
-         * maxRowBytes floor above). Tall rects are read in successive bands. */
+         * maxRowBytes floor above). Tall rects are read in successive bands.
+         */
         int bandRows = pitch > 0
                            ? (int) (child->presentReadbackCap / (size_t) pitch)
                            : rects[r].h;
@@ -575,7 +584,8 @@ static Bool presentWindowAccelerated(Window win,
                                   child->presentReadback, pitch) != 0) {
                 /* Bail like the readback failure above: leave needsPresent and
                  * the dirty region set so the frame is retried, instead of
-                 * marking it presented and stranding stale pixels on screen. */
+                 * marking it presented and stranding stale pixels on screen.
+                 */
                 LOG("SDL_UpdateTexture failed in %s: %s\n", __func__,
                     SDL_GetError());
                 goto fail;
@@ -593,17 +603,39 @@ static Bool presentWindowAccelerated(Window win,
             libx11CompatConfigureLiveResizeLayer(nsWindow);
     }
 #endif
+    if (SDL_RenderSetScale(child->presentRenderer, 1.0f, 1.0f) != 0 ||
+        SDL_RenderSetViewport(child->presentRenderer, NULL) != 0 ||
+        SDL_RenderSetClipRect(child->presentRenderer, NULL) != 0) {
+        LOG("SDL_RenderSet{Scale,Viewport,ClipRect} failed in %s: %s\n",
+            __func__, SDL_GetError());
+        goto fail;
+    }
     unsigned long bg = resolvedWindowBackgroundColor(win);
     SDL_SetRenderDrawColor(child->presentRenderer, GET_RED_FROM_COLOR(bg),
                            GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(child->presentRenderer);
     SDL_Rect dstCopy = {0, 0, bw, bh};
+    if (!child->hiDpiPromoted) {
+        int outW = 0, outH = 0;
+        SDL_GetRendererOutputSize(child->presentRenderer, &outW, &outH);
+        if (outW > 0 && outH > 0) {
+            double sx = child->hiDpiScaleX > 0.0 ? child->hiDpiScaleX : 1.0;
+            double sy = child->hiDpiScaleY > 0.0 ? child->hiDpiScaleY : 1.0;
+            dstCopy.w = (int) lround((double) bw * sx);
+            dstCopy.h = (int) lround((double) bh * sy);
+            if (dstCopy.w > outW)
+                dstCopy.w = outW;
+            if (dstCopy.h > outH)
+                dstCopy.h = outH;
+        }
+    }
     if (SDL_RenderCopy(child->presentRenderer, child->presentTexture, NULL,
                        &dstCopy) != 0) {
         /* Bail like the readback/upload failures above: leave needsPresent and
          * the dirty region set so the frame is retried instead of being marked
-         * presented and permanently dropped. */
+         * presented and permanently dropped.
+         */
         LOG("SDL_RenderCopy failed in %s: %s\n", __func__, SDL_GetError());
         goto fail;
     }
@@ -627,7 +659,8 @@ fail:
      * SDL_RenderReadPixels on the SCREEN target) would otherwise sample this
      * window's backing texture and produce a corrupt frame. The success path
      * intentionally leaves the target on child->sdlTexture like the software
-     * path; only the dropped-frame paths reset it here. */
+     * path; only the dropped-frame paths reset it here.
+     */
     SDL_SetRenderTarget(screen, NULL);
     return False;
 }
@@ -648,7 +681,8 @@ void drawWindowDataToScreen()
          * leaves presentWakePending set. Clear it before rescheduling:
          * otherwise schedulePresentWake short-circuits on the still-set flag,
          * no new timer arms, and a burst that outlives its first wake is
-         * stranded past the safety cap with no present. */
+         * stranded past the safety cap with no present.
+         */
         SDL_AtomicSet(&presentWakePending, False);
         schedulePresentWake();
         return;
@@ -716,7 +750,8 @@ void drawWindowDataToScreen()
         /* Accelerated windows never touch SDL_GetWindowSurface (mutually
          * exclusive with the per-window renderer). The helper mutates the
          * SCREEN render target for its readback, so flag the shared restore
-         * below. */
+         * below.
+         */
         if (!child->presentUsesSoftware && child->presentRenderer) {
             screenTargetMutated = True;
             if (presentWindowAccelerated(children[i], child, screen,
@@ -754,6 +789,58 @@ void drawWindowDataToScreen()
             clampH = texH;
         if (clampW <= 0 || clampH <= 0)
             continue;
+        if (!child->hiDpiPromoted &&
+            (winSurface->w != clampW || winSurface->h != clampH)) {
+            SDL_Rect source = {0, 0, clampW, clampH};
+            if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
+                LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
+                    SDL_GetError());
+                continue;
+            }
+            SDL_RenderSetViewport(screen, NULL);
+            SDL_RenderSetClipRect(screen, NULL);
+            screenTargetMutated = True;
+            SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
+                0, source.w, source.h, 32, SDL_PIXELFORMAT_RGBA8888);
+            if (!staging)
+                continue;
+            uint64_t readStart = monotonicNowNs();
+            int readRc =
+                SDL_RenderReadPixels(screen, &source, SDL_PIXELFORMAT_RGBA8888,
+                                     staging->pixels, staging->pitch);
+            readbackNs += monotonicNowNs() - readStart;
+            if (readRc == 0) {
+                uint64_t updateStart = monotonicNowNs();
+                unsigned long bg = resolvedWindowBackgroundColor(children[i]);
+                Uint32 bgPixel = SDL_MapRGBA(
+                    XC_SURFACE_FORMAT(winSurface), GET_RED_FROM_COLOR(bg),
+                    GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
+                    GET_ALPHA_FROM_COLOR(bg));
+                SDL_FillRect(winSurface, NULL, bgPixel);
+                double sx = child->hiDpiScaleX > 0.0 ? child->hiDpiScaleX : 1.0;
+                double sy = child->hiDpiScaleY > 0.0 ? child->hiDpiScaleY : 1.0;
+                SDL_Rect dst = {0, 0, (int) lround((double) source.w * sx),
+                                (int) lround((double) source.h * sy)};
+                if (dst.w > winSurface->w)
+                    dst.w = winSurface->w;
+                if (dst.h > winSurface->h)
+                    dst.h = winSurface->h;
+                SDL_BlitScaled(staging, NULL, winSurface, &dst);
+                SDL_UpdateWindowSurface(child->sdlWindow);
+                updateNs += monotonicNowNs() - updateStart;
+                child->needsPresent = False;
+                child->hasPresentRect = False;
+                pixman_region32_clear(&child->dirty);
+                child->fullyDirty = False;
+                child->hasPresented = True;
+                presentedWindows++;
+                presentedPixels += (uint64_t) source.w * (uint64_t) source.h;
+                timelineTapPresent(children[i], 1,
+                                   (uint64_t) source.w * (uint64_t) source.h);
+            }
+            SDL_FreeSurface(staging);
+            continue;
+        }
         /* Option 1b keeps the X11 backing at physical pixels, so the backing
          * texture and the host window surface are the same size in steady state
          * and the present is a 1:1 blit. During a live host resize SDL updates
@@ -775,9 +862,9 @@ void drawWindowDataToScreen()
         if (clampW <= 0 || clampH <= 0)
             continue;
         SDL_Rect bounds = {0, 0, clampW, clampH};
-        /* One-time per-window log recording the backing vs surface sizes.
-         * Under Option 1b the X11 backing is physical, so in steady state
-         * winSurface and the backing texture match and the present is 1:1.
+        /* One-time per-window log recording the backing vs surface sizes. Under
+         * Option 1b the X11 backing is physical, so in steady state winSurface
+         * and the backing texture match and the present is 1:1.
          */
         if (!child->loggedPresentScale) {
             int rendererOutputW = 0, rendererOutputH = 0;
@@ -978,7 +1065,8 @@ void drawWindowDataToScreen()
                 }
                 if (winSurface->h > clampH) {
                     /* Full width so the bottom-right corner (below and right of
-                     * the content) is covered by this pass too. */
+                     * the content) is covered by this pass too.
+                     */
                     SDL_Rect bottom = {0, clampH, winSurface->w,
                                        winSurface->h - clampH};
                     SDL_FillRect(winSurface, &bottom, fill);
@@ -1105,6 +1193,13 @@ void glxCompositeToWindow(Window window,
         windowStruct->glxCompositeTexture =
             SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
                               SDL_TEXTUREACCESS_STREAMING, width, height);
+        /* Replace, do not blend: the readback is a full opaque frame, and the
+         * pbuffer clear color may carry alpha 0. Match every other staging
+         * texture here rather than lean on SDL's default.
+         */
+        if (windowStruct->glxCompositeTexture)
+            SDL_SetTextureBlendMode(windowStruct->glxCompositeTexture,
+                                    SDL_BLENDMODE_NONE);
         windowStruct->glxCompositeFlip = malloc((size_t) width * height * 4);
         windowStruct->glxCompositeW = width;
         windowStruct->glxCompositeH = height;
@@ -1127,10 +1222,18 @@ void glxCompositeToWindow(Window window,
         memcpy(flipped + (size_t) row * width * 4,
                rgba + (size_t) (height - 1 - row) * width * 4,
                (size_t) width * 4);
-    SDL_UpdateTexture(windowStruct->glxCompositeTexture, NULL, flipped,
-                      width * 4);
+    /* If the upload or copy fails, do not mark the rect present: the backing
+     * still holds the previous frame, and presenting it would show a stale
+     * image that reads exactly like a ghost. Skip the frame instead so the next
+     * one repaints cleanly.
+     */
+    if (SDL_UpdateTexture(windowStruct->glxCompositeTexture, NULL, flipped,
+                          width * 4) != 0)
+        return;
     SDL_Rect dst = {0, 0, width, height};
-    SDL_RenderCopy(renderer, windowStruct->glxCompositeTexture, NULL, &dst);
+    if (SDL_RenderCopy(renderer, windowStruct->glxCompositeTexture, NULL,
+                       &dst) != 0)
+        return;
     invalidateSdlDrawStateCache();
 
     /* Present the top-level ancestor over the widget's rect; walk up
@@ -1694,12 +1797,55 @@ unsigned long x11compat_pixmap_readback_reads = 0;
  * apps that interleave XCopyArea-from-pixmap with XGetImage-of-the-same-pixmap,
  * so it is left out until a workload asks for it. Access is unguarded, matching
  * the single-threaded SDL renderer path the rest of the drawing code assumes.
+ * Live stipple stamps across all pixmaps. Lets
+ * invalidateStippleStampsForRenderer skip the resource-table sweep on window
+ * teardown when nothing stippled, which is every app that is not Magic.
+ * Single-threaded SDL path, so no locking.
  */
+static int liveStippleStampCount = 0;
+
+void freePixmapStippleStamp(PixmapStruct *pixmap)
+{
+    if (!pixmap || !pixmap->stippleStamp)
+        return;
+    SDL_DestroyTexture(pixmap->stippleStamp);
+    pixmap->stippleStamp = NULL;
+    pixmap->stampRenderer = NULL;
+    liveStippleStampCount--;
+}
+
+static void dropStampIfRenderer(void *data, void *ctx)
+{
+    PixmapStruct *pixmap = data;
+    if (pixmap && pixmap->stampRenderer == (SDL_Renderer *) ctx)
+        freePixmapStippleStamp(pixmap);
+}
+
+/* A stipple stamp texture is created on the renderer of whatever drawable last
+ * filled with it, which for a window is that window's own renderer. SDL frees a
+ * renderer's textures with the renderer, so a stamp cached on a window renderer
+ * must be dropped before that renderer is destroyed or the cached SDL_Texture
+ * dangles into a later reuse or XFreePixmap. Called at every
+ * SDL_DestroyRenderer site alongside the put-image and text cache
+ * invalidations.
+ */
+void invalidateStippleStampsForRenderer(SDL_Renderer *renderer)
+{
+    if (!renderer || liveStippleStampCount == 0)
+        return;
+    forEachXidResourceOfType(PIXMAP, dropStampIfRenderer, renderer);
+}
+
 void markPixmapReadbackDirty(Drawable drawable)
 {
     PixmapStruct *pixmap = GET_PIXMAP_STRUCT(drawable);
-    if (pixmap)
+    if (pixmap) {
         pixmap->readbackDirty = True;
+        /* The stipple stamp is derived from this content; drop it so a later
+         * fill rebuilds it from the changed pixels.
+         */
+        freePixmapStippleStamp(pixmap);
+    }
 }
 
 void freePixmapReadback(PixmapStruct *pixmap)
@@ -2465,7 +2611,7 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
         if (child == None || !IS_TYPE(child, WINDOW))
             continue;
         WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
-        if (childStruct->mapState != Mapped)
+        if (childStruct->inputOnly || childStruct->mapState != Mapped)
             continue;
         SDL_Rect childRect = {
             .x = childStruct->x,
@@ -2501,7 +2647,7 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
             if (child == None || !IS_TYPE(child, WINDOW))
                 continue;
             WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
-            if (childStruct->mapState != Mapped)
+            if (childStruct->inputOnly || childStruct->mapState != Mapped)
                 continue;
             int64_t childY1_64 = childStruct->y;
             int64_t childY2_64 =
@@ -2532,6 +2678,104 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
     free(segments);
     free(segScratch);
     return ok;
+}
+
+/* Initialize `region` to `rect` minus the areas covered by `window`'s mapped
+ * InputOutput child windows: the X ClipByChildren geometry. InputOnly children
+ * are invisible event targets and must not punch holes in parent drawing. The
+ * layer flattens the window tree into one texture per top level, so any parent
+ * draw that must not touch a visible child window subtracts the child rects
+ * first (copies, stipple fills). Leaf windows have no mapped children, so the
+ * region stays the full rect. Caller owns the region and must
+ * pixman_region32_fini it.
+ */
+static void childExcludedRegion(Window window,
+                                const SDL_Rect *rect,
+                                pixman_region32_t *region)
+{
+    pixman_region32_init_rect(region, rect->x, rect->y, (unsigned int) rect->w,
+                              (unsigned int) rect->h);
+    Window *children = GET_CHILDREN(window);
+    size_t childCount = GET_WINDOW_STRUCT(window)->children.length;
+    for (size_t i = 0; i < childCount; i++) {
+        Window child = children[i];
+        if (child == None || !IS_TYPE(child, WINDOW))
+            continue;
+        WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
+        if (childStruct->inputOnly || childStruct->mapState != Mapped)
+            continue;
+        pixman_region32_t childRegion;
+        pixman_region32_init_rect(&childRegion, childStruct->x, childStruct->y,
+                                  childStruct->w, childStruct->h);
+        pixman_region32_subtract(region, region, &childRegion);
+        pixman_region32_fini(&childRegion);
+    }
+}
+
+/* Copy srcTexture into a ClipByChildren window, skipping the regions covered by
+ * mapped child windows. The layer flattens the window tree into one texture per
+ * top level, so a plain copy of a parent's whole area (a Tk frame flushing its
+ * double-buffer pixmap, say) overwrites the child widgets drawn into the same
+ * texture; their repaint arrives later via an async Expose, so an intervening
+ * present samples the erased gap and the window flashes blank. Subtracting the
+ * child rects reproduces X ClipByChildren, which never writes child-window
+ * pixels. Leaf windows collapse to a single copy.
+ *
+ * Returns 0 on success, -1 on an SDL error.
+ */
+static int renderCopyClipByChildren(SDL_Renderer *renderer,
+                                    Window window,
+                                    SDL_Texture *texture,
+                                    const SDL_Rect *srcRect,
+                                    const SDL_Rect *destRect)
+{
+    /* Callers clamp destRect to the drawable before reaching here (XCopyArea
+     * rejects zero/overflow, clipCopyAreaRects clips to bounds). Guard anyway:
+     * a negative width/height would wrap to a huge unsigned extent and make
+     * pixman allocate an enormous region.
+     */
+    if (destRect->w <= 0 || destRect->h <= 0)
+        return 0;
+    /* A Pixmap destination has no children, so ClipByChildren collapses to a
+     * plain copy. Guard here because GET_WINDOW_STRUCT inside
+     * childExcludedRegion would reinterpret a PixmapStruct as a WindowStruct
+     * and read a garbage child count: XCopyArea into a double-buffer pixmap
+     * with a default GC (subWindowMode ClipByChildren) reaches this with a
+     * non-window drawable.
+     */
+    if (!IS_TYPE(window, WINDOW)) {
+        if (SDL_RenderCopy(renderer, texture, srcRect, destRect) != 0) {
+            LOG("SDL_RenderCopy failed in %s: %s\n", __func__, SDL_GetError());
+            return -1;
+        }
+        return 0;
+    }
+    pixman_region32_t region;
+    childExcludedRegion(window, destRect, &region);
+    int nRects = 0;
+    pixman_box32_t *boxes = pixman_region32_rectangles(&region, &nRects);
+    int rc = 0;
+    for (int i = 0; i < nRects; i++) {
+        SDL_Rect dst = {
+            boxes[i].x1,
+            boxes[i].y1,
+            boxes[i].x2 - boxes[i].x1,
+            boxes[i].y2 - boxes[i].y1,
+        };
+        SDL_Rect src = {
+            srcRect->x + (dst.x - destRect->x),
+            srcRect->y + (dst.y - destRect->y),
+            dst.w,
+            dst.h,
+        };
+        if (SDL_RenderCopy(renderer, texture, &src, &dst) != 0) {
+            LOG("SDL_RenderCopy failed in %s: %s\n", __func__, SDL_GetError());
+            rc = -1;
+            break;
+        }
+    }
+    pixman_region32_fini(&region);
+    return rc;
 }
 
 static Bool getDrawableSize(Drawable drawable, int *width, int *height)
@@ -4861,13 +5105,20 @@ int XCopyArea(Display *display,
                 SDL_SetTextureBlendMode(pixmapTexture, SDL_BLENDMODE_NONE);
                 ShapeGuard fastSg;
                 shapeGuardBegin(&fastSg, dest, destRenderer, &fastDest);
+                Bool fastClipKids = GET_GC(gc)->subWindowMode == ClipByChildren;
                 int fastClipCount = getGcClipIterationCount(gc, dest);
                 int fastRcCopy = 0;
                 for (int clip = 0; clip < fastClipCount; clip++) {
                     if (!setGcClipForIteration(destRenderer, gc, clip, dest))
                         continue;
-                    if (SDL_RenderCopy(destRenderer, pixmapTexture, &fastSrc,
-                                       &fastDest) != 0) {
+                    int copyRc =
+                        fastClipKids
+                            ? renderCopyClipByChildren(destRenderer, dest,
+                                                       pixmapTexture, &fastSrc,
+                                                       &fastDest)
+                            : SDL_RenderCopy(destRenderer, pixmapTexture,
+                                             &fastSrc, &fastDest);
+                    if (copyRc != 0) {
                         LOG("SDL_RenderCopy failed in %s fast path: %s\n",
                             __func__, SDL_GetError());
                         fastRcCopy = -1;
@@ -4936,13 +5187,18 @@ int XCopyArea(Display *display,
         srcRect.y = 0;
         ShapeGuard sg;
         shapeGuardBegin(&sg, dest, destRenderer, &destRect);
+        Bool clipKids = GET_GC(gc)->subWindowMode == ClipByChildren;
         int clipCount = getGcClipIterationCount(gc, dest);
         int rcCopy = 0;
         for (int clip = 0; clip < clipCount; clip++) {
             if (!setGcClipForIteration(destRenderer, gc, clip, dest))
                 continue;
-            if (SDL_RenderCopy(destRenderer, srcTexture, &srcRect, &destRect) !=
-                0) {
+            int copyRc = clipKids ? renderCopyClipByChildren(
+                                        destRenderer, dest, srcTexture,
+                                        &srcRect, &destRect)
+                                  : SDL_RenderCopy(destRenderer, srcTexture,
+                                                   &srcRect, &destRect);
+            if (copyRc != 0) {
                 LOG("SDL_RenderCopy failed in %s: %s\n", __func__,
                     SDL_GetError());
                 rcCopy = -1;
@@ -5211,6 +5467,228 @@ static void fillRectsClipAware(SDL_Renderer *renderer,
     }
 }
 
+/* Solid-fill every rect in the given color, honoring the GC clip iterations and
+ * ClipByChildren. Shared by the plain FillSolid GXcopy path and the opaque
+ * stipple fallback, which fill identically apart from the color.
+ */
+static void fillSolidRectsClipAware(SDL_Renderer *renderer,
+                                    GC gc,
+                                    Drawable d,
+                                    const SDL_Rect *rects,
+                                    int count,
+                                    unsigned long color,
+                                    Bool clipByChildren)
+{
+    applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE, color);
+    int clipCount = getGcClipIterationCount(gc, d);
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(renderer, gc, clip, d))
+            continue;
+        fillRectsClipAware(renderer, d, rects, count, clipByChildren);
+    }
+    clearRendererClip(renderer);
+}
+
+/* Turn the GC stipple pixmap into a colored, alpha-keyed tile texture that
+ * renderStippleRects then tiles across each fill. A set stipple bit becomes
+ * opaque foreground; an unset bit becomes the background (FillOpaqueStippled)
+ * or transparent (FillStippled). The result is memoized on the pixmap (see
+ * PixmapStruct.stippleStamp), keyed by renderer, resolved colors, and the
+ * opaque flag, so repeated fills with the same stipple reuse it.
+ *
+ * Returns the texture, or NULL if the stipple could not be read or the texture
+ * could not be built.
+ */
+static SDL_Texture *stippleStamp(SDL_Renderer *renderer,
+                                 PixmapStruct *sp,
+                                 Pixmap stipplePixmap,
+                                 unsigned long fgc,
+                                 unsigned long bgc,
+                                 Bool opaque)
+{
+    if (sp->stippleStamp && sp->stampRenderer == renderer &&
+        sp->stampFg == fgc && sp->stampBg == bgc && sp->stampOpaque == opaque)
+        return sp->stippleStamp;
+    int sw = (int) sp->width, sh = (int) sp->height;
+    SDL_Rect full = {0, 0, sw, sh};
+    SDL_Surface *stip = getPixmapSurfaceRect(stipplePixmap, &full);
+    if (!stip)
+        return NULL;
+    /* Bake a whole number of pattern periods into one stamp so a large fill
+     * with a small stipple issues far fewer SDL_RenderCopy calls (an 8x8
+     * stipple over a Magic layout otherwise draws one copy per 8x8 tile). The
+     * stamp stays a multiple of the base period, so tiling it phase-aligns to
+     * the stipple origin exactly as a single-period stamp would. Caller reads
+     * the stamp size back via SDL_QueryTexture.
+     */
+    int repX = sw > 0 ? (64 + sw - 1) / sw : 1;
+    int repY = sh > 0 ? (64 + sh - 1) / sh : 1;
+    int stampW = sw * repX, stampH = sh * repY;
+    SDL_Surface *stamp = SDL_CreateRGBSurfaceWithFormat(
+        0, stampW, stampH, 32, SDL_PIXELFORMAT_RGBA8888);
+    if (!stamp) {
+        SDL_FreeSurface(stip);
+        return NULL;
+    }
+    Uint32 fg = ((Uint32) GET_RED_FROM_COLOR(fgc) << 24) |
+                ((Uint32) GET_GREEN_FROM_COLOR(fgc) << 16) |
+                ((Uint32) GET_BLUE_FROM_COLOR(fgc) << 8) | 0xffu;
+    Uint32 bg = opaque ? (((Uint32) GET_RED_FROM_COLOR(bgc) << 24) |
+                          ((Uint32) GET_GREEN_FROM_COLOR(bgc) << 16) |
+                          ((Uint32) GET_BLUE_FROM_COLOR(bgc) << 8) | 0xffu)
+                       : 0u;
+    if (SDL_LockSurface(stip) != 0) {
+        SDL_FreeSurface(stip);
+        SDL_FreeSurface(stamp);
+        return NULL;
+    }
+    if (SDL_LockSurface(stamp) != 0) {
+        SDL_UnlockSurface(stip);
+        SDL_FreeSurface(stip);
+        SDL_FreeSurface(stamp);
+        return NULL;
+    }
+    int spitch = stip->pitch / 4, dpitch = stamp->pitch / 4;
+    const Uint32 *spx = (const Uint32 *) stip->pixels;
+    Uint32 *dpx = (Uint32 *) stamp->pixels;
+    /* Magic builds a stipple pixmap by drawing each bit with foreground (pat &
+     * 1), so a set bit stores color value 1 (e.g. 0x000001ff in the RGBA
+     * readback) and an unset bit stores 0 (0x000000ff). Mask off the alpha low
+     * byte and treat any nonzero RGB as a set bit.
+     */
+    for (int y = 0; y < stampH; y++)
+        for (int x = 0; x < stampW; x++)
+            dpx[y * dpitch + x] =
+                (spx[(y % sh) * spitch + (x % sw)] & 0xffffff00u) != 0 ? fg
+                                                                       : bg;
+    SDL_UnlockSurface(stamp);
+    SDL_UnlockSurface(stip);
+    SDL_FreeSurface(stip);
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(renderer, stamp);
+    SDL_FreeSurface(stamp);
+    if (!tex)
+        return NULL;
+    SDL_SetTextureBlendMode(tex,
+                            opaque ? SDL_BLENDMODE_NONE : SDL_BLENDMODE_BLEND);
+    freePixmapStippleStamp(sp);
+    sp->stippleStamp = tex;
+    sp->stampRenderer = renderer;
+    sp->stampFg = fgc;
+    sp->stampBg = bgc;
+    sp->stampOpaque = opaque;
+    liveStippleStampCount++;
+    return tex;
+}
+
+/* Fill rectangles with the GC stipple pattern. Magic paints most layers this
+ * way (metal, wells, contacts, the darker diffusions): a 1-bpp pattern pixmap
+ * selects which pixels take the foreground. Tile a cached stamp texture across
+ * each rectangle, phased by the tile/stipple origin and honoring the GC clip
+ * and ClipByChildren the same way the solid path does. Without this the
+ * stippled layers rendered as nothing (FillStippled) or a flat background block
+ * (FillOpaqueStippled), so half of a scmos layout was invisible.
+ */
+static Bool renderStippleRects(SDL_Renderer *renderer,
+                               GC gc,
+                               Drawable d,
+                               GraphicContext *gContext,
+                               const SDL_Rect *rects,
+                               int count,
+                               Bool opaque,
+                               Bool clipByChildren)
+{
+    if (gContext->stipple == None || !IS_TYPE(gContext->stipple, PIXMAP))
+        return False;
+    PixmapStruct *sp = GET_PIXMAP_STRUCT(gContext->stipple);
+    /* Real stipples are tiny (8x8 up to 32x32). Cap well above that: a larger
+     * stipple would make stippleStamp request a multi-period surface whose
+     * width*height*4 could overflow SDL's size math, and would spin an
+     * O(width*height) bake loop. Fall back to a solid fill instead.
+     */
+    if (!sp || sp->width == 0 || sp->height == 0 || sp->width > 4096 ||
+        sp->height > 4096)
+        return False;
+    int sw = (int) sp->width, sh = (int) sp->height;
+    unsigned long fgc = opaqueColorIfAlphaUnset(gContext->foreground);
+    unsigned long bgc = opaqueColorIfAlphaUnset(gContext->background);
+    SDL_Texture *tex =
+        stippleStamp(renderer, sp, gContext->stipple, fgc, bgc, opaque);
+    if (!tex)
+        return False;
+    /* The stamp bakes in a whole number of pattern periods (see stippleStamp),
+     * so step tiles by its actual size, not the base period. Alignment below
+     * still uses sw/sh, which is safe because the stamp size is a multiple of
+     * them. Fall back to the base period if the query fails.
+     */
+    int stampW = sw, stampH = sh;
+    SDL_QueryTexture(tex, NULL, NULL, &stampW, &stampH);
+    if (stampW < sw)
+        stampW = sw;
+    if (stampH < sh)
+        stampH = sh;
+    int ox = gContext->tileStipOriginX, oy = gContext->tileStipOriginY;
+    Bool ok = True;
+    int clipCount = getGcClipIterationCount(gc, d);
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(renderer, gc, clip, d))
+            continue;
+        SDL_Rect gcClip;
+        Bool hasGcClip = SDL_RenderIsClipEnabled(renderer) == SDL_TRUE;
+        if (hasGcClip)
+            SDL_RenderGetClipRect(renderer, &gcClip);
+        for (int i = 0; i < count; i++) {
+            if (rects[i].w <= 0 || rects[i].h <= 0)
+                continue;
+            pixman_region32_t region;
+            if (clipByChildren && IS_TYPE(d, WINDOW))
+                childExcludedRegion(d, &rects[i], &region);
+            else
+                pixman_region32_init_rect(&region, rects[i].x, rects[i].y,
+                                          (unsigned int) rects[i].w,
+                                          (unsigned int) rects[i].h);
+            int nsub = 0;
+            pixman_box32_t *subs = pixman_region32_rectangles(&region, &nsub);
+            for (int s = 0; s < nsub; s++) {
+                SDL_Rect clipR = {
+                    subs[s].x1,
+                    subs[s].y1,
+                    subs[s].x2 - subs[s].x1,
+                    subs[s].y2 - subs[s].y1,
+                };
+                if (hasGcClip && !SDL_IntersectRect(&clipR, &gcClip, &clipR))
+                    continue;
+                if (clipR.w <= 0 || clipR.h <= 0)
+                    continue;
+                SDL_RenderSetClipRect(renderer, &clipR);
+                /* Phase-align the first tile to the stipple origin; tiles that
+                 * start before the clip get trimmed by the clip rect. ox/oy
+                 * come from XSetTSOrigin (client-controlled), so do the
+                 * subtraction in 64-bit to keep an extreme origin from
+                 * overflowing the int; sw/sh are capped at 4096, so the
+                 * resulting phase fits back in an int.
+                 */
+                int startX =
+                    clipR.x - (int) ((((int64_t) clipR.x - ox) % sw + sw) % sw);
+                int startY =
+                    clipR.y - (int) ((((int64_t) clipR.y - oy) % sh + sh) % sh);
+                for (int ty = startY; ty < clipR.y + clipR.h; ty += stampH)
+                    for (int tx = startX; tx < clipR.x + clipR.w;
+                         tx += stampW) {
+                        SDL_Rect dst = {tx, ty, stampW, stampH};
+                        if (SDL_RenderCopy(renderer, tex, NULL, &dst) != 0)
+                            ok = False;
+                    }
+            }
+            pixman_region32_fini(&region);
+        }
+    }
+    clearRendererClip(renderer);
+    /* False if any tile blit failed, so the caller (FillOpaqueStippled) can
+     * fall back to a solid fill rather than trust a partial stipple.
+     */
+    return ok;
+}
+
 int XFillRectangles(Display *display,
                     Drawable d,
                     GC gc,
@@ -5308,35 +5786,34 @@ int XFillRectangles(Display *display,
             }
             clearRendererClip(renderer);
         } else {
-            applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
-                              gContext->foreground);
-            int clipCount = getGcClipIterationCount(gc, d);
-            for (int clip = 0; clip < clipCount; clip++) {
-                if (!setGcClipForIteration(renderer, gc, clip, d))
-                    continue;
-                fillRectsClipAware(renderer, d, sdlRectangles, validRectangles,
-                                   clipByChildren);
-            }
-            clearRendererClip(renderer);
+            fillSolidRectsClipAware(renderer, gc, d, sdlRectangles,
+                                    validRectangles, gContext->foreground,
+                                    clipByChildren);
             childrenPunched = clipByChildren;
         }
     } else if (gContext->fillStyle == FillTiled) {
         LOG("Fill_style is %s\n", "FillTiled");
     } else if (gContext->fillStyle == FillOpaqueStippled) {
         LOG("Fill_style is %s\n", "FillOpaqueStippled");
-        applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
-                          gContext->background);
-        int clipCount = getGcClipIterationCount(gc, d);
-        for (int clip = 0; clip < clipCount; clip++) {
-            if (!setGcClipForIteration(renderer, gc, clip, d))
-                continue;
-            fillRectsClipAware(renderer, d, sdlRectangles, validRectangles,
-                               clipByChildren);
+        if (renderStippleRects(renderer, gc, d, gContext, sdlRectangles,
+                               validRectangles, True, clipByChildren)) {
+            childrenPunched = clipByChildren;
+        } else {
+            /* Opaque stipple must fully paint the region. When the stamp is
+             * missing or could not be built renderStippleRects draws nothing
+             * and returns False, so fall back to a solid background fill rather
+             * than leave stale pixels until an expose repaints them.
+             */
+            fillSolidRectsClipAware(renderer, gc, d, sdlRectangles,
+                                    validRectangles, gContext->background,
+                                    clipByChildren);
+            childrenPunched = clipByChildren;
         }
-        clearRendererClip(renderer);
-        childrenPunched = clipByChildren;
     } else if (gContext->fillStyle == FillStippled) {
         LOG("Fill_style is %s\n", "FillStippled");
+        if (renderStippleRects(renderer, gc, d, gContext, sdlRectangles,
+                               validRectangles, False, clipByChildren))
+            childrenPunched = clipByChildren;
     }
     Bool shapeOk = True;
     if (shapeBase) {

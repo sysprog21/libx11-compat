@@ -26,6 +26,14 @@ XID allocXidResource(void);
 void freeXidResource(XID id);
 XID_Struct *getXidStruct(XID id);
 
+/* Visit the data pointer of every live resource of a given type. Used to reach
+ * per-resource caches (such as a pixmap's stipple stamp) that must be dropped
+ * when the renderer they were built on is torn down.
+ */
+void forEachXidResourceOfType(XResourceType type,
+                              void (*visit)(void *data, void *ctx),
+                              void *ctx);
+
 #include "errors.h"
 #include "window.h"
 

@@ -1,0 +1,306 @@
+--- a/graphics/W3Dmain.c
++++ b/graphics/W3Dmain.c
+@@ -80,6 +80,7 @@
+ void Set3DDefaults();
+ void w3drefreshFunc();
+ bool W3Ddelete();
++bool W3DhandleEvent();
+ 
+ /* ------------------------Low-Level Routines--------------------------------- */
+ 
+@@ -108,6 +109,36 @@
+     grSimpleUnlock(w);
+ }
+ 
++/*
++ * w3dPresent --
++ *	Present the completed 3D frame to the screen.
++ *
++ *	Magic draws to GL_FRONT and relies on the X server showing those draws
++ *	immediately.  On the EGL/GLES stack (gl4es over ANGLE) nothing reaches
++ *	the screen until eglSwapBuffers, which libx11-compat issues from
++ *	glXSwapBuffers; without this the 3D window stays blank.  Call this once
++ *	at the end of a full redisplay rather than in w3dUnlock: a redisplay
++ *	locks and unlocks several times (once per visible style) but starts with
++ *	w3dClear and accumulates every style into one buffer, so a single swap
++ *	here presents the whole frame, where a per-unlock swap would flip the
++ *	buffer mid-frame and drop the styles drawn before it.
++ */
++
++void
++w3dPresent(w)
++    MagWindow *w;
++{
++    Window wind;
++    /* w_grdata is null while the widget is being torn down (the race the
++     * wrapper.tcl "winfo exists" guard dodges); Tk_WindowId(NULL) would
++     * dereference a bad pointer, so bail before calling it.
++     */
++    if (w == (MagWindow *)NULL || w->w_grdata == (ClientData)NULL) return;
++    wind = Tk_WindowId((Tk_Window)w->w_grdata);
++    if (wind != 0)
++	glXSwapBuffers(grXdpy, (GLXDrawable)wind);
++}
++
+ /* -------------------Low-Level Drawing Routines------------------------------ */
+ 
+ void
+@@ -461,7 +492,12 @@
+     fg = ((GLfloat)lg / 255);
+     fb = ((GLfloat)lb / 255);
+ 
+-    glClearColor(fr, fg, fb, 0.0);
++    glDisable(GL_SCISSOR_TEST);
++    glDisable(GL_BLEND);
++    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++    glDepthMask(GL_TRUE);
++    glClearDepth(1.0);
++    glClearColor(fr, fg, fb, 1.0);
+     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+ }
+ 
+@@ -498,9 +534,7 @@
+ 	glEnable(GL_POLYGON_SMOOTH);
+     }
+ 
+-    /* Need to look into dealing properly with double-buffered graphics */
+     glDrawBuffer(GL_FRONT);
+-    /* glDrawBuffer(GL_BACK); */
+ 
+     glMatrixMode(GL_PROJECTION);
+     glLoadIdentity();
+@@ -1013,6 +1047,55 @@
+ /*
+  * ----------------------------------------------------------------------------
+  *
++ * W3DhandleEvent --
++ *
++ *	Handle pointer events for the 3D window before the generic macro path
++ *	sees them.
++ *
++ * ----------------------------------------------------------------------------
++ */
++
++bool
++W3DhandleEvent(w, xevent)
++    MagWindow *w;
++    XEvent *xevent;
++{
++    W3DclientRec *crec;
++
++    if ((w == (MagWindow *)NULL) || (w->w_clientData == (ClientData)NULL))
++	return FALSE;
++
++    crec = (W3DclientRec *)w->w_clientData;
++
++    switch (xevent->type)
++    {
++	case ButtonPress:
++	    if (xevent->xbutton.button != Button1) return FALSE;
++	    crec->dragging = TRUE;
++	    crec->drag_x = xevent->xbutton.x;
++	    crec->drag_y = xevent->xbutton.y;
++	    return TRUE;
++	case ButtonRelease:
++	    if (xevent->xbutton.button != Button1) return FALSE;
++	    crec->dragging = FALSE;
++	    return TRUE;
++	case MotionNotify:
++	    if (!crec->dragging)
++		return TRUE;
++	    crec->view_y += (float)(xevent->xmotion.x - crec->drag_x);
++	    crec->view_x += (float)(xevent->xmotion.y - crec->drag_y);
++	    crec->drag_x = xevent->xmotion.x;
++	    crec->drag_y = xevent->xmotion.y;
++	    w3drefreshFunc(w);
++	    return TRUE;
++    }
++
++    return FALSE;
++}
++
++/*
++ * ----------------------------------------------------------------------------
++ *
+  * w3dView --
+  *
+  *	Set the viewing angle into the 3D display.  Overrides the window
+@@ -1495,6 +1578,9 @@
+ 
+     crec->width = 500;
+     crec->height = 500;
++    crec->dragging = FALSE;
++    crec->drag_x = 0;
++    crec->drag_y = 0;
+ 
+     /* Rendering level (0 = coarse & fast, 1 = finer but slower, etc.	*/
+     /* Render cif by default.						*/
+@@ -1564,6 +1650,25 @@
+ 	    if (wind == 0)
+ 	    glXMakeCurrent(grXdpy, (GLXDrawable)wind, grXcontext);
+ 	}
++
++	Tk_GeometryRequest(tkwind, crec->width, crec->height);
++	if (Tk_IsTopLevel(tkwind))
++	{
++	    /* Standalone 3D windows keep their OpenGL viewport in fixed
++	     * W3DclientRec.width / height values.  Wrapper-owned child windows
++	     * are constrained by tcltk/wrapper.tcl after geometry settles.
++	     */
++	    Tk_MakeWindowExist(tkwind);
++	    wind = Tk_WindowId(tkwind);
++	    if (wind != 0)
++	    {
++		XSizeHints xsh;
++		xsh.flags = PMinSize | PMaxSize;
++		xsh.min_width = xsh.max_width = crec->width;
++		xsh.min_height = xsh.max_height = crec->height;
++		XSetWMNormalHints(grXdpy, wind, &xsh);
++	    }
++	}
+ 
+ 	/* execute any pending Tk events */
+ 
+@@ -1577,7 +1663,8 @@
+ 	/* use the OpenGL Tk event handler (see grTOGL1.c) for the 3d window */
+ 
+ 	Tk_CreateEventHandler(tkwind, ExposureMask | StructureNotifyMask |
+-		ButtonPressMask | KeyPressMask,
++		ButtonPressMask | ButtonReleaseMask | Button1MotionMask |
++		KeyPressMask,
+ 		(Tk_EventProc *)TOGLEventProc, (ClientData)tkwind);
+ 
+ 	w3dWindow = window;
+@@ -1705,6 +1792,7 @@
+ 	    }
+ 	}
+     }
++    w3dPresent(w);
+ }
+ 
+ 
+@@ -1781,6 +1869,7 @@
+ 	}
+     }
+     UndoEnable();
++    w3dPresent(w);
+ }
+ 
+ /*
+--- a/graphics/grTOGL1.c
++++ b/graphics/grTOGL1.c
+@@ -30,6 +30,9 @@
+ #include "windows/windows.h"
+ #include "graphics/graphics.h"
+ #include "graphics/graphicsInt.h"
++#ifdef THREE_D
++#include "graphics/wind3d.h"
++#endif
+ #include "textio/textio.h"
+ #include "textio/txcommands.h"
+ #include "utils/signals.h"
+@@ -326,6 +329,16 @@
+     grXcontext = glXCreateContext(grXdpy, grVisualInfo, NULL, GL_TRUE);
+ #endif
+ 
++    /* glXCreateContext does not make the context current, but the GL calls
++     * below run immediately.  On a gl4es-over-EGL stack the first such call
++     * dereferences the current context state and crashes when none is bound,
++     * so make the context current on the (now-realized) top-level window first.
++     */
++    Tk_MakeWindowExist(toglCurrent.window);
++    toglCurrent.windowid = Tk_WindowId(toglCurrent.window);
++    if (!glXMakeCurrent(grXdpy, (GLXDrawable)toglCurrent.windowid, grXcontext))
++	return FALSE;
++
+     /* Basic GL parameters */
+ 
+     glLineWidth(1.0);
+@@ -500,6 +513,14 @@
+     KeySym keysym;
+     int nbytes;
+ 
++    entry = HashLookOnly(&grTOGLWindowTable, (char *)tkwind);
++    mw = (entry)?(MagWindow *)HashGetValue(entry):0;
++
++#ifdef THREE_D
++    if (mw && (mw->w_client == W3DclientID) && W3DhandleEvent(mw, xevent))
++	return;
++#endif
++
+     /* Keys and Buttons:  Determine expansion of macros or redirect
+      * keys to the terminal or console.
+      */
+@@ -535,9 +556,6 @@
+ 		}
+ 		nbytes = 0;
+ 
+-		entry = HashLookOnly(&grTOGLWindowTable, (char *)tkwind);
+-		mw = (entry)?(MagWindow *)HashGetValue(entry):0;
+-
+ 		if (mw && (mw->w_flags & WIND_SCROLLBARS))
+ 		    if (WindButtonInFrame(mw, ButtonEvent->x,
+ 				grXtransY(mw, ButtonEvent->y),
+@@ -558,9 +576,6 @@
+ 
+ 		if (IsModifierKey(keysym)) break;	/* Don't handle modifiers */
+ 
+-		entry = HashLookOnly(&grTOGLWindowTable, (char *)tkwind);
+-		mw = (entry)?(MagWindow *)HashGetValue(entry):0;
+-
+ keys_and_buttons:
+ 
+ 		keymod = (LockMask | ControlMask | ShiftMask)
+@@ -1487,6 +1502,19 @@
+ 	freeMagic(pdata);
+ 	XFreeGC(grXdpy, grXcopyGC);
+     }
++    else if (w != GR_LOCK_SCREEN)
++    {
++	/* On-screen window: magic renders to GL_FRONT and never swaps, so the
++	 * X server would show those draws immediately.  On the EGL/GLES stack
++	 * (gl4es over ANGLE) nothing reaches the screen until eglSwapBuffers,
++	 * which libx11-compat issues from glXSwapBuffers.  Present the finished
++	 * frame here, where a real window's drawing has just been unlocked.
++	 * GR_LOCK_SCREEN is the whole-screen lock (cursor loading, style setup),
++	 * not a real window: presenting it would swap a pbuffer-backed drawable
++	 * whose gl4es state is not yet current and crash during early init.
++	 */
++	glXSwapBuffers(grXdpy, (GLXDrawable)toglCurrent.windowid);
++    }
+     grSimpleUnlock(w);
+ }
+ 
+--- a/graphics/wind3d.h
++++ b/graphics/wind3d.h
+@@ -31,6 +31,9 @@
+ 
+     int		width;		/* Window width */
+     int		height;		/* Window height */
++    bool	dragging;	/* Button1 drag rotates the view */
++    int		drag_x;		/* Last drag X position */
++    int		drag_y;		/* Last drag Y position */
+ 
+     int		level;		/* rendering level (0 = coarse) */
+ 
+@@ -48,6 +51,7 @@
+ 
+ extern void w3dSetProjection();
+ extern void W3Dcommand();
++extern bool W3DhandleEvent();
+ extern void W3Dinit();
+ 
+ /* Command procedures */
+--- a/tcltk/wrapper.tcl
++++ b/tcltk/wrapper.tcl
+@@ -1611,5 +1611,9 @@ proc magic::render3d {{cell ""}} {
+    pack .render.title.cutbox -side left
+    pack .render.title.msg -side right -fill x -expand true
+-   pack .render.magic -expand true -fill both -side bottom
++   pack .render.magic -side bottom
++   update idletasks
++   wm geometry .render [winfo reqwidth .render]x[winfo reqheight .render]
++   update idletasks
++   wm resizable .render false false
+    bind .render.magic <Enter> {focus %W}
+ }

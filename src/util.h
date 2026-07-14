@@ -30,7 +30,22 @@
 #define LOG(msg, args...) ((void) (0 && fprintf(stderr, msg, ##args)))
 #endif /* DEBUG_LIBX11_COMPAT */
 
-#define WARN_UNIMPLEMENTED LOG("Hit unimplemented function %s.\n", __func__)
+/* Debug builds always log the hit; release builds log only when the env flag is
+ * set (see libx11CompatWarnUnimplemented below), so the default release path
+ * stays a no-op. The do/while wrapper lets a plain WARN_UNIMPLEMENTED;
+ * statement expand safely in any context.
+ */
+#ifdef DEBUG_LIBX11_COMPAT
+#define WARN_UNIMPLEMENTED_ENABLED 1
+#else
+#define WARN_UNIMPLEMENTED_ENABLED libx11CompatWarnUnimplemented()
+#endif /* DEBUG_LIBX11_COMPAT */
+
+#define WARN_UNIMPLEMENTED                                                 \
+    do {                                                                   \
+        if (WARN_UNIMPLEMENTED_ENABLED)                                    \
+            fprintf(stderr, "Hit unimplemented function %s.\n", __func__); \
+    } while (0)
 
 /* Unconditional diagnostic trace, independent of DEBUG_LIBX11_COMPAT and of
  * stderr (curses apps such as xwpe take over the terminal, so stderr LOG output
@@ -54,7 +69,30 @@ void compatTrace(const char *fmt, ...);
 #define LIBX11_COMPAT_HIDDEN
 #endif
 
+/* Returns nonzero when LIBX11_COMPAT_WARN_UNIMPLEMENTED is set to a non-empty,
+ * non-"0" value. Lets a release build surface unimplemented-call coverage on
+ * demand (e.g. a missing-Xlib gate driving a real app) without a debug rebuild.
+ * Internal helper in the sense that clients do not call it directly, but
+ * deliberately exported (not marked hidden): sibling compat libraries
+ * (libXmu-compat, libXext-compat, ...) are built from sources that expand
+ * WARN_UNIMPLEMENTED and link against libX11-compat for this helper, so it must
+ * stay resolvable in the dynamic symbol table.
+ */
+int libx11CompatWarnUnimplemented(void);
+
 #include "X11/Xlib.h"
+
+Bool compatSelfScalingToolkitLoaded(void);
+Bool compatGtkCoreFontToolkitLoaded(void);
+Bool compatXtToolkitLoaded(void);
+
+/* True when the loaded toolkit set gets its X11 geometry promoted to backing
+ * pixels: none of the self-scaling, GTK core-font, or Xt toolkits is present.
+ * Window geometry promotion and core-font scaling both gate on this, so they
+ * share one predicate instead of each spelling out the toolkit checks and
+ * drifting apart.
+ */
+Bool compatHiDpiPromoteToolkits(void);
 
 typedef struct {
     void **array;

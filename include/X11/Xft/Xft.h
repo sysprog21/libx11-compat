@@ -2,6 +2,7 @@
 #define X11_XFT_XFT_H
 
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/extensions/Xrender.h>
 #include <fontconfig/fontconfig.h>
 
@@ -22,6 +23,8 @@ typedef FcChar8 XftChar8;
 typedef FcChar16 XftChar16;
 typedef FcChar32 XftChar32;
 typedef FcResult XftResult;
+typedef FcPattern XftPattern;
+typedef FcFontSet XftFontSet;
 
 #define XftTypeVoid FcTypeVoid
 #define XftTypeInteger FcTypeInteger
@@ -68,6 +71,23 @@ typedef FcResult XftResult;
 #define XFT_CHAR_HEIGHT "charheight"
 #define XFT_MATRIX "matrix"
 #define XFT_CORE "core"
+#define XFT_SPACING FC_SPACING
+
+/* Xft re-exports fontconfig's weight, slant, and spacing enum values and its
+ * result codes under XFT_/Xft names; clients (Tk) reference either spelling.
+ */
+#define XFT_WEIGHT_LIGHT FC_WEIGHT_LIGHT
+#define XFT_WEIGHT_MEDIUM FC_WEIGHT_MEDIUM
+#define XFT_WEIGHT_BOLD FC_WEIGHT_BOLD
+#define XFT_SLANT_ROMAN FC_SLANT_ROMAN
+#define XFT_SLANT_ITALIC FC_SLANT_ITALIC
+#define XFT_SLANT_OBLIQUE FC_SLANT_OBLIQUE
+#define XFT_PROPORTIONAL FC_PROPORTIONAL
+#define XFT_MONO FC_MONO
+#define XftResultMatch FcResultMatch
+#define XftResultNoMatch FcResultNoMatch
+#define XftResultTypeMismatch FcResultTypeMismatch
+#define XftResultNoId FcResultNoId
 
 typedef struct _XftFont {
     int ascent;
@@ -91,6 +111,13 @@ typedef struct _XftGlyphSpec {
     short y;
 } XftGlyphSpec;
 
+typedef struct _XftGlyphFontSpec {
+    struct _XftFont *font;
+    FT_UInt glyph;
+    short x;
+    short y;
+} XftGlyphFontSpec;
+
 Bool XftInit(const char *config);
 int XftGetVersion(void);
 Bool XftDefaultHasRender(Display *dpy);
@@ -104,6 +131,11 @@ XftFont *XftFontOpen(Display *dpy, int screen, ...);
 XftFont *XftFontOpenName(Display *dpy, int screen, const char *name);
 XftFont *XftFontOpenPattern(Display *dpy, FcPattern *pattern);
 XftFont *XftFontOpenXlfd(Display *dpy, int screen, const char *xlfd);
+FcPattern *XftXlfdParse(const char *xlfd_orig,
+                        FcBool ignore_scalable,
+                        FcBool complete);
+FcFontSet *XftListFonts(Display *dpy, int screen, ...);
+#define XftFontSetDestroy FcFontSetDestroy
 void XftFontClose(Display *dpy, XftFont *font);
 XftDraw *XftDrawCreate(Display *dpy,
                        Drawable drawable,
@@ -116,6 +148,11 @@ Bool XftDrawSetClipRectangles(XftDraw *draw,
                               int y_origin,
                               const XRectangle *rects,
                               int n);
+Bool XftDrawSetClip(XftDraw *draw, Region region);
+void XftDrawGlyphFontSpec(XftDraw *draw,
+                          const XftColor *color,
+                          const XftGlyphFontSpec *glyphs,
+                          int len);
 Display *XftDrawDisplay(XftDraw *draw);
 Drawable XftDrawDrawable(XftDraw *draw);
 Colormap XftDrawColormap(XftDraw *draw);

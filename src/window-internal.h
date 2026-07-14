@@ -123,6 +123,15 @@ void computeVisibleRegion(Window window, pixman_region32_t *out);
 const pixman_region32_t *ensureVisibleRegion(Window window);
 void invalidateVisibleRegionForTopLevel(Window window);
 
+/* Tear down a window's renderer. Every per-renderer texture cache (put-image
+ * staging, glyph text, stipple stamps) must be dropped before the renderer is
+ * destroyed, because SDL frees a renderer's textures with it and a surviving
+ * cache entry would then dangle. Routing all destroys through here keeps the
+ * invalidation set in one place instead of copied at each call site. No-op on a
+ * NULL renderer.
+ */
+void destroyWindowRenderer(SDL_Renderer *renderer);
+
 /* Motif WM hints bit layout. Used by both the XChangeProperty _MOTIF_WM_HINTS
  * write routing and the synthesized read in XGetWindowProperty; centralizing
  * the constants here keeps the two paths in sync.

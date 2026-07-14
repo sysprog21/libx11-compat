@@ -7,6 +7,41 @@
 typedef int (*errorHandlerFunction)(Display *, XErrorEvent *);
 static errorHandlerFunction error_handler = defaultErrorHandler;
 
+/* Repeat-collapse state for defaultErrorHandler: an unbroken run of the
+ * identical (code, request) prints once and then a tally when the run ends. The
+ * run can still be open when the process exits (the client keeps reissuing the
+ * bad request right up to shutdown), so an atexit hook flushes the final tally
+ * instead of silently dropping it. A multi-threaded client (XInitThreads) can
+ * deliver protocol errors from several threads at once, so these counters and
+ * the one-shot atexit registration are guarded by the same side-table lock the
+ * request tracking uses (see acquireLastRequestLock).
+ */
+static unsigned char errRepeatLastCode;
+static unsigned char errRepeatLastRequest;
+static unsigned long errRepeatCount;
+
+/* Caller must hold the side-table lock. Snapshot and clear the current repeat
+ * run, returning its length so the caller can print the tally after releasing
+ * the lock. The fprintf must stay out of the locked region, or a slow stderr
+ * sink would stall all request bookkeeping and error handling.
+ */
+static unsigned long takeRepeatedErrorTallyLocked(void)
+{
+    unsigned long count = errRepeatCount;
+    errRepeatCount = 0;
+    return count;
+}
+
+/* Print the collapsed-repeat tally for a run of count identical errors. Call
+ * only after releasing the side-table lock.
+ */
+static void printRepeatedErrorTally(unsigned long count)
+{
+    if (count > 1)
+        fprintf(stderr, "  (previous error repeated %lu more times)\n",
+                count - 1);
+}
+
 /* Per-Display last request code tracking. The upstream _XDisplay struct has no
  * request_code slot, so a side table keyed by Display* lets independent Display
  * connections record their last request without clobbering each other.
@@ -71,6 +106,21 @@ static void unlockSide(SDL_mutex *lk)
 {
     if (lk)
         SDL_UnlockMutex(lk);
+}
+
+/* atexit hook: flush any still-open repeat run under the lock. Every holder of
+ * this lock releases it before any fprintf or exit and none call exit while
+ * holding it, so acquiring it here cannot self-deadlock or block on a stuck
+ * holder; taking it keeps the errRepeatCount read/reset free of a data race
+ * with a concurrent error still arriving at shutdown.
+ */
+static void flushRepeatedErrorTallyAtExit(void)
+{
+    SDL_mutex *lk = acquireLastRequestLock();
+    lockSide(lk);
+    unsigned long count = takeRepeatedErrorTallyLocked();
+    unlockSide(lk);
+    printRepeatedErrorTally(count);
 }
 
 static LastRequestEntry *findLastRequestEntryLocked(Display *display)
@@ -219,6 +269,33 @@ int defaultErrorHandler(Display *display, XErrorEvent *event)
             break;
         }
     }
+    /* Now that the handler returns instead of exiting, a client that reissues
+     * the same bad request every frame (a Tk redraw hitting one over-strict
+     * check, say) would flood stderr forever. Collapse an unbroken run of the
+     * identical (code, request) into one line plus a final tally, so a genuine
+     * new error still prints immediately.
+     */
+    static Bool tallyFlushRegistered;
+    SDL_mutex *tallyLock = acquireLastRequestLock();
+    lockSide(tallyLock);
+    if (!tallyFlushRegistered) {
+        tallyFlushRegistered = True;
+        atexit(flushRepeatedErrorTallyAtExit);
+    }
+    Bool sameAsLast = errRepeatCount > 0 &&
+                      errRepeatLastCode == event->error_code &&
+                      errRepeatLastRequest == event->request_code;
+    if (sameAsLast) {
+        errRepeatCount++;
+        unlockSide(tallyLock);
+        return 0;
+    }
+    unsigned long pendingTally = takeRepeatedErrorTallyLocked();
+    errRepeatLastCode = event->error_code;
+    errRepeatLastRequest = event->request_code;
+    errRepeatCount = 1;
+    unlockSide(tallyLock);
+    printRepeatedErrorTally(pendingTally);
     if (format) {
         fprintf(stderr, format, event->request_code);
     } else {
@@ -227,7 +304,30 @@ int defaultErrorHandler(Display *display, XErrorEvent *event)
     }
     fflush(stdout);
     fflush(stderr);
-    exit(1);
+    /* Deliberate divergence from Xlib. Real Xlib's default handler is fatal for
+     * a decodable core error (_XDefaultError prints, then exit(1)). We instead
+     * print and return, because on this in-process layer a single non-fatal
+     * BadValue (an over-strict XCopyArea during a Tk file-dialog scroll, say)
+     * was killing the whole app, and toolkits (Tk, Motif) are written assuming
+     * a benign protocol error is survivable. Every in-tree handleError caller
+     * returns an error code right after the call, so control flow stays well
+     * defined once this no longer exits. Set LIBX11_COMPAT_FATAL_ERRORS to
+     * restore the fatal behavior when debugging, so a masked error that leaves
+     * a client in a state it assumed unreachable is not hidden. Resolve the env
+     * flag once, race-free for XInitThreads clients: two threads hitting an
+     * error concurrently would otherwise race the lazy init. The value is
+     * idempotent, so an atomic load/store (no lock) is enough; -1 marks
+     * unresolved.
+     */
+    static int fatalErrors = -1;
+    int fatal = __atomic_load_n(&fatalErrors, __ATOMIC_ACQUIRE);
+    if (fatal < 0) {
+        fatal = getenv("LIBX11_COMPAT_FATAL_ERRORS") != NULL;
+        __atomic_store_n(&fatalErrors, fatal, __ATOMIC_RELEASE);
+    }
+    if (fatal)
+        exit(1);
+    return 0;
 }
 
 inline void handleOutOfMemory(int type,

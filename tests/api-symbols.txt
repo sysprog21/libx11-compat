@@ -585,6 +585,7 @@ XcmsVisualOfCCC
 XkbKeycodeToKeysym
 XkbKeysymToModifiers
 XkbLookupKeySym
+XkbOpenDisplay
 XkbQueryExtension
 XkbSetDetectableAutoRepeat
 XkbTranslateKeySym
@@ -683,5 +684,6 @@ glXQueryServerString
 glXQueryVersion
 glXSwapBuffers
 glXSwapIntervalEXT
+glXUseXFont
 glXWaitGL
 glXWaitX

@@ -586,7 +586,8 @@ static EGLContext createEglContext(EGLConfig config,
     else if (pref == CTX_API_GLES)
         desktop = False;
     else /* CTX_API_AUTO: desktop GL if the provider offers it (Mesa), else GLES
-          * (ANGLE). This is the correct default for a plain GLX context. */
+          * (ANGLE). This is the correct default for a plain GLX context.
+          */
         desktop = (eglProviderClientApi() == EGL_CLIENT_API_DESKTOP);
 
     EGLenum apiType = desktop ? EGL_OPENGL_API : EGL_OPENGL_ES_API;
@@ -1449,6 +1450,7 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
     const EglApi *egl = eglApi();
 
     EGLSurface surface = EGL_NO_SURFACE;
+    Bool onScreen = False;
     if (drawable == currentDrawable && currentContext) {
         /* Swap is the per-frame checkpoint for a render loop that binds once
          * and then loops render+swap: pick up a window resize here and rebind
@@ -1462,6 +1464,11 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
          */
         refreshDrawableSurfaceIfResized(dpy, drawable);
         surface = surfaceForDrawable(dpy, drawable, currentContext->config);
+        pthread_mutex_lock(&glxLock);
+        int drawIdx = findDrawableLocked(drawable);
+        if (drawIdx >= 0)
+            onScreen = drawableSurfaces[drawIdx].onScreen;
+        pthread_mutex_unlock(&glxLock);
         EGLSurface readSurface = surface;
         if (currentReadDrawable != drawable) {
             refreshDrawableSurfaceIfResized(dpy, currentReadDrawable);
@@ -1516,11 +1523,13 @@ void glXSwapBuffers(Display *dpy, GLXDrawable drawable)
          */
         pthread_mutex_lock(&glxLock);
         int idx = findDrawableLocked(drawable);
-        if (idx >= 0)
+        if (idx >= 0) {
             surface = drawableSurfaces[idx].surface;
+            onScreen = drawableSurfaces[idx].onScreen;
+        }
         pthread_mutex_unlock(&glxLock);
     }
-    if (surface != EGL_NO_SURFACE)
+    if (surface != EGL_NO_SURFACE && onScreen)
         egl->swapBuffers(eglDefaultDisplay(), surface);
 
     /* Embedded GL child widget: a WINDOW backed by an offscreen pbuffer (it is
@@ -1569,6 +1578,37 @@ static GlPixelStoreiFn compositePixelStorei = NULL;
 static void (*compositeFlush)(void) = NULL;
 static pthread_once_t compositeResolveOnce = PTHREAD_ONCE_INIT;
 
+static void *resolveGl4esSymbol(void *initSymbol, const char *name)
+{
+    Dl_info info;
+    if (!initSymbol || !dladdr(initSymbol, &info) || !info.dli_fname)
+        return NULL;
+    void *handle = dlopen(info.dli_fname, RTLD_LAZY | RTLD_LOCAL);
+    if (!handle) {
+        /* dli_fname is the running executable when gl4es is linked statically
+         * into the client: a non-PIE executable cannot be reopened by path, so
+         * dlopen fails here. Fall back to the main-program handle, which
+         * resolves the client's exported gl4es symbols. Missing this leaves the
+         * composite readback with the provider's raw glFlush, which does not
+         * drain gl4es's batch, so a sparse single-frame client (glxdemo) reads
+         * back blank.
+         */
+        handle = dlopen(NULL, RTLD_LAZY | RTLD_LOCAL);
+        if (!handle)
+            return NULL;
+        void *sym = dlsym(handle, name);
+        dlclose(handle);
+        return sym;
+    }
+    /* dladdr found this library via a symbol already in use, so it is loaded
+     * and stays mapped after we drop the reference this dlopen just took. The
+     * resolved pointer remains valid; releasing the handle avoids leaking it.
+     */
+    void *sym = dlsym(handle, name);
+    dlclose(handle);
+    return sym;
+}
+
 static void resolveCompositeReadback(void)
 {
     /* A statically-linked desktop-GL translation layer (gl4es), probed by its
@@ -1581,7 +1621,8 @@ static void resolveCompositeReadback(void)
      * safe and is needed when a provider's eglGetProcAddress returns null for
      * core GL (legal before EGL 1.5).
      */
-    Bool haveGl4es = dlsym(RTLD_DEFAULT, "initialize_gl4es") != NULL;
+    void *gl4esInitSymbol = dlsym(RTLD_DEFAULT, "initialize_gl4es");
+    Bool haveGl4es = gl4esInitSymbol != NULL;
     Bool systemGlSafe = haveGl4es;
 #ifndef __APPLE__
     systemGlSafe = True;
@@ -1620,7 +1661,8 @@ static void resolveCompositeReadback(void)
      * provider's own glFlush (or nothing) is correct and safe.
      */
     if (haveGl4es)
-        compositeFlush = (void (*)(void)) dlsym(RTLD_DEFAULT, "glFlush");
+        compositeFlush =
+            (void (*)(void)) resolveGl4esSymbol(gl4esInitSymbol, "glFlush");
     if (!compositeFlush)
         compositeFlush = (void (*)(void)) eglApi()->getProcAddress("glFlush");
 }
@@ -1797,6 +1839,20 @@ void glXWaitX(void)
     /* No-op; see glXWaitGL. */
 }
 
+void glXUseXFont(Font font, int first, int count, int listBase)
+{
+    (void) font;
+    (void) first;
+    (void) count;
+    (void) listBase;
+    /* Unsupported: building GL bitmap display lists from an X font has no path
+     * on the EGL provider. Surface it as an explicit unimplemented stub so a
+     * legacy client rendering text this way gets a diagnostic under
+     * LIBX11_COMPAT_WARN_UNIMPLEMENTED instead of silently blank glyphs.
+     */
+    WARN_UNIMPLEMENTED;
+}
+
 Bool glXQueryExtension(Display *dpy, int *errorBase, int *eventBase)
 {
     (void) dpy;
@@ -1903,6 +1959,7 @@ static const struct {
      (__GLXextFuncPtr) glXCreateContextAttribsARB},
     {"glXCreateWindow", (__GLXextFuncPtr) glXCreateWindow},
     {"glXDestroyWindow", (__GLXextFuncPtr) glXDestroyWindow},
+    {"glXUseXFont", (__GLXextFuncPtr) glXUseXFont},
     {"glXCreatePbuffer", (__GLXextFuncPtr) glXCreatePbuffer},
     {"glXDestroyPbuffer", (__GLXextFuncPtr) glXDestroyPbuffer},
     {"glXQueryDrawable", (__GLXextFuncPtr) glXQueryDrawable},

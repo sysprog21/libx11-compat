@@ -13,6 +13,7 @@
 #include <Xm/RowColumn.h>
 #include <Xm/Xm.h>
 
+#include "util.h"
 #include "window.h"
 
 static void exit_cb(XtPointer client_data, XtIntervalId *id)
@@ -418,6 +419,11 @@ int main(int argc, char **argv)
                                    argv, NULL, NULL, 0);
     if (!shell) {
         fprintf(stderr, "XtAppInitialize returned NULL\n");
+        return 1;
+    }
+    if (!compatSelfScalingToolkitLoaded()) {
+        fprintf(stderr, "Motif toolkit was not detected as self-scaling\n");
+        XtDestroyWidget(shell);
         return 1;
     }
 

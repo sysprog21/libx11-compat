@@ -122,12 +122,14 @@ cinepaint-clean:
     check-smoke-cinepaint-first-run-ignore \
     check-smoke-cinepaint-about \
     check-smoke-cinepaint-palette-png \
+    check-smoke-cinepaint-file-menu \
     check-cinepaint-no-unexpected-stubs check-cinepaint-no-host-x11
 check-smoke-cinepaint-startup: $(UI_SMOKE_OUT_ROOT)/cinepaint-startup/.stamp
 check-smoke-cinepaint-canvas: $(UI_SMOKE_OUT_ROOT)/cinepaint-canvas/.stamp
 check-smoke-cinepaint-first-run-ignore: $(UI_SMOKE_OUT_ROOT)/cinepaint-first-run-ignore/.stamp
 check-smoke-cinepaint-about: $(UI_SMOKE_OUT_ROOT)/cinepaint-about/.stamp
 check-smoke-cinepaint-palette-png: $(UI_SMOKE_OUT_ROOT)/cinepaint-palette-png/.stamp
+check-smoke-cinepaint-file-menu: $(UI_SMOKE_OUT_ROOT)/cinepaint-file-menu/.stamp
 
 $(UI_SMOKE_OUT_ROOT)/cinepaint-startup/.stamp: FORCE $(CINEPAINT_BUILD_STAMP)
 	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-startup/home
@@ -161,16 +163,49 @@ $(UI_SMOKE_OUT_ROOT)/cinepaint-startup/.stamp: FORCE $(CINEPAINT_BUILD_STAMP)
 	    --env LIBX11_COMPAT_WARN_UNIMPLEMENTED=1
 	$(Q)touch $@
 
+$(UI_SMOKE_OUT_ROOT)/cinepaint-file-menu/.stamp: FORCE $(CINEPAINT_BUILD_STAMP)
+	$(Q)rm -rf $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home
+	$(Q)mkdir -p \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/brushes \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/gradients \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/palettes \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/patterns \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/plug-ins \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/gfig \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/tmp \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/scripts \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/gflares
+	$(Q)cp $(CINEPAINT_WORK_DIR)/hollywood/data/cinepaintrc $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/cinepaintrc
+	$(Q)printf '%s\n' '(dont-show-tips)' >> $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/cinepaintrc
+	$(Q)cp $(CINEPAINT_WORK_DIR)/hollywood/docs/gtkrc $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home/.cinepaint/gtkrc
+	$(Q)$(PYTHON) scripts/run-ui-replay.py \
+	    --name cinepaint-file-menu \
+	    --app $(abspath $(CINEPAINT_BIN)) \
+	    --app-arg=--no-splash \
+	    --workdir $(abspath $(CINEPAINT_WORK_DIR))/hollywood \
+	    --replay tests/ui/replays/cinepaint-file-menu.replay \
+	    --out-root $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu \
+	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --in-process-snapshots \
+	    --offscreen \
+	    --env DYLD_LIBRARY_PATH=$(abspath $(CINEPAINT_CMAKE_DIR)):$(abspath $(GTK1_CMAKE_DIR)):$(abspath $(GTK1_LIB_ALIASES)):$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \
+	    --env LD_LIBRARY_PATH=$(abspath $(CINEPAINT_CMAKE_DIR)):$(abspath $(GTK1_CMAKE_DIR)):$(abspath $(GTK1_LIB_ALIASES)):$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH} \
+	    --env HOME=$(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/home \
+	    --env LIBX11_COMPAT_WARN_UNIMPLEMENTED=1
+	$(Q)touch $@
+
 check-cinepaint-no-unexpected-stubs: check-smoke-gtk1 check-smoke-cinepaint-startup \
-    check-smoke-cinepaint-canvas check-smoke-cinepaint-first-run-ignore \
-    check-smoke-cinepaint-about check-smoke-cinepaint-palette-png
+	    check-smoke-cinepaint-canvas check-smoke-cinepaint-first-run-ignore \
+	    check-smoke-cinepaint-about check-smoke-cinepaint-palette-png \
+	    check-smoke-cinepaint-file-menu
 	$(Q)! rg -n "WARN_UNIMPLEMENTED" \
 	    $(abspath $(UI_SMOKE_OUT_ROOT))/gtk1-smoke/logs \
 	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-startup/logs \
 	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-canvas/logs \
 	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-first-run-ignore/logs \
 	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-about/logs \
-	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-palette-png/logs
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-palette-png/logs \
+	    $(abspath $(UI_SMOKE_OUT_ROOT))/cinepaint-file-menu/logs
 
 check-cinepaint-no-host-x11: $(GTK1_SMOKE_BIN) $(CINEPAINT_BUILD_STAMP)
 	$(Q)if [ "$(UNAME_S)" = "Darwin" ]; then \

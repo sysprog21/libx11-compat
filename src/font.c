@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <limits.h>
+#include <math.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 
@@ -513,63 +514,54 @@ static int clampFontSize(int size)
     return size;
 }
 
-/* Scale a resolved 1x pixel size by the display-global HiDPI factor so glyphs
- * render at the same physical size as before while filling the physical-pixel
- * window geometry realizeTopLevelWindow promotes to. requestedFontSize itself
- * stays unscaled because callers compare its result against literal 1x pixel
- * sizes (the 14/16/19 fixed-font checks); only the open/metric paths take the
- * scale. A no-op when the global factor is 1.0 (non-HiDPI hosts, CI dummy).
+static Bool coreFontsUseHiDpiScale(void)
+{
+    /* Scale core fonts only for apps whose geometry is promoted; a uniform
+     * upscale app (self-scaling, GTK core-font, or Xt/Athena) must keep 1x
+     * metrics or the font scale and the present upscale compound. The shared
+     * predicate keeps this in lockstep with the geometry-promotion path.
+     */
+    return compatHiDpiPromoteToolkits();
+}
+
+/* Backing scale used to enlarge core fonts. Clamp to a 1x floor so a
+ * low-density or anomalous SDL size ratio below 1.0 cannot shrink text below
+ * its requested size; the promotion path only ever enlarges, never reduces.
  */
+static double coreFontHiDpiScale(void)
+{
+    double scale = compatGlobalHiDpiScale();
+    return scale < 1.0 ? 1.0 : scale;
+}
+
 static int hiDpiScaledPixelSize(int size)
 {
-    double scale = compatGlobalHiDpiScale();
-    if (scale <= 1.0)
+    if (!coreFontsUseHiDpiScale())
         return size;
-    /* size is already a resolved 1x pixel size bounded by requestedFontSize /
-     * clampFontSize, so re-applying the MAX_FONT_SIZE cap here would clamp the
-     * physical-pixel size back down and leave large fonts too small on Retina.
-     * Keep the MIN floor and only guard against int overflow from the multiply.
-     */
-    double scaled = (double) size * scale + 0.5;
-    if (scaled > (double) INT_MAX)
-        scaled = (double) INT_MAX;
-    int result = (int) scaled;
-    if (result < MIN_FONT_SIZE)
-        result = MIN_FONT_SIZE;
-    return result;
+    double scaled = (double) size * coreFontHiDpiScale();
+    if (scaled < MIN_FONT_SIZE)
+        return MIN_FONT_SIZE;
+    return scaled > INT_MAX ? INT_MAX : (int) lround(scaled);
 }
 
-/* Nearest-integer HiDPI factor for the embedded 6x13 bitmap. The bitmap is
- * painted one source pixel per integer-sized block (a fractional factor would
- * blur the cell), so both the renderer and the metrics reported for
- * bitmap-drawn fonts must use this same integer factor or the advance grid
- * clients measure drifts from the pixels actually painted. A no-op at 1x.
- */
 static int fixedBitmapHiDpiScale(void)
 {
-    double scale = compatGlobalHiDpiScale();
-    int rounded = scale > 1.0 ? (int) (scale + 0.5) : 1;
-    return rounded < 1 ? 1 : rounded;
+    if (!coreFontsUseHiDpiScale())
+        return 1;
+    int scale = (int) lround(compatGlobalHiDpiScale());
+    return scale > 1 ? scale : 1;
 }
 
-/* Scale a 1x core font metric (ascent/descent/advance width) by the HiDPI
- * factor so the metrics reported to clients match the HiDPI-scaled glyph
- * rendering. A width of 0 means "not fixed width" and passes through unchanged.
- */
 static short hiDpiScaledMetric(short value)
 {
-    double scale = compatGlobalHiDpiScale();
-    if (scale <= 1.0 || value == 0)
+    if (!coreFontsUseHiDpiScale() || value == 0)
         return value;
-    /* value returns as a short, so a large advance width scaled by a high
-     * factor can exceed SHRT_MAX and wrap negative. Clamp to the short range
-     * (both ends, since a negative advance is meaningless) before the cast. */
-    double scaled = (double) value * scale + (value > 0 ? 0.5 : -0.5);
-    if (scaled > (double) SHRT_MAX)
-        scaled = (double) SHRT_MAX;
-    else if (scaled < (double) SHRT_MIN)
-        scaled = (double) SHRT_MIN;
-    return (short) scaled;
+    double scaled = (double) value * coreFontHiDpiScale();
+    if (scaled > SHRT_MAX)
+        return SHRT_MAX;
+    if (scaled < SHRT_MIN)
+        return SHRT_MIN;
+    return (short) lround(scaled);
 }
 
 /* Fixed-bitmap variant of hiDpiScaledMetric: fonts drawn by
@@ -583,7 +575,12 @@ static short fixedBitmapScaledMetric(short value)
 {
     if (value == 0)
         return value;
-    return (short) (value * fixedBitmapHiDpiScale());
+    int scaled = value * fixedBitmapHiDpiScale();
+    if (scaled > SHRT_MAX)
+        return SHRT_MAX;
+    if (scaled < SHRT_MIN)
+        return SHRT_MIN;
+    return (short) scaled;
 }
 
 static int decipointsToPixelSize(int decipoints)
@@ -1310,11 +1307,16 @@ TTF_Font *compatFontOpenFamilyFallbackForChar(const char *familyHint,
 static FontCacheEntry *findFontCacheEntryByName(const char *name)
 {
     /* Exact cache match wins so a real scanned font is never shadowed by an
-     * alias prefix. Aliases only kick in when no entry matches.
+     * alias prefix. Aliases only kick in when no entry matches. Tk's font
+     * matching (GetScreenFont) can hand XLoadQueryFont a NULL family name;
+     * without this guard the strcmp below dereferences NULL. Treat it as a miss
+     * so XLoadQueryFont returns NULL and the caller tries the next candidate.
      */
+    if (!name)
+        return NULL;
     for (size_t i = 0; i < fontCache->length; i++) {
         FontCacheEntry *entry = fontCache->array[i];
-        if (!strcmp(entry->XLFName, name))
+        if (entry->XLFName && !strcmp(entry->XLFName, name))
             return entry;
     }
     if (strchr(name, '*') || strchr(name, '?')) {
@@ -2413,9 +2415,9 @@ static Bool renderFixedBitmapText(Drawable drawable,
     /* When realizeTopLevelWindow promotes a window to physical pixels the core
      * metrics reported for the fixed aliases are HiDPI-scaled, so the embedded
      * 6x13 cell must be drawn at the same integer factor or the glyphs shrink
-     * and drift out of the advance grid clients measured. Nearest-integer
-     * scale keeps each source pixel a crisp square block. A no-op at 1x. The
-     * metrics reported by coreFontMetricsForName use this same factor via
+     * and drift out of the advance grid clients measured. Nearest-integer scale
+     * keeps each source pixel a crisp square block. A no-op at 1x. The metrics
+     * reported by coreFontMetricsForName use this same factor via
      * fixedBitmapScaledMetric, so measured advance == painted cell width.
      */
     const int scale = fixedBitmapHiDpiScale();

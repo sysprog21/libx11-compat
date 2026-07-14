@@ -361,6 +361,10 @@ static int ignored_io_error(Display *display)
 
 static int test_smoke(Display *display)
 {
+    /* The default error handler matches Xlib: it reports a protocol error and
+     * returns rather than terminating the process. Fire an invalid request (bad
+     * depth) in a child and confirm the child survives to exit cleanly.
+     */
     pid_t pid = fork();
     CHECK(pid >= 0, "fork for default error handler check failed");
     if (pid == 0) {
@@ -372,9 +376,8 @@ static int test_smoke(Display *display)
     int status = 0;
     CHECK(waitpid(pid, &status, 0) == pid,
           "waitpid for default error handler check failed");
-    CHECK(
-        (WIFEXITED(status) && WEXITSTATUS(status) != 0) || WIFSIGNALED(status),
-        "default error handler did not terminate on protocol error");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "default error handler must report and return, not terminate");
 
     int minKeycode = 0;
     int maxKeycode = 0;
@@ -1926,6 +1929,43 @@ static int test_pixmaps(Display *display)
     CHECK(pixel_is_rgb(surface, 4, 4, 255, 255, 255),
           "XCopyArea to pixmap damaged unrelated pixels");
     SDL_FreeSurface(surface);
+
+    Window copyParent =
+        XCreateSimpleWindow(display, root, 30, 30, 8, 8, 0, 0, 0xFFFFFFFF);
+    CHECK(copyParent != None, "InputOnly XCopyArea parent creation failed");
+    CHECK(XMapWindow(display, copyParent),
+          "InputOnly XCopyArea parent map failed");
+    CHECK(XCopyArea(display, copySrc, copyParent, copyGc, 2, 2, 3, 3, 0, 0),
+          "baseline XCopyArea to parent window failed");
+    GET_RENDERER(copyParent, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface != NULL,
+          "getRenderSurface for baseline XCopyArea parent failed");
+    CHECK(pixel_is_rgb(surface, 0, 0, 0, 0, 0),
+          "baseline XCopyArea to parent window did not copy source pixels");
+    SDL_FreeSurface(surface);
+    CHECK(XSetForeground(display, copyGc, 0xFFFFFFFF),
+          "InputOnly XCopyArea parent reset color failed");
+    CHECK(XFillRectangle(display, copyParent, copyGc, 0, 0, 8, 8),
+          "InputOnly XCopyArea parent reset failed");
+    XSetWindowAttributes inputCopyAttrs;
+    memset(&inputCopyAttrs, 0, sizeof(inputCopyAttrs));
+    Window inputCopyChild =
+        XCreateWindow(display, copyParent, 0, 0, 4, 4, 0, CopyFromParent,
+                      InputOnly, CopyFromParent, 0, &inputCopyAttrs);
+    CHECK(inputCopyChild != None, "InputOnly XCopyArea child creation failed");
+    CHECK(XMapWindow(display, inputCopyChild),
+          "InputOnly XCopyArea child map failed");
+    CHECK(XCopyArea(display, copySrc, copyParent, copyGc, 2, 2, 3, 3, 0, 0),
+          "XCopyArea to parent with InputOnly child failed");
+    GET_RENDERER(copyParent, renderer);
+    surface = getRenderSurface(renderer);
+    CHECK(surface != NULL,
+          "getRenderSurface for InputOnly XCopyArea parent failed");
+    CHECK(pixel_is_rgb(surface, 0, 0, 0, 0, 0),
+          "InputOnly child incorrectly clipped parent XCopyArea");
+    SDL_FreeSurface(surface);
+    XDestroyWindow(display, copyParent);
 
     /* Non-GXcopy XCopyArea: the raster-op fallback should now respect the GC
      * function. GXxor of opaque white over black yields white, GXand yields
@@ -10596,6 +10636,72 @@ static void *suiteWatchdog(void *unused)
     return NULL;
 }
 
+/* XWarpPointer resolves a destination window plus offset to the logical global
+ * screen point SDL warps to. The pre-fix code translated root -> dest_window,
+ * which yields the negated destination origin, so a window away from (0,0)
+ * warped to the wrong place (and a promoted HiDPI window compounded it). Verify
+ * the forward mapping lands at the top-level's real SDL host origin plus the
+ * offset. Runs at scale 1.0 under the dummy driver, which pins the sign fix and
+ * the child-offset accumulation; the HiDPI divide is a no-op there.
+ */
+static int test_warp_pointer_target(Display *display)
+{
+    Window root = DefaultRootWindow(display);
+    Window win = XCreateSimpleWindow(display, root, 60, 40, 200, 150, 0, 0, 0);
+    CHECK(win != None, "warp-target: window creation failed");
+    XMapWindow(display, win);
+    XEvent out;
+    while (XCheckTypedWindowEvent(display, win, Expose, &out)) {
+    }
+    WindowStruct *ws = GET_WINDOW_STRUCT(win);
+    CHECK(ws->sdlWindow != NULL, "warp-target: SDL window not realized");
+    int hostX = 0, hostY = 0;
+    SDL_GetWindowPosition(ws->sdlWindow, &hostX, &hostY);
+
+    int gx = 0, gy = 0;
+    CHECK(libx11CompatWarpTargetGlobal(win, 25, 30, &gx, &gy),
+          "warp-target: mapping a realized top-level failed");
+    CHECK(
+        gx == hostX + 25 && gy == hostY + 30,
+        "warp-target: destination did not resolve to host origin plus offset");
+
+    CHECK(libx11CompatWarpTargetGlobal(win, 0, 0, &gx, &gy) && gx == hostX &&
+              gy == hostY,
+          "warp-target: window origin did not map to the SDL host position");
+
+    Window child = XCreateSimpleWindow(display, win, 10, 8, 40, 30, 0, 0, 0);
+    CHECK(child != None, "warp-target: child creation failed");
+    CHECK(libx11CompatWarpTargetGlobal(child, 5, 6, &gx, &gy),
+          "warp-target: mapping a child failed");
+    CHECK(gx == hostX + 10 + 5 && gy == hostY + 8 + 6,
+          "warp-target: child destination did not accumulate its offset");
+
+    /* HiDPI regression: force the top-level to a promoted 2x scale (a real
+     * Retina host; the dummy driver never promotes on its own) and confirm the
+     * physical-to-logical divide is applied. A relative XWarpPointer adds its
+     * offset in this same pixel space before resolving, so this divide is what
+     * keeps a 2x warp from landing twice as far as asked. The scale-1.0 checks
+     * above leave this path untested.
+     */
+    ws->hiDpiPromoted = True;
+    ws->hiDpiScaleX = 2.0;
+    ws->hiDpiScaleY = 2.0;
+    CHECK(libx11CompatWarpTargetGlobal(win, 40, 60, &gx, &gy) &&
+              gx == hostX + 20 && gy == hostY + 30,
+          "warp-target: HiDPI 2x did not halve the physical offset");
+    CHECK(libx11CompatWarpTargetGlobal(win, 0, 0, &gx, &gy) && gx == hostX &&
+              gy == hostY,
+          "warp-target: HiDPI origin drifted from the SDL host position");
+    ws->hiDpiPromoted = False;
+
+    /* An unrealized/root window has no top-level SDL position to resolve. */
+    CHECK(!libx11CompatWarpTargetGlobal(root, 0, 0, &gx, &gy),
+          "warp-target: the root window unexpectedly resolved a position");
+
+    XDestroyWindow(display, win);
+    return 1;
+}
+
 static int run_test(const char *name, int (*test)(Display *))
 {
     g_currentTest = name;
@@ -12398,6 +12504,7 @@ int main(void)
     run_test("regions", test_regions);
     run_test("events", test_events);
     run_test("grab_release_on_unviewable", test_grab_release_on_unviewable);
+    run_test("warp_pointer_target", test_warp_pointer_target);
     run_test("windows", test_windows);
     run_test("fonts", test_fonts);
     run_test("contexts", test_contexts);

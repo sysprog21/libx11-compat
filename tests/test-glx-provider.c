@@ -35,6 +35,7 @@ int main(void)
 {
     /* Select the fake provider before any GLX call triggers the one-shot load.
      */
+    setenv("SDL_VIDEODRIVER", "dummy", 1);
     setenv("LIBX11_COMPAT_EGL", FAKE_EGL_PATH, 1);
 
     Display *dpy = XOpenDisplay(NULL);
@@ -148,10 +149,17 @@ int main(void)
     lastChannels(&er, &eg, &eb, &ea, &ed, &es);
     CHECK(er == 8 && eg == 6 && eb == 5 && ea == 4 && ed == 24 && es == 8,
           "make-current encoded each channel to the correct EGL token");
+    /* Headless, the window has no on-screen surface, so it is backed by a
+     * single-buffered pbuffer. glXSwapBuffers must NOT dispatch eglSwapBuffers
+     * to such a surface: the swap presents nothing and, under ANGLE, recycles
+     * the backing so a later readback returns a stale frame. The offscreen
+     * current window is presented by reading it back and compositing instead,
+     * so the provider swap count stays put.
+     */
     long swapsBefore = swapCount();
     glXSwapBuffers(dpy, win);
-    CHECK(swapCount() == swapsBefore + 1,
-          "glXSwapBuffers dispatched to the provider surface");
+    CHECK(swapCount() == swapsBefore,
+          "glXSwapBuffers does not swap an offscreen pbuffer-backed window");
     CHECK(glXMakeCurrent(dpy, None, NULL), "glXMakeCurrent release");
     CHECK(glXGetCurrentContext() == NULL, "no current context after release");
 

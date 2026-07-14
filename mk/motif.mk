@@ -29,7 +29,8 @@ MOTIF_DEMOS_BUILD_STAMP := $(MOTIF_DEMOS_BUILD_DIR)/.build-stamp
 MOTIF_LIBXM := $(OUT)/libXm.so
 MOTIF_LIBMRM := $(OUT)/libMrm.so
 MOTIF_TEST_BINS := $(OUT)/tests/test-motif-link \
-                   $(OUT)/tests/test-motif-resources
+                   $(OUT)/tests/test-motif-resources \
+                   $(OUT)/tests/test-toolkit-probe
 MOTIF_YACC ?= $(shell if [ -x /opt/homebrew/opt/bison/bin/bison ]; then printf '%s\n' '/opt/homebrew/opt/bison/bin/bison -y'; else printf '%s\n' yacc; fi)
 
 MOTIF_CFLAGS ?= -g -O0
@@ -294,6 +295,14 @@ $(OUT)/tests/test-motif-%: tests/test-motif-%.c $(MOTIF_LIBXM) \
 	    $(MOTIF_LIBXM) $(MOTIF_LIBMRM) $(LIBXT_TARGET) $(TARGET) \
 	    $(LDLIBS) $(MOTIF_LIBS) $(LIBXT_TEST_LDFLAGS) $(TEST_LDFLAGS) \
 	    -o $@
+
+$(OUT)/tests/test-toolkit-probe: tests/test-toolkit-probe.c $(MOTIF_LIBXM) \
+    $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) \
+	    -DMOTIF_LIB_PATH=\"$(abspath $(MOTIF_LIBXM))\" $< $(TARGET) \
+	    $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 .PHONY: motif motif-demos check-link-motif
 ## Build thentenaar/motif libXm and libMrm against the compatibility stack
