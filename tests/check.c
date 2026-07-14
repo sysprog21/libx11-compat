@@ -185,6 +185,15 @@ static int failures = 0;
         }                                                                  \
     } while (0)
 
+#define CHECK_ABORT(condition, message)                                    \
+    do {                                                                   \
+        if (!(condition)) {                                                \
+            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, (message)); \
+            fflush(stderr);                                                \
+            abort();                                                       \
+        }                                                                  \
+    } while (0)
+
 /* Fetch the next queued event of a given type, skipping unrelated events that a
  * process-global SDL event queue can leave ahead of a freshly pushed one (stale
  * StructureNotify, focus changes, in-process WM housekeeping). A bare
@@ -10566,8 +10575,30 @@ static int test_live_resize_reflow_hook(Display *display)
     return 1;
 }
 
+/* Test-suite watchdog. A threading test that deadlocks (a worker parked in
+ * runOnMainThread, which has no timeout) would otherwise hang the whole binary
+ * until CI cancels it minutes later. The watchdog aborts with the running
+ * test's name after a bound far above any healthy run, turning an indefinite
+ * hang into a fast, diagnostic failure. main() exits normally on success, so
+ * the detached watchdog is reaped with the process before it ever fires.
+ */
+static volatile const char *g_currentTest = "(startup)";
+
+static void *suiteWatchdog(void *unused)
+{
+    (void) unused;
+    SDL_Delay(180000);
+    fprintf(stderr,
+            "\nWATCHDOG: test suite hung in '%s'; aborting after 180s\n",
+            (const char *) g_currentTest);
+    fflush(stderr);
+    abort();
+    return NULL;
+}
+
 static int run_test(const char *name, int (*test)(Display *))
 {
+    g_currentTest = name;
     Display *display = XOpenDisplay(NULL);
     if (display == NULL) {
         fprintf(stderr, "%s: XOpenDisplay returned NULL\n", name);
@@ -10580,6 +10611,16 @@ static int run_test(const char *name, int (*test)(Display *))
         printf("ok %s\n", name);
     }
     return ok;
+}
+
+/* Run a Display-less threading test, recording its name for the watchdog and
+ * folding the failure count so main() reads as a flat list.
+ */
+static void run_thread_test(const char *name, int (*test)(void))
+{
+    g_currentTest = name;
+    if (!test())
+        failures++;
 }
 
 /* XmbTextPropertyToTextList used to be a stub that returned Success while
@@ -11714,11 +11755,10 @@ static int test_main_dispatch(Display *display)
     for (int i = 0; i < 100000 && !SDL_AtomicGet(&probe.ran); i++)
         XPending(display);
     /* Assert before joining: a broken dispatch leaves the worker blocked
-     * forever in runOnMainThread, so joining it would hang. CHECK returns on
-     * failure, leaking the blocked worker, which is fine for a test process
-     * about to exit non-zero.
+     * forever in runOnMainThread, so joining it would hang. Abort instead of
+     * returning with a worker still pointing at this stack frame.
      */
-    CHECK(SDL_AtomicGet(&probe.ran), "off-thread dispatch never ran");
+    CHECK_ABORT(SDL_AtomicGet(&probe.ran), "off-thread dispatch never ran");
     pthread_join(worker, NULL);
     CHECK(probe.ranOn == mainId,
           "off-thread thunk did not run on the main thread");
@@ -11842,7 +11882,8 @@ static int test_off_thread_window_calls(Display *display)
      */
     for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++)
         XPending(display);
-    CHECK(SDL_AtomicGet(&a.done), "off-thread window calls never completed");
+    CHECK_ABORT(SDL_AtomicGet(&a.done),
+                "off-thread window calls never completed");
     pthread_join(worker, NULL);
 
     /* The routed XMapWindow must actually have mapped the window. */
@@ -11858,12 +11899,14 @@ static int test_off_thread_window_calls(Display *display)
 
 struct offThreadCloseArgs {
     Display *display;
+    SDL_atomic_t done;
 };
 
 static void *offThreadCloseWorker(void *p)
 {
     struct offThreadCloseArgs *a = (struct offThreadCloseArgs *) p;
     XCloseDisplay(a->display);
+    SDL_AtomicSet(&a->done, 1);
     return NULL;
 }
 
@@ -11875,27 +11918,35 @@ static int test_off_thread_close_display_teardown(void)
                                        0, 20, 20, 0, 0, 0);
     CHECK(child != None, "XCreateSimpleWindow failed");
 
-    struct offThreadCloseArgs a = {display};
+    struct offThreadCloseArgs a = {display, {0}};
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, offThreadCloseWorker, &a) == 0,
           "pthread_create failed");
 
-    int handled = 0;
-    for (int i = 0; i < 100000 && !handled; i++) {
+    /* Pump until XCloseDisplay has fully returned on the worker, handling every
+     * MAIN_DISPATCH it routes here (teardown can route more than one). Stopping
+     * after the first would leave the worker parked in runOnMainThread on a
+     * later dispatch, so the join below would hang. Bounded so a routing
+     * failure fails fast instead of hanging.
+     */
+    int dispatched = 0;
+    for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (mainDispatchOwnsEventType(ev.type) &&
                 ev.user.code == MAIN_DISPATCH_EVENT_CODE) {
                 mainDispatchHandleEvent(&ev);
-                handled = 1;
-                break;
+                dispatched = 1;
             }
         }
-        if (!handled)
+        if (!SDL_AtomicGet(&a.done))
             SDL_Delay(1);
     }
-    CHECK(handled, "off-thread XCloseDisplay teardown did not route to main");
+    CHECK_ABORT(SDL_AtomicGet(&a.done),
+                "off-thread XCloseDisplay teardown did not complete");
     pthread_join(worker, NULL);
+    CHECK(dispatched,
+          "off-thread XCloseDisplay teardown did not route to main");
     printf("ok off_thread_close_display_teardown\n");
     return 1;
 }
@@ -11952,8 +12003,9 @@ static int test_off_thread_locked_map(void)
      */
     for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++)
         XPending(display);
-    CHECK(SDL_AtomicGet(&a.done),
-          "worker holding XLockDisplay across a routed map never completed");
+    CHECK_ABORT(SDL_AtomicGet(&a.done),
+                "worker holding XLockDisplay across a routed map never "
+                "completed");
     pthread_join(worker, NULL);
 
     XDestroyWindow(display, win);
@@ -12012,8 +12064,8 @@ static int test_off_thread_lock_contention(void)
     pthread_t t1, t2;
     CHECK(pthread_create(&t1, NULL, contendWorker, &holder) == 0,
           "pthread_create failed");
-    CHECK(pthread_create(&t2, NULL, contendWorker, &contender) == 0,
-          "pthread_create failed");
+    CHECK_ABORT(pthread_create(&t2, NULL, contendWorker, &contender) == 0,
+                "pthread_create failed");
     /* Pump so the holder's handoffs run on this thread. A deadlocked gate
      * wedges XPending in LockDisplay (hang -> timeout); a working gate drains
      * promptly.
@@ -12022,8 +12074,8 @@ static int test_off_thread_lock_contention(void)
                                      SDL_AtomicGet(&contender.done));
          i++)
         XPending(display);
-    CHECK(SDL_AtomicGet(&holder.done) && SDL_AtomicGet(&contender.done),
-          "lock-contention workers did not both finish");
+    CHECK_ABORT(SDL_AtomicGet(&holder.done) && SDL_AtomicGet(&contender.done),
+                "lock-contention workers did not both finish");
     pthread_join(t1, NULL);
     pthread_join(t2, NULL);
 
@@ -12081,18 +12133,20 @@ static int test_main_dispatch_handoff_order(void)
     CHECK(pthread_create(&normal, NULL, handoffOrderNormalWorker, &a) == 0,
           "pthread_create failed");
     SDL_Delay(10);
-    CHECK(pthread_create(&locked, NULL, handoffOrderLockedWorker, &a) == 0,
-          "pthread_create failed");
+    CHECK_ABORT(
+        pthread_create(&locked, NULL, handoffOrderLockedWorker, &a) == 0,
+        "pthread_create failed");
     for (int i = 0; i < 10000 && !displayLockHandoffPending(); i++)
         SDL_Delay(1);
-    CHECK(displayLockHandoffPending(), "locked worker did not enter handoff");
+    CHECK_ABORT(displayLockHandoffPending(),
+                "locked worker did not enter handoff");
 
     for (int i = 0; i < 100000 && !(SDL_AtomicGet(&a.handoffDone) &&
                                     SDL_AtomicGet(&a.normalDone));
          i++)
         XPending(display);
-    CHECK(SDL_AtomicGet(&a.handoffDone) && SDL_AtomicGet(&a.normalDone),
-          "handoff-order workers did not both finish");
+    CHECK_ABORT(SDL_AtomicGet(&a.handoffDone) && SDL_AtomicGet(&a.normalDone),
+                "handoff-order workers did not both finish");
     pthread_join(normal, NULL);
     pthread_join(locked, NULL);
     CHECK(!SDL_AtomicGet(&a.interleaved),
@@ -12156,18 +12210,43 @@ static int test_main_dispatch_deferred_xnext(void)
           "pthread_create failed");
     for (int i = 0; i < 10000 && !displayLockHandoffPending(); i++)
         SDL_Delay(1);
-    CHECK(displayLockHandoffPending(), "locked worker did not enter handoff");
-    CHECK(pthread_create(&normal, NULL, deferredXNextNormalWorker, &a) == 0,
-          "pthread_create failed");
+    CHECK_ABORT(displayLockHandoffPending(),
+                "locked worker did not enter handoff");
+    CHECK_ABORT(
+        pthread_create(&normal, NULL, deferredXNextNormalWorker, &a) == 0,
+        "pthread_create failed");
 
-    XEvent out;
-    XNextEvent(display, &out);
-    CHECK(out.type == ClientMessage && out.xany.window == win,
-          "XNextEvent did not receive deferred dispatch event");
-    CHECK(SDL_AtomicGet(&a.lockedDone) && SDL_AtomicGet(&a.normalDone),
-          "XNextEvent did not flush deferred main dispatch");
+    /* Pump the event loop until both dispatches have run and the deferred
+     * ClientMessage arrives. A single XNextEvent is not enough: it returns the
+     * first queued X event, which may be an unrelated one left by an earlier
+     * test, and when an X event is already queued it need not drain the SDL
+     * queue that carries the MAIN_DISPATCH thunks. Draining here guarantees the
+     * handoff owner's thunk runs, so the locked worker is never stranded in
+     * runOnMainThread (which, via the still-pending handoff, would deadlock the
+     * next test). Bounded so a genuine flush failure fails fast instead of
+     * hanging.
+     */
+    int gotMsg = 0;
+    for (int i = 0; i < 5000 && !(gotMsg && SDL_AtomicGet(&a.lockedDone) &&
+                                  SDL_AtomicGet(&a.normalDone));
+         i++) {
+        while (XPending(display) > 0) {
+            XEvent out;
+            XNextEvent(display, &out);
+            if (out.type == ClientMessage && out.xany.window == win)
+                gotMsg = 1;
+        }
+        SDL_Delay(1);
+    }
+
+    Bool serviced =
+        SDL_AtomicGet(&a.lockedDone) && SDL_AtomicGet(&a.normalDone);
+    CHECK_ABORT(
+        serviced,
+        "deferred main dispatch did not flush under XNextEvent pumping");
     pthread_join(locked, NULL);
     pthread_join(normal, NULL);
+    CHECK(gotMsg, "XNextEvent did not deliver the deferred ClientMessage");
 
     XDestroyWindow(display, win);
     XCloseDisplay(display);
@@ -12238,15 +12317,15 @@ static int test_off_thread_drain_race(void)
     pthread_t router, drainer;
     CHECK(pthread_create(&router, NULL, drainRaceRouter, &a) == 0,
           "pthread_create failed");
-    CHECK(pthread_create(&drainer, NULL, drainRaceDrainer, &a) == 0,
-          "pthread_create failed");
+    CHECK_ABORT(pthread_create(&drainer, NULL, drainRaceDrainer, &a) == 0,
+                "pthread_create failed");
     /* Main pumps so the routed thunks run here; the drainer steals some events
      * and must re-queue them rather than run them off-main.
      */
     for (int i = 0; i < 5000000 && !SDL_AtomicGet(&a.routerDone); i++)
         XPending(display);
-    CHECK(SDL_AtomicGet(&a.routerDone),
-          "router did not complete under a concurrent off-main drainer");
+    CHECK_ABORT(SDL_AtomicGet(&a.routerDone),
+                "router did not complete under a concurrent off-main drainer");
     pthread_join(router, NULL);
     pthread_join(drainer, NULL);
 
@@ -12258,6 +12337,14 @@ static int test_off_thread_drain_race(void)
 
 int main(void)
 {
+    /* Bound the whole run: a deadlocked threading test aborts with its name
+     * instead of hanging CI. Detached, so a normal exit reaps it before it
+     * fires.
+     */
+    pthread_t watchdog;
+    if (pthread_create(&watchdog, NULL, suiteWatchdog, NULL) == 0)
+        pthread_detach(watchdog);
+
     /* Race gate: LIBX11_COMPAT_THREAD_TEST_ONLY runs just the threading test so
      * it can be driven under ThreadSanitizer without paying for the whole suite
      * (CFLAGS_EXTRA=-fsanitize=thread LDLIBS_EXTRA=-fsanitize=thread).
@@ -12277,20 +12364,17 @@ int main(void)
         } else {
             failures++;
         }
-        if (!test_off_thread_close_display_teardown())
-            failures++;
-        if (!test_off_thread_drain_race())
-            failures++;
-        if (!test_off_thread_locked_map())
-            failures++;
-        if (!test_off_thread_lock_contention())
-            failures++;
-        if (!test_main_dispatch_handoff_order())
-            failures++;
-        if (!test_main_dispatch_deferred_xnext())
-            failures++;
-        if (!test_display_lock_threads())
-            failures++;
+        run_thread_test("off_thread_close_display_teardown",
+                        test_off_thread_close_display_teardown);
+        run_thread_test("off_thread_drain_race", test_off_thread_drain_race);
+        run_thread_test("off_thread_locked_map", test_off_thread_locked_map);
+        run_thread_test("off_thread_lock_contention",
+                        test_off_thread_lock_contention);
+        run_thread_test("main_dispatch_handoff_order",
+                        test_main_dispatch_handoff_order);
+        run_thread_test("main_dispatch_deferred_xnext",
+                        test_main_dispatch_deferred_xnext);
+        run_thread_test("display_lock_threads", test_display_lock_threads);
         return failures == 0 ? 0 : 1;
     }
 
@@ -12355,22 +12439,19 @@ int main(void)
     run_test("live_resize_reflow_hook", test_live_resize_reflow_hook);
     run_test("main_dispatch", test_main_dispatch);
     run_test("off_thread_window_calls", test_off_thread_window_calls);
-    if (!test_off_thread_close_display_teardown())
-        failures++;
-    if (!test_off_thread_drain_race())
-        failures++;
-    if (!test_off_thread_locked_map())
-        failures++;
-    if (!test_off_thread_lock_contention())
-        failures++;
-    if (!test_main_dispatch_handoff_order())
-        failures++;
-    if (!test_main_dispatch_deferred_xnext())
-        failures++;
+    run_thread_test("off_thread_close_display_teardown",
+                    test_off_thread_close_display_teardown);
+    run_thread_test("off_thread_drain_race", test_off_thread_drain_race);
+    run_thread_test("off_thread_locked_map", test_off_thread_locked_map);
+    run_thread_test("off_thread_lock_contention",
+                    test_off_thread_lock_contention);
+    run_thread_test("main_dispatch_handoff_order",
+                    test_main_dispatch_handoff_order);
+    run_thread_test("main_dispatch_deferred_xnext",
+                    test_main_dispatch_deferred_xnext);
     /* Threading last: XInitThreads is global and permanent (see the note above
      * test_display_lock_threads).
      */
-    if (!test_display_lock_threads())
-        failures++;
+    run_thread_test("display_lock_threads", test_display_lock_threads);
     return failures == 0 ? 0 : 1;
 }
