@@ -11899,14 +11899,12 @@ static int test_off_thread_window_calls(Display *display)
 
 struct offThreadCloseArgs {
     Display *display;
-    SDL_atomic_t done;
 };
 
 static void *offThreadCloseWorker(void *p)
 {
     struct offThreadCloseArgs *a = (struct offThreadCloseArgs *) p;
     XCloseDisplay(a->display);
-    SDL_AtomicSet(&a->done, 1);
     return NULL;
 }
 
@@ -11918,35 +11916,35 @@ static int test_off_thread_close_display_teardown(void)
                                        0, 20, 20, 0, 0, 0);
     CHECK(child != None, "XCreateSimpleWindow failed");
 
-    struct offThreadCloseArgs a = {display, {0}};
+    struct offThreadCloseArgs a = {display};
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, offThreadCloseWorker, &a) == 0,
           "pthread_create failed");
 
-    /* Pump until XCloseDisplay has fully returned on the worker, handling every
-     * MAIN_DISPATCH it routes here (teardown can route more than one). Stopping
-     * after the first would leave the worker parked in runOnMainThread on a
-     * later dispatch, so the join below would hang. Bounded so a routing
-     * failure fails fast instead of hanging.
+    /* Pump only until the routed teardown dispatch (destroyScreenWindow) has
+     * run, then stop touching SDL and join. XCloseDisplay routes exactly that
+     * one call to the main thread; its remaining teardown (SDL_Quit, TTF_Quit)
+     * runs on the worker after the dispatch completes, so continuing to poll
+     * SDL here would race that SDL_Quit. Abort if it never routes: the worker
+     * would otherwise stay parked in runOnMainThread and the join would hang.
      */
-    int dispatched = 0;
-    for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++) {
+    int handled = 0;
+    for (int i = 0; i < 100000 && !handled; i++) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (mainDispatchOwnsEventType(ev.type) &&
                 ev.user.code == MAIN_DISPATCH_EVENT_CODE) {
                 mainDispatchHandleEvent(&ev);
-                dispatched = 1;
+                handled = 1;
+                break;
             }
         }
-        if (!SDL_AtomicGet(&a.done))
+        if (!handled)
             SDL_Delay(1);
     }
-    CHECK_ABORT(SDL_AtomicGet(&a.done),
-                "off-thread XCloseDisplay teardown did not complete");
+    CHECK_ABORT(handled,
+                "off-thread XCloseDisplay teardown did not route to main");
     pthread_join(worker, NULL);
-    CHECK(dispatched,
-          "off-thread XCloseDisplay teardown did not route to main");
     printf("ok off_thread_close_display_teardown\n");
     return 1;
 }
