@@ -6,7 +6,7 @@ macOS without XQuartz, Wayland-only sessions, headless CI, Android apps with the
 
 Both SDL major versions are supported from a single source tree: the build
 auto-detects SDL3 (when both SDL3 and SDL3_ttf are visible to `pkg-config`) and
-otherwise uses SDL2, and the backend can be selected explicitly. See
+otherwise uses SDL2; the backend can also be selected explicitly. See
 [SDL backend](#sdl-backend) below.
 
 The library is not a re-implementation of the X11 wire protocol and does not replace a real X server.
@@ -137,8 +137,8 @@ but each exercises behavior that small examples do not reach.
   build/xfig/source/src/xfig tests/data/mindmap.fig
   ```
 
-- [XCircuit](http://opencircuitdesign.com/xcircuit/): the PostScript-oriented schematic capture and drawing editor builds against the compat stack plus the bundled libXt, libXpm, and the libICE / libSM session libraries.
-  It drives the Xt Intrinsics widget tree and XCircuit's own Xlib-drawn canvas, Xpm-backed toolbar and object icons, `XDrawString` font metrics across the Symbol and Helvetica families, `XCopyArea` backing-pixmap redraw for the file-list hover highlight, object-instance drawing with fixed and normal bounding boxes, and larger PostScript example imports opened through its menus and file dialogs.
+- [XCircuit](http://opencircuitdesign.com/xcircuit/): the PostScript-oriented schematic capture and drawing editor is built in its Tcl/Tk configuration against the compat stack plus the bundled libXt, libXpm, and the libICE / libSM session libraries, driven by the same private Tcl/Tk as the Magic port rather than a system-installed Tk.
+  It drives XCircuit's Tk UI and its own Xlib-drawn canvas, Xpm-backed toolbar and object icons, `XDrawString` font metrics across the Symbol and Helvetica families, `XCopyArea` backing-pixmap redraw for the file-list hover highlight, object-instance drawing with fixed and normal bounding boxes, and larger PostScript example imports opened through its menus and file dialogs.
 
   <a href="assets/xcircuit.png"><img src="assets/xcircuit.png" alt="XCircuit running through libx11-compat on macOS" width="420"></a>
 
@@ -221,17 +221,14 @@ but each exercises behavior that small examples do not reach.
   build/xwpe/source/xwpe                 # launch from the build tree
   ```
 
-- [Magic](http://opencircuitdesign.com/magic/): the [RTimothyEdwards/magic](https://github.com/RTimothyEdwards/magic) VLSI layout editor is the toolkit's first Tcl/Tk workload, with a private Tcl/Tk built alongside it (`mk/tcltk.mk`) so the port carries its own TkX11 rather than depending on a system Tk.
-  It drives Magic's Tk UI over an Xlib-drawn layout canvas: the menu bar, layer palette, DRC toggle, and the `tut11d` tutorial cell, plus scrolling and resize redraw.
-  With Magic's OpenGL graphics enabled it also opens Magic's 3D render window, so the 2D Tk editor and a live 3D view of the same cell render together with no X server.
-  `MAGIC_OPENGL=auto` (the default) resolves per platform: on macOS it enables OpenGL once ANGLE is present, which a fresh checkout fetches and builds with `make fetch-angle build-angle` (the `build-angle` target requires the sources fetched first); on Linux it enables OpenGL when a `GL`/`GLU` header+link probe succeeds and drives Magic through the host's desktop GL/GLU. Opt out with `MAGIC_OPENGL=0`.
-  On the macOS/ANGLE path the 3D view runs through the in-tree GLX-over-EGL / gl4es stack with no desktop-GL driver present; the Linux path instead relies on the host's desktop GL.
-  See [GLX and OpenGL](#glx-and-opengl) for that path and its limits.
+- [Magic](http://opencircuitdesign.com/magic/): the [RTimothyEdwards/magic](https://github.com/RTimothyEdwards/magic) VLSI layout editor serves as the toolkit's Tcl/Tk workload. It is built together with a private copy of Tcl/Tk, so the port is self-contained and ships its own TkX11 rather than relying on a system-installed Tk.
+  It drives Magic's Tk UI over an Xlib-drawn layout canvas: the menu bar, layer palette, DRC toggle, and the tutorial cell, plus scrolling and resize redraw.
+  With Magic's OpenGL graphics enabled, it also opens Magic's 3D render window, so the 2D Tk editor and a live 3D view of the same cell render together with no X server. See [GLX and OpenGL](#glx-and-opengl) for that path and its limits.
 
   <a href="assets/magic.png"><img src="assets/magic.png" alt="Magic VLSI layout editor and 3D render window running through libx11-compat on macOS" width="420"></a>
 
   ```sh
-  make magic                                   # build Magic + private Tcl/Tk
+  make magic                             # build Magic + private Tcl/Tk
   CAD_ROOT=build/magic/install/lib build/magic/install/bin/magic -d OGL
   ```
 
@@ -240,7 +237,13 @@ but that they keep legacy Xlib clients building and running on platforms where n
 
 These ports rely on community input.
 Concrete reproducers, screenshot diffs, and small fixes posted to [GitHub Issues](https://github.com/sysprog21/libx11-compat/issues) are the most effective way to push these workloads forward.
-Specific gaps worth opening issues for include widget paths that misrender, Motif demos that crash or differ visibly from the native baseline, Osiris/Qt2 menu or Designer interactions that differ from native X11, ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did, and Xfig drawings whose objects rasterize differently than under a real X server.
+Specific gaps worth opening issues for include:
+
+- Widget paths that misrender.
+- Motif demos that crash or differ visibly from the native baseline.
+- Osiris/Qt2 menu or Designer interactions that differ from native X11.
+- ViolaWWW interactions (navigation, dialogs, image formats) that do not behave as the historical browser did.
+- Xfig drawings whose objects rasterize differently than under a real X server.
 
 ## Coverage and Compatibility
 
