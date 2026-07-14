@@ -22,10 +22,12 @@ void initWindowStruct(WindowStruct *windowStruct,
                       Pixmap backgroundPixmap);
 Bool initScreenWindow(Display *display);
 Window getWindowFromId(Uint32 sdlWindowId);
+
 /* Resolve a window's effective background colour, walking up through
  * ParentRelative backgrounds, with an opaque alpha forced on. Used by the
  * present path to fill the margin newly exposed during a live host resize so it
- * shows a stable background colour instead of flickering garbage. */
+ * shows a stable background colour instead of flickering garbage.
+ */
 unsigned long resolvedWindowBackgroundColor(Window window);
 size_t collectMappedOverrideRedirectWindows(Window *out, size_t max);
 void destroyScreenWindow(Display *display);
@@ -79,6 +81,24 @@ Bool configureWindow(Display *display,
                      Window window,
                      unsigned long value_mask,
                      XWindowChanges *values);
+
+/* Abort unless running on the main event thread. Enforces the "SDL work runs on
+ * the main thread" invariant at the SDL sources in the window layer;
+ * unconditional (not assert) so NDEBUG cannot turn a controlled abort into a
+ * silent off-main SDL crash on macOS. who names the caller for the diagnostic.
+ */
+void requireMainEventThread(const char *who);
+
+/* Route a void(Window) operation to the main event thread when called off it,
+ * so its SDL calls run where macOS requires. On the main thread (the hot
+ * event-handling path) this costs one atomic load then a direct call. An op
+ * self-routes by passing itself: the routed invocation re-enters on the main
+ * thread, where the same guard now passes and the body runs. Used by the
+ * WM-state appliers, which XChangeProperty / XSetWMNormalHints can reach from a
+ * client worker thread.
+ */
+void runWindowOpOnMain(void (*fn)(Window), Window window);
+
 Window createInternalWindow(Display *display,
                             Window parent,
                             int x,
@@ -186,7 +206,7 @@ Bool windowIsModal(Window window);
  * sides are realized and the child is marked modal. Defers via
  * deferredTransientParent until both windows exist.
  */
-void applyTransientForRelationship(Display *display, Window window);
+void applyTransientForRelationship(Window window);
 
 /* Drop the deferred transient_for record and any live SDL_SetWindowModalFor
  * binding. Called from the WM_TRANSIENT_FOR property-delete path.

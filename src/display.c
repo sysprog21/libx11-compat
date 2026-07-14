@@ -1,11 +1,17 @@
+#include <limits.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <X11/X.h>
 #include <X11/Xlibint.h>
-#include "X11/Xutil.h"
+#include <X11/Xutil.h>
+
 #include "sdl-compat.h"
 #include "sdl-ttf-compat.h"
 #include "window.h"
 #include "errors.h"
 #include "events.h"
+#include "main-dispatch.h"
 #include "replay.h"
 #include "colors.h"
 #include "drawing.h"
@@ -19,11 +25,6 @@
 #include "image.h"
 #include "input-method.h"
 #include "mac-live-resize.h"
-#include <X11/X.h>
-#include <X11/Xutil.h>
-#include <limits.h>
-#include <pthread.h>
-#include <stdlib.h>
 
 #ifndef SDL_HINT_VIDEO_X11_XKB
 #define SDL_HINT_VIDEO_X11_XKB "SDL_VIDEO_X11_XKB"
@@ -62,51 +63,171 @@ LIBX11_COMPAT_HIDDEN void (*_XFreeDisplayLock_fn)(Display *dpy) = NULL;
  *
  * One global lock, not per-display. Simultaneous Displays are rare here and a
  * coarse lock is correct; if multi-display contention ever shows up, key the
- * mutex off dpy.
+ * mutex off dpy. Handoff-aware recursive display lock. Replaces a plain
+ * PTHREAD_MUTEX_RECURSIVE so a worker that must hand SDL work to the main
+ * thread (runOnMainThread) can shed the lock while it blocks and have the main
+ * thread pick it up to run the handoff, without a third thread slipping into
+ * the shedding worker's critical section. A bolt-on gate over a recursive mutex
+ * has a check-then-act race (pass the gate, then acquire, and a fresh handoff
+ * wedges the main thread), so the gate is folded into ownership here: every
+ * ownership transition happens under mutex, and while a handoff is pending only
+ * the main thread (to run the thunk) and the shedding worker (to reacquire) may
+ * take the free lock. Single-threaded clients never install the hooks, so none
+ * of this is reached and LockDisplay stays a no-op.
  */
-static pthread_mutex_t globalDisplayLock;
-static pthread_once_t globalDisplayLockOnce = PTHREAD_ONCE_INIT;
+typedef struct DisplayLock {
+    pthread_mutex_t mutex;     /* guards every field below */
+    pthread_cond_t cond;       /* signalled on any ownership/handoff change */
+    SDL_threadID owner;        /* current holder, 0 when free */
+    int depth;                 /* owner's recursion depth */
+    SDL_threadID handoffOwner; /* worker mid-handoff, 0 when none */
+} DisplayLock;
 
-static void initGlobalDisplayLock(void)
+static DisplayLock displayLock;
+static pthread_once_t displayLockOnce = PTHREAD_ONCE_INIT;
+
+static void initDisplayLock(void)
 {
-    pthread_mutexattr_t attr;
     /* pthread_once cannot report failure, and a display lock that silently
      * no-ops would let threads corrupt shared state undetected. Fail loudly.
      */
-    if (pthread_mutexattr_init(&attr) != 0 ||
-        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0 ||
-        pthread_mutex_init(&globalDisplayLock, &attr) != 0) {
+    if (pthread_mutex_init(&displayLock.mutex, NULL) != 0 ||
+        pthread_cond_init(&displayLock.cond, NULL) != 0) {
         fprintf(stderr, "libX11-compat: failed to init display lock\n");
         abort();
     }
-    pthread_mutexattr_destroy(&attr);
+    displayLock.owner = 0;
+    displayLock.depth = 0;
+    displayLock.handoffOwner = 0;
+}
+
+/* True when tid may take the currently-free lock given the handoff state.
+ * During a handoff only the main thread (runs the thunk) and the handoff owner
+ * (reacquires) are allowed; everyone else waits so the shedding worker's
+ * critical section is not interleaved. Called with displayLock.mutex held;
+ * libx11CompatOnMainEventThread is a lock-free atomic read.
+ */
+static Bool mayTakeFreeLock(SDL_threadID tid)
+{
+    return displayLock.handoffOwner == 0 || displayLock.handoffOwner == tid ||
+           libx11CompatOnMainEventThread();
 }
 
 static void compatLockDisplay(Display *dpy)
 {
     (void) dpy;
-    pthread_mutex_lock(&globalDisplayLock);
+    SDL_threadID tid = SDL_ThreadID();
+    pthread_mutex_lock(&displayLock.mutex);
+    for (;;) {
+        if (displayLock.owner == tid) { /* recursive re-entry always allowed */
+            displayLock.depth++;
+            break;
+        }
+        if (displayLock.owner == 0 && mayTakeFreeLock(tid)) {
+            displayLock.owner = tid;
+            displayLock.depth = 1;
+            break;
+        }
+        pthread_cond_wait(&displayLock.cond, &displayLock.mutex);
+    }
+    pthread_mutex_unlock(&displayLock.mutex);
 }
 
 static void compatUnlockDisplay(Display *dpy)
 {
     (void) dpy;
-    pthread_mutex_unlock(&globalDisplayLock);
+    SDL_threadID tid = SDL_ThreadID();
+    pthread_mutex_lock(&displayLock.mutex);
+    /* Only the owner may unlock, and only at a positive depth. The replaced
+     * PTHREAD_MUTEX_RECURSIVE returned EPERM on a non-owner or over-unlock; the
+     * monitor mirrors that by ignoring it, rather than decrementing another
+     * thread's depth, clearing owner mid-critical-section, or underflowing.
+     */
+    if (displayLock.owner == tid && displayLock.depth > 0) {
+        if (--displayLock.depth == 0) {
+            displayLock.owner = 0;
+            pthread_cond_broadcast(&displayLock.cond);
+        }
+    }
+    pthread_mutex_unlock(&displayLock.mutex);
 }
 
-/* Redirect the just-initialized lock hooks at the recursive global mutex. Call
- * right after InitDisplayLock; a no-op when threads were not initialized.
+/* Fully release this thread's hold on the display lock (all recursion levels)
+ * and mark a handoff pending, so the main thread can take the lock to run the
+ * routed work while other lock-takers wait.
+ *
+ * Returns the shed depth, or 0 (a no-op) when this thread holds no lock,
+ * including single-threaded clients that never installed the hooks.
+ */
+int displayLockReleaseForHandoff(void)
+{
+    /* Reached from runOnMainThread, not the lock hooks, so it can be the first
+     * monitor access when a client spawns threads without XInitThreads (the
+     * hooks, and thus initDisplayLock, are only installed under XInitThreads).
+     * Ensure the mutex/cond are initialized before touching them.
+     */
+    pthread_once(&displayLockOnce, initDisplayLock);
+    SDL_threadID tid = SDL_ThreadID();
+    int depth = 0;
+    pthread_mutex_lock(&displayLock.mutex);
+    if (displayLock.owner == tid) {
+        depth = displayLock.depth;
+        displayLock.depth = 0;
+        displayLock.owner = 0;
+        displayLock.handoffOwner = tid;
+        pthread_cond_broadcast(&displayLock.cond);
+    }
+    pthread_mutex_unlock(&displayLock.mutex);
+    return depth;
+}
+
+Bool displayLockHandoffPending(void)
+{
+    pthread_once(&displayLockOnce, initDisplayLock);
+    pthread_mutex_lock(&displayLock.mutex);
+    Bool pending = displayLock.handoffOwner != 0;
+    pthread_mutex_unlock(&displayLock.mutex);
+    return pending;
+}
+
+/* Reacquire the lock at the shed depth once the handoff has run, then clear the
+ * handoff so any threads gated in compatLockDisplay proceed. Waits out the main
+ * thread still holding the lock from running the thunk.
+ */
+void displayLockReacquire(int depth)
+{
+    if (depth <= 0)
+        return;
+
+    /* depth > 0 implies a prior displayLockReleaseForHandoff already ran the
+     * once-init, but keep it symmetric and robust.
+     */
+    pthread_once(&displayLockOnce, initDisplayLock);
+    SDL_threadID tid = SDL_ThreadID();
+    pthread_mutex_lock(&displayLock.mutex);
+    while (displayLock.owner != 0)
+        pthread_cond_wait(&displayLock.cond, &displayLock.mutex);
+    displayLock.owner = tid;
+    displayLock.depth = depth;
+    displayLock.handoffOwner = 0;
+    pthread_cond_broadcast(&displayLock.cond);
+    pthread_mutex_unlock(&displayLock.mutex);
+}
+
+/* Redirect the just-initialized lock hooks at the recursive monitor. Call right
+ * after InitDisplayLock; a no-op when threads were not initialized.
  */
 static void installRecursiveDisplayLock(Display *display)
 {
     if (!display->lock_fns)
         return;
-    pthread_once(&globalDisplayLockOnce, initGlobalDisplayLock);
+    pthread_once(&displayLockOnce, initDisplayLock);
     display->lock_fns->lock_display = compatLockDisplay;
     display->lock_fns->unlock_display = compatUnlockDisplay;
 }
 
 int numDisplaysOpen = 0;
+
 /* Vendor reports the SDL version this library was compiled against. The active
  * video driver can vary by environment at runtime, while this string is stable
  * and useful for compatibility probes.
@@ -143,9 +264,11 @@ void compatPublishHiDpiScaleProperty(Display *display)
     long fixed = lround(globalHiDpiScale * HIDPI_SCALE_PROPERTY_FIXED_POINT);
     if (fixed < 0)
         fixed = 0;
+
     /* Format-32 properties are stored and returned as an array of long (the
-     * documented Xlib client convention, which this shim follows), so publish
-     * a long rather than a fixed-width 32-bit integer. */
+     * documented Xlib client convention, which this shim follows), so publish a
+     * long rather than a fixed-width 32-bit integer.
+     */
     XChangeProperty(display, SCREEN_WINDOW, scaleAtom, XA_CARDINAL, 32,
                     PropModeReplace, (const unsigned char *) &fixed, 1);
 }
@@ -182,7 +305,8 @@ static void probeGlobalHiDpiScale(void)
     /* Reset first so a later 1x session cannot inherit a prior Retina scale:
      * globalHiDpiScale is process-lifetime, and the probe below only overwrites
      * it on a pixel!=point mismatch, so without this a Retina-then-1x sequence
-     * (or the probe-failure early return) would keep the stale 2.0. */
+     * (or the probe-failure early return) would keep the stale 2.0.
+     */
     globalHiDpiScale = 1.0;
     SDL_Window *probe =
         SDL_CreateWindow("", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
@@ -205,7 +329,8 @@ static void probeGlobalHiDpiScale(void)
          * Derive the backing size from a throwaway renderer's output size,
          * which reports physical pixels on every SDL2 that ships a renderer.
          * SDL3 always has SizeInPixels, so this fallback is never compiled
-         * there (its SDL2-only renderer API would not build). */
+         * there (its SDL2-only renderer API would not build).
+         */
         SDL_Renderer *probeRenderer =
             SDL_CreateRenderer(probe, -1, SDL_RENDERER_ACCELERATED);
         if (!probeRenderer)
@@ -245,7 +370,8 @@ static void applyScreenGeometryOverride(int *width, int *height)
  * the real closes run after the observer frame unwinds via
  * libx11CompatRunDeferredDisplayClose. A single slot would drop earlier closes
  * if a reflow callback tore down more than one Display in the same frame, so
- * keep them all. Main-thread-only, so no locking is needed. */
+ * keep them all. Main-thread-only, so no locking is needed.
+ */
 static Display **pendingCloseDisplays = NULL;
 static size_t pendingCloseCount = 0;
 static size_t pendingCloseCapacity = 0;
@@ -255,7 +381,8 @@ static size_t pendingCloseCapacity = 0;
  * synchronously from inside the observer crashes -- so under OOM the close must
  * still be recorded somewhere rather than silently dropped while XCloseDisplay
  * reports success. A handful of slots covers any plausible per-frame teardown
- * burst. */
+ * burst.
+ */
 #define PENDING_CLOSE_FALLBACK_SLOTS 8
 static Display *pendingCloseFallback[PENDING_CLOSE_FALLBACK_SLOTS];
 static size_t pendingCloseFallbackCount = 0;
@@ -268,7 +395,8 @@ int XCloseDisplay(Display *display)
          * XCloseDisplay). Tearing down SDL / removing the run-loop observer
          * from inside the observer's own callback crashes; defer the real close
          * until the present frame unwinds. Queue the Display* and return
-         * cleanly. */
+         * cleanly.
+         */
         if (pendingCloseCount == pendingCloseCapacity) {
             size_t newCap = pendingCloseCapacity ? pendingCloseCapacity * 2 : 4;
             Display **grown = realloc(pendingCloseDisplays,
@@ -282,12 +410,14 @@ int XCloseDisplay(Display *display)
             pendingCloseDisplays[pendingCloseCount++] = display;
         } else if (pendingCloseFallbackCount < PENDING_CLOSE_FALLBACK_SLOTS) {
             /* Dynamic queue is full and could not grow; keep the close in the
-             * static fallback so the deferred drain still tears it down. */
+             * static fallback so the deferred drain still tears it down.
+             */
             pendingCloseFallback[pendingCloseFallbackCount++] = display;
         } else {
             /* Both queues are exhausted under sustained OOM. Dropping the close
              * leaks the Display, but the alternative (a synchronous close from
-             * inside the observer) crashes, so leak rather than crash. */
+             * inside the observer) crashes, so leak rather than crash.
+             */
             LOG("XCloseDisplay: deferred-close queues exhausted, leaking "
                 "Display %p\n",
                 (void *) display);
@@ -362,7 +492,7 @@ int XCloseDisplay(Display *display)
      * XInitThreads; the macro no-ops otherwise. Safe even though we repointed
      * lock_fns->lock_display: _XFreeDisplayLock frees dpy->lock and
      * dpy->lock_fns without invoking them, and never touches the shared
-     * globalDisplayLock.
+     * process-global displayLock monitor.
      */
     FreeDisplayLock(display);
     free(display);
@@ -381,6 +511,7 @@ void libx11CompatRunDeferredDisplayClose(void)
 {
     if (pendingCloseCount == 0 && pendingCloseFallbackCount == 0)
         return;
+
     /* Detach both queues before draining so any re-entrant XCloseDisplay during
      * a teardown starts fresh lists instead of mutating the ones being walked.
      */
@@ -584,6 +715,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
         applyScreenGeometryOverride(&displayMode.w, &displayMode.h);
         screen->width = displayMode.w;
         screen->height = displayMode.h;
+
         /* Motif converts resolution-independent dimensions from the screen's
          * reported physical size. Host physical DPI, especially Retina/HiDPI,
          * makes those resources expand by the monitor scale factor while
@@ -596,6 +728,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
             (int) roundf(((float) displayMode.h * 25.4f) / COMPAT_LOGICAL_DPI);
         screen->root = SCREEN_WINDOW;
         screen->root_visual = getDefaultVisual(screenIndex);
+
         /* RGB32 visuals have 24 significant bits with the high byte ignored for
          * alpha. Matches the (depth 24, bpp 32) entry from XListPixmapFormats.
          */
@@ -613,6 +746,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
              depthIndex++) {
             screen->depths[depthIndex].depth = supportedDepths[depthIndex];
         }
+
         /* Default pixels are 24-bit TrueColor values, not full internal ARGB
          * draw colors. Some legacy clients index tables sized by 1 <<
          * DefaultDepth using BlackPixel/WhitePixel.
@@ -654,6 +788,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
         /* Init the font search path */
         XSetFontPath(display, NULL, 0);
     }
+
     /* Advertise the probed HiDPI backing scale on the root window so clients
      * that render at a fixed point size can scale their glyphs to match the
      * promoted physical-pixel geometry. Kept current on a monitor move by the
@@ -937,24 +1072,21 @@ void XSetWMSizeHints(Display *dpy, Window w, XSizeHints *hints, Atom prop)
      * cacheResizeIncrementsFromNormalHintsProperty for
      * WM_NORMAL_HINTS/format-32 there), so it stays correct without a second
      * inline decode here that would also run even when the property write
-     * failed. */
+     * failed.
+     */
     XChangeProperty(dpy, w, prop, XA_WM_SIZE_HINTS, 32, PropModeReplace,
                     (unsigned char *) &data, NumPropSizeElements);
 }
 
-
-void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
+/* Apply size hints to the SDL window so user resizes are clamped. X11
+ * 'border_width' lives inside the window's geometry, so SDL minimum / maximum
+ * can use min/max_width/height directly without adding border to either side.
+ * Runs on the main event thread only (XSetWMNormalHints routes it there).
+ */
+static void applyWmNormalHintsSdl(Window w, XSizeHints *hints)
 {
-    XSetWMSizeHints(dpy, w, hints, XA_WM_NORMAL_HINTS);
-    /* Apply size hints to the SDL window so user resizes are clamped. X11
-     * 'border_width' lives inside the window's geometry, so SDL minimum /
-     * maximum can use min/max_width/height directly without adding border to
-     * either side.
-     */
-    if (!hints || !IS_MAPPED_TOP_LEVEL_WINDOW(w))
-        return;
-
     SDL_Window *sdlWindow = GET_WINDOW_STRUCT(w)->sdlWindow;
+
     /* Clear stale constraints when a flag disappears: passing 0 tells SDL there
      * is no bound. Otherwise a window that switches from fixed-size hints
      * (PMaxSize with max == min) to ranged hints (no PMaxSize) would keep the
@@ -973,6 +1105,35 @@ void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
         SDL_SetWindowMaximumSize(sdlWindow, 0, 0);
     }
     applyNormalHintsResizableFromProperty(w);
+}
+
+struct wmNormalHintsArgs {
+    Window window;
+    XSizeHints *hints;
+};
+
+static void wmNormalHintsSdlOnMain(void *p)
+{
+    struct wmNormalHintsArgs *a = (struct wmNormalHintsArgs *) p;
+    applyWmNormalHintsSdl(a->window, a->hints);
+}
+
+void XSetWMNormalHints(Display *dpy, Window w, XSizeHints *hints)
+{
+    XSetWMSizeHints(dpy, w, hints, XA_WM_NORMAL_HINTS);
+
+    if (!hints || !IS_MAPPED_TOP_LEVEL_WINDOW(w))
+        return;
+
+    /* The hints pointer stays valid for the whole call: an off-main worker
+     * blocks in runOnMainThread until the main thread has read it.
+     */
+    if (!libx11CompatOnMainEventThread()) {
+        struct wmNormalHintsArgs a = {w, hints};
+        runOnMainThread(wmNormalHintsSdlOnMain, &a);
+        return;
+    }
+    applyWmNormalHintsSdl(w, hints);
 }
 
 Bool topLevelResizableFromNormalHints(Window window)
@@ -995,6 +1156,7 @@ Bool topLevelResizableFromNormalHints(Window window)
         return False;
 
     xPropSizeHints *sizeHints = (xPropSizeHints *) prop->data;
+
     /* Mirror a real WM: a top-level is resizable unless the client pinned it to
      * a fixed size (both PMinSize and PMaxSize present with min == max). xwpe
      * advertises PMinSize/PResizeInc/PBaseSize without capping max, so it stays
@@ -1009,6 +1171,10 @@ Bool topLevelResizableFromNormalHints(Window window)
 
 void applyNormalHintsResizableFromProperty(Window window)
 {
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(applyNormalHintsResizableFromProperty, window);
+        return;
+    }
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
         return;
 
@@ -1050,6 +1216,7 @@ void cacheResizeIncrementsFromNormalHintsProperty(Window window)
     }
 
     xPropSizeHints *sizeHints = (xPropSizeHints *) prop->data;
+
     /* Mirror the cache the XSetWMSizeHints path populates from the XSizeHints
      * struct (see the PResizeInc block there): only WM_NORMAL_HINTS governs
      * live sizing and only PResizeInc requests cell snapping. ICCCM: when
@@ -1058,7 +1225,8 @@ void cacheResizeIncrementsFromNormalHintsProperty(Window window)
      * defaults to 0 ("no minimum"). The base fields live only in the 18-element
      * ICCCM-v1 payload (indices 15-16); a legacy 15-element write reaches here
      * with dataLength == OldNumPropSizeElements, so treat PBaseSize as absent
-     * unless the full payload is present, or the read runs past the store. */
+     * unless the full payload is present, or the read runs past the store.
+     */
     Bool haveBaseFields = (sizeHints->flags & PBaseSize) &&
                           prop->dataLength >= NumPropSizeElements;
     if ((sizeHints->flags & PResizeInc) && sizeHints->widthInc > 0 &&
