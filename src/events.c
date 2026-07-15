@@ -1151,9 +1151,10 @@ static Bool getEventQueueLength(int *qlen)
      * small secondary-thread stack (macOS threads default to 512 KB) the moment
      * an off-main caller drains events through here.
      *
-     * SDL_PeepEvents has counted matching events for a NULL buffer since SDL
-     * 2.0.0, so this holds on the SDL2 2.0.10 differential host as well as on
-     * SDL2 2.30 and SDL3.
+     * SDL_PeepEvents has returned the full match count for a NULL buffer since
+     * SDL 2.0.5 (earlier releases reported only a 0/1 presence result), so this
+     * holds on the SDL2 2.0.10 differential host as well as on SDL2 2.30 and
+     * SDL3.
      */
     *qlen =
         SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT);
