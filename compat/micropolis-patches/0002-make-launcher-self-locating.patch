@@ -1,0 +1,22 @@
+diff --git a/Micropolis b/Micropolis
+--- a/Micropolis
++++ b/Micropolis
+@@ -1,7 +1,16 @@
+ #!/bin/bash
+-export SIMHOME=`pwd`
++SIMHOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++export SIMHOME
++if [ -d "$SIMHOME/../lib-aliases" ]; then
++  micropolis_lib_path="$SIMHOME/../lib-aliases"
++else
++  micropolis_lib_path="$SIMHOME/lib-aliases"
++fi
++export DYLD_LIBRARY_PATH="$micropolis_lib_path${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
++export LD_LIBRARY_PATH="$micropolis_lib_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+ echo "Starting Micropolis in $SIMHOME ... "
+-res/sim $*
++cd "$SIMHOME" || exit 1
++exec "$SIMHOME/src/sim/sim" "$@"
+ 
+ #
+ # Micropolis, Unix Version.  This game was released for the Unix platform

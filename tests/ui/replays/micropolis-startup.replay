@@ -1,0 +1,62 @@
+delay 1500
+wait-converge 200 2 50 200 20000
+delay 3000
+state-snapshot editor
+assert-state editor micropolis-editor.json
+screenshot initial
+assert-image initial common-visible.json
+assert-image initial micropolis-terrain.json
+target-motion 431 225
+delay 800
+button 1 press
+delay 100
+button 1 release
+delay 800
+target-motion 760 360
+button 2 press
+delay 150
+target-motion 660 300
+delay 150
+button 2 release
+wait-converge 200 2 50 200 12000
+screenshot panned
+assert-image panned common-visible.json
+assert-image panned micropolis-map-changed.json
+target-motion 760 360
+button 1 click
+wait-converge 200 2 50 200 12000
+screenshot built
+assert-image built common-visible.json
+assert-image built micropolis-map-changed.json
+assert-image built micropolis-built-changed.json
+target-motion 386 12
+button 1 press
+delay 400
+target-motion 386 40
+delay 400
+state-snapshot menu
+assert-state menu micropolis-menu.json
+screenshot menu
+assert-image menu common-visible.json
+target-motion 700 500
+button 1 release
+wait-converge 200 2 50 200 5000
+target-at 300 474
+target-motion 295 469
+button 1 click
+delay 1200
+target first
+target-motion 30 12
+button 1 click
+delay 600
+target latest
+target-motion 35 83
+button 1 click
+delay 1200
+state-snapshot quit-dialog
+assert-state quit-dialog micropolis-quit.json
+target latest
+target-motion 300 176
+button 1 click
+wait-exit 10000
+assert-exit 0

@@ -150,6 +150,7 @@ static void compatUnlockDisplay(Display *dpy)
 {
     (void) dpy;
     SDL_threadID tid = SDL_ThreadID();
+
     pthread_mutex_lock(&displayLock.mutex);
     /* Only the owner may unlock, and only at a positive depth. The replaced
      * PTHREAD_MUTEX_RECURSIVE returned EPERM on a non-owner or over-unlock; the
@@ -478,6 +479,17 @@ int XCloseDisplay(Display *display)
     }
     closeEventPipe(display);
     if (numDisplaysOpen == 1) {
+        /* Remove any pending present-wake timer immediately before SDL_Quit,
+         * after all rendering teardown so nothing re-arms it below. Its
+         * callback runs on SDL's timer thread and pushes a PRESENT event; left
+         * live across SDL_Quit it can push into a half-torn-down event
+         * subsystem (and race the next display's SDL_Init), which corrupts the
+         * SDL allocator heap. cancelPresentWakeTimer blocks a callback already
+         * running, so once it returns no present-wake push can overlap the
+         * teardown. XOpenDisplay cancels on the reinit side; this closes the
+         * matching teardown side.
+         */
+        cancelPresentWakeTimer();
         freeAtomStorage();
         resetSelectionAtomCache();
         freeFontStorage();
@@ -614,10 +626,30 @@ Display *XOpenDisplay(_Xconst char *display_name)
          * CGEvent).
          */
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+        /* Cancel any present-wake timer a previous display left pending so its
+         * callback cannot push an SDL event while this SDL_Init touches the
+         * event subsystem; ThreadSanitizer flags that overlap as a race.
+         */
+        cancelPresentWakeTimer();
         sdlVideoInitInProgress = True;
-        int sdlInitResult = SDL_Init(SDL_INIT_VIDEO);
+        /* Init the timer subsystem alongside video so this display owns its
+         * refcount and the matching SDL_Quit joins the SDL timer thread. The
+         * present-wake and Xt pump-wake timers otherwise start that thread
+         * lazily through SDL_AddTimer, outside SDL's init refcount, so SDL_Quit
+         * leaves it running; a later XOpenDisplay's SDL_Init then re-inits the
+         * tick base under the still-live thread, which ThreadSanitizer reports
+         * as a data race. SDL_INIT_TIMER is a no-op bit on the SDL3 backend,
+         * where timers need no subsystem.
+         */
+        int sdlInitResult = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
         sdlVideoInitInProgress = False;
-        if (sdlInitResult == -1) {
+        /* SDL2 returns 0 on success or a negative error code on failure, and on
+         * the SDL3 backend SDL_Init resolves to xc_Init (sdl-compat.h), which
+         * maps SDL3's bool to that same 0/negative convention. Test for any
+         * negative so an SDL3 init failure runs the error path below rather
+         * than continuing on uninitialized SDL state.
+         */
+        if (sdlInitResult < 0) {
             /* Diagnose intermittent XOpenDisplay -> NULL failures observed
              * under load on the remote Xvfb differential test. The Xt error
              * "Can't open display" is generic; without this line the actual SDL

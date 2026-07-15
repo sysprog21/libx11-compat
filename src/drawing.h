@@ -1,9 +1,10 @@
 #ifndef _DRAWING_H_
 #define _DRAWING_H_
 
-#include "sdl-compat.h"
 #include <limits.h>
 #include <stdint.h>
+
+#include "sdl-compat.h"
 #include "resource-types.h"
 #include "window.h"
 
@@ -22,9 +23,9 @@
 
 typedef struct {
     SDL_Texture *texture;
-    unsigned int width;
-    unsigned int height;
+    unsigned int width, height;
     unsigned int depth;
+
     /* Lazy readback cache. Pixmaps are texture-only, so without this a run of
      * XGetImage calls on an unchanged pixmap issues one SDL_RenderReadPixels (a
      * GPU-to-CPU stall) per call. readback holds the whole pixmap surface,
@@ -35,6 +36,7 @@ typedef struct {
      */
     SDL_Surface *readback;
     Bool readbackDirty;
+
     /* Cached stipple stamp. A pixmap used as a GC stipple gets turned into a
      * foreground/background-colored, alpha-keyed tile texture in
      * renderStippleRects; magic reuses the same stipple across many fills, so
@@ -48,8 +50,7 @@ typedef struct {
      */
     SDL_Texture *stippleStamp;
     SDL_Renderer *stampRenderer;
-    unsigned long stampFg;
-    unsigned long stampBg;
+    unsigned long stampFg, stampBg;
     Bool stampOpaque;
 } PixmapStruct;
 
@@ -96,6 +97,7 @@ void putPixel(SDL_Surface *surface,
               unsigned int y,
               Uint32 pixel);
 Uint32 getPixel(SDL_Surface *surface, unsigned int x, unsigned int y);
+
 /* True if point (x, y), in the mask's coordinate space offset by (offsetX,
  * offsetY), lands on an active (non-black) mask pixel. Out-of-range points are
  * outside the shape. Shared by shape rendering and event hit-testing so both
@@ -115,6 +117,7 @@ void glxCompositeToWindow(Window window,
 SDL_Surface *getRenderSurface(SDL_Renderer *renderer);
 SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
                                   const SDL_Rect *source);
+
 /* Read a rect from a Pixmap through its lazy readback cache.
  *
  * Returns a freshly allocated RGBA8888 surface (caller frees) matching
@@ -122,12 +125,15 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
  * dirty cycle.
  */
 SDL_Surface *getPixmapSurfaceRect(Pixmap pixmap, const SDL_Rect *source);
+
 void markPixmapReadbackDirty(Drawable drawable);
 void freePixmapReadback(PixmapStruct *pixmap);
 void freePixmapStippleStamp(PixmapStruct *pixmap);
 void invalidateStippleStampsForRenderer(SDL_Renderer *renderer);
+
 /* Test hook: count of SDL_RenderReadPixels issued to refresh pixmap caches. */
 extern unsigned long x11compat_pixmap_readback_reads;
+
 /* Number of clip iterations to perform when drawing into "d" through "gc". Each
  * iteration is one (gc clip rect) x (visible-region rect) pair.
  *
@@ -137,7 +143,9 @@ extern unsigned long x11compat_pixmap_readback_reads;
  * applies to windows.
  */
 int getGcClipIterationCount(GC gc, Drawable d);
+
 void setRendererDrawableClip(SDL_Renderer *renderer, const SDL_Rect *clip);
+
 /* Pair "iteration" of getGcClipIterationCount: intersect the gc clip rect, the
  * cached parent-chain drawable clip, and "d"'s sibling visible region (when "d"
  * is a window), then push the result through SDL_RenderSetClipRect.
@@ -148,20 +156,25 @@ Bool setGcClipForIteration(SDL_Renderer *renderer,
                            GC gc,
                            int iteration,
                            Drawable d);
+
 void clearRendererClip(SDL_Renderer *renderer);
+
 /* Flush the per-primitive cache that pairs a Drawable with its resolved visible
  * region and rect count. Called from invalidateVisibleRegionSubtree so the
  * cached pointer cannot outlive the underlying pixman rect storage across a
  * region recomputation.
  */
 void invalidatePrimitiveClipCache(void);
+
 void drawWindowDataToScreen(void);
+
 /* Runtime kill switch for the per-window accelerated present path. When
  * LIBX11_COMPAT_FORCE_SOFTWARE_PRESENT is set to a truthy value every top-level
  * window keeps the SDL_GetWindowSurface software present, so the accelerated
  * path can be bisected out without a rebuild. Read once and cached.
  */
 Bool libx11CompatForceSoftwarePresent(void);
+
 /* True when the per-window accelerated present pipeline is actually usable on
  * this host. Some drivers (SDL2's dummy driver on headless CI) return a
  * renderer whose SDL_RenderReadPixels never reflects what was drawn, so a
@@ -170,6 +183,7 @@ Bool libx11CompatForceSoftwarePresent(void);
  * the SDL_GetWindowSurface software present when this returns False.
  */
 Bool libx11CompatAcceleratedPresentUsable(void);
+
 /* Coalesce a client repaint burst so its intermediate XFlush/XSync presents do
  * not reach the screen (see the deadline notes in drawing.c). begin arms the
  * hold at the point a host-resize ConfigureNotify is produced; end presents the
@@ -179,10 +193,12 @@ Bool libx11CompatAcceleratedPresentUsable(void);
 void beginCoalesceClientRepaint(void);
 void endCoalesceClientRepaint(void);
 Bool presentWakeOwnsEventType(Uint32 eventType);
+void cancelPresentWakeTimer(void);
 void markWindowNeedsPresent(Window window);
 void markWindowNeedsPresentRect(Window window, const SDL_Rect *rect);
 void presentDrawableIfVisible(Drawable drawable);
 void presentDrawableRectIfVisible(Drawable drawable, const SDL_Rect *rect);
+
 /* Same as presentDrawableRectIfVisible but leaves the text-stamp cache
  * untouched. The core-text path calls this so marking its own freshly drawn
  * cell present does not evict the stamp it is about to record.
@@ -223,6 +239,7 @@ void applySdlDrawState(SDL_Renderer *renderer,
                        SDL_BlendMode blendMode,
                        unsigned long color);
 void invalidateGcStateCache(GC gc);
+
 /* Call after any direct SDL_SetRenderDrawColor / SDL_SetRenderDrawBlendMode
  * that does not go through applySdlDrawState. Otherwise the next cached apply
  * may see a "matching" cache entry and skip the SDL push even though the
@@ -246,6 +263,7 @@ void invalidateSdlDrawStateCache(void);
 SDL_Surface *captureShapeMaskBaseline(Drawable d,
                                       SDL_Renderer *renderer,
                                       const SDL_Rect *rect);
+
 /* Returns True on success (or when no work was needed). False means the SDL
  * readback / texture upload failed and masked pixels may still be visible on
  * screen; callers may want to skip presentDrawableIfVisible or log a BadMatch

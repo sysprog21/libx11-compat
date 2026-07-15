@@ -43,6 +43,7 @@ include mk/grace.mk
 include mk/tcltk.mk
 include mk/xcircuit.mk
 include mk/magic.mk
+include mk/micropolis.mk
 include mk/gl4es.mk
 include mk/mesa-demos.mk
 include mk/tests.mk

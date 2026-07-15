@@ -1,0 +1,55 @@
+diff --git a/src/tclx/makefile b/src/tclx/makefile
+--- a/src/tclx/makefile
++++ b/src/tclx/makefile
+@@ -45,10 +45,10 @@
+ tcl: TCLX_MAKES
+ 
+ TCLX_MAKES: libtcl.a
+-	cd ucbsrc;    $(MAKE) -$(MAKEFLAGS) all
+-	cd ossupp;    $(MAKE) -$(MAKEFLAGS) all
+-	cd tclsrc;    $(MAKE) -$(MAKEFLAGS) all
+-	cd src;       $(MAKE) -$(MAKEFLAGS) all
++	cd ucbsrc;    $(MAKE) all
++	cd ossupp;    $(MAKE) all
++	cd tclsrc;    $(MAKE) all
++	cd src;       $(MAKE) all
+ 
+ 
+ # Copy the UCB libtcl.a file from where it was built.  Force the other
+@@ -66,8 +66,8 @@
+ wish: TKX_MAKES runwish
+ 
+ TKX_MAKES: libtk.a tcl
+-	cd tkucbsrc; $(MAKE) -$(MAKEFLAGS) all
+-	cd tksrc;    $(MAKE) -$(MAKEFLAGS) all
++	cd tkucbsrc; $(MAKE) all
++	cd tksrc;    $(MAKE) all
+ 
+ 
+ # Copy the UCB libtk.a file.  Force the other Makefiles to add their
+@@ -122,7 +122,7 @@
+ #  just test to see if the C++ include file compiles and links
+ 
+ tclplus:
+-	cd src;$(MAKE) -$(MAKEFLAGS) tclplus
++	cd src;$(MAKE) tclplus
+ 
+ #------------------------------------------------------------------------------
+ #
+@@ -153,10 +153,10 @@
+ 
+ clean:
+-	cd ucbsrc;    $(MAKE) -$(MAKEFLAGS) clean
+-	cd ossupp;    $(MAKE) -$(MAKEFLAGS) clean
+-	cd src;       $(MAKE) -$(MAKEFLAGS) clean
+-	cd tclsrc;    $(MAKE) -$(MAKEFLAGS) clean
+-	cd tkucbsrc;  $(MAKE) -$(MAKEFLAGS) clean
+-	cd tksrc;     $(MAKE) -$(MAKEFLAGS) clean
++	cd ucbsrc;    $(MAKE) clean
++	cd ossupp;    $(MAKE) clean
++	cd src;       $(MAKE) clean
++	cd tclsrc;    $(MAKE) clean
++	cd tkucbsrc;  $(MAKE) clean
++	cd tksrc;     $(MAKE) clean
+ 	touch junk~ config/junk~
+ 	-rm -f *~ config/*~ libtcl.a tcldef libtk.a runtcl runwish

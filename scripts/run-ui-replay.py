@@ -60,6 +60,7 @@ replay, state, timeline, and renderer artifacts without a visible desktop.
     screenshot <name> [x y w h]
     state-snapshot <name>           # requires --in-process-snapshots
     wait-converge [bucket_ms quiet diverged threshold timeout_ms]
+    wait-exit <timeout_ms>
     wait-window <regex> <timeout_ms>
     assert-image <screenshot> <rule.json>
     assert-state <state-name> <rule.json>
@@ -367,6 +368,16 @@ def wait_process_alive(proc, timeout_ms):
         time.sleep(0.1)
 
 
+def wait_process_exit(proc, timeout_ms):
+    deadline = time.time() + timeout_ms / 1000.0
+    while time.time() < deadline:
+        status = proc.poll()
+        if status is not None:
+            return status
+        time.sleep(0.1)
+    raise ReplayError(f"process still running after {timeout_ms} ms")
+
+
 WAIT_CONVERGE_DEFAULTS = [50, 2, 16, 32, 5000]
 
 
@@ -584,6 +595,7 @@ def write_internal_replay(source_path, dest_path, snapshot_dir=None, sync_dir=No
             "assert-exit",
             "assert-state",
             "timeline-summary",
+            "wait-exit",
         ):
             continue
         else:
@@ -1834,6 +1846,17 @@ def run_replay(args):
                         # legacy delay-shaped behavior so the script stays
                         # portable.
                         time.sleep(0.5)
+                elif command == "wait-exit":
+                    if len(parts) != 2:
+                        raise ReplayError("wait-exit expects timeout-ms")
+                    wait_process_exit(proc, int(parts[1]))
+                    rows.append(
+                        {
+                            "status": "ok",
+                            "relative_path": f"wait-exit:{parts[1]}",
+                            "detail": "",
+                        }
+                    )
                 elif command == "state-snapshot":
                     if len(parts) < 2:
                         raise ReplayError("state-snapshot expects a name")

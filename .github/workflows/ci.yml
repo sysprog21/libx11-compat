@@ -1893,6 +1893,83 @@ jobs:
         if: ${{ !cancelled() }}
         run: ccache --show-stats
 
+  # ---- Micropolis (bundled Tcl/Tk/TclX) build + compat-link gate ----
+  # Builds stargo/micropolis with its in-tree Tcl/Tk/TclX against libx11-compat
+  # so the compat XShm / XPutImage / Xlib surface it links stays intact: a
+  # compat API or symbol regression that breaks the port is caught here at build
+  # and link time. Kept in its own job (like magic/mosaic) so the bundled
+  # interpreter build stays out of the core PR gate. The runtime replay smokes
+  # (make micropolis-check) assert macOS/SDL3 window geometry and are validated
+  # there; the compat's own check-unit covers the XShm behavior on Linux.
+  micropolis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # python3-pil backs the smoke's image assertions; byacc builds the
+        # bundled TclX parser; SDL2 stack plus pixman is the compat boundary.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc ccache make pkg-config python3 python3-pil byacc \
+            libsdl2-dev libsdl2-ttf-dev libpixman-1-dev
+
+      - name: Cache upstream sources and Micropolis clone
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+          key: micropolis-upstream-v1-${{ runner.os }}-${{ hashFiles('mk/micropolis.mk', 'compat/micropolis-patches/**', 'scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            micropolis-upstream-v1-${{ runner.os }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-micropolis-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-micropolis-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        # Micropolis's cc-legacy wrapper execs "$CC" as a single program, so CC
+        # must be one word. Route ccache through its masquerade directory on
+        # PATH instead of CC="ccache gcc", which cc-legacy would exec verbatim.
+        run: |
+          ccache --max-size=800M
+          ccache --zero-stats
+          echo "/usr/lib/ccache" >>"$GITHUB_PATH"
+          echo "CC=gcc" >>"$GITHUB_ENV"
+
+      - name: Build libX11-compat (prerequisite for Micropolis)
+        # Prime the upstream stamp serially before the parallel build, matching
+        # the other workload jobs on a cold cache.
+        run: |
+          make build/upstream/include/.upstream-stamp
+          make -j"$(nproc)"
+
+      - name: Build Micropolis against the compat stack
+        id: micropolis
+        run: make micropolis
+
+      - name: Upload Micropolis build log on failure
+        if: ${{ failure() && steps.micropolis.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: micropolis-build-log
+          path: build/micropolis/build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
   # ---- Native SDL3 backend build + regression tests ----
   # ubuntu-24.04 ships no SDL3 in its repos (SDL3 GA'd after noble), and no
   # GitHub runner image or readily-available PPA carries libsdl3-dev for

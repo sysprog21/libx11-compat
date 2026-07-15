@@ -1,0 +1,25 @@
+diff --git a/src/sim/w_x.c b/src/sim/w_x.c
+index 82ff0a2..4bbcee8 100644
+--- a/src/sim/w_x.c
++++ b/src/sim/w_x.c
+@@ -361,14 +361,14 @@ FindXDisplay(Tk_Window tkwin)
+ 	  case 32: \
+ 	    if (xd->visual->red_mask == 0xff0000) { \
+ 	    xd->pixels[i] = \
+-	      ((color->red & 0xff) << 16) | \
+-	      ((color->green & 0xff) << 8) | \
+-	      ((color->blue & 0xff) << 0); \
++	      (((color->red >> 8) & 0xff) << 16) | \
++	      (((color->green >> 8) & 0xff) << 8) | \
++	      (((color->blue >> 8) & 0xff) << 0); \
+ 	    } else { \
+ 	    xd->pixels[i] = \
+-	      ((color->blue & 0xff) << 16) | \
+-	      ((color->green & 0xff) << 8) | \
+-	      ((color->red & 0xff) << 0); \
++	      (((color->blue >> 8) & 0xff) << 16) | \
++	      (((color->green >> 8) & 0xff) << 8) | \
++	      (((color->red >> 8) & 0xff) << 0); \
+ 	    } \
+ 	    break; \
+ 	  } \

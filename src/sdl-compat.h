@@ -34,6 +34,14 @@
 #include <SDL3/SDL_main.h>
 #include <stdbool.h>
 
+/* SDL3 folded timers into core init and dropped SDL_INIT_TIMER. Define it to a
+ * no-op bit so XOpenDisplay can pass SDL_INIT_VIDEO | SDL_INIT_TIMER unchanged
+ * across both backends; on SDL3 the timer thread needs no subsystem init.
+ */
+#ifndef SDL_INIT_TIMER
+#define SDL_INIT_TIMER 0
+#endif
+
 /* SDL2's headers transitively dragged in the libc declarations (stdlib, string)
  * that much of the tree relies on without including them directly. SDL3
  * deliberately stopped leaking libc, so re-provide the same surface here to

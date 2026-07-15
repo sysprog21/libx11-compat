@@ -1,7 +1,12 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
-#include "X11/Xlib.h"
+#include <X11/Xlib.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
 #include "drawing.h"
 #include "errors.h"
 #include "resource-types.h"
@@ -14,10 +19,6 @@
 #include "mac-live-resize.h"
 #include "path/raster.h"
 #include "timeline.h"
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -26,6 +27,38 @@
 static SDL_atomic_t presentWakePending = {False};
 static SDL_atomic_t presentWakeTimerPending = {False};
 static SDL_atomic_t presentWakeEventType = {-1};
+
+/* Live SDL_TimerID of the pending present-wake timer, or 0 for none. Stored so
+ * cancelPresentWakeTimer can remove it before a fresh SDL_Init; see that
+ * function.
+ */
+static SDL_atomic_t presentWakeTimerId = {0};
+
+/* Set by cancelPresentWakeTimer so a present-wake callback that has already
+ * started (SDL_RemoveTimer cannot recall one mid-flight) skips its
+ * SDL_PushEvent instead of pushing into a tearing-down event subsystem.
+ * schedulePresentWake clears it when it arms a fresh timer.
+ */
+static SDL_atomic_t presentWakeTornDown = {False};
+
+/* Serializes the callback's push against cancelPresentWakeTimer's teardown
+ * wait, so the cancel returns only after any in-flight callback has finished
+ * and a later one is guaranteed to observe presentWakeTornDown. Lazily created;
+ * the spinlock guards the one-time SDL_CreateMutex against the timer thread and
+ * the main thread racing on first use.
+ */
+static SDL_mutex *presentWakeCallbackLock;
+static SDL_SpinLock presentWakeCallbackLockInit;
+
+static SDL_mutex *ensurePresentWakeCallbackLock(void)
+{
+    SDL_AtomicLock(&presentWakeCallbackLockInit);
+    if (!presentWakeCallbackLock)
+        presentWakeCallbackLock = SDL_CreateMutex();
+    SDL_mutex *lock = presentWakeCallbackLock;
+    SDL_AtomicUnlock(&presentWakeCallbackLockInit);
+    return lock;
+}
 
 #define PRESENT_WAKE_DELAY_MS 16
 
@@ -57,6 +90,7 @@ static Bool getDrawableSize(Drawable drawable, int *width, int *height);
 static void resolveWindowBackground(Window window,
                                     Pixmap *backgroundPixmap,
                                     unsigned long *backgroundColor);
+
 /* Forward-defined here so callers earlier in the file (the shape-mask
  * snapshot/composite helpers) can stack-allocate a ShapeMaskView. The
  * resolve/sample helpers themselves live next to the rest of the shape code
@@ -158,6 +192,7 @@ static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
     }
     if (rect->w <= 0 || rect->h <= 0)
         return;
+
     /* Pixman validates `x + w` and `y + h` as signed-int extents and flags the
      * rect with a stderr BUG print when they overflow. Drawing primitives
      * feeding this path can synthesize wildly extreme bboxes from parent-chain
@@ -216,17 +251,37 @@ static Uint32 presentWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
 {
     (void) interval;
     (void) param;
-    SDL_AtomicSet(&presentWakeTimerPending, False);
+    /* Hold the callback lock across the tornDown check and the push so
+     * cancelPresentWakeTimer, which sets tornDown before taking the same lock,
+     * either waits out a push already in progress or is seen by this one. Once
+     * tornDown is set no push happens, so no present-wake event can land in an
+     * event subsystem being torn down.
+     */
+    SDL_mutex *lock = ensurePresentWakeCallbackLock();
+    if (lock)
+        SDL_LockMutex(lock);
     int eventType = SDL_AtomicGet(&presentWakeEventType);
-    if (SDL_AtomicGet(&presentWakePending) || eventType == -1)
-        return 0;
-
-    SDL_Event event;
-    SDL_zero(event);
-    event.type = (Uint32) eventType;
-    event.user.code = PRESENT_EVENT_CODE;
-    if (SDL_PushEvent(&event) == 1)
-        SDL_AtomicSet(&presentWakePending, True);
+    if (!SDL_AtomicGet(&presentWakeTornDown) &&
+        !(SDL_AtomicGet(&presentWakePending) || eventType == -1)) {
+        SDL_Event event;
+        SDL_zero(event);
+        event.type = (Uint32) eventType;
+        event.user.code = PRESENT_EVENT_CODE;
+        if (SDL_PushEvent(&event) == 1)
+            SDL_AtomicSet(&presentWakePending, True);
+    }
+    if (lock)
+        SDL_UnlockMutex(lock);
+    /* Clear pending only after the push, and never clear the stored id here.
+     * Keeping pending set stops a concurrent schedulePresentWake from adding a
+     * second timer and overwriting presentWakeTimerId while this callback is
+     * still running; keeping the id valid lets cancelPresentWakeTimer call
+     * SDL_RemoveTimer on this timer and block until this callback returns, so a
+     * following SDL_Init cannot overlap the SDL_PushEvent above. Once this
+     * returns SDL removes the one-shot itself; the stale id is harmless because
+     * SDL_RemoveTimer on it is a no-op and the next schedule overwrites it.
+     */
+    SDL_AtomicSet(&presentWakeTimerPending, False);
     return 0;
 }
 
@@ -250,6 +305,7 @@ static Bool hasPendingWindowPresent(void)
          */
         if (!IS_TYPE(children[i], WINDOW))
             continue;
+
         WindowStruct *child = GET_WINDOW_STRUCT(children[i]);
         if (child->sdlWindow && child->needsPresent)
             return True;
@@ -273,10 +329,55 @@ static void schedulePresentWake(void)
          */
         SDL_AtomicCAS(&presentWakeEventType, -1, (int) eventType);
     }
+    /* Re-enable pushes for this SDL session: a prior teardown left tornDown set
+     * to gag any straggler callback. Both schedule and cancel run on the main
+     * thread, so this store cannot race a concurrent cancel.
+     */
+    SDL_AtomicSet(&presentWakeTornDown, False);
     SDL_AtomicSet(&presentWakeTimerPending, True);
-    if (SDL_AddTimer(PRESENT_WAKE_DELAY_MS, presentWakeTimerCallback, NULL) ==
-        0)
+    SDL_TimerID timer =
+        SDL_AddTimer(PRESENT_WAKE_DELAY_MS, presentWakeTimerCallback, NULL);
+    if (timer == 0)
         SDL_AtomicSet(&presentWakeTimerPending, False);
+    else
+        SDL_AtomicSet(&presentWakeTimerId, (int) timer);
+}
+
+/* Remove a pending present-wake timer, if any, before the caller tears SDL down
+ * or reinitializes it, so no present-wake SDL_PushEvent overlaps SDL_Quit or a
+ * fresh SDL_Init. Both XCloseDisplay (before SDL_Quit) and XOpenDisplay (before
+ * SDL_Init) call it. A timer left live across either boundary races SDL's
+ * event-subsystem state, which ThreadSanitizer reports as a data race and which
+ * corrupts the SDL allocator heap in practice.
+ */
+void cancelPresentWakeTimer(void)
+{
+    /* Publish tornDown before touching the timer or the callback lock. A
+     * callback that has not started yet then observes it and skips the push;
+     * one already running is waited out by the lock handshake below.
+     */
+    SDL_AtomicSet(&presentWakeTornDown, True);
+    int timer = SDL_AtomicSet(&presentWakeTimerId, 0);
+    if (timer)
+        SDL_RemoveTimer((SDL_TimerID) timer);
+    /* SDL_RemoveTimer stops a not-yet-fired timer but does not join a callback
+     * already executing on the SDL timer thread. Cycle the callback lock: if a
+     * callback holds it mid-push, this blocks until it releases; a callback
+     * that takes the lock after this acquires it only after tornDown is visible
+     * (through the mutex release/acquire), so it skips its push. Either way no
+     * present-wake push survives past this point.
+     */
+    SDL_mutex *lock = ensurePresentWakeCallbackLock();
+    if (lock) {
+        SDL_LockMutex(lock);
+        SDL_UnlockMutex(lock);
+    }
+    SDL_AtomicSet(&presentWakeTimerPending, False);
+    /* A PRESENT event this timer already pushed dies with the SDL event queue
+     * on teardown; clear pending so a stale True does not suppress the next
+     * schedulePresentWake after SDL reinitializes.
+     */
+    SDL_AtomicSet(&presentWakePending, False);
 }
 
 static uint64_t coalesceDeadlineGet(void)
@@ -861,6 +962,7 @@ void drawWindowDataToScreen()
             clampH = winSurface->h;
         if (clampW <= 0 || clampH <= 0)
             continue;
+
         SDL_Rect bounds = {0, 0, clampW, clampH};
         /* One-time per-window log recording the backing vs surface sizes. Under
          * Option 1b the X11 backing is physical, so in steady state winSurface
@@ -1173,6 +1275,7 @@ void glxCompositeToWindow(Window window,
     SDL_Renderer *renderer = getWindowRenderer(window);
     if (!renderer)
         return;
+
     /* ABGR8888 in SDL's little-endian byte order is R,G,B,A in memory, matching
      * glReadPixels(GL_RGBA, GL_UNSIGNED_BYTE); SDL_RenderCopy converts to the
      * window texture's own format. GL is bottom-up, so flip the rows on the CPU
@@ -1218,22 +1321,26 @@ void glxCompositeToWindow(Window window,
         }
     }
     unsigned char *flipped = windowStruct->glxCompositeFlip;
-    for (int row = 0; row < height; row++)
+    for (int row = 0; row < height; row++) {
         memcpy(flipped + (size_t) row * width * 4,
                rgba + (size_t) (height - 1 - row) * width * 4,
                (size_t) width * 4);
+    }
+
     /* If the upload or copy fails, do not mark the rect present: the backing
      * still holds the previous frame, and presenting it would show a stale
      * image that reads exactly like a ghost. Skip the frame instead so the next
      * one repaints cleanly.
      */
     if (SDL_UpdateTexture(windowStruct->glxCompositeTexture, NULL, flipped,
-                          width * 4) != 0)
+                          width * 4) != 0) {
         return;
+    }
     SDL_Rect dst = {0, 0, width, height};
     if (SDL_RenderCopy(renderer, windowStruct->glxCompositeTexture, NULL,
-                       &dst) != 0)
+                       &dst) != 0) {
         return;
+    }
     invalidateSdlDrawStateCache();
 
     /* Present the top-level ancestor over the widget's rect; walk up
@@ -1297,6 +1404,7 @@ typedef struct {
 
 static TextStampEntry textStamps[TEXT_STAMP_CAPACITY];
 static Uint64 textStampClock = 0;
+
 /* Live stamp count, so the invalidation hook on the hot present path can bail
  * out before scanning when nothing uses core text (atomic read needs no lock).
  */
@@ -1422,6 +1530,7 @@ void textStampRecord(Drawable drawable,
     char *dup = strdup(string);
     if (!dup)
         return;
+
     textStampLock();
     /* This label now owns the cell; drop any stamp it overwrites, then take a
      * free slot or evict the least-recently-used one.
@@ -1447,6 +1556,7 @@ void textStampRecord(Drawable drawable,
     textStamps[slot].foreground = foreground;
     textStamps[slot].string = dup;
     textStamps[slot].lastUsed = ++textStampClock;
+
     /* Publish the count before marking the slot live so a concurrent lockless
      * early-out that observes a non-zero count is guaranteed to then take the
      * lock and scan this fully-populated entry.
@@ -1462,11 +1572,13 @@ void flushTextStampsForWindow(Window window)
         return;
     Window topWindow;
     SDL_Rect topRect;
+
     /* A geometry or stacking change to any window in the tree can move or
      * destroy the cells we stamped, so flush the whole top-level wholesale.
      */
     if (!drawableTopLevelRect(window, NULL, &topWindow, &topRect))
         topWindow = window;
+
     textStampLock();
     for (int i = 0; i < TEXT_STAMP_CAPACITY; i++) {
         if (textStamps[i].inUse && textStamps[i].topWindow == topWindow)
@@ -1700,6 +1812,7 @@ SDL_Surface *getRenderSurfaceRect(SDL_Renderer *renderer,
     }
 
     SDL_FillRect(surface, NULL, 0);
+
     /* Clip the requested rect to the viewport. SDL_RenderReadPixels fails
      * outright if the rect leaves the render target, so an X11 caller asking
      * for a drawable-relative area that runs off the edge would otherwise lose
@@ -2011,6 +2124,7 @@ SDL_Surface *getPixmapSurfaceRect(Pixmap pixmap, const SDL_Rect *source)
                             (int) pixmapStruct->height};
     SDL_Rect clipped;
     Bool anyInBounds = SDL_IntersectRect(source, &cacheBounds, &clipped);
+
     /* Zero-pad only the part of the request that runs past the pixmap edge, the
      * same contract getRenderSurfaceRect gives for out-of-bounds reads. When
      * the request lies fully inside the pixmap (the common case) the blit
@@ -2081,6 +2195,7 @@ Bool applyShapeMaskOverDrawnRect(Drawable d,
     ShapeMaskView view;
     if (!resolveShapeMasks(window, &view))
         return True;
+
     /* Match the clipping captureShapeMaskBaseline did so the composite surface
      * is the same size as the baseline.
      */
@@ -2358,6 +2473,7 @@ Bool setGcClipForIteration(SDL_Renderer *renderer,
     const pixman_region32_t *region = drawableVisibleRegion(d, &visCount);
     if (visCount <= 0)
         return False;
+
     /* The bounds check must agree with the cap reported by
      * getGcClipIterationCount; visIdx / gcIdx stay safe because the caller only
      * iterates up to that returned int.
@@ -2736,6 +2852,7 @@ static int renderCopyClipByChildren(SDL_Renderer *renderer,
      */
     if (destRect->w <= 0 || destRect->h <= 0)
         return 0;
+
     /* A Pixmap destination has no children, so ClipByChildren collapses to a
      * plain copy. Guard here because GET_WINDOW_STRUCT inside
      * childExcludedRegion would reinterpret a PixmapStruct as a WindowStruct
@@ -4430,6 +4547,7 @@ int XDrawSegments(Display *display,
         return 1;
     }
     applySdlDrawState(renderer, gc, SDL_BLENDMODE_BLEND, gContext->foreground);
+
     /* SDL_RenderDrawLines would connect the segments; XSegment is disjoint. */
     int clipCount = getGcClipIterationCount(gc, d);
     for (int clip = 0; clip < clipCount; clip++) {
@@ -4479,6 +4597,7 @@ int XDrawLine(Display *display,
         repaintMappedChildrenInRect(display, d, &damage);
         return 1;
     }
+
     /* Wide / non-solid stroke wanted but the path rasterizer failed (typically
      * pathInit OOM). The fallback below uses SDL_RenderDrawLine which is
      * single-pixel only; flag the silent lineWidth downgrade so a regression in
@@ -4555,6 +4674,7 @@ int XDrawLines(Display *display,
         }
         sdlPoints = heapPoints;
     }
+
     /* CoordModePrevious accumulates relative deltas in int64 so a hostile delta
      * sequence can't signed-overflow into bogus coordinates fed to
      * polylineDamageRect; clampToInt saturates back to the SDL_Point int.
@@ -4682,6 +4802,7 @@ int XClearArea(register Display *dpy,
         .w = clearWidth,
         .h = clearHeight,
     };
+
     /* The fill below overwrites these pixels, so any text stamp covering the
      * cleared cell is now stale. XClearArea fills the backing without routing
      * through the present choke point, so invalidate explicitly here.
@@ -4828,6 +4949,7 @@ static int xCopyAreaRasterOp(Display *display,
     size_t pixelCount = (size_t) destRect.w * (size_t) destRect.h;
     if (pixelCount > SIZE_MAX / sizeof(Uint32))
         return -1;
+
     /* calloc instead of malloc: some SDL_RenderReadPixels backends silently
      * partial-fill when the requested rect intersects out-of-bounds; the rest
      * stays zero rather than feeding uninitialized heap into
@@ -4851,6 +4973,7 @@ static int xCopyAreaRasterOp(Display *display,
     int pitch = (int) pitchSize;
     SDL_Texture *texture = NULL;
     SDL_Renderer *destRenderer = NULL;
+
     /* SDL_RenderReadPixels reads absolute render-target coordinates and ignores
      * the active viewport, while the caller passes srcRect / destRect in
      * drawable-local (viewport-relative) coordinates. For a child window whose
@@ -5338,6 +5461,7 @@ int XDrawRectangle(Display *display,
         return 0;
     }
     GraphicContext *gContext = GET_GC(gc);
+
     /* SDL_RenderDrawRect outlines a w-by-h pixel rect; the X11 spec is (w+1) by
      * (h+1). Clamp in int64 so an unsigned width near UINT_MAX can't wrap into
      * a negative SDL_Rect.w or wrap the path corners.
@@ -5514,6 +5638,7 @@ static SDL_Texture *stippleStamp(SDL_Renderer *renderer,
     SDL_Surface *stip = getPixmapSurfaceRect(stipplePixmap, &full);
     if (!stip)
         return NULL;
+
     /* Bake a whole number of pattern periods into one stamp so a large fill
      * with a small stipple issues far fewer SDL_RenderCopy calls (an 8x8
      * stipple over a Magic layout otherwise draws one copy per 8x8 tile). The
@@ -5551,16 +5676,19 @@ static SDL_Texture *stippleStamp(SDL_Renderer *renderer,
     int spitch = stip->pitch / 4, dpitch = stamp->pitch / 4;
     const Uint32 *spx = (const Uint32 *) stip->pixels;
     Uint32 *dpx = (Uint32 *) stamp->pixels;
+
     /* Magic builds a stipple pixmap by drawing each bit with foreground (pat &
      * 1), so a set bit stores color value 1 (e.g. 0x000001ff in the RGBA
      * readback) and an unset bit stores 0 (0x000000ff). Mask off the alpha low
      * byte and treat any nonzero RGB as a set bit.
      */
-    for (int y = 0; y < stampH; y++)
-        for (int x = 0; x < stampW; x++)
+    for (int y = 0; y < stampH; y++) {
+        for (int x = 0; x < stampW; x++) {
             dpx[y * dpitch + x] =
                 (spx[(y % sh) * spitch + (x % sw)] & 0xffffff00u) != 0 ? fg
                                                                        : bg;
+        }
+    }
     SDL_UnlockSurface(stamp);
     SDL_UnlockSurface(stip);
     SDL_FreeSurface(stip);
@@ -5599,6 +5727,7 @@ static Bool renderStippleRects(SDL_Renderer *renderer,
 {
     if (gContext->stipple == None || !IS_TYPE(gContext->stipple, PIXMAP))
         return False;
+
     PixmapStruct *sp = GET_PIXMAP_STRUCT(gContext->stipple);
     /* Real stipples are tiny (8x8 up to 32x32). Cap well above that: a larger
      * stipple would make stippleStamp request a multi-period surface whose
@@ -5615,6 +5744,7 @@ static Bool renderStippleRects(SDL_Renderer *renderer,
         stippleStamp(renderer, sp, gContext->stipple, fgc, bgc, opaque);
     if (!tex)
         return False;
+
     /* The stamp bakes in a whole number of pattern periods (see stippleStamp),
      * so step tiles by its actual size, not the base period. Alignment below
      * still uses sw/sh, which is safe because the stamp size is a multiple of
@@ -5683,6 +5813,7 @@ static Bool renderStippleRects(SDL_Renderer *renderer,
         }
     }
     clearRendererClip(renderer);
+
     /* False if any tile blit failed, so the caller (FillOpaqueStippled) can
      * fall back to a solid fill rather than trust a partial stipple.
      */
@@ -5713,6 +5844,7 @@ int XFillRectangles(Display *display,
         handleError(0, display, d, 0, BadDrawable, 0);
         return 0;
     }
+
     /* nrectangles is caller-supplied; an unbounded VLA is a stack-overflow path
      * on hostile or buggy input. Use a small inline buffer for the common case
      * and the heap when the request is larger.
@@ -5750,6 +5882,7 @@ int XFillRectangles(Display *display,
     GraphicContext *gContext = GET_GC(gc);
     LOG("bgColor: 0x%08lx, fgColor: 0x%08lx\n", gContext->background,
         gContext->foreground);
+
     /* Snapshot the union of all rectangles before drawing so shape-mask
      * post-processing can restore mask-excluded pixels in one pass.
      */
@@ -5759,6 +5892,7 @@ int XFillRectangles(Display *display,
     SDL_Surface *shapeBase = captureShapeMaskBaseline(d, renderer, &shapeUnion);
     Bool clipByChildren =
         IS_TYPE(d, WINDOW) && gContext->subWindowMode == ClipByChildren;
+
     /* True only once a fill path has punched children out per rect. The
      * raster-op path below cannot punch (it blits whole rects through
      * readback), so it leaves this False and forces the child-repaint post-step
