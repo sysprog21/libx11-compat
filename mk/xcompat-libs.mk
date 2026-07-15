@@ -21,15 +21,11 @@ XMU_UPSTREAM_OBJS := $(patsubst $(XMU_SRC_DIR)/%.c,$(XMU_OBJ_DIR)/%.o,$(XMU_UPST
 
 $(OUT)/xext-compat.o: compat/xext-compat.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(OUT)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 $(OUT)/xmu-compat.o: compat/xmu-compat.c $(UPSTREAM_HEADERS_STAMP) \
     $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(OUT)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 $(XMU_OBJ_DIR):
 	@mkdir -p $@
@@ -40,33 +36,24 @@ $(XMU_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_STAGED_H) \
     $(SDL_BACKEND_STAMP) | $(XMU_OBJ_DIR)
 	@echo "  CC      $(XMU_SRC_DIR)/$*.c"
 	$(Q)$(CC) $(LIBXT_CPPFLAGS) -iquote $(OUT)/upstream/include/X11/Xmu \
-	    $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) \
-	    -c $(XMU_SRC_DIR)/$*.c -o $@
+	    $(LEGACY_FP_CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
+	    $(DEPFLAGS) -c $(XMU_SRC_DIR)/$*.c -o $@
 
 $(OUT)/xinerama-compat.o: compat/xinerama-compat.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(OUT)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 $(OUT)/ice-compat.o: compat/ice-compat.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(OUT)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 $(OUT)/sm-compat.o: compat/sm-compat.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(OUT)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 $(OUT)/xft-compat.o: src/xft.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(OUT)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 $(XEXT_COMPAT_TARGET): $(OUT)/xext-compat.o $(TARGET) | $(OUT)
 	@echo "  LD      $@"

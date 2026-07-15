@@ -170,8 +170,8 @@ $(OUT)/upstream/include/X11/Shell.h: $(LIBXT_GEN_DIR)/Shell.h
 $(LIBXT_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_PATCH_STAMP) $(LIBXT_GEN_HEADERS) \
     $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(LIBXT_OBJ_DIR)
 	@echo "  CC      $(LIBXT_SRC_DIR)/$*.c"
-	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) \
+	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(LEGACY_FP_CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
+	    $(DEPFLAGS) \
 	    -c $(LIBXT_SRC_DIR)/$*.c -o $@
 
 # StringDefs.c lives in $(LIBXT_GEN_DIR), not LIBXT_SRC_DIR.
@@ -179,8 +179,8 @@ $(LIBXT_OBJ_DIR)/StringDefs.o: $(LIBXT_GEN_C) $(LIBXT_GEN_HEADERS) \
     $(LIBXT_STAGED_H) $(SDL_BACKEND_STAMP) | $(LIBXT_OBJ_DIR) \
     $(UPSTREAM_HEADERS_STAMP)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(LEGACY_FP_CFLAGS) $(LIBXT_CFLAGS) $(CFLAGS_EXTRA) \
+	    $(DEPFLAGS) -c $< -o $@
 
 # Link as a shared library. libXt's own dependency closure is just
 # libX11-compat (which provides Xlib, Xrm, atoms, ...) and libc; SDL2 is

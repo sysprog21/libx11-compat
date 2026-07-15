@@ -42,6 +42,33 @@ CPPFLAGS += -Iinclude -Isrc \
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter \
           -Wno-typedef-redefinition -fPIC
 
+# Release optimization default for first-party objects: libX11-compat core, the
+# staged upstream libX11 sources, the compat toolkit libraries (libXt/Xpm/Xaw/
+# Xmu/Xext/Xinerama/ICE/SM/Xft-compat), tests, and bundled examples. Debug CI
+# passes OPTFLAGS=-O0 explicitly.
+OPTFLAGS ?= -O2
+
+# FP_CFLAGS / LEGACY_FP_CFLAGS are the single source of truth for the first-
+# party optimization + base flag set. Every first-party compile rule uses one of
+# them (via cc_object or by hand) rather than threading $(OPTFLAGS) itself, so
+# the opt level is defined here once and cannot silently drift out of an
+# individual rule.
+#
+# OPTFLAGS comes BEFORE $(CFLAGS): $(OPTFLAGS) is the default, and a value the
+# user or a job supplies later wins because the last -O on the command line
+# takes effect. So `make CFLAGS="-O0 -g"` still lowers the optimization (Make's
+# usual convention), a sanitizer job's -O1 in $(CFLAGS_EXTRA) still wins, and
+# OPTFLAGS=-O0 sets it directly. Recursive (=) so command-line overrides of
+# OPTFLAGS/CFLAGS are honored at recipe time.
+FP_CFLAGS = $(OPTFLAGS) $(CFLAGS)
+
+# Legacy/upstream X11 sources (staged libX11 plus the libXt/Xaw/Xpm/Xmu compat
+# libs) predate strict aliasing and contain type-punning that is benign at -O0
+# but a TBAA hazard at the -O2 default. Keep the speed but disable the aliasing
+# assumption so -O2 cannot reorder or elide those punned loads/stores. Trailing
+# so it is not overridden by a -fstrict-aliasing that leaks in via $(CFLAGS).
+LEGACY_FP_CFLAGS = $(FP_CFLAGS) -fno-strict-aliasing
+
 # Opt-in strict mode: STRICT=1 turns warnings into errors so CI surfaces
 # new diagnostics at PR time. STRICT_CFLAGS is applied only to first-
 # party objects via mk/common.mk's compile rule; upstream-derived libXt

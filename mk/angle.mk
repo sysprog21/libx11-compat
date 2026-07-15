@@ -271,7 +271,7 @@ clean-angle:
 $(OUT)/examples/glxgears: examples/glxgears.c $(TARGET) $(ANGLE_LIBGLESV2)
 	@$(MKDIR_P) $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) -I$(ANGLE_ROOT)/include $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) -I$(ANGLE_ROOT)/include $(FP_CFLAGS) $(CFLAGS_EXTRA) \
 	    $< $(TARGET) $(ANGLE_LIBGLESV2) $(LDLIBS) \
 	    -Wl,-rpath,$(abspath $(OUT)) -Wl,-rpath,$(abspath $(ANGLE_OUT_DIR)) \
 	    -lm -o $@
@@ -330,7 +330,7 @@ $(OUT)/tests/glx-egl-diff: tests/glx-egl-diff.c $(TARGET) $(ANGLE_LIBGLESV2) \
                            $(ANGLE_LIBEGL)
 	@$(MKDIR_P) $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) -I$(ANGLE_ROOT)/include $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) -I$(ANGLE_ROOT)/include $(FP_CFLAGS) $(CFLAGS_EXTRA) \
 	    $< $(TARGET) $(ANGLE_LIBGLESV2) $(ANGLE_LIBEGL) $(LDLIBS) \
 	    -Wl,-rpath,$(abspath $(OUT)) -Wl,-rpath,$(abspath $(ANGLE_OUT_DIR)) \
 	    -o $@

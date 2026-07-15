@@ -34,8 +34,8 @@ $(LIBXPM_SRCS): $(UPSTREAM_HEADERS_STAMP)
 $(LIBXPM_OBJ_DIR)/%.o: $(LIBXPM_SRC_DIR)/%.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(LIBXPM_OBJ_DIR)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(LIBXPM_CPPFLAGS) $(CFLAGS) $(LIBXPM_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(Q)$(CC) $(LIBXPM_CPPFLAGS) $(LEGACY_FP_CFLAGS) $(LIBXPM_CFLAGS) $(CFLAGS_EXTRA) \
+	    $(DEPFLAGS) -c $< -o $@
 
 $(LIBXPM_TARGET): $(LIBXPM_OBJS) $(TARGET) | $(OUT)
 	@echo "  LD      $@"

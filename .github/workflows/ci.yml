@@ -197,6 +197,36 @@ jobs:
       - name: Build libX11-compat.so
         run: make -j"$(nproc)"
 
+      - name: Assert release build compiles first-party objects with -O2
+        # Resolve the actual compile command make would run for one object per
+        # first-party rule family and confirm it carries the release flags. This
+        # checks the real expanded command, not makefile text, so it cannot be
+        # fooled by recipe layout, variable spelling, or continuation style, and
+        # it covers every rule shape: the cc_object core rule, the staged upstream
+        # libX11 rule (which also gets -fno-strict-aliasing), the examples rule,
+        # and the test rule. -B forces make to emit the recipe; -n keeps it from
+        # running; the awk join collapses backslash-continued recipe lines so the
+        # flags and the source token land on one line regardless of layout. A new
+        # rule family added later is not covered here by itself; add a line for it.
+        run: |
+          assert_opt() {
+            local target=$1 needle=$2 flag=$3 cmd
+            cmd=$(make -Bn V=1 "$target" 2>/dev/null \
+              | awk '/\\$/{sub(/\\$/," ");printf "%s",$0;next}{print}' \
+              | grep -E '(clang|gcc|ccache)[^=]' | grep -- "$needle" | head -1)
+            case "$cmd" in
+              "") echo "assert_opt: no compile command for $target ($needle)"; exit 1 ;;
+              *"$flag"*) echo "ok: $target ($needle) carries $flag" ;;
+              *) echo "error: $target ($needle) compile command missing $flag"
+                 echo "$cmd"; exit 1 ;;
+            esac
+          }
+          assert_opt build/src/drawing.o          '-c src/drawing.c' '-O2'
+          assert_opt build/upstream/src/Context.o 'Context.c'        '-O2'
+          assert_opt build/upstream/src/Context.o 'Context.c'        '-fno-strict-aliasing'
+          assert_opt build/examples/clock         'examples/clock.c' '-O2'
+          assert_opt build/tests/test-xft-link    'test-xft-link.c'  '-O2'
+
       - name: Run regression tests (make check-unit)
         # check-unit is the sanitizer-friendly subset: in-tree binaries
         # + symbol-coverage, no motif/violawww gates. The motif job below
@@ -272,7 +302,10 @@ jobs:
           echo "CC=ccache clang" >>"$GITHUB_ENV"
 
       - name: Build with DEBUG_LIBX11_COMPAT
-        run: make CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT -j"$(nproc)"
+        # Debug pins OPTFLAGS=-O0 explicitly rather than inheriting the release
+        # -O2 default, so a debug build stays unoptimized for stepping and does
+        # not silently track whatever the release optimization level becomes.
+        run: make OPTFLAGS=-O0 CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT -j"$(nproc)"
 
       - name: Run regression tests (debug)
         # check-unit only: the umbrella check would recursively run
@@ -283,7 +316,7 @@ jobs:
           UI_REPLAY_XVFB: --xvfb
           UI_REPLAY_SCREENSHOT_COMMAND: import
           UI_REPLAY_DISPLAY: 121
-        run: make CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT check-unit
+        run: make OPTFLAGS=-O0 CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT check-unit
 
       - name: ccache stats
         run: ccache --show-stats

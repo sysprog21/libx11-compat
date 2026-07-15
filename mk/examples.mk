@@ -41,13 +41,13 @@ bench-x11perf: $(X11PERF_BIN)
 $(OUT)/examples/%: examples/%.c $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
 	    $(LDLIBS) $(EXAMPLE_LDFLAGS) -o $@
 
 $(X11PERF_BIN): $(X11PERF_SRCS) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      examples/x11perf"
-	$(Q)$(CC) $(CPPFLAGS) -I$(X11PERF_DIR) $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) -I$(X11PERF_DIR) $(FP_CFLAGS) $(CFLAGS_EXTRA) \
 	    -Wno-missing-field-initializers -Wno-unused-but-set-variable \
 	    -Wno-sign-compare -DHAVE_CONFIG_H=1 \
 	    $(X11PERF_SRCS) $(TARGET) $(LDLIBS) $(EXAMPLE_LDFLAGS) -o $@
