@@ -1,0 +1,19 @@
+{
+  "assertions": [
+    {"type": "non_empty"},
+    {"type": "not_all_black"},
+    {
+      "type": "region_max_dark_ratio",
+      "rect": [86, 25, 102, 88],
+      "dark_threshold": 32,
+      "max_dark_ratio": 0.70
+    },
+    {
+      "type": "region_min_color_coverage",
+      "rect": [500, 24, 524, 744],
+      "colors": [[85, 85, 255], [0, 255, 0], [203, 124, 97]],
+      "tolerance": 24,
+      "min_ratio": 0.08
+    }
+  ]
+}

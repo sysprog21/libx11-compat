@@ -232,6 +232,16 @@ but each exercises behavior that small examples do not reach.
   CAD_ROOT=build/magic/install/lib build/magic/install/bin/magic -d OGL
   ```
 
+- [Micropolis](https://en.wikipedia.org/wiki/Micropolis_(video_game)): the GPL release of the original SimCity engine, a TclX/Tk workload built together with a private copy of Tcl/Tk so the port ships its own Tk rather than relying on a system-installed one.
+  It is the toolkit's MIT-SHM workload: the tile map and editor views upload their pixels through `XShmPutImage`, so the port drives the shared-memory image path (`src/xshm.c`) and the 32bpp `XPutImage` image transfer end to end.
+
+  <a href="assets/micropolis.png"><img src="assets/micropolis.png" alt="Micropolis (SimCity) running through libx11-compat on macOS" width="420"></a>
+
+  ```sh
+  make micropolis                        # build Micropolis + private Tcl/Tk
+  build/micropolis/source/Micropolis     # launch
+  ```
+
 The value of these ports is not that they replace a real X11, Motif, or Qt2 install today,
 but that they keep legacy Xlib clients building and running on platforms where no X server is available while migration is in progress.
 

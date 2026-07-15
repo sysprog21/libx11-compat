@@ -1,6 +1,7 @@
 #include <limits.h>
 #include <stdint.h>
-#include "X11/Xlib.h"
+#include <X11/Xlib.h>
+
 #include "errors.h"
 #include "drawing.h"
 #include "resource-types.h"
@@ -73,6 +74,7 @@ static Uint32 *ensurePutImageScratchBuffer(size_t pixelsNeeded)
      */
     if (pixelsNeeded > SIZE_MAX / sizeof(Uint32))
         return NULL;
+
     if (pixelsNeeded > putImageScratch.pixelCapacity) {
         Uint32 *grown =
             realloc(putImageScratch.pixels, pixelsNeeded * sizeof(Uint32));
@@ -108,6 +110,52 @@ static SDL_Texture *ensurePutImageStagingTexture(SDL_Renderer *renderer,
     return putImageScratch.texture;
 }
 
+static int renderRgba8888Locked(Drawable drawable,
+                                GC gc,
+                                SDL_Renderer *renderer,
+                                const void *pixels,
+                                int pitch,
+                                int dest_x,
+                                int dest_y,
+                                unsigned int width,
+                                unsigned int height)
+{
+    SDL_Texture *texture =
+        ensurePutImageStagingTexture(renderer, (int) width, (int) height);
+    if (!texture) {
+        LOG("SDL_CreateTexture failed: %s\n", SDL_GetError());
+        return -1;
+    }
+    if (SDL_UpdateTexture(texture, NULL, pixels, pitch) < 0) {
+        LOG("SDL_UpdateTexture failed in %s: %s\n", __func__, SDL_GetError());
+        return -1;
+    }
+    SDL_Rect dst = {
+        .x = dest_x,
+        .y = dest_y,
+        .w = width,
+        .h = height,
+    };
+    ShapeGuard sg;
+    shapeGuardBegin(&sg, drawable, renderer, &dst);
+    int clipCount = getGcClipIterationCount(gc, drawable);
+    for (int clip = 0; clip < clipCount; clip++) {
+        if (!setGcClipForIteration(renderer, gc, clip, drawable))
+            continue;
+        if (SDL_RenderCopy(renderer, texture, NULL, &dst) < 0) {
+            clearRendererClip(renderer);
+            shapeGuardEnd(&sg);
+            LOG("SDL_RenderCopy failed: %s\n", SDL_GetError());
+            return -1;
+        }
+    }
+    clearRendererClip(renderer);
+    Bool shapeOk = shapeGuardEnd(&sg);
+    if (shapeOk)
+        presentDrawableRectIfVisible(drawable, &dst);
+    return 1;
+}
+
 void freeImageStorage(void)
 {
     /* Release scratch payload but leave putImageScratchLock alive; destroying
@@ -128,17 +176,21 @@ void freeImageStorage(void)
     unlockPutImageScratch(lock);
 }
 
-/* Pack an X11 pixel into SDL2's RGBA8888 layout. Routes through
- * colorWithOpaqueDefault so core-X11 pixels (alpha byte == 0) render opaque
- * instead of disappearing into SDL2's alpha-aware blend.
+/* Pack an X11 pixel into SDL2's RGBA8888 layout, which matches every drawable
+ * render target in this layer so SDL_RenderCopy of the staging texture stays a
+ * straight per-row copy instead of a converting blit. Promotes a zero (core-X11
+ * opaque) alpha byte to 0xFF branch-free so core-X11 pixels render opaque
+ * instead of vanishing into SDL2's alpha-aware blend, and does the whole
+ * swizzle in Uint32 so the 32-bit XPutImage loops vectorize with narrow lanes
+ * (NEON on arm64, SSE on x86) once this TU is built optimized.
  */
 static inline Uint32 xColorToRgba8888(unsigned long color)
 {
-    color = colorWithOpaqueDefault(color);
-    return ((Uint32) GET_RED_FROM_COLOR(color) << 24) |
-           ((Uint32) GET_GREEN_FROM_COLOR(color) << 16) |
-           ((Uint32) GET_BLUE_FROM_COLOR(color) << 8) |
-           (Uint32) GET_ALPHA_FROM_COLOR(color);
+    Uint32 c = (Uint32) color;
+    Uint32 alpha = (Uint32) 0xFF << ALPHA_SHIFT;
+    c |= alpha & -(Uint32) ((c & alpha) == 0);
+    return ((c >> RED_SHIFT & 0xFF) << 24) | ((c >> GREEN_SHIFT & 0xFF) << 16) |
+           ((c >> BLUE_SHIFT & 0xFF) << 8) | (c >> ALPHA_SHIFT & 0xFF);
 }
 
 static unsigned long oneBitPixelFromRgba(Uint32 pixel)
@@ -197,9 +249,6 @@ SDL_Renderer *getPutImageStagingTextureRenderer(void)
 #undef XDestroyImage
 #endif
 
-// Inspired by
-// https://github.com/csulmone/X11/blob/59029dc09211926a5c95ff1dd2b828574fefcde6/libX11-1.5.0/src/ImUtil.c
-
 static int imageByteOrder(Display *display)
 {
     if (display)
@@ -224,6 +273,12 @@ static int bitsPerPixelForDepth(unsigned int depth, int format)
     return 32;
 }
 
+static Bool imageUsesCanonicalColorMasks(const XImage *image)
+{
+    return image->format == ZPixmap && image->bits_per_pixel == 32 &&
+           image->depth >= 24;
+}
+
 static Bool isValidBitmapPad(int bitmapPad)
 {
     return bitmapPad == 8 || bitmapPad == 16 || bitmapPad == 32;
@@ -237,6 +292,7 @@ static int paddedBytesPerLine(unsigned int width,
         return 0;
     if (bitsPerPixel <= 0)
         return 0;
+
     /* Compute in uint64_t so width * bitsPerPixel (worst case ~2^32 * 32) and
      * the padding round-up cannot wrap. The final return is int, so reject
      * anything that would not fit.
@@ -293,6 +349,24 @@ XImage *XCreateImage(Display *display,
     image->bitmap_pad = bitmap_pad;
     image->bytes_per_line = bytes_per_line;
     image->bits_per_pixel = bitsPerPixelForDepth(depth, format);
+    if (imageUsesCanonicalColorMasks(image)) {
+        /* This layer decodes every 32bpp ZPixmap word as the canonical XColor
+         * layout (XPutImage's swizzle uses fixed RED_SHIFT/etc) and its only
+         * visual advertises exactly these masks. Report canonical masks even
+         * when a client hands in a Visual with different ones: honoring those
+         * would make image->red_mask/green_mask/blue_mask disagree with how the
+         * pixels are actually rendered and read back, not agree with it.
+         */
+        image->red_mask = 0xFFul << RED_SHIFT;
+        image->green_mask = 0xFFul << GREEN_SHIFT;
+        image->blue_mask = 0xFFul << BLUE_SHIFT;
+    } else {
+        image->red_mask = visual ? visual->red_mask : 0;
+        image->green_mask = visual ? visual->green_mask : 0;
+        image->blue_mask = visual ? visual->blue_mask : 0;
+    }
+    image->obdata = NULL;
+
     /* Real Xlib happily accepts width==0 or bits_per_pixel==0 and returns an
      * XImage whose bytes_per_line is zero. paddedBytesPerLine yields 0 in those
      * cases now, so just trust its result rather than aborting.
@@ -334,7 +408,7 @@ static char *xyPixmapPlanePointer(XImage *image, int plane, int x, int y)
     size_t planeStride =
         (size_t) image->bytes_per_line * (size_t) image->height;
     return image->data + planeStride * (size_t) plane +
-           image->bytes_per_line * y + x / 8;
+           (size_t) image->bytes_per_line * (size_t) y + x / 8;
 }
 
 static Bool imageCoordinatesValid(XImage *image, int x, int y)
@@ -514,6 +588,7 @@ XImage *XSubImage(XImage *image,
 
     int bytesPerLine =
         paddedBytesPerLine(width, image->bits_per_pixel, image->bitmap_pad);
+
     /* paddedBytesPerLine returns 0 either for a legitimately empty image or
      * because the row would overflow int. The pixel loop below would still
      * iterate width*height times on a calloc(0, height) buffer, so reject the
@@ -535,6 +610,16 @@ XImage *XSubImage(XImage *image,
         free(data);
         return NULL;
     }
+
+    /* XCreateImage above took a NULL visual, so it zeroed the channel masks. A
+     * sub-image shares its parent's pixel format, and real Xlib carries the
+     * parent's masks over, so copy them rather than leave a client inspecting
+     * subImage->red_mask with 0.
+     */
+    subImage->red_mask = image->red_mask;
+    subImage->green_mask = image->green_mask;
+    subImage->blue_mask = image->blue_mask;
+
     for (unsigned int currY = 0; currY < height; currY++) {
         for (unsigned int currX = 0; currX < width; currX++) {
             XPutPixel(subImage, (int) currX, (int) currY,
@@ -685,35 +770,30 @@ int XPutImage(Display *display,
             memset(data, 0, sizeof(Uint32) * width * height);
         }
     } else if (image->format == ZPixmap && image->bits_per_pixel == 32) {
-        /* The fast 32-bit-load path requires the row base to be 4-byte aligned.
-         * Xlib does not promise that for caller-supplied data, so fall back to
-         * memcpy-per-pixel when either the stride or the base pointer is
-         * misaligned.
+        /* Caller-supplied image->data carries no guaranteed type or alignment,
+         * so read each 32-bit pixel through memcpy. A direct (Uint32 *) cast of
+         * the char buffer is undefined under strict aliasing and would bite
+         * once this file is compiled optimized; memcpy is the aliasing-safe
+         * punt and the compiler lowers it to a plain load, so the loop still
+         * vectorizes.
          */
-        Bool aligned = (image->bytes_per_line % (int) sizeof(Uint32)) == 0 &&
-                       (((uintptr_t) image->data) % sizeof(Uint32)) == 0;
         for (unsigned int y = 0; y < height; y++) {
             const char *srcRow =
                 image->data +
                 (size_t) image->bytes_per_line * ((size_t) src_y + y) +
                 (size_t) src_x * sizeof(Uint32);
             Uint32 *dst = data + y * width;
-            if (aligned) {
-                const Uint32 *src = (const Uint32 *) srcRow;
-                for (unsigned int x = 0; x < width; x++)
-                    dst[x] = xColorToRgba8888(src[x]);
-            } else {
-                for (unsigned int x = 0; x < width; x++) {
-                    Uint32 color;
-                    memcpy(&color, srcRow + x * sizeof(Uint32), sizeof(Uint32));
-                    dst[x] = xColorToRgba8888(color);
-                }
+            for (unsigned int x = 0; x < width; x++) {
+                Uint32 color;
+                memcpy(&color, srcRow + x * sizeof(Uint32), sizeof(Uint32));
+                dst[x] = xColorToRgba8888(color);
             }
         }
     } else if (image->format == XYBitmap) {
         Uint32 foreground = xColorToRgba8888(graphicContext->foreground);
         Uint32 background = xColorToRgba8888(graphicContext->background);
         Bool msbFirst = image->bitmap_bit_order == MSBFirst;
+
         /* The 256-entry LUT below costs ~2us to build, only worth it when the
          * image is large enough to amortize over many bytes. For small inputs
          * the original per-pixel bit test wins.
@@ -733,12 +813,14 @@ int XPutImage(Display *display,
                 Uint32 *dst = data + y * width;
                 unsigned int x = 0;
                 unsigned int srcBitX = (unsigned int) src_x;
+
                 /* Head: pixels before the first aligned source byte. */
                 while (x < width && (srcBitX & 7) != 0) {
                     unsigned char byte = srcRow[srcBitX >> 3];
                     dst[x++] = lut[byte][srcBitX & 7];
                     srcBitX++;
                 }
+
                 /* Aligned middle: one source byte at a time produces eight
                  * destination pixels per memcpy.
                  */
@@ -748,6 +830,7 @@ int XPutImage(Display *display,
                     x += 8;
                     srcBitX += 8;
                 }
+
                 /* Tail: remaining pixels after the last full byte. */
                 while (x < width) {
                     unsigned char byte = srcRow[srcBitX >> 3];
@@ -790,44 +873,11 @@ int XPutImage(Display *display,
         }
     }
 
-    SDL_Texture *texture =
-        ensurePutImageStagingTexture(renderer, (int) width, (int) height);
-    if (!texture) {
-        unlockPutImageScratch(scratchLock);
-        LOG("SDL_CreateTexture failed: %s\n", SDL_GetError());
-        return -1;
-    }
-    if (SDL_UpdateTexture(texture, NULL, data, (int) (width * sizeof(Uint32))) <
-        0) {
-        unlockPutImageScratch(scratchLock);
-        LOG("SDL_UpdateTexture failed in %s: %s\n", __func__, SDL_GetError());
-        return -1;
-    }
-    SDL_Rect dst = {dest_x, dest_y, width, height};
-    ShapeGuard sg;
-    shapeGuardBegin(&sg, drawable, renderer, &dst);
-    int clipCount = getGcClipIterationCount(gc, drawable);
-    for (int clip = 0; clip < clipCount; clip++) {
-        if (!setGcClipForIteration(renderer, gc, clip, drawable))
-            continue;
-        if (SDL_RenderCopy(renderer, texture, NULL, &dst) < 0) {
-            clearRendererClip(renderer);
-            shapeGuardEnd(&sg);
-            unlockPutImageScratch(scratchLock);
-            LOG("SDL_RenderCopy failed: %s\n", SDL_GetError());
-            return -1;
-        }
-    }
-    clearRendererClip(renderer);
-    /* If the shape composite failed mid-flight, mask-violating pixels may still
-     * be on the renderer; skip the present so the next draw recomposes from a
-     * fresh baseline rather than flashing stale output.
-     */
-    Bool shapeOk = shapeGuardEnd(&sg);
+    int result = renderRgba8888Locked(drawable, gc, renderer, data,
+                                      (int) (width * sizeof(Uint32)), dest_x,
+                                      dest_y, width, height);
     unlockPutImageScratch(scratchLock);
-    if (shapeOk)
-        presentDrawableRectIfVisible(drawable, &dst);
-    return 1;
+    return result;
 }
 
 XImage *XGetImage(Display *display,
@@ -852,10 +902,12 @@ XImage *XGetImage(Display *display,
         LOG("XGetImage on SCREEN_WINDOW is not supported by this shim.\n");
         return NULL;
     }
+
     if (IS_TYPE(drawable, WINDOW) && IS_INPUT_ONLY(drawable)) {
         handleError(0, display, drawable, 0, BadMatch, 0);
         return NULL;
     }
+
     /* SDL_Rect carries signed int, and the per-row pointer math below uses
      * width and height as positive offsets; reject any dimension that would
      * cast to a negative int before allocations are attempted.
@@ -873,8 +925,10 @@ XImage *XGetImage(Display *display,
     } else if (IS_TYPE(drawable, PIXMAP)) {
         depth = (int) GET_PIXMAP_STRUCT(drawable)->depth;
     }
+
     int bitsPerPixel = bitsPerPixelForDepth((unsigned int) depth, format);
     int bytes_per_line = paddedBytesPerLine(width, bitsPerPixel, 32);
+
     /* paddedBytesPerLine returns 0 either for a legitimately empty image or
      * because the row size would overflow int. Either way, an extreme width
      * could make calloc(0, height) succeed even though the width*height pixel
@@ -904,6 +958,7 @@ XImage *XGetImage(Display *display,
     }
     SDL_Rect srcRect = {x, y, (int) width, (int) height};
     SDL_Surface *drawableSurface;
+
     /* Pixmaps read through their lazy cache so repeated XGetImage on unchanged
      * contents does not stall on SDL_RenderReadPixels each call. Routing around
      * GET_RENDERER also keeps the read from re-marking the pixmap dirty.
@@ -929,18 +984,30 @@ XImage *XGetImage(Display *display,
 
     if (format == ZPixmap && image->bits_per_pixel == 32) {
         for (unsigned int currY = 0; currY < height; currY++) {
-            const Uint32 *src =
-                (const Uint32 *) ((const char *) drawableSurface->pixels +
-                                  currY * drawableSurface->pitch);
+            /* drawableSurface->pixels is opaque SDL storage with no declared
+             * type, so read each pixel through memcpy rather than a Uint32 *
+             * cast, which would be undefined under strict aliasing once this
+             * file is compiled optimized. image->data is our own allocation, so
+             * the Uint32 store below sets its effective type and stays safe.
+             */
+            const char *srcRow = (const char *) drawableSurface->pixels +
+                                 currY * drawableSurface->pitch;
             Uint32 *dst =
                 (Uint32 *) (image->data + currY * image->bytes_per_line);
             if (plane_mask == (unsigned long) ~0) {
-                for (unsigned int currX = 0; currX < width; currX++)
-                    dst[currX] = (Uint32) rgba8888ToXColor(src[currX]);
+                for (unsigned int currX = 0; currX < width; currX++) {
+                    Uint32 rgba;
+                    memcpy(&rgba, srcRow + currX * sizeof(Uint32),
+                           sizeof(Uint32));
+                    dst[currX] = (Uint32) rgba8888ToXColor(rgba);
+                }
             } else {
-                for (unsigned int currX = 0; currX < width; currX++)
-                    dst[currX] =
-                        (Uint32) (plane_mask & rgba8888ToXColor(src[currX]));
+                for (unsigned int currX = 0; currX < width; currX++) {
+                    Uint32 rgba;
+                    memcpy(&rgba, srcRow + currX * sizeof(Uint32),
+                           sizeof(Uint32));
+                    dst[currX] = (Uint32) (plane_mask & rgba8888ToXColor(rgba));
+                }
             }
         }
     } else {

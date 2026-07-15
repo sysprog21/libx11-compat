@@ -156,6 +156,7 @@ unsigned char getLastRequestCode(Display *display)
     SDL_mutex *lk = acquireLastRequestLock();
     lockSide(lk);
     LastRequestEntry *entry = findLastRequestEntryLocked(display);
+
     /* Read the byte under the lock. Returning the pointer would let another
      * thread (releaseLastRequestCode) free the node between the unlock and the
      * caller's deref.
@@ -219,12 +220,16 @@ void freeLastRequestStorage(void)
 
 errorHandlerFunction XSetErrorHandler(errorHandlerFunction handler)
 {
-    // https://tronche.com/gui/x/xlib/event-handling/protocol-errors/XSetErrorHandler.html
     errorHandlerFunction prev_error_handler = error_handler;
     if (!handler)
         handler = defaultErrorHandler;
     error_handler = handler;
     return prev_error_handler;
+}
+
+int _XDefaultError(Display *display, XErrorEvent *event)
+{
+    return defaultErrorHandler(display, event);
 }
 
 int defaultErrorHandler(Display *display, XErrorEvent *event)
@@ -269,6 +274,7 @@ int defaultErrorHandler(Display *display, XErrorEvent *event)
             break;
         }
     }
+
     /* Now that the handler returns instead of exiting, a client that reissues
      * the same bad request every frame (a Tk redraw hitting one over-strict
      * check, say) would flood stderr forever. Collapse an unbroken run of the
@@ -302,22 +308,24 @@ int defaultErrorHandler(Display *display, XErrorEvent *event)
         fprintf(stderr, "An unknown error occurred for request %d: %u\n",
                 event->request_code, event->error_code);
     }
+
     fflush(stdout);
     fflush(stderr);
+
     /* Deliberate divergence from Xlib. Real Xlib's default handler is fatal for
-     * a decodable core error (_XDefaultError prints, then exit(1)). We instead
-     * print and return, because on this in-process layer a single non-fatal
-     * BadValue (an over-strict XCopyArea during a Tk file-dialog scroll, say)
-     * was killing the whole app, and toolkits (Tk, Motif) are written assuming
-     * a benign protocol error is survivable. Every in-tree handleError caller
-     * returns an error code right after the call, so control flow stays well
-     * defined once this no longer exits. Set LIBX11_COMPAT_FATAL_ERRORS to
-     * restore the fatal behavior when debugging, so a masked error that leaves
-     * a client in a state it assumed unreachable is not hidden. Resolve the env
-     * flag once, race-free for XInitThreads clients: two threads hitting an
-     * error concurrently would otherwise race the lazy init. The value is
-     * idempotent, so an atomic load/store (no lock) is enough; -1 marks
-     * unresolved.
+     * a decodable core error (_XDefaultError prints, then exit(1)). The compat
+     * layer instead prints and returns, because on this in-process layer a
+     * single non-fatal BadValue (an over-strict XCopyArea during a Tk
+     * file-dialog scroll, say) was killing the whole app, and toolkits (Tk,
+     * Motif) are written assuming a benign protocol error is survivable. Every
+     * in-tree handleError caller returns an error code right after the call, so
+     * control flow stays well defined once this no longer exits. Set
+     * LIBX11_COMPAT_FATAL_ERRORS to restore the fatal behavior when debugging,
+     * so a masked error that leaves a client in a state it assumed unreachable
+     * is not hidden. Resolve the env flag once, race-free for XInitThreads
+     * clients: two threads hitting an error concurrently would otherwise race
+     * the lazy init. The value is idempotent, so an atomic load/store (no lock)
+     * is enough; -1 marks unresolved.
      */
     static int fatalErrors = -1;
     int fatal = __atomic_load_n(&fatalErrors, __ATOMIC_ACQUIRE);

@@ -1,0 +1,5 @@
+delay 1500
+wait-converge 200 2 50 200 20000
+state-snapshot scenario
+assert-state scenario micropolis-scenario-fullsize.json
+screenshot scenario

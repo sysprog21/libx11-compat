@@ -1,0 +1,5 @@
+{
+  "assertions": [
+    {"type": "window_with_geometry_range", "wm_name": "Micropolis Scenarios", "map_state": 1, "w_min": 1200, "h_min": 900}
+  ]
+}

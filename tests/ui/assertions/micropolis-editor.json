@@ -1,0 +1,6 @@
+{
+  "assertions": [
+    {"type": "geq", "field": "mapped_window_count", "min": 1},
+    {"type": "window_with_geometry_range", "wm_class": "head0", "wm_name": "Micropolis Controls", "map_state": 1, "w_min": 900, "h_min": 650}
+  ]
+}

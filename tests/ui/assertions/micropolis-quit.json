@@ -1,0 +1,18 @@
+{
+  "assertions": [
+    {
+      "type": "window_with_geometry_range",
+      "wm_class": "ask6",
+      "wm_name": "Micropolis Query",
+      "map_state": 1,
+      "x_min": 0,
+      "x_max": 10,
+      "y_min": 0,
+      "y_max": 10,
+      "w_min": 340,
+      "w_max": 360,
+      "h_min": 190,
+      "h_max": 210
+    }
+  ]
+}

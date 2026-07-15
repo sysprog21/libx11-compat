@@ -36,6 +36,7 @@
 #include "timeline.h"
 #include "util.h"
 #include <pthread.h>
+#include <sys/shm.h>
 
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
@@ -294,11 +295,13 @@ static int ignored_error(Display *display, XErrorEvent *event)
 }
 
 static int last_error_code = 0;
+static int last_error_count = 0;
 
 static int record_error(Display *display, XErrorEvent *event)
 {
     (void) display;
     last_error_code = event->error_code;
+    last_error_count++;
     return 0;
 }
 
@@ -359,6 +362,8 @@ static int ignored_io_error(Display *display)
     return 0;
 }
 
+extern int _XDefaultError(Display *display, XErrorEvent *event);
+
 static int test_smoke(Display *display)
 {
     /* The default error handler matches Xlib: it reports a protocol error and
@@ -378,6 +383,13 @@ static int test_smoke(Display *display)
           "waitpid for default error handler check failed");
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
           "default error handler must report and return, not terminate");
+
+    XErrorEvent event = {
+        .error_code = BadWindow,
+        .request_code = X_DestroyWindow,
+    };
+    CHECK(_XDefaultError(display, &event) == 0,
+          "_XDefaultError must delegate to the default handler");
 
     int minKeycode = 0;
     int maxKeycode = 0;
@@ -3151,6 +3163,106 @@ static int test_xgetimage_color_roundtrip(Display *display)
     return 1;
 }
 
+static int test_xshm_put_image(Display *display)
+{
+    int screen = DefaultScreen(display);
+    Window root = RootWindow(display, screen);
+    enum { W = 2, H = 2 };
+
+    int ownedShmid =
+        shmget(IPC_PRIVATE, W * H * (int) sizeof(Uint32), IPC_CREAT | 0600);
+    CHECK(ownedShmid >= 0, "shmget for owned XShm attach failed");
+    XShmSegmentInfo ownedInfo = {
+        .shmid = ownedShmid,
+        .shmaddr = NULL,
+        .readOnly = False,
+    };
+    CHECK(XShmAttach(display, &ownedInfo), "owned XShmAttach failed");
+    CHECK(ownedInfo.shmaddr, "owned XShmAttach did not map shmaddr");
+    CHECK(XShmAttach(display, &ownedInfo),
+          "owned XShm duplicate attach failed");
+    CHECK(ownedInfo.shmaddr, "owned XShm duplicate attach cleared shmaddr");
+    CHECK(XShmDetach(display, &ownedInfo), "owned XShmDetach failed");
+    CHECK(!ownedInfo.shmaddr, "owned XShmDetach left stale shmaddr");
+    CHECK(XShmAttach(display, &ownedInfo), "owned XShm reattach failed");
+    CHECK(ownedInfo.shmaddr, "owned XShm reattach did not remap");
+    CHECK(XShmDetach(display, &ownedInfo), "owned XShm second detach failed");
+    shmctl(ownedShmid, IPC_RMID, NULL);
+
+    int shmid =
+        shmget(IPC_PRIVATE, W * H * (int) sizeof(Uint32), IPC_CREAT | 0600);
+    CHECK(shmid >= 0, "shmget for XShm upload failed");
+    Uint32 *pixels = shmat(shmid, NULL, 0);
+    CHECK(pixels != (void *) -1, "shmat for XShm upload failed");
+
+    /* Canonical X11 pixel words, the layout every real client feeds through
+     * this layer's default (ARGB) visual: red at RED_SHIFT, alpha byte zero.
+     */
+    for (int i = 0; i < W * H; i++)
+        pixels[i] = 0x00FF0000u;
+    XShmSegmentInfo shminfo = {
+        .shmid = shmid,
+        .shmaddr = (char *) pixels,
+        .readOnly = False,
+    };
+    CHECK(XShmAttach(display, &shminfo), "XShmAttach segment failed");
+    shmctl(shmid, IPC_RMID, NULL);
+    XImage *img = XShmCreateImage(display, DefaultVisual(display, screen), 32,
+                                  ZPixmap, (char *) pixels, &shminfo, W, H);
+    CHECK(img, "XShmCreateImage failed");
+
+    Pixmap pm = XCreatePixmap(display, root, W, H,
+                              (unsigned int) DefaultDepth(display, screen));
+    CHECK(pm != None, "XCreatePixmap for XShm upload failed");
+    GC gc = XCreateGC(display, pm, 0, NULL);
+    CHECK(gc, "XCreateGC for XShm upload failed");
+    CHECK(XShmPutImage(display, pm, gc, img, 0, 0, 0, 0, W, H, False),
+          "XShmPutImage failed");
+
+    char *normalData = calloc(W * H, sizeof(Uint32));
+    CHECK(normalData, "normal XShm fallback image allocation failed");
+    Uint32 *normalPixels = (Uint32 *) normalData;
+    for (int i = 0; i < W * H; i++)
+        normalPixels[i] = 0x00FF0000u;
+    XImage *normalImg = XCreateImage(display, DefaultVisual(display, screen),
+                                     32, ZPixmap, 0, normalData, W, H, 32, 0);
+    CHECK(normalImg, "normal XShm fallback image creation failed");
+    CHECK(!normalImg->obdata, "XCreateImage left obdata uninitialized");
+    CHECK(XShmPutImage(display, pm, gc, normalImg, 0, 0, 0, 0, W, H, False),
+          "normal image XShmPutImage fallback failed");
+    XDestroyImage(normalImg);
+
+    XImage *readback = XGetImage(display, pm, 0, 0, W, H, AllPlanes, ZPixmap);
+    CHECK(readback, "XGetImage after XShm upload failed");
+    CHECK((XGetPixel(readback, 0, 0) & 0x00FFFFFFul) == 0x00FF0000ul,
+          "XShm upload corrupted canonical X11 pixel words");
+    XDestroyImage(readback);
+
+    /* A put to a freed drawable must surface exactly one BadDrawable, not
+     * silently retry.
+     */
+    Pixmap freedPm = XCreatePixmap(
+        display, root, W, H, (unsigned int) DefaultDepth(display, screen));
+    CHECK(freedPm != None, "XCreatePixmap for failed XShm upload failed");
+    XFreePixmap(display, freedPm);
+    last_error_code = 0;
+    last_error_count = 0;
+    int (*oldErrorHandler)(Display *, XErrorEvent *) =
+        XSetErrorHandler(record_error);
+    CHECK(!XShmPutImage(display, freedPm, gc, img, 0, 0, 0, 0, W, H, False),
+          "XShmPutImage to freed pixmap should fail");
+    XSetErrorHandler(oldErrorHandler);
+    CHECK(last_error_code == BadDrawable && last_error_count == 1,
+          "failed XShmPutImage should raise exactly one BadDrawable");
+
+    XFreeGC(display, gc);
+    XFreePixmap(display, pm);
+    XDestroyImage(img);
+    XShmDetach(display, &shminfo);
+    shmdt(pixels);
+    return 1;
+}
+
 static int test_images(Display *display)
 {
     CHECK(XImageByteOrder(display) == ImageByteOrder(display),
@@ -3183,6 +3295,30 @@ static int test_images(Display *display)
     CHECK(image != NULL, "XCreateImage failed");
     CHECK(image->bits_per_pixel == 32 && image->bytes_per_line == 8,
           "unexpected 32-bit image layout");
+    CHECK(image->red_mask == 0x00FF0000ul &&
+              image->green_mask == 0x0000FF00ul &&
+              image->blue_mask == 0x000000FFul,
+          "XCreateImage masks did not match canonical pixel words");
+
+    /* A 32bpp ZPixmap must report the canonical channel masks that match this
+     * layer's fixed pixel decode, even when a client supplies a Visual with
+     * different masks: reporting the Visual's masks would make image->red_mask
+     * disagree with how XPutImage actually renders and reads back the word.
+     */
+    Visual customVisual = *DefaultVisual(display, DefaultScreen(display));
+    customVisual.red_mask = 0x0000FF00ul;
+    customVisual.green_mask = 0x00FF0000ul;
+    customVisual.blue_mask = 0xFF000000ul;
+    XImage *maskImage =
+        XCreateImage(display, &customVisual, 32, ZPixmap, 0, NULL, 2, 2, 32, 0);
+    CHECK(maskImage, "custom-visual XCreateImage failed");
+    CHECK(
+        maskImage->red_mask == 0x00FF0000ul &&
+            maskImage->green_mask == 0x0000FF00ul &&
+            maskImage->blue_mask == 0x000000FFul,
+        "32bpp XCreateImage should report canonical masks matching the decode");
+    XDestroyImage(maskImage);
+
     CHECK(XPutPixel(image, 0, 0, 0x11223344), "XPutPixel 32-bit failed");
     CHECK(XPutPixel(image, 1, 0, 0x55667788), "XPutPixel second pixel failed");
     CHECK(XGetPixel(image, 0, 0) == 0x11223344, "XGetPixel 32-bit failed");
@@ -3200,6 +3336,10 @@ static int test_images(Display *display)
     CHECK(subImage != NULL, "XSubImage failed");
     CHECK(XGetPixel(subImage, 0, 0) == 0x55667789,
           "XSubImage copied wrong pixel");
+    CHECK(subImage->red_mask == image->red_mask &&
+              subImage->green_mask == image->green_mask &&
+              subImage->blue_mask == image->blue_mask,
+          "XSubImage did not inherit parent channel masks");
     XDestroyImage(subImage);
     XDestroyImage(image);
 
@@ -8229,8 +8369,8 @@ static int test_extensions(Display *display)
               completion->major_code == X_ShmPutImage,
           "XShm completion event fields were incorrect");
 
-    /* Attach/Detach are no-ops in the in-process model but must report success,
-     * and the delegating readers/pixmap path must round-trip without crashing.
+    /* Attach/Detach track the client segment in the in-process model, and the
+     * delegating readers/pixmap path must round-trip without crashing.
      */
     CHECK(XShmAttach(display, &shminfo), "XShmAttach should report success");
     CHECK(XShmGetImage(display, shmWindow, shmImage, 0, 0, AllPlanes),
@@ -8241,6 +8381,56 @@ static int test_extensions(Display *display)
     CHECK(shmPixmap != None, "XShmCreatePixmap should return a valid pixmap");
     XFreePixmap(display, shmPixmap);
     CHECK(XShmDetach(display, &shminfo), "XShmDetach should report success");
+
+    /* Library-owned mapping (shmaddr NULL, so XShmAttach shmat's it itself):
+     * exercise the in-flight pin/unpin around XShmPutImage and the immediate
+     * unmap on XShmDetach.
+     */
+    int ownShmid =
+        shmget(IPC_PRIVATE, 2 * 2 * (int) sizeof(Uint32), IPC_CREAT | 0600);
+    CHECK(ownShmid >= 0, "shmget for library-owned XShm test failed");
+    XShmSegmentInfo ownInfo = {.shmid = ownShmid, .shmaddr = NULL};
+    CHECK(XShmAttach(display, &ownInfo),
+          "XShmAttach of a library-owned segment should succeed");
+    shmctl(ownShmid, IPC_RMID, NULL);
+    CHECK(ownInfo.shmaddr,
+          "XShmAttach should map a NULL-shmaddr segment itself");
+    XImage *ownImage =
+        XShmCreateImage(display, DefaultVisual(display, DefaultScreen(display)),
+                        32, ZPixmap, ownInfo.shmaddr, &ownInfo, 2, 2);
+    CHECK(ownImage, "library-owned XShmCreateImage failed");
+    CHECK(XShmPutImage(display, shmWindow,
+                       DefaultGC(display, DefaultScreen(display)), ownImage, 0,
+                       0, 0, 0, 2, 2, False),
+          "library-owned XShmPutImage failed");
+    XDestroyImage(ownImage);
+    CHECK(XShmDetach(display, &ownInfo),
+          "XShmDetach of a library-owned segment should succeed");
+    CHECK(!ownInfo.shmaddr,
+          "XShmDetach should clear a library-owned shmaddr after unmapping");
+
+    /* A read-only self-mapped segment must be rejected by XShmGetImage, not
+     * faulted: XGetSubImage writes the copied-back pixels into a read-only
+     * mapping otherwise.
+     */
+    int roShmid =
+        shmget(IPC_PRIVATE, 2 * 2 * (int) sizeof(Uint32), IPC_CREAT | 0600);
+    CHECK(roShmid >= 0, "shmget for read-only XShm test failed");
+    XShmSegmentInfo roInfo = {
+        .shmid = roShmid, .shmaddr = NULL, .readOnly = True};
+    CHECK(XShmAttach(display, &roInfo),
+          "XShmAttach read-only self-map should succeed");
+    shmctl(roShmid, IPC_RMID, NULL);
+    XImage *roImage =
+        XShmCreateImage(display, DefaultVisual(display, DefaultScreen(display)),
+                        32, ZPixmap, roInfo.shmaddr, &roInfo, 2, 2);
+    CHECK(roImage, "read-only XShmCreateImage failed");
+    CHECK(!XShmGetImage(display, shmWindow, roImage, 0, 0, AllPlanes),
+          "XShmGetImage into a read-only segment must be rejected");
+    XDestroyImage(roImage);
+    XShmDetach(display, &roInfo);
+    if (roInfo.shmaddr)
+        shmdt(roInfo.shmaddr);
 
     XDestroyWindow(display, shmWindow);
     XDestroyImage(shmImage);
@@ -12499,6 +12689,7 @@ int main(void)
     run_test("pixmap_readback_cache", test_pixmap_readback_cache);
     run_test("pixmap_readback_uncached", test_pixmap_readback_uncached);
     run_test("xgetimage_color_roundtrip", test_xgetimage_color_roundtrip);
+    run_test("xshm_put_image", test_xshm_put_image);
     run_test("images", test_images);
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);

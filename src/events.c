@@ -4027,6 +4027,8 @@ static void printEventInfo(XEvent *event)
         CASE_TYPE(MappingNotify, "");
     default:
         eventType = "Unknown";
+        msg[0] = '\0';
+        break;
     }
 #undef CASE_TYPE
     LOG("Got %s event\n", eventType);

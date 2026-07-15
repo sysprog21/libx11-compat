@@ -67,6 +67,7 @@ shell-quoted arguments (`shlex.split` semantics).
 | `delay` | `<ms>` | Sleep the worker thread for `<ms>` milliseconds. Prefer `wait-converge` for any sleep meant to mask post-input churn. |
 | `wait-window` | `<pattern> <timeout_ms>` | On `xdotool`: poll `xdotool search --name` / `--class`. On `internal`: poll that the process is still alive for `timeout_ms`. |
 | `wait-converge` | `[bucket_ms quiet_buckets diverged_buckets threshold_per_bucket timeout_ms]` | Block until the per-kind atomic counters for `Expose`/`MapNotify`/`UnmapNotify`/`ConfigureNotify`/`DestroyNotify`/`Present` show `quiet_buckets` consecutive empty buckets (converged), `diverged_buckets` consecutive over-threshold buckets (divergent, emits a `diverged` timeline record), or until the timeout fires. Defaults: 50 ms buckets, 2 quiet, 16 diverged, threshold 32 events per bucket, 5 s timeout. |
+| `wait-exit` | `<timeout_ms>` | Poll the target process until it exits, failing if it is still alive after `timeout_ms`. Use before `assert-exit <status>` when shutdown latency is app-driven. |
 
 ### Input
 

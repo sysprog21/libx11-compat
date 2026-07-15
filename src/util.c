@@ -41,6 +41,7 @@ static Bool loadedLibraryHasSymbol(const char *soname, const char *symbol)
     void *handle = dlopen(soname, RTLD_LAZY | RTLD_NOLOAD);
     if (!handle)
         return False;
+
     /* RTLD_NOLOAD still bumps the library refcount, and these probes run
      * repeatedly on cold font/realize paths, so drop the reference once the
      * presence check is done. Only the boolean matters, not keeping it mapped.
@@ -55,16 +56,49 @@ static Bool loadedLibraryHasSymbol(const char *soname, const char *symbol)
 #endif
 }
 
+static Bool defaultSymbolPresent(const char *const *symbols, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+        if (dlsym(RTLD_DEFAULT, symbols[i]))
+            return True;
+    return False;
+}
+
+static Bool loadedLibraryHasAnySymbol(const char *soname,
+                                      const char *const *symbols,
+                                      size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (loadedLibraryHasSymbol(soname, symbols[i]))
+            return True;
+    }
+    return False;
+}
+
 Bool compatSelfScalingToolkitLoaded(void)
 {
-    if (dlsym(RTLD_DEFAULT, "Tk_MainWindow") ||
+    static const char *tkSymbols[] = {
+        "Tk_MainWindow",
+        "Tk_CreateMainWindow",
+        "Tk_CreateWindow",
+    };
+    if (defaultSymbolPresent(tkSymbols, ARRAY_LENGTH(tkSymbols)) ||
         dlsym(RTLD_DEFAULT, "XmStringCreateLocalized"))
         return True;
-    static const char *tkLibs[] = {"libtk8.6.dylib", "libtk8.6.so", "libtk.so"};
-    static const char *xmLibs[] = {"libXm.5.dylib", "libXm.so.5", "libXm.dylib",
-                                   "libXm.so"};
+
+    static const char *tkLibs[] = {
+        "libtk8.6.dylib", "libtk8.6.so", "libtk8.5.dylib", "libtk8.5.so",
+        "libtk4.2.dylib", "libtk4.2.so", "libtk.dylib",    "libtk.so",
+    };
+    static const char *xmLibs[] = {
+        "libXm.5.dylib",
+        "libXm.so.5",
+        "libXm.dylib",
+        "libXm.so",
+    };
     for (size_t i = 0; i < ARRAY_LENGTH(tkLibs); i++)
-        if (loadedLibraryHasSymbol(tkLibs[i], "Tk_MainWindow"))
+        if (loadedLibraryHasAnySymbol(tkLibs[i], tkSymbols,
+                                      ARRAY_LENGTH(tkSymbols)))
             return True;
     for (size_t i = 0; i < ARRAY_LENGTH(xmLibs); i++)
         if (loadedLibraryHasSymbol(xmLibs[i], "XmStringCreateLocalized"))
@@ -76,11 +110,17 @@ Bool compatGtkCoreFontToolkitLoaded(void)
 {
     if (dlsym(RTLD_DEFAULT, "gdk_font_load"))
         return True;
-    static const char *gtkLibs[] = {"libgtk1.dylib", "libgtk1.so",
-                                    "libgtk.dylib", "libgtk.so"};
-    for (size_t i = 0; i < ARRAY_LENGTH(gtkLibs); i++)
+
+    static const char *gtkLibs[] = {
+        "libgtk1.dylib",
+        "libgtk1.so",
+        "libgtk.dylib",
+        "libgtk.so",
+    };
+    for (size_t i = 0; i < ARRAY_LENGTH(gtkLibs); i++) {
         if (loadedLibraryHasSymbol(gtkLibs[i], "gdk_font_load"))
             return True;
+    }
     return False;
 }
 
@@ -95,6 +135,7 @@ Bool compatXtToolkitLoaded(void)
 {
     if (dlsym(RTLD_DEFAULT, "XtCreateWidget"))
         return True;
+
     static const char *xtLibs[] = {"libXt.6.dylib", "libXt.dylib", "libXt.so.6",
                                    "libXt.so"};
     for (size_t i = 0; i < ARRAY_LENGTH(xtLibs); i++)
@@ -149,6 +190,7 @@ void *removeArray(Array *a, size_t index, Bool preserveOrder)
 {
     if (index >= a->length)
         abort();
+
     void *element = a->array[index];
     if (index + 1 < a->length) {
         if (preserveOrder) {
@@ -216,6 +258,7 @@ Bool matchWildcard(const char *wildcard, const char *string)
 {
     if (!wildcard || !string)
         return False;
+
     const char *w = wildcard;
     const char *s = string;
     const char *star = NULL;

@@ -1,20 +1,9 @@
 #ifndef _COLORS_H_
 #define _COLORS_H_
 
-#include "sdl-compat.h"
 #include <X11/Xlib.h>
 
-// #if SDL_BYTEORDER != SDL_BIG_ENDIAN
-// #  define RED_SHIFT   24
-// #  define GREEN_SHIFT 16
-// #  define BLUE_SHIFT  8
-// #  define ALPHA_SHIFT 0
-// #else
-// #  define RED_SHIFT   0
-// #  define GREEN_SHIFT 8
-// #  define BLUE_SHIFT  16
-// #  define ALPHA_SHIFT 24
-// #endif
+#include "sdl-compat.h"
 
 /* Xlib-facing pixels are stored as logical ARGB values (A=24, R=16, G=8, B=0).
  * SDL render targets use SDL_PIXELFORMAT_RGBA8888, but every renderer write /
@@ -43,9 +32,13 @@
  */
 static inline unsigned long colorWithOpaqueDefault(unsigned long color)
 {
-    if ((color & (0xFFul << ALPHA_SHIFT)) == 0)
-        return color | (0xFFul << ALPHA_SHIFT);
-    return color;
+    /* Branchless promote of a zero alpha byte to 0xFF: the mask is all-ones
+     * when the alpha byte is zero and all-zero otherwise, so the OR is a no-op
+     * for pixels that already carry alpha. Staying branch-free lets the per
+     * pixel XPutImage swizzle loops that call through here vectorize.
+     */
+    unsigned long alpha = 0xFFul << ALPHA_SHIFT;
+    return color | (alpha & -(unsigned long) ((color & alpha) == 0));
 }
 
 extern Colormap GREY_SCALE_COLORMAP;

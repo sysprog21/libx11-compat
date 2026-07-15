@@ -1,0 +1,19 @@
+{
+  "assertions": [
+    {"type": "geq", "field": "popup_window_count", "min": 1},
+    {
+      "type": "window_with_geometry_range",
+      "wm_class": "m",
+      "wm_name": "m",
+      "map_state": 1,
+      "x_min": 360,
+      "x_max": 372,
+      "y_min": 18,
+      "y_max": 24,
+      "w_min": 110,
+      "w_max": 125,
+      "h_min": 50,
+      "h_max": 65
+    }
+  ]
+}
