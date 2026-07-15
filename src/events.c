@@ -1138,18 +1138,25 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
 static Bool getEventQueueLength(int *qlen)
 {
     /* Motif expose/configure bursts and resize-driven repaints routinely push
-     * the queue past 25 entries in a single SDL_PumpEvents tick; callers used
+     * the queue past 25 entries in a single SDL_PumpEvents tick; callers use
      * the returned length both to size a follow-up GETEVENT drain and to feed
      * XEventsQueued, so undercounting throttled Xt's main loop and dropped
-     * events behind a quiet 25-event ceiling.
+     * events behind a quiet ceiling.
      *
-     * The cap is just a peek buffer; size it large enough for realistic bursts
-     * but bounded so a runaway SDL queue can't blow the stack.
+     * Count with a NULL buffer: under SDL_PEEKEVENT, SDL_PeepEvents returns the
+     * number of matching events without copying any and leaves the queue
+     * intact, so the count is exact and unbounded. A real peek buffer would
+     * need one SDL_Event per queued event on the stack; at any realistic cap
+     * that array is hundreds of KB (4096 entries is ~512 KB) and overflows a
+     * small secondary-thread stack (macOS threads default to 512 KB) the moment
+     * an off-main caller drains events through here.
+     *
+     * SDL_PeepEvents has counted matching events for a NULL buffer since SDL
+     * 2.0.0, so this holds on the SDL2 2.0.10 differential host as well as on
+     * SDL2 2.30 and SDL3.
      */
-    enum { PEEK_CAP = 4096 };
-    SDL_Event tmp[PEEK_CAP];
-    *qlen = SDL_PeepEvents(tmp, PEEK_CAP, SDL_PEEKEVENT, SDL_FIRSTEVENT,
-                           SDL_LASTEVENT);
+    *qlen =
+        SDL_PeepEvents(NULL, 0, SDL_PEEKEVENT, SDL_FIRSTEVENT, SDL_LASTEVENT);
     if (*qlen < 0) {
         LOG("Failed to get the length of the input queue: %s\n",
             SDL_GetError());
