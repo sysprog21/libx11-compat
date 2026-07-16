@@ -38,14 +38,31 @@ $(if $(filter Linux,$(UNAME_S)),-Wl$(comma)-rpath$(comma)'$$ORIGIN') \
 $(if $(filter Darwin,$(UNAME_S)),-Wl$(comma)-install_name$(comma)@rpath/$(1) -Wl$(comma)-rpath$(comma)@loader_path)
 endef
 
+# Header-dependency generation flags, shared by every compile rule in the tree.
+# Recursive (=) on purpose: $@ and $< must expand per-target when the recipe
+# runs, not once at parse time. Reference it as $(DEPFLAGS) in any object rule.
+DEPFLAGS = -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d)
+
+# Canned recipe: compile one first-party C translation unit to its object with
+# the standard flag set and dependency tracking. The generic src/tests object
+# rule below and the compat-shim object rules (mk/xcompat-libs.mk) each need
+# distinct prerequisites but share this exact recipe, so it lives in one place.
+# The optimization/base flags come from $(FP_CFLAGS) (defined in mk/config.mk),
+# so the opt level is set there once, not per rule. Invoke it bare as
+# $(cc_object) from a recipe; it relies on the automatic $@/$< of the invoking
+# rule.
+define cc_object
+@mkdir -p $(dir $@)
+@echo "  CC      $<"
+$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
+    $(DEPFLAGS) -c $< -o $@
+endef
+
 $(OUT):
 	@mkdir -p $@
 
 $(OUT)/%.o: %.c $(SDL_BACKEND_STAMP) | $(OUT)
-	@mkdir -p $(dir $@)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(cc_object)
 
 # Upstream sources staged under $(OUT)/upstream/src/ live next to their
 # objects rather than mirroring an in-tree path, so they need their own
@@ -60,8 +77,8 @@ $(OUT)/%.o: %.c $(SDL_BACKEND_STAMP) | $(OUT)
 $(OUT)/upstream/src/%.o: $(OUT)/upstream/src/%.c $(SDL_BACKEND_STAMP) | $(OUT)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) -Wno-sign-compare -D_XLIBINT_ \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) -c $< -o $@
+	$(Q)$(CC) $(CPPFLAGS) $(LEGACY_FP_CFLAGS) $(CFLAGS_EXTRA) -Wno-sign-compare -D_XLIBINT_ \
+	    $(DEPFLAGS) -c $< -o $@
 .PHONY: clean distclean
 
 ## Remove build artifacts

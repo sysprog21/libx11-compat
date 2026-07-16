@@ -24,8 +24,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include "sdl-compat.h"
 #include <X11/Xatom.h>
+
+#include "sdl-compat.h"
 #include "display.h"
 #include "events.h"
 #include "input.h"
@@ -47,6 +48,7 @@ static pthread_mutex_t stateMutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t stateCond = PTHREAD_COND_INITIALIZER;
 static int stateDone = 0;
 static int stateResult = 0;
+
 /* SDL_atomic-backed so stateSnapshotOwnsEventType() can read it from the SDL
  * filter / dispatch path without holding stateMutex. SDL atomics give us an
  * acquire/release barrier; the previous plain int read raced the writer that
@@ -254,6 +256,7 @@ static void populateWindowEntry(UiSnapshotWindow *entry, Window window)
     entry->event_mask = ws->eventMask;
     entry->wm_class[0] = '\0';
     entry->wm_name[0] = '\0';
+
     /* wm_name: prefer the cached windowName, fall back to WM_NAME storage.
      * wm_class: read from XA_WM_CLASS storage if present.
      */
@@ -271,6 +274,7 @@ static void populateWindowEntry(UiSnapshotWindow *entry, Window window)
         WindowProperty *stored = findProperty(&ws->properties, atom, NULL);
         writePropertyRecord(&entry->properties[entry->property_count], atom,
                             stored);
+
         /* Use the explicit byte length (dataLength * format byte width) so a
          * non-NUL-terminated property value cannot drive strlen past the end of
          * the property storage.
@@ -356,6 +360,7 @@ static void emitWindowEntry(FILE *fp, const UiSnapshotWindow *entry, Bool last)
             : p->source == UI_PROP_SOURCE_STORED ? "stored"
                                                  : "synthesized",
             p->truncated);
+
         /* Match writePropertyRecord: unsupported formats emit an empty hex
          * string because the byte buffer was never populated. Otherwise the
          * dumped zeros would lie about the property's contents and trip
@@ -418,6 +423,7 @@ static int writeSnapshotJson(const char *path, const UiSnapshot *snap)
     for (int i = 0; i < snap->window_count; i++)
         emitWindowEntry(fp, &snap->windows[i], i == snap->window_count - 1);
     fprintf(fp, "  ]\n}\n");
+
     /* Check for any latched stream error (a failed fprintf leaves ferror set
      * even when the later fclose flush succeeds) so a partially written JSON is
      * never renamed into place as if complete.
@@ -451,6 +457,7 @@ static void populateSnapshot(Display *display, UiSnapshot *snap)
     for (size_t i = 0; i < screen->children.length; i++) {
         Window child = children[i];
         WindowStruct *cws = GET_WINDOW_STRUCT(child);
+
         /* Internal windows (the hidden clipboard requestor) are library
          * plumbing, not part of the client's window tree; keep them out of the
          * snapshot.
@@ -465,8 +472,10 @@ static void populateSnapshot(Display *display, UiSnapshot *snap)
             snap->truncation_flagged = 1;
             continue;
         }
+
         UiSnapshotWindow *entry = &snap->windows[snap->window_count++];
         populateWindowEntry(entry, child);
+
         /* Also count popup windows by _NET_WM_WINDOW_TYPE atom set (some Motif
          * menus set the atom without override-redirect). EWMH allows the
          * property to be a list of atoms in priority order, so walk every
@@ -524,11 +533,27 @@ int stateSnapshotHandleEvent(Display *display, const SDL_Event *event)
         free(path);
         return -5;
     }
-    UiSnapshot snap;
-    populateSnapshot(display, &snap);
-    int rc = writeSnapshotJson(path, &snap);
-    if (rc != 0)
-        LOG("state-snapshot: write %s failed (rc=%d)\n", path, rc);
+    /* UiSnapshot is ~100 KB (UI_SNAPSHOT_MAX_WINDOWS window records). Heap it
+     * rather than placing it on the stack: this handler runs from the SDL event
+     * path, which a multithreaded XInitThreads client can pump from a secondary
+     * thread whose stack is far smaller than the main thread's (512 KB on
+     * macOS), and a per-call heap buffer also avoids two pumping threads
+     * sharing one snapshot. Signal an out-of-memory failure through the normal
+     * result path so a waiter wakes immediately instead of blocking until its
+     * timeout.
+     */
+    UiSnapshot *snap = malloc(sizeof *snap);
+    int rc;
+    if (!snap) {
+        LOG("state-snapshot: out of memory for snapshot buffer\n");
+        rc = -6;
+    } else {
+        populateSnapshot(display, snap);
+        rc = writeSnapshotJson(path, snap);
+        free(snap);
+        if (rc != 0)
+            LOG("state-snapshot: write %s failed (rc=%d)\n", path, rc);
+    }
     pthread_mutex_lock(&stateMutex);
     /* Re-check the generation now that we have the mutex; a concurrent
      * stateSnapshotRequestAndWait could have bumped it between our pre-write
@@ -567,6 +592,7 @@ int stateSnapshotRequestAndWait(const char *path)
     }
     stateDone = 0;
     stateResult = 0;
+
     /* Bump the generation under the mutex so any stale event from a prior
      * timed-out request lands as eventGeneration != stateGeneration in
      * stateSnapshotHandleEvent and gets dropped instead of satisfying us.

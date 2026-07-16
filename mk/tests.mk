@@ -159,41 +159,41 @@ endif
 $(OUT)/tests/test-libxt-%: tests/test-libxt-%.c $(LIBXT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(LIBXT_TARGET) $(TARGET) $(LDLIBS) $(LIBXT_TEST_LDFLAGS) \
 	    $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/test-libxpm-%: tests/test-libxpm-%.c $(LIBXPM_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(LIBXPM_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/test-xmu-link: tests/test-xmu-link.c $(XMU_COMPAT_TARGET) $(LIBXT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(LIBXT_CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(XMU_COMPAT_TARGET) $(LIBXT_TARGET) $(TARGET) $(LDLIBS) \
 	    $(LIBXT_TEST_LDFLAGS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/test-xinerama-link: tests/test-xinerama-link.c $(XINERAMA_COMPAT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(XINERAMA_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) \
 	    -o $@
 
 $(OUT)/tests/test-xft-link: tests/test-xft-link.c $(XFT_COMPAT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(XFT_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/test-libxaw-link: tests/test-libxaw-link.c $(LIBXAW_TARGET) \
     $(LIBXT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(LIBXAW_CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(LIBXAW_CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(LIBXAW_TARGET) $(LIBXT_TARGET) $(XMU_COMPAT_TARGET) \
 	    $(LIBXPM_TARGET) $(TARGET) $(LDLIBS) $(LIBXT_TEST_LDFLAGS) \
 	    $(TEST_LDFLAGS) -o $@
@@ -202,7 +202,7 @@ $(OUT)/tests/test-ice-sm-link: tests/test-ice-sm-link.c \
     $(SM_COMPAT_TARGET) $(ICE_COMPAT_TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(SM_COMPAT_TARGET) $(ICE_COMPAT_TARGET) $(LDLIBS) \
 	    $(TEST_LDFLAGS) -o $@
 
@@ -213,7 +213,7 @@ $(OUT)/tests/test-ice-sm-link: tests/test-ice-sm-link.c \
 $(OUT)/tests/symbol-coverage: tests/symbol-coverage.c $(TARGET) $(XFT_COMPAT_TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(TARGET) $(XFT_COMPAT_TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 # The fake EGL provider is a standalone loadable object (no libX11-compat link);
@@ -222,22 +222,22 @@ $(OUT)/tests/symbol-coverage: tests/symbol-coverage.c $(TARGET) $(XFT_COMPAT_TAR
 $(FAKE_EGL_LIB): tests/fake-egl.c
 	@mkdir -p $(dir $@)
 	@echo "  LD      $@"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) -shared -o $@ $<
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) -shared -o $@ $<
 
 $(OUT)/tests/test-glx-provider: tests/test-glx-provider.c $(TARGET) $(FAKE_EGL_LIB)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) -DFAKE_EGL_PATH=\"$(abspath $(FAKE_EGL_LIB))\" \
-	    $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+	    $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/test-glx-init-fail: tests/test-glx-init-fail.c $(TARGET) $(FAKE_EGL_LIB)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) -DFAKE_EGL_PATH=\"$(abspath $(FAKE_EGL_LIB))\" \
-	    $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+	    $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
 	    $(LDLIBS) $(TEST_LDFLAGS) -o $@

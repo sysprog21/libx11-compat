@@ -291,7 +291,7 @@ $(OUT)/tests/test-motif-%: tests/test-motif-%.c $(MOTIF_LIBXM) \
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(LIBXT_CPPFLAGS) -I$(MOTIF_BUILD_DIR)/lib \
-	    -I$(MOTIF_SRC_DIR)/lib $(CFLAGS) $(CFLAGS_EXTRA) $< \
+	    -I$(MOTIF_SRC_DIR)/lib $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(MOTIF_LIBXM) $(MOTIF_LIBMRM) $(LIBXT_TARGET) $(TARGET) \
 	    $(LDLIBS) $(MOTIF_LIBS) $(LIBXT_TEST_LDFLAGS) $(TEST_LDFLAGS) \
 	    -o $@
@@ -300,7 +300,7 @@ $(OUT)/tests/test-toolkit-probe: tests/test-toolkit-probe.c $(MOTIF_LIBXM) \
     $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_EXTRA) \
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) \
 	    -DMOTIF_LIB_PATH=\"$(abspath $(MOTIF_LIBXM))\" $< $(TARGET) \
 	    $(LDLIBS) $(TEST_LDFLAGS) -o $@
 

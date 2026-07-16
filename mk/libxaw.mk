@@ -49,8 +49,8 @@ $(LIBXAW_SRCS): $(UPSTREAM_HEADERS_STAMP)
 $(LIBXAW_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_STAGED_H) \
     $(SDL_BACKEND_STAMP) | $(LIBXAW_OBJ_DIR)
 	@echo "  CC      $(LIBXAW_SRC_DIR)/$*.c"
-	$(Q)$(CC) $(LIBXAW_CPPFLAGS) $(CFLAGS) $(LIBXAW_CFLAGS) $(CFLAGS_EXTRA) \
-	    -MMD -MP -MF $(@:.o=.d) -MT $@ -MT $(@:.o=.d) \
+	$(Q)$(CC) $(LIBXAW_CPPFLAGS) $(LEGACY_FP_CFLAGS) $(LIBXAW_CFLAGS) $(CFLAGS_EXTRA) \
+	    $(DEPFLAGS) \
 	    -c $(LIBXAW_SRC_DIR)/$*.c -o $@
 
 LIBXAW_LDFLAGS := $(call shared_lib_rpath_ldflags,$(notdir $(LIBXAW_TARGET)))
