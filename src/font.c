@@ -40,6 +40,31 @@ typedef struct {
     short coreDescent;
     short coreWidth;
     Bool useFixedBitmap;
+
+    /* The XLFD/alias name the face was loaded from, kept so the face can be
+     * reopened at a different HiDPI scale after the window moves between
+     * differently scaled monitors. basePixelSize is the unscaled size parsed
+     * from that name once at load (so the per-draw scale check does not reparse
+     * the XLFD on the hot path); openedPixelSize is the scaled size the face is
+     * currently open at, so a scale change shows up as a size mismatch. See
+     * compatFontSyncScale.
+     */
+    char *name;
+    char *filePath;
+    char *openedFilePath;
+    int basePixelSize;
+    int openedPixelSize;
+
+    /* Fixed-width TTF metrics captured once per face open (and re-open on a
+     * scale change), so getTextWidthForChars can refresh a client XFontStruct
+     * without a per-call TTF_GlyphMetrics lookup on the measurement hot path.
+     * Only meaningful for a fixed-width face that has no core-metric override;
+     * core-metric fonts use coreAscent/coreDescent/coreWidth instead.
+     */
+    Bool ttfFixedMetricsValid;
+    short ttfAscent;
+    short ttfDescent;
+    XCharStruct ttfFixedChar;
 } CompatFont;
 
 #define GET_FONT_RESOURCE(fontXID) ((CompatFont *) GET_XID_VALUE(fontXID))
@@ -51,6 +76,7 @@ typedef struct {
 #define ASCII_RENDER_PROBE_TEXT "Aa0 "
 #define FIXED_BITMAP_WIDTH 6
 #define FIXED_BITMAP_HEIGHT 13
+
 /* Match the core metrics reported for Xvfb's "fixed" alias. The bundled 6x13
  * bitmap has 13 rows, so drawing it in an 11/2 box keeps every glyph pixel
  * inside the row extent clients use when clearing scrolled text.
@@ -72,6 +98,7 @@ static void finishTextDamage(Display *display,
 {
     if (damage && IS_TYPE(drawable, WINDOW))
         postExposeEventsForMappedChildren(display, drawable, damage, 1);
+
     /* Use the stamp-preserving present: renderText has just recorded a stamp
      * for this cell, and the generic present path would evict it again.
      */
@@ -103,6 +130,9 @@ static Array *fontCache = NULL;
  * further down) to decide whether to advertise the bitmap-font metrics.
  */
 static Bool loadFixedBitmapFont(void);
+static Bool fillXCharStruct(TTF_Font *font,
+                            unsigned int character,
+                            XCharStruct *charStruct);
 static Array *fontAliasNames = NULL;
 
 // Check if the given path points to an existing directory
@@ -417,6 +447,7 @@ static Bool isFontAlias(const char *name)
 {
     if (!name)
         return False;
+
     /* Discrete short aliases plus a few XLFD prefixes that real X11 clients
      * request when there is no font server. findFontCacheEntry ByName checks
      * the cache first, so an XLFD that does happen to be scanned in is honored
@@ -603,6 +634,7 @@ static Bool parsePositiveIntBounded(const char *text,
         if (*p < '0' || *p > '9')
             return False;
         int digit = *p - '0';
+
         /* XLFD numeric fields are caller-controlled. Reject the multiply before
          * it can wrap, and saturate once the running value exceeds the caller's
          * cap. The remaining digits are drained without arithmetic so a bogus
@@ -618,6 +650,7 @@ static Bool parsePositiveIntBounded(const char *text,
         }
         value = value * 10 + digit;
     }
+
     /* The in-loop guard uses the value before the current digit, so a final
      * digit can push the result just past saturationCap (e.g. "21474833"
      * against a decipoint cap). Clamp on exit so callers can rely on the return
@@ -886,6 +919,7 @@ static Bool coreFontMetricsForNameRaw(const char *name,
 {
     if (!name)
         return False;
+
     /* Legacy misc-fixed bitmap fonts. The name spells width x pixel-height, but
      * the ascent/descent split is font-specific, so keep it in an explicit
      * table rather than deriving it from the height. Reporting these instead of
@@ -923,6 +957,7 @@ static Bool coreFontMetricsForNameRaw(const char *name,
             }
         }
     }
+
     /* XLFD family names are case-insensitive per the X11 spec, so "-Helvetica-"
      * / "-HELVETICA-" must take the same override path as the lowercase form.
      */
@@ -1132,7 +1167,8 @@ static Bool fontCanRenderText(TTF_Font *font)
 static TTF_Font *openRenderableProbeFont(const char *const *paths,
                                          size_t count,
                                          int size,
-                                         const char *skipPath)
+                                         const char *skipPath,
+                                         char **openedPath)
 {
     for (size_t i = 0; i < count; i++) {
         if (skipPath && !strcmp(paths[i], skipPath))
@@ -1140,8 +1176,16 @@ static TTF_Font *openRenderableProbeFont(const char *const *paths,
         TTF_Font *font = TTF_OpenFont(paths[i], size);
         if (!font)
             continue;
-        if (fontCanRenderText(font))
+        if (fontCanRenderText(font)) {
+            if (openedPath) {
+                *openedPath = strdup(paths[i]);
+                if (!*openedPath) {
+                    TTF_CloseFont(font);
+                    return NULL;
+                }
+            }
             return font;
+        }
         TTF_CloseFont(font);
     }
     return NULL;
@@ -1175,14 +1219,16 @@ static TTF_Font *openRenderableProbeFontForChar(const char *const *paths,
 
 static TTF_Font *openRenderableFallbackFont(const char *name,
                                             int size,
-                                            const char *skipPath)
+                                            const char *skipPath,
+                                            char **openedPath)
 {
     TTF_Font *font = NULL;
     if (containsIgnoreCase(name, "times") ||
         containsIgnoreCase(name, "adobe-times") ||
         containsIgnoreCase(name, "schoolbook")) {
-        font = openRenderableProbeFont(
-            SERIF_PROBE_PATHS, ARRAY_LENGTH(SERIF_PROBE_PATHS), size, skipPath);
+        font = openRenderableProbeFont(SERIF_PROBE_PATHS,
+                                       ARRAY_LENGTH(SERIF_PROBE_PATHS), size,
+                                       skipPath, openedPath);
         if (font)
             return font;
     }
@@ -1195,18 +1241,19 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
         if (containsIgnoreCase(name, "bold")) {
             font = openRenderableProbeFont(SANS_BOLD_PROBE_PATHS,
                                            ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS),
-                                           size, skipPath);
+                                           size, skipPath, openedPath);
             if (font)
                 return font;
         }
-        font = openRenderableProbeFont(
-            SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS), size, skipPath);
+        font = openRenderableProbeFont(SANS_PROBE_PATHS,
+                                       ARRAY_LENGTH(SANS_PROBE_PATHS), size,
+                                       skipPath, openedPath);
         if (font)
             return font;
     }
     font = openRenderableProbeFont(MONOSPACE_PROBE_PATHS,
                                    ARRAY_LENGTH(MONOSPACE_PROBE_PATHS), size,
-                                   skipPath);
+                                   skipPath, openedPath);
     if (font)
         return font;
     if (!fontCache)
@@ -1220,8 +1267,16 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
         font = TTF_OpenFont(entry->filePath, size);
         if (!font)
             continue;
-        if (fontCanRenderText(font))
+        if (fontCanRenderText(font)) {
+            if (openedPath) {
+                *openedPath = strdup(entry->filePath);
+                if (!*openedPath) {
+                    TTF_CloseFont(font);
+                    return NULL;
+                }
+            }
             return font;
+        }
         TTF_CloseFont(font);
     }
     return NULL;
@@ -1292,7 +1347,7 @@ static TTF_Font *openRenderableFallbackFontForChar(const char *name,
 TTF_Font *compatFontOpenFamilyFallback(const char *familyHint, int size)
 {
     const char *name = familyHint ? familyHint : "sans";
-    return openRenderableFallbackFont(name, clampFontSize(size), NULL);
+    return openRenderableFallbackFont(name, clampFontSize(size), NULL, NULL);
 }
 
 TTF_Font *compatFontOpenFamilyFallbackForChar(const char *familyHint,
@@ -1342,6 +1397,124 @@ static FontCacheEntry *findFontCacheEntryByName(const char *name)
     return NULL;
 }
 
+/* Open (or reopen) the TTF face for a CompatFont at the current HiDPI scale.
+ * Mirrors the primary-then-fallback open sequence XLoadFont uses, so a rebuild
+ * on a scale change picks the same face the client originally got. Closes any
+ * existing face first and records the pixel size it was opened at.
+ *
+ * Returns True on success, leaving resource->ttf unchanged on failure.
+ */
+static Bool compatFontOpenFace(CompatFont *resource, const char *name)
+{
+    if (!resource->filePath) {
+        FontCacheEntry *fontEntry = findFontCacheEntryByName(name);
+        if (!fontEntry)
+            return False;
+        resource->filePath = strdup(fontEntry->filePath);
+        if (!resource->filePath)
+            return False;
+    }
+    int baseSize = requestedFontSize(name);
+    int fontSize = hiDpiScaledPixelSize(baseSize);
+    const char *openPath = resource->openedFilePath ? resource->openedFilePath
+                                                    : resource->filePath;
+    TTF_Font *ttf = TTF_OpenFont(openPath, fontSize);
+    if (!ttf)
+        return False;
+    if (!fontCanRenderText(ttf)) {
+        /* Search for a renderable substitute whenever the opened face cannot
+         * render, including on a reopen at a new scale: a face that rendered at
+         * the load size can become unrenderable at another size (a bitmap-only
+         * strike), so keep it only if no substitute is found. Skip the path
+         * just tried (openPath) rather than always the primary, so a rescale
+         * skips the failing face and not merely the original request.
+         */
+        char *fallbackPath = NULL;
+        TTF_Font *fallback =
+            openRenderableFallbackFont(name, fontSize, openPath, &fallbackPath);
+        if (fallback) {
+            TTF_CloseFont(ttf);
+            ttf = fallback;
+            free(resource->openedFilePath);
+            resource->openedFilePath = fallbackPath;
+        } else {
+            free(fallbackPath);
+        }
+    }
+    if (!resource->openedFilePath) {
+        resource->openedFilePath = strdup(resource->filePath);
+        if (!resource->openedFilePath) {
+            TTF_CloseFont(ttf);
+            return False;
+        }
+    }
+    if (resource->ttf)
+        TTF_CloseFont(resource->ttf);
+    resource->ttf = ttf;
+    resource->basePixelSize = baseSize;
+    resource->openedPixelSize = fontSize;
+
+    /* Capture the face metrics once here so the measurement path can refresh a
+     * client XFontStruct after a scale change without a per-call TTF lookup.
+     * ttfAscent/ttfDescent mirror exactly what fillFontStructFromTTF stores, so
+     * re-applying them when the scale is unchanged is a no-op; ttfFixedChar is
+     * only meaningful for a fixed-width face. Recomputed on every reopen, so
+     * all three stay correct across a scale change.
+     */
+    resource->ttfAscent = (short) TTF_FontAscent(ttf);
+    resource->ttfDescent = (short) abs(TTF_FontDescent(ttf));
+    resource->ttfFixedMetricsValid =
+        TTF_FontFaceIsFixedWidth(ttf) &&
+        fillXCharStruct(ttf, 'n', &resource->ttfFixedChar);
+    return True;
+}
+
+/* Rebuild the face if the process HiDPI scale changed since it was opened, so
+ * text drawn (or measured) after a monitor move lands at the destination
+ * monitor's physical size instead of the source monitor's. hiDpiScaledPixelSize
+ * folds the current global scale into the target pixel size, so an unchanged
+ * scale (the common single-monitor case) leaves openedPixelSize matching and
+ * this is a cheap no-op. On a real rebuild the font's cached glyph textures are
+ * evicted so they re-render at the new size.
+ *
+ * The scale tracked is the process-global one (compatGlobalHiDpiScale), not the
+ * destination drawable's, which matches X11's single dpi-per-screen model and
+ * how core fonts were already sized at load. A Font is display-wide, so if a
+ * promoted app kept two top-levels on differently scaled monitors and shared
+ * one font, only the monitor matching the current global scale would render at
+ * the right physical size. That is inherent to a single global font scale and
+ * no worse than the pre-change frozen-at-load size; the in-tree promoted
+ * consumer (xwpe) is single-top-level, so it does not arise. Keying a set of
+ * faces and the text cache by target scale would fix the multi-top-level case,
+ * but that is not a real workload here.
+ *
+ * Called from the drawing/measuring consumers on the thread about to use the
+ * face, not eagerly from the DISPLAY_CHANGED handler. The rebuild closes the
+ * old face, so it is confined to single-threaded clients: the compat font paths
+ * do not take LockDisplay, so under XInitThreads another thread could be inside
+ * an SDL_ttf call on the same face and freeing it there would be a
+ * use-after-free. A multi-threaded client on a mixed-DPI move keeps the
+ * pre-existing behavior (text at the source scale until the client reloads the
+ * font), never a crash. The single-threaded case covers the interactive
+ * window-drag this targets.
+ */
+static void compatFontSyncScale(Font fontXid, CompatFont *resource)
+{
+    if (!resource || !resource->name || !resource->ttf)
+        return;
+    if (compatDisplayThreadsInitialized())
+        return;
+    if (hiDpiScaledPixelSize(resource->basePixelSize) ==
+        resource->openedPixelSize)
+        return;
+    if (compatFontOpenFace(resource, resource->name)) {
+        resource->hasCoreMetrics = coreFontMetricsForName(
+            resource->name, &resource->coreAscent, &resource->coreDescent,
+            &resource->coreWidth);
+        invalidateTextCacheForFont(fontXid);
+    }
+}
+
 Font XLoadFont(Display *display, _Xconst char *name)
 {
     SET_X_SERVER_REQUEST(display, X_OpenFont);
@@ -1351,39 +1524,41 @@ Font XLoadFont(Display *display, _Xconst char *name)
         return None;
     }
     SET_XID_TYPE(font, FONT);
-    /* Use the unified lookup so XLoadFont and the rest of the font code agree
-     * on cache-first, alias-second ordering. Open-coding the alias check here
-     * used to shadow exact XLFD matches.
-     */
-    FontCacheEntry *fontEntry = findFontCacheEntryByName(name);
-    if (!fontEntry) {
-        FREE_XID(font);
-        LOG("Font %s not found in cache!\n", name);
-        handleError(0, display, None, 0, BadName, 0);
-        return None;
-    }
     CompatFont *resource = calloc(1, sizeof(*resource));
     if (!resource) {
         FREE_XID(font);
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
-    int fontSize = hiDpiScaledPixelSize(requestedFontSize(name));
-    resource->ttf = TTF_OpenFont(fontEntry->filePath, fontSize);
-    if (!resource->ttf) {
+
+    /* Guard NULL before strdup: Tk's font matching can hand XLoadQueryFont a
+     * NULL family name, which must stay a BadName miss (not a crash). A NULL
+     * name leaves resource->name NULL and short-circuits the open below.
+     */
+    if (name)
+        resource->name = strdup(name);
+
+    /* Use the unified lookup (inside compatFontOpenFace) so XLoadFont and the
+     * rest of the font code agree on cache-first, alias-second ordering.
+     * Open-coding the alias check here used to shadow exact XLFD matches. A
+     * non-NULL name whose strdup failed is out of memory, not a bad name;
+     * report it like the calloc failure above rather than as BadName.
+     */
+    if (name && !resource->name) {
         free(resource);
         FREE_XID(font);
-        LOG("Failed to load font %s!\n", name);
-        handleError(0, display, None, 0, BadName, 0);
+        handleOutOfMemory(0, display, 0, 0);
         return None;
     }
-    if (!fontCanRenderText(resource->ttf)) {
-        TTF_Font *fallback =
-            openRenderableFallbackFont(name, fontSize, fontEntry->filePath);
-        if (fallback) {
-            TTF_CloseFont(resource->ttf);
-            resource->ttf = fallback;
-        }
+    if (!resource->name || !compatFontOpenFace(resource, name)) {
+        free(resource->name);
+        free(resource->filePath);
+        free(resource->openedFilePath);
+        free(resource);
+        FREE_XID(font);
+        LOG("Failed to load font %s!\n", name ? name : "(null)");
+        handleError(0, display, None, 0, BadName, 0);
+        return None;
     }
     resource->hasCoreMetrics =
         coreFontMetricsForName(name, &resource->coreAscent,
@@ -1419,6 +1594,9 @@ static void freeFontResource(Font fontXid, CompatFont *resource)
     invalidateTextCacheForFont(fontXid);
     if (resource->ttf)
         TTF_CloseFont(resource->ttf);
+    free(resource->name);
+    free(resource->filePath);
+    free(resource->openedFilePath);
     free(resource);
     SET_XID_VALUE(fontXid, NULL);
     SET_XID_TYPE(fontXid, CLOSED_FONT);
@@ -1639,6 +1817,7 @@ char **XListFonts(Display *display,
         if (matchWildcard(pattern, name))
             insertArray(&names, name);
     }
+
     /* Resolve aliases to a stable cache-owned name. Returning the caller's
      * pattern would alias caller-owned memory and could embed wildcards in the
      * result list.
@@ -1654,6 +1833,7 @@ char **XListFonts(Display *display,
     *actual_count_return = (int) names.length;
     if (names.length == 0)
         return NULL;
+
     /* Copy names into caller-owned storage. Returning raw cache or alias-intern
      * pointers would dangle after XSetFontPath rebuilds the font cache, so each
      * entry is duplicated. The trailing NULL lets XFreeFontNames walk the list
@@ -2022,6 +2202,12 @@ static XFontStruct *queryFontStruct(Display *display,
         handleError(0, display, fontId, 0, BadFont, 0);
         return NULL;
     }
+
+    /* Report metrics for the face at the current scale: if the window moved to
+     * a differently scaled monitor since load, rebuild before measuring so the
+     * XFontStruct the client caches matches what will actually be drawn.
+     */
+    compatFontSyncScale(fontId, GET_FONT_RESOURCE(fontId));
     TTF_Font *font = GET_FONT(fontId);
     if (!font) {
         handleError(0, display, fontId, 0, BadFont, 0);
@@ -2083,6 +2269,43 @@ static int getTextWidthForChars(XFontStruct *font_struct,
 {
     if (!font_struct || !string)
         return 0;
+    if (font_struct->fid != None && IS_TYPE(font_struct->fid, FONT)) {
+        CompatFont *fontResource = GET_FONT_RESOURCE(font_struct->fid);
+        compatFontSyncScale(font_struct->fid, fontResource);
+        if (fontResource && fontResource->hasCoreMetrics)
+            applyCoreFontMetrics(font_struct, fontResource->coreAscent,
+                                 fontResource->coreDescent,
+                                 fontResource->coreWidth);
+        else if (fontResource && fontResource->ttf) {
+            /* Non-core face: refresh the scalar metrics captured at face open
+             * so a scale change is reflected here, with no per-call TTF lookup.
+             * ascent/descent apply to every face (variable-width included) so a
+             * proportional font's line height tracks the new scale; the fixed-
+             * width bounds are only meaningful for a fixed-width face and drive
+             * the fast path below. per_char is deliberately not rebuilt here
+             * (it is a variable array whose reflow belongs to XQueryFont, not
+             * the measurement path); a client wanting fresh per-glyph widths
+             * after a scale change re-queries, and XTextWidth itself already
+             * measures the rebuilt face directly, so its result is
+             * current-scale correct.
+             */
+            font_struct->ascent = fontResource->ttfAscent;
+            font_struct->descent = fontResource->ttfDescent;
+            if (fontResource->ttfFixedMetricsValid && !font_struct->per_char) {
+                /* Refresh only the fixed advance so the fast path below
+                 * reflects the current scale. Do not copy the whole 'n'
+                 * XCharStruct into max_bounds: 'n' has no descender, so clients
+                 * that size text rows or clear rectangles from
+                 * max_bounds.descent would clip real descenders. The aggregate
+                 * bounds stay as XLoadQueryFont measured them.
+                 */
+                font_struct->min_bounds.width =
+                    fontResource->ttfFixedChar.width;
+                font_struct->max_bounds.width =
+                    fontResource->ttfFixedChar.width;
+            }
+        }
+    }
     if (!font_struct->per_char &&
         font_struct->min_bounds.width == font_struct->max_bounds.width) {
         /* Promote to 64-bit so a wide font times a long string can't wrap the
@@ -2093,6 +2316,7 @@ static int getTextWidthForChars(XFontStruct *font_struct,
         return product > INT_MAX ? INT_MAX : (int) product;
     }
     int width, height;
+
     /* A font id can resolve to a NULL face (for example after the client closed
      * and reopened its display, retiring the old font table, as Motif fileview
      * does after its language dialog). SDL_ttf dereferences the font pointer,
@@ -2249,6 +2473,7 @@ typedef struct {
 
 static TextCacheEntry textCache[TEXT_CACHE_CAPACITY];
 static Uint64 textCacheClock = 0;
+
 /* The cache is shared global state, but renderText, the invalidate*ForRenderer
  * / *ForFont helpers, and freeTextCache can be called from multiple X Display
  * threads concurrently. Without a lock a concurrent LRU eviction could free a
@@ -2451,6 +2676,7 @@ static Bool renderFixedBitmapText(Drawable drawable,
             int charX = x + (int) i * cellW;
             for (int row = 0; row < FIXED_BITMAP_HEIGHT && ok; row++) {
                 unsigned char bits = fixedBitmapFont.rows[ch][row];
+
                 /* Pack consecutive set bits on this row into a single SDL_Rect
                  * with w>1. A glyph with full ink on a row used to emit 6
                  * rects; now it emits 1. Each source pixel spans scale x scale.
@@ -2561,6 +2787,7 @@ static void normalizeGlyphAlpha(SDL_Surface *surface)
                 peak = a;
         }
     }
+
     /* peak == 0 (blank) or 255 (already opaque somewhere) needs no rescale.
      * Otherwise a <= peak guarantees a * 255 / peak stays within 255.
      */
@@ -2615,6 +2842,14 @@ static Bool renderText(Display *display,
         }
     }
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
+
+    /* Rebuild the face first if the window has moved to a differently scaled
+     * monitor since the font was opened, so the glyphs render at the new
+     * monitor's physical size. Done before the cache lock below (the rebuild
+     * takes that lock to evict stale textures).
+     */
+    compatFontSyncScale(gContext->font, fontResource);
+
     /* A font id with no loaded face (NULL ttf, for example after the client
      * closed and reopened its display) must not reach SDL_ttf: TTF_Render* and
      * TTF_FontAscent below dereference the font pointer. Prefer the
@@ -2722,6 +2957,7 @@ static Bool renderText(Display *display,
     }
     if (drawnBounds)
         *drawnBounds = destR;
+
     /* Anti-aliased glyph edges are not idempotent under SDL alpha blending, so
      * Motif's expose/arm redraws (an identical XDrawString to the same cell
      * with no interior clear) would thicken the text on every pass. When the
@@ -2815,6 +3051,8 @@ static int drawImageString(Display *display,
     int ascent = 0;
     int descent = 0;
     CompatFont *fontResource = GET_FONT_RESOURCE(gContext->font);
+    compatFontSyncScale(gContext->font, fontResource);
+
     /* The clear box must match the renderer that will actually run. The fixed
      * aliases render through SDL_ttf now, but their X11-visible metrics stay at
      * the historical 6x13 cell so Xt/Xaw layout does not shift.
@@ -2880,6 +3118,7 @@ static int drawImageString(Display *display,
          */
         SDL_Rect imageDamage;
         unionRect(&background, &damage, &imageDamage);
+
         /* The opaque background fill plus text overwrote this region without
          * recording a stamp, so drop any stamp it covered before the
          * stamp-preserving present in finishTextDamage runs.
@@ -2923,6 +3162,7 @@ int XDrawImageString16(Display *display,
 {
     // https://tronche.com/gui/x/xlib/graphics/drawing-text/XDrawImageString16.html
     SET_X_SERVER_REQUEST(display, X_ImageText16);
+
     /* Length-counted Xlib API: glyph U+0000 is still part of the request and
      * must be drawn. Only short-circuit on a missing buffer or zero length,
      * never on a leading NUL glyph.

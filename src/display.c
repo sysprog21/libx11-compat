@@ -126,6 +126,11 @@ static Bool mayTakeFreeLock(SDL_threadID tid)
            libx11CompatOnMainEventThread();
 }
 
+Bool compatDisplayThreadsInitialized(void)
+{
+    return _XInitDisplayLock_fn ? True : False;
+}
+
 static void compatLockDisplay(Display *dpy)
 {
     (void) dpy;
@@ -152,6 +157,7 @@ static void compatUnlockDisplay(Display *dpy)
     SDL_threadID tid = SDL_ThreadID();
 
     pthread_mutex_lock(&displayLock.mutex);
+
     /* Only the owner may unlock, and only at a positive depth. The replaced
      * PTHREAD_MUTEX_RECURSIVE returned EPERM on a non-owner or over-unlock; the
      * monitor mirrors that by ignoring it, rather than decrementing another
@@ -626,12 +632,14 @@ Display *XOpenDisplay(_Xconst char *display_name)
          * CGEvent).
          */
         SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+
         /* Cancel any present-wake timer a previous display left pending so its
          * callback cannot push an SDL event while this SDL_Init touches the
          * event subsystem; ThreadSanitizer flags that overlap as a race.
          */
         cancelPresentWakeTimer();
         sdlVideoInitInProgress = True;
+
         /* Init the timer subsystem alongside video so this display owns its
          * refcount and the matching SDL_Quit joins the SDL timer thread. The
          * present-wake and Xt pump-wake timers otherwise start that thread
@@ -643,6 +651,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
          */
         int sdlInitResult = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER);
         sdlVideoInitInProgress = False;
+
         /* SDL2 returns 0 on success or a negative error code on failure, and on
          * the SDL3 backend SDL_Init resolves to xc_Init (sdl-compat.h), which
          * maps SDL3's bool to that same 0/negative convention. Test for any
@@ -725,6 +734,7 @@ Display *XOpenDisplay(_Xconst char *display_name)
     display->bitmap_unit = 32;
     display->bitmap_pad = 32;
     display->bitmap_bit_order = display->byte_order;
+
     /* Keep the Xlib default screen stable at 0. SDL_GetCurrentVideoDisplay is
      * window-relative and can change after windows move between displays.
      */
@@ -893,6 +903,7 @@ int XGrabServer(Display *display)
 {
     // https://tronche.com/gui/x/xlib/window-and-session-manager/XGrabServer.html
     SET_X_SERVER_REQUEST(display, X_GrabServer);
+
     /* No-op: this backend has no separate X server or competing clients to
      * exclude while a client updates global state.
      */

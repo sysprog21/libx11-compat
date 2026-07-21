@@ -113,6 +113,34 @@ static uint64_t monotonicNowNs(void)
     return ((uint64_t) now.tv_sec * 1000000000ULL) + (uint64_t) now.tv_nsec;
 }
 
+/* True when a uniform-upscale window's present magnifies its backing by an
+ * exact integer factor of 2 or more. Such a present should sample nearest so
+ * the magnified pixels stay crisp (what a real X server does under integer
+ * device scaling) instead of bilinear-soft; fractional or sub-2x scales keep
+ * linear, where bilinear reads better. Per-axis helper for
+ * presentUsesIntegerScale, which both present paths consult.
+ */
+static Bool presentScaleIsIntegral(double scale)
+{
+    double rounded = round(scale);
+    return rounded >= 2.0 && fabs(scale - rounded) < 0.01;
+}
+
+/* The steady-state integer-scale present policy, shared by the accelerated and
+ * software paths so they cannot drift: nearest sampling and edge-to-edge
+ * coverage apply only to an exact integer (>=2) magnification of a backing that
+ * spans the whole window, and never mid live-resize (the backing lags the
+ * window during a drag, so letting the filter and dst rect flip with it makes
+ * glyphs visibly switch nearest/linear and leaves a stretched-edge ghost).
+ */
+static Bool presentUsesIntegerScale(double sx,
+                                    double sy,
+                                    Bool backingSpansWindow)
+{
+    return presentScaleIsIntegral(sx) && presentScaleIsIntegral(sy) &&
+           backingSpansWindow && !libx11CompatInLiveResizePresent();
+}
+
 static double nsToMs(uint64_t ns)
 {
     return (double) ns / 1000000.0;
@@ -251,6 +279,7 @@ static Uint32 presentWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
 {
     (void) interval;
     (void) param;
+
     /* Hold the callback lock across the tornDown check and the push so
      * cancelPresentWakeTimer, which sets tornDown before taking the same lock,
      * either waits out a push already in progress or is seen by this one. Once
@@ -272,6 +301,7 @@ static Uint32 presentWakeTimerCallback(XC_TIMER_CALLBACK_PARAMS)
     }
     if (lock)
         SDL_UnlockMutex(lock);
+
     /* Clear pending only after the push, and never clear the stored id here.
      * Keeping pending set stops a concurrent schedulePresentWake from adding a
      * second timer and overwriting presentWakeTimerId while this callback is
@@ -329,6 +359,7 @@ static void schedulePresentWake(void)
          */
         SDL_AtomicCAS(&presentWakeEventType, -1, (int) eventType);
     }
+
     /* Re-enable pushes for this SDL session: a prior teardown left tornDown set
      * to gag any straggler callback. Both schedule and cancel run on the main
      * thread, so this store cannot race a concurrent cancel.
@@ -360,6 +391,7 @@ void cancelPresentWakeTimer(void)
     int timer = SDL_AtomicSet(&presentWakeTimerId, 0);
     if (timer)
         SDL_RemoveTimer((SDL_TimerID) timer);
+
     /* SDL_RemoveTimer stops a not-yet-fired timer but does not join a callback
      * already executing on the SDL timer thread. Cycle the callback lock: if a
      * callback holds it mid-push, this blocks until it releases; a callback
@@ -373,6 +405,7 @@ void cancelPresentWakeTimer(void)
         SDL_UnlockMutex(lock);
     }
     SDL_AtomicSet(&presentWakeTimerPending, False);
+
     /* A PRESENT event this timer already pushed dies with the SDL event queue
      * on teardown; clear pending so a stale True does not suppress the next
      * schedulePresentWake after SDL reinitializes.
@@ -393,6 +426,17 @@ static void coalesceDeadlineSet(uint64_t ns)
     SDL_AtomicSet(&coalesceDeadlineHiNs, (int) (uint32_t) (ns >> 32));
 }
 
+/* Whether the coalesce gate has expired for a clock reading and stored
+ * deadline. A now of 0 means the monotonic clock is unavailable; treat that as
+ * expired rather than a deadline in the infinite past, so a dead clock can
+ * never suppress presents forever. Pure and non-static so the zero-clock branch
+ * is testable without mocking the clock (see tests/check.c test_coalesce_gate).
+ */
+Bool coalesceGateExpired(uint64_t now, uint64_t deadline)
+{
+    return now == 0 || now >= deadline;
+}
+
 /* True while a client repaint burst is being coalesced (deadline in the
  * future). Expires itself once the safety cap passes so a stuck client still
  * presents on the next draw.
@@ -402,7 +446,7 @@ static Bool coalesceActive(void)
     uint64_t deadline = coalesceDeadlineGet();
     if (deadline == 0)
         return False;
-    if (monotonicNowNs() >= deadline) {
+    if (coalesceGateExpired(monotonicNowNs(), deadline)) {
         coalesceDeadlineSet(0);
         return False;
     }
@@ -434,6 +478,36 @@ Bool libx11CompatForceSoftwarePresent(void)
                      : 0;
     }
     return cached ? True : False;
+}
+
+/* Fault-injection hooks for the accelerated-present software fallback test (see
+ * tests/check.c test_present_software_fallback). The headless CI SDL driver
+ * cannot run a real accelerated present, so the test forces a window onto the
+ * accelerated path and forces its present to fail, to exercise the mid-run
+ * demotion to the software path. Both default off in production.
+ */
+static Bool forceAcceleratedPresentForTest = False;
+static Bool failAcceleratedPresentOnceForTest = False;
+static int softwareDemotionCountForTest = 0;
+
+void libx11CompatForceAcceleratedPresentForTest(Bool on)
+{
+    forceAcceleratedPresentForTest = on;
+}
+
+Bool libx11CompatAcceleratedPresentForcedForTest(void)
+{
+    return forceAcceleratedPresentForTest;
+}
+
+void libx11CompatFailAcceleratedPresentOnceForTest(void)
+{
+    failAcceleratedPresentOnceForTest = True;
+}
+
+int libx11CompatSoftwareDemotionCountForTest(void)
+{
+    return softwareDemotionCountForTest;
 }
 
 Bool libx11CompatAcceleratedPresentUsable(void)
@@ -469,6 +543,7 @@ Bool libx11CompatAcceleratedPresentUsable(void)
         if (probeTex) {
             Uint32 readPixel = 0;
             SDL_Rect one = {0, 0, 1, 1};
+
             /* SDL_SetRenderTarget / SDL_RenderReadPixels are the int-normalized
              * wrappers on SDL3 (== 0 means success on both SDL2 and SDL3).
              * SetRenderDrawColor / RenderClear flip their result convention
@@ -522,8 +597,40 @@ Bool libx11CompatAcceleratedPresentUsable(void)
  * child->sdlTexture like the software path does.
  *
  * Returns True on a successful present (bookkeeping cleared), False if the
- * frame was dropped (needsPresent left set to retry next frame).
+ * frame was dropped (needsPresent left set to retry next frame). Move a window
+ * from the accelerated present path to the software SDL_GetWindowSurface path
+ * after its accelerated present failed mid-run. SDL binds a window to either a
+ * renderer or SDL_GetWindowSurface, never both, so the per-window renderer and
+ * its streaming texture have to be torn down before the software path can bind
+ * the window framebuffer. needsPresent and the dirty region are left intact so
+ * the caller re-presents the same frame through software. The demotion is
+ * permanent: a renderer that failed once is unlikely to recover, and re-probing
+ * every frame would thrash.
  */
+static void demoteWindowToSoftwarePresent(WindowStruct *child)
+{
+    if (child->presentTexture) {
+        SDL_DestroyTexture(child->presentTexture);
+        child->presentTexture = NULL;
+    }
+    child->presentTexW = 0;
+    child->presentTexH = 0;
+    if (child->presentRenderer) {
+        SDL_DestroyRenderer(child->presentRenderer);
+        child->presentRenderer = NULL;
+    }
+
+    /* The accelerated readback staging buffer (up to presentReadbackCapLimit,
+     * megabytes) is dead once the software path takes over, and the demotion is
+     * permanent. Release it now rather than pinning it until window destroy.
+     */
+    free(child->presentReadback);
+    child->presentReadback = NULL;
+    child->presentReadbackCap = 0;
+    child->presentUsesSoftware = True;
+    softwareDemotionCountForTest++;
+}
+
 static Bool presentWindowAccelerated(Window win,
                                      WindowStruct *child,
                                      SDL_Renderer *screen,
@@ -560,6 +667,7 @@ static Bool presentWindowAccelerated(Window win,
         }
         child->presentTexW = bw;
         child->presentTexH = bh;
+
         /* A freshly (re)created streaming texture holds no prior content, so
          * the whole backing must be re-read this frame regardless of the dirty
          * region carried over from the old size.
@@ -618,6 +726,15 @@ static Bool presentWindowAccelerated(Window win,
             SDL_GetError());
         return False;
     }
+
+    /* Fault injection for the software-fallback test: fail here, after the
+     * SCREEN target was pointed at the backing, so the fail path's target
+     * restore is exercised alongside the caller's demotion. One-shot.
+     */
+    if (failAcceleratedPresentOnceForTest) {
+        failAcceleratedPresentOnceForTest = False;
+        goto fail;
+    }
     if (SDL_RenderSetViewport(screen, NULL) != 0 ||
         SDL_RenderSetClipRect(screen, NULL) != 0) {
         LOG("SDL_RenderSet{Viewport,ClipRect}(NULL) failed in %s: %s\n",
@@ -662,6 +779,7 @@ static Bool presentWindowAccelerated(Window win,
     uint64_t framePixels = 0;
     for (int r = 0; r < nrects; r++) {
         int pitch = rects[r].w * 4;
+
         /* Rows that fit the scratch in one band (>=1: guaranteed by the
          * maxRowBytes floor above). Tall rects are read in successive bands.
          */
@@ -717,6 +835,7 @@ static Bool presentWindowAccelerated(Window win,
                            GET_ALPHA_FROM_COLOR(bg));
     SDL_RenderClear(child->presentRenderer);
     SDL_Rect dstCopy = {0, 0, bw, bh};
+    Bool integerScalePresent = False;
     if (!child->hiDpiPromoted) {
         int outW = 0, outH = 0;
         SDL_GetRendererOutputSize(child->presentRenderer, &outW, &outH);
@@ -729,8 +848,34 @@ static Bool presentWindowAccelerated(Window win,
                 dstCopy.w = outW;
             if (dstCopy.h > outH)
                 dstCopy.h = outH;
+
+            /* Exact integer magnification of the whole logical backing: cover
+             * the drawable edge to edge (a lround of bw*sx can fall 1px short
+             * of outW and leave a background seam, which nearest sampling makes
+             * more visible) and sample nearest below. A size-changing drag ends
+             * with a normal (non-live-resize) present from the post-loop
+             * ConfigureNotify that restores the crisp path; a net-zero-size
+             * drag has nothing to repaint and stays on the plain path until the
+             * next repaint, which is soft but never wrong.
+             */
+            integerScalePresent =
+                presentUsesIntegerScale(sx, sy, bw == w && bh == h);
+            if (integerScalePresent) {
+                dstCopy.w = outW;
+                dstCopy.h = outH;
+            }
         }
     }
+
+    /* Set the present texture's scale mode per present, not at creation: the
+     * texture is only recreated on a backing size change, but hiDpiScaleX/Y is
+     * rewritten on monitor moves, so a creation-time mode would go stale.
+     */
+#if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(child->presentTexture, integerScalePresent
+                                                       ? XC_SCALEMODE_NEAREST
+                                                       : XC_SCALEMODE_LINEAR);
+#endif
     if (SDL_RenderCopy(child->presentRenderer, child->presentTexture, NULL,
                        &dstCopy) != 0) {
         /* Bail like the readback/upload failures above: leave needsPresent and
@@ -772,6 +917,7 @@ void drawWindowDataToScreen()
         SDL_AtomicSet(&presentWakePending, False);
         return;
     }
+
     /* Hold intermediate presents back while a client repaint burst is in
      * flight: the dirty region stays accumulated on each WindowStruct and a
      * present wake is (re)scheduled so the final complete frame still lands
@@ -857,9 +1003,19 @@ void drawWindowDataToScreen()
             screenTargetMutated = True;
             if (presentWindowAccelerated(children[i], child, screen,
                                          &readbackNs, &updateNs,
-                                         &presentedPixels))
+                                         &presentedPixels)) {
                 presentedWindows++;
-            continue;
+                continue;
+            }
+
+            /* Accelerated present failed mid-run. Rather than leave the frame
+             * dirty for a retry that will likely fail the same way, demote this
+             * window to the software path and present the same frame through it
+             * below. presentWindowAccelerated already restored the SCREEN
+             * target on its failure path, so the software path starts clean.
+             */
+            demoteWindowToSoftwarePresent(child);
+            /* fall through to the software present path */
         }
 
         SDL_Surface *winSurface = SDL_GetWindowSurface(child->sdlWindow);
@@ -871,6 +1027,7 @@ void drawWindowDataToScreen()
 
         int w, h;
         GET_WINDOW_DIMS(children[i], w, h);
+
         /* Build the read rect list. fullyDirty (sentinel set by
          * unionPresentRect on a NULL mark or rect-count overflow), or a window
          * that has never presented before, falls back to a single full-window
@@ -926,7 +1083,26 @@ void drawWindowDataToScreen()
                     dst.w = winSurface->w;
                 if (dst.h > winSurface->h)
                     dst.h = winSurface->h;
+
+                /* Match the accelerated present's policy so a window looks the
+                 * same whether it takes the accelerated or the software path:
+                 * exact integer magnification of the whole backing covers the
+                 * surface edge to edge and samples nearest for crisp pixels;
+                 * everything else keeps the plain linear scaled blit.
+                 */
+                Bool integerScalePresent = presentUsesIntegerScale(
+                    sx, sy, source.w == w && source.h == h);
+                if (integerScalePresent) {
+                    dst.w = winSurface->w;
+                    dst.h = winSurface->h;
+                }
+#if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
+                xc_BlitScaledMode(staging, NULL, winSurface, &dst,
+                                  integerScalePresent ? XC_SCALEMODE_NEAREST
+                                                      : XC_SCALEMODE_LINEAR);
+#else
                 SDL_BlitScaled(staging, NULL, winSurface, &dst);
+#endif
                 SDL_UpdateWindowSurface(child->sdlWindow);
                 updateNs += monotonicNowNs() - updateStart;
                 child->needsPresent = False;
@@ -942,6 +1118,7 @@ void drawWindowDataToScreen()
             SDL_FreeSurface(staging);
             continue;
         }
+
         /* Option 1b keeps the X11 backing at physical pixels, so the backing
          * texture and the host window surface are the same size in steady state
          * and the present is a 1:1 blit. During a live host resize SDL updates
@@ -964,6 +1141,7 @@ void drawWindowDataToScreen()
             continue;
 
         SDL_Rect bounds = {0, 0, clampW, clampH};
+
         /* One-time per-window log recording the backing vs surface sizes. Under
          * Option 1b the X11 backing is physical, so in steady state winSurface
          * and the backing texture match and the present is 1:1.
@@ -1011,6 +1189,7 @@ void drawWindowDataToScreen()
         }
         if (!useRegion || nrects == 0) {
             SDL_Rect r = {0, 0, clampW, clampH};
+
             /* When fullyDirty is set, always read back the entire clamped
              * window. presentRect may carry over a smaller bounding extent from
              * prior partial marks in the same pending cycle; using it here
@@ -1099,6 +1278,7 @@ void drawWindowDataToScreen()
         if (readRc == 0) {
             uint64_t updateStart = monotonicNowNs();
 #if defined(__APPLE__)
+
             /* During the modal live-resize loop the observer drives this
              * present re-entrantly. By default AppKit stretches the last
              * drawable to the animating window bounds (contentsGravity =
@@ -1122,6 +1302,7 @@ void drawWindowDataToScreen()
             SDL_UpdateWindowSurfaceRects(child->sdlWindow, surfaceRects,
                                          nrects);
 #endif
+
             /* During a live host resize the window surface grows before the
              * backing is recreated, so a band of surface to the right of and
              * below the presented backing has no source pixels. On macOS the
@@ -1296,6 +1477,7 @@ void glxCompositeToWindow(Window window,
         windowStruct->glxCompositeTexture =
             SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888,
                               SDL_TEXTUREACCESS_STREAMING, width, height);
+
         /* Replace, do not blend: the readback is a full opaque frame, and the
          * pbuffer clear color may carry alpha 0. Match every other staging
          * texture here rather than lean on SDL's default.
@@ -1532,6 +1714,7 @@ void textStampRecord(Drawable drawable,
         return;
 
     textStampLock();
+
     /* This label now owns the cell; drop any stamp it overwrites, then take a
      * free slot or evict the least-recently-used one.
      */
@@ -1954,6 +2137,7 @@ void markPixmapReadbackDirty(Drawable drawable)
     PixmapStruct *pixmap = GET_PIXMAP_STRUCT(drawable);
     if (pixmap) {
         pixmap->readbackDirty = True;
+
         /* The stipple stamp is derived from this content; drop it so a later
          * fill rebuilds it from the changed pixels.
          */
@@ -2677,9 +2861,19 @@ static void subtractSegment(SDL_Rect *segments,
     *segmentCount = outCount;
 }
 
+/* exceptChild, when not None, is a mapped child of window whose area must NOT
+ * be clipped out of the fill. This is for clearing a moved child's vacated
+ * footprint: child windows share the top-level backing, so a child's old pixels
+ * physically remain in the parent backing after it moves. When the old and new
+ * footprints overlap, the ordinary clip-by-children would protect the child at
+ * its new position and leave those stale overlap pixels behind (a ghost). The
+ * mover repaints its new footprint immediately afterward, so filling across it
+ * here is safe.
+ */
 static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
                                          Window window,
-                                         const SDL_Rect *rect)
+                                         const SDL_Rect *rect,
+                                         Window exceptChild)
 {
     if (!renderer || !rect || rect->w <= 0 || rect->h <= 0)
         return True;
@@ -2690,6 +2884,7 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
 
     WindowStruct *parent = GET_WINDOW_STRUCT(window);
     size_t childCount = parent->children.length;
+
     /* Bound the allocation so a pathological window tree can't wrap the malloc
      * size and bypass the OOM guard.
      */
@@ -2726,6 +2921,8 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
         Window child = children[i];
         if (child == None || !IS_TYPE(child, WINDOW))
             continue;
+        if (exceptChild != None && child == exceptChild)
+            continue;
         WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
         if (childStruct->inputOnly || childStruct->mapState != Mapped)
             continue;
@@ -2761,6 +2958,8 @@ static Bool renderFillRectClipByChildren(SDL_Renderer *renderer,
         for (size_t i = 0; i < childCount && segmentCount > 0; i++) {
             Window child = children[i];
             if (child == None || !IS_TYPE(child, WINDOW))
+                continue;
+            if (exceptChild != None && child == exceptChild)
                 continue;
             WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
             if (childStruct->inputOnly || childStruct->mapState != Mapped)
@@ -3432,6 +3631,7 @@ static void rasterOpRendererRect(SDL_Renderer *renderer,
 
     Uint32 format;
     SDL_Texture *target = rasterOpResolveTarget(renderer, &format);
+
     /* Always read in ARGB8888 so applyRasterFunction's "preserve the top byte
      * as alpha" contract holds. The commit path converts back to the target's
      * native format only at the UpdateTexture boundary.
@@ -3553,6 +3753,7 @@ static void rasterOpRendererLine(SDL_Renderer *renderer,
 
     Uint32 format;
     SDL_Texture *target = rasterOpResolveTarget(renderer, &format);
+
     /* See the matching block in rasterOpRendererRect for why this stays locked
      * to ARGB8888 - format-aware writeback happens in the commit helper, not in
      * the XOR step.
@@ -3636,6 +3837,7 @@ static void rasterOpRendererRectOutline(SDL_Renderer *renderer,
     /* Bottom: skip bottom-right corner (just drawn). */
     rasterOpRendererLine(renderer, xRight, yBot, x, yBot, function, planeMask,
                          sourceColor, False);
+
     /* Left: skip bottom-left corner (just drawn) AND stop one short of the
      * top-left corner (first edge already drew it).
      */
@@ -4387,6 +4589,7 @@ int XDrawPoints(Display *display,
         applySdlDrawState(renderer, gc, SDL_BLENDMODE_NONE,
                           gContext->foreground);
     }
+
     /* Compute the bbox of all points (post-CoordMode resolution) so the shape
      * guard can capture once. An empty/degenerate bbox (no in-range points)
      * yields w/h == 0; shapeGuardBegin treats that as a no-op.
@@ -4520,6 +4723,7 @@ int XDrawSegments(Display *display,
                 return 1;
             }
         }
+
         /* Wide-stroke path failed (most likely pathInit OOM). The fallback
          * below renders each segment with SDL_RenderDrawLine, which is
          * single-pixel only; flag the silent lineWidth downgrade.
@@ -4759,6 +4963,26 @@ int XClearArea(register Display *dpy,
                unsigned int height,
                Bool exposures)
 {
+    return compatClearWindowAreaExceptChild(dpy, w, x, y, width, height,
+                                            exposures, None);
+}
+
+/* Shared body of XClearArea, plus exceptChild for the moved-child cleanup path
+ * (see renderFillRectClipByChildren). exceptChild is None for a plain
+ * XClearArea, so the ordinary clip-by-children behavior is unchanged. The
+ * X_ClearArea request context is set here rather than in the XClearArea wrapper
+ * so the internal move-cleanup caller (postParentExposureForOldArea) also
+ * attributes any error it raises to a clear-area request, not a stale opcode.
+ */
+int compatClearWindowAreaExceptChild(Display *dpy,
+                                     Window w,
+                                     int x,
+                                     int y,
+                                     unsigned int width,
+                                     unsigned int height,
+                                     Bool exposures,
+                                     Window exceptChild)
+{
     // https://tronche.com/gui/x/xlib/graphics/XClearArea.html
     SET_X_SERVER_REQUEST(dpy, X_ClearArea);
     TYPE_CHECK(w, WINDOW, dpy, 0);
@@ -4846,7 +5070,8 @@ int XClearArea(register Display *dpy,
         }
     } else {
         applySdlDrawState(renderer, NULL, SDL_BLENDMODE_NONE, backgroundColor);
-        if (!renderFillRectClipByChildren(renderer, w, &clearRect)) {
+        if (!renderFillRectClipByChildren(renderer, w, &clearRect,
+                                          exceptChild)) {
             clearRendererClip(renderer);
             shapeGuardEnd(&sg);
             LOG("SDL_RenderFillRect failed in %s: %s\n", __func__,
@@ -5120,6 +5345,7 @@ int XCopyArea(Display *display,
         handleError(0, display, src, 0, BadValue, 0);
         return 0;
     }
+
     /* Reject anything whose extents would overflow signed int. Downstream
      * SDL_Rect math uses int x/y/w/h and would wrap; capping width/height alone
      * is not enough because src_x + width or dest_x + width can still overflow
@@ -5209,6 +5435,7 @@ int XCopyArea(Display *display,
             if (pixmapTexture && destRenderer == pixmapRenderer) {
                 SDL_Rect fastSrc = srcRect;
                 SDL_Rect fastDest = destRect;
+
                 /* XCopyArea is a 1:1 blit: a source rect that runs past the
                  * source pixmap must copy only the in-bounds portion (X11
                  * leaves the rest untouched), not stretch the smaller region
@@ -5267,6 +5494,7 @@ int XCopyArea(Display *display,
             handleError(0, display, src, 0, BadDrawable, 0);
             return 0;
         }
+
         /* Same 1:1 clamp as the fast path: for a Pixmap source, restrict the
          * copy to the pixmap texture so a src rect that runs off the pixmap
          * leaves the trailing dest row/column untouched instead of painting the
@@ -5301,6 +5529,7 @@ int XCopyArea(Display *display,
             handleError(0, display, dest, 0, BadDrawable, 0);
             return 0;
         }
+
         /* XCopyArea is GXcopy: destination pixels are replaced, not blended.
          * SDL_RenderCopy ignores renderer draw color/blend state, so only the
          * texture blend mode matters here.
@@ -5582,7 +5811,7 @@ static void fillRectsClipAware(SDL_Renderer *renderer,
 {
     if (clipByChildren) {
         for (int r = 0; r < count; r++) {
-            if (!renderFillRectClipByChildren(renderer, d, &rects[r]))
+            if (!renderFillRectClipByChildren(renderer, d, &rects[r], None))
                 LOG("SDL_RenderFillRect failed in %s: %s\n", __func__,
                     SDL_GetError());
         }
@@ -5729,6 +5958,7 @@ static Bool renderStippleRects(SDL_Renderer *renderer,
         return False;
 
     PixmapStruct *sp = GET_PIXMAP_STRUCT(gContext->stipple);
+
     /* Real stipples are tiny (8x8 up to 32x32). Cap well above that: a larger
      * stipple would make stippleStamp request a multi-period surface whose
      * width*height*4 could overflow SDL's size math, and would spin an
@@ -5790,6 +6020,7 @@ static Bool renderStippleRects(SDL_Renderer *renderer,
                 if (clipR.w <= 0 || clipR.h <= 0)
                     continue;
                 SDL_RenderSetClipRect(renderer, &clipR);
+
                 /* Phase-align the first tile to the stipple origin; tiles that
                  * start before the clip get trimmed by the clip rect. ox/oy
                  * come from XSetTSOrigin (client-controlled), so do the

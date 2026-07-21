@@ -118,6 +118,7 @@ static void activateHostApplication(void)
                     (void) setFrontProcess(&psn);
                 }
             }
+
             /* The resolved symbols are only used above, so drop the handle
              * rather than leak a reference on every activation. Gated on
              * !transformed so a successful transform never reopens it.
@@ -250,6 +251,7 @@ static void showTopLevelWindow(Display *display, Window window, Bool raise)
         return;
 
     windowStruct->needsPresent = True;
+
     /* Release any coalesce gate a prior host-resize burst left armed so this
      * mandatory present-before-show is not swallowed by
      * drawWindowDataToScreen's coalesce early-return, which would leave the
@@ -261,6 +263,7 @@ static void showTopLevelWindow(Display *display, Window window, Bool raise)
     if (raise)
         activateHostApplication();
 #endif
+
     /* The map paths that call this already post an explicit MapNotify; arm the
      * one-shot so the MapNotify the coming SDL SHOWN echo would synthesize is
      * dropped in convertEvent rather than delivered a second time.
@@ -416,8 +419,9 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
      * usable, force the software present path so headless/CI runs behave like a
      * real driver.
      */
-    if (libx11CompatForceSoftwarePresent() ||
-        !libx11CompatAcceleratedPresentUsable()) {
+    if (!libx11CompatAcceleratedPresentForcedForTest() &&
+        (libx11CompatForceSoftwarePresent() ||
+         !libx11CompatAcceleratedPresentUsable())) {
         windowStruct->presentUsesSoftware = True;
     } else {
         windowStruct->presentRenderer =
@@ -464,6 +468,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         int logicalW = 0, logicalH = 0;
         Bool haveSize = False;
         SDL_GetWindowSize(sdlWindow, &logicalW, &logicalH);
+
         /* Prefer SDL_GetWindowSizeInPixels: it reports the window's physical
          * backing size directly and does not depend on a renderer or the
          * SDL_GetWindowSurface software binding. On sdl2-compat over SDL3 the
@@ -507,6 +512,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
             logicalH > 0) {
             windowStruct->hiDpiScaleX = (double) physW / (double) logicalW;
             windowStruct->hiDpiScaleY = (double) physH / (double) logicalH;
+
             /* The font engine scaled glyphs and metrics by the display-global
              * HiDPI factor probed at XOpenDisplay. That factor and this
              * per-window ratio come from the same host display, so on a
@@ -605,6 +611,7 @@ static void unrealizeTopLevelWindow(Window window)
     replayTargetForgetWindow(destroyedId);
 
     deleteWindowMapping(window);
+
     /* Drop any cached GLX/EGL surface bound to this window before its SDL
      * window (and, on Linux, the native X11 window behind it) is destroyed, so
      * an EGL window surface never outlives the window it renders to. A later
@@ -1146,6 +1153,7 @@ static int mapWindowImpl(Display *display, Window window)
     mapRequestedChildren(display, window);
 
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+
     /* Under a real window manager the post-map ConfigureNotify carries a
      * WM-adjusted geometry that differs from what the shell requested, and Xt
      * uses that size change to run its post-realize layout pass, reconfiguring
@@ -1232,11 +1240,13 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
 
     windowStruct->mapState = UnMapped;
     flushTextStampsForWindow(window);
+
     /* The window is now unviewable; drop any active grab it (or an ancestor)
      * held so a Motif menu shell does not keep swallowing pointer input after
      * it unmaps.
      */
     releaseActiveGrabsForUnviewableWindow(display, window);
+
     /* Unmapping clears this window's contribution to the sibling occlusion
      * graph; lower siblings may now have more visible area. Mark the top-level
      * subtree stale so the next draw recomputes.
@@ -1251,6 +1261,7 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
          * it too if it ever runs off-main.
          */
         requireMainEventThread("XUnmapWindow");
+
         /* Report the unmap before tearing down the SDL window. A client that
          * selected StructureNotifyMask (Tk wraps every toplevel, and its
          * WaitForEvent blocks up to 2 seconds for the UnmapNotify when it
@@ -1558,6 +1569,7 @@ static int reparentWindowImpl(Display *display,
     windowStruct->x = x;
     windowStruct->y = y;
     flushTextStampsForWindow(window);
+
     /* The new parent's siblings of "window" (and their descendants) and
      * "window"'s own descendants all need their cached visible regions
      * recomputed against the new parent chain. removeChildFromParent above

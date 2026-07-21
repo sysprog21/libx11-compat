@@ -538,6 +538,7 @@ Bool postWmDeleteIfHandled(Display *display, Window window, Time time)
             event.xclient.format = 32;
             event.xclient.data.l[0] = wmDeleteWindowAtom;
             event.xclient.data.l[1] = time;
+
             /* Append, not prepend: this is a freshly synthesized event, so it
              * must land behind whatever is already queued rather than jump to
              * the head the way a put-back re-read would.
@@ -695,6 +696,7 @@ void libx11CompatResetLiveResizeCoalesce(void)
         ws->liveResizeLastSeenW = 0;
         ws->liveResizeLastSeenH = 0;
         ws->liveResizeSettleTicks = 0;
+
         /* Clear any snap echo-suppression key a previous drag-end snap left
          * set: if that snap's echo was coalesced away the key never matched,
          * and a stale key could otherwise drop a genuine resize of this new
@@ -1098,6 +1100,7 @@ int libx11CompatPresentDuringLiveResizeEx(int forceReflow)
                          pixelH);
             }
         }
+
         /* Only incur the present readback when this tick produced new content.
          * A quiet, already-settled reflow tick reuses the identical frame, so
          * skipping its full-window readback keeps idle ticks near-free and lets
@@ -1300,6 +1303,7 @@ static int drainSdlEventsToPutBack(Display *display)
      * XNextEvent loop (which holds no lock) via the existing re-queue path.
      */
     LockDisplay(display);
+
     /* Run any dispatch commands parked while a handoff was pending; the handoff
      * may have cleared since the last drain even if no new event arrived.
      */
@@ -1335,6 +1339,7 @@ static int drainSdlEventsToPutBack(Display *display)
     for (int i = 0; i < qlen; i++) {
         XEvent converted;
         if (convertEvent(display, &events[i], &converted, True) == 0)
+
             /* convertEvent already ran its terminal timelineTapXEvent for these
              * events; mark them so popPutBackEvent does not tap a second time
              * when they are eventually consumed.
@@ -1492,6 +1497,7 @@ static Bool windowSelectsAny(Window window, long mask)
 }
 
 #if SDL_VERSION_ATLEAST(2, 0, 18)
+
 /* Fold a sub-notch precise wheel delta into an integer notch. When the raw
  * integer axis already carries a notch, just clear the accumulator. Otherwise
  * accumulate the fraction and emit at most one notch per event, dropping any
@@ -2017,6 +2023,7 @@ int initEventPipe(Display *display)
         SDL_AtomicUnlock(&eventPipeGlobalLock);
         return -1;
     }
+
     /* The eventFds globals are shared across displays. Only the first open
      * creates the pipe; subsequent opens reuse it. Recreating it per call would
      * leak the previous fds since closeEventPipe runs only on the final display
@@ -2658,6 +2665,7 @@ int convertEvent(Display *display,
         xEvent->xkey.subwindow = None;
         xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         int pointerX = 0, pointerY = 0;
+
         /* Injected/replay coordinates are already X11 physical pixels; only
          * real SDL_GetMouseState points need scaling. Mirrors the
          * button/motion/wheel synthetic handling; scaling twice would double
@@ -2679,6 +2687,7 @@ int convertEvent(Display *display,
     case SDL_MOUSEBUTTONDOWN:
         LOG("SDL_MOUSEBUTTONDOWN\n");
         type = ButtonPress;
+
         /* Previously this case synthesized an EnterNotify from the first
          * mouse-down to compensate for environments that never delivered
          * SDL_WINDOWEVENT_ENTER. The hack double-fired Motif arm/focus
@@ -2869,6 +2878,7 @@ int convertEvent(Display *display,
                 WindowStruct *shownStruct = GET_WINDOW_STRUCT(eventWindow);
                 shownStruct->mapState = Mapped;
                 markWindowNeedsPresent(eventWindow);
+
                 /* Drop the echo when showTopLevelWindow already posted an
                  * explicit MapNotify for this show; delivering both runs Xt/Tk
                  * map handlers twice. One-shot: clear as it is consumed.
@@ -2914,6 +2924,7 @@ int convertEvent(Display *display,
                 GET_WINDOW_STRUCT(eventWindow)->x = logicalX;
                 GET_WINDOW_STRUCT(eventWindow)->y = logicalY;
             }
+
             /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
              * ConfigureNotify dispatch below; the unified handler keys off
              * XC_WINDOW_SUBEVENT(sdlEvent) to decide which fields to query.
@@ -3000,6 +3011,7 @@ int convertEvent(Display *display,
                 if (eventWindow != None) {
                     int oldWidth = 0, oldHeight = 0;
                     GET_WINDOW_DIMS(eventWindow, oldWidth, oldHeight);
+
                     /* On macOS the live-resize observer already adopts the
                      * final drag size (windowStruct->w/h +
                      * resizeWindowTexture), runs the client reflow and presents
@@ -3022,6 +3034,7 @@ int convertEvent(Display *display,
                     GET_WINDOW_STRUCT(eventWindow)->h = (unsigned int) pixelH;
                     if (sizeChanged) {
                         resizeWindowTexture(eventWindow);
+
                         /* The top-level's own cached visibleRegion is its
                          * (0,0,w,h) frame; it goes stale on every resize driven
                          * by SDL outside of configureWindow.
@@ -3029,24 +3042,29 @@ int convertEvent(Display *display,
                         invalidateVisibleRegionForTopLevel(eventWindow);
 
                         /* How much of the backing to wipe depends on the
-                         * top-level's bit gravity. ForgetGravity (the X
-                         * default) discards all contents on resize, so clear
-                         * the whole subtree. A retaining gravity
-                         * (StaticGravity, which xwpe sets on its cells) keeps
-                         * the old pixels: clear only the bands that newly
-                         * appeared because a dimension grew, and leave the
-                         * previously visible region - already carried into the
-                         * new backing by resizeWindowTexture's overlap-copy -
-                         * untouched. Wiping that retained region (or the whole
-                         * subtree) would blank content the client has not yet
-                         * repainted; during the macOS modal resize loop the
-                         * client's repaint lags a few frames, so that blank
-                         * shows as a transient black flash. Clearing only the
-                         * growth bands keeps the last-good content up until the
-                         * reflow lands and matches real X11.
+                         * top-level's bit gravity, and must match what
+                         * resizeWindowTexture just carried over. Only a
+                         * top-left-anchored retaining gravity
+                         * (NorthWestGravity/StaticGravity, which xwpe sets on
+                         * its cells) keeps its old pixels pinned at (0,0): for
+                         * those, clear only the bands that newly appeared
+                         * because a dimension grew and leave the retained
+                         * region
+                         * - already copied into the new backing by
+                         * resizeWindowTexture - untouched. Wiping that region
+                         * would blank content the client has not yet repainted;
+                         * during the macOS modal resize loop the repaint lags a
+                         * few frames, so the blank shows as a transient black
+                         * flash. ForgetGravity and every unmodeled gravity let
+                         * the client discard contents on resize, so clear the
+                         * whole subtree here; any top-left copy
+                         * resizeWindowTexture kept for ForgetGravity is only a
+                         * transient flash-avoidance during the modal drag,
+                         * superseded once this runs. The full Expose below
+                         * drives the repaint either way.
                          */
-                        if (GET_WINDOW_STRUCT(eventWindow)->bitGravity ==
-                            ForgetGravity) {
+                        if (!bitGravityIsTopLeftAnchored(
+                                GET_WINDOW_STRUCT(eventWindow)->bitGravity)) {
                             clearWindowTreeWithoutExpose(display, eventWindow);
                         } else {
                             if (pixelW > oldWidth) {
@@ -3102,6 +3120,7 @@ int convertEvent(Display *display,
             }
 
             xEvent->xconfigure.above = None;
+
             /* eventWindow came from getWindowFromId and can be None for an
              * untracked SDL window. The caller's XEvent is not zeroed and
              * FILL_STANDARD_VALUES does not touch these two fields, so set
@@ -3188,6 +3207,7 @@ int convertEvent(Display *display,
                         "cachedPhys=(%ux%u)\n",
                         eventWindow, lw, lh, pw, ph, movedWs->hiDpiScaleX,
                         movedWs->hiDpiScaleY, movedWs->w, movedWs->h);
+
                     /* The global font scale tracks the same host backing as
                      * this window, so refresh it and republish the root
                      * property on both backends; a client re-deriving its font
@@ -3204,6 +3224,7 @@ int convertEvent(Display *display,
                                                       (double) lh);
                         compatPublishHiDpiScaleProperty(display);
 #if defined(LIBX11_COMPAT_SDL3)
+
                         /* SDL2 follows a DISPLAY_CHANGED with a SIZE_CHANGED
                          * that reflows geometry using the scale refreshed
                          * above. The SDL3 backend delivers no such geometry
@@ -3222,6 +3243,7 @@ int convertEvent(Display *display,
                                 compatGlobalHiDpiScale());
                             postSyntheticWindowResize(display, eventWindow, pw,
                                                       ph);
+
                             /* The cached visible region is the pre-move
                              * (0,0,w,h) rect; the re-promote just grew the
                              * top-level, so invalidate it as the RESIZED
@@ -3334,6 +3356,7 @@ int convertEvent(Display *display,
                           display, eventWindow,
                           (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp))
                     : False;
+
             /* Real X11 kills the client connection here. Route through the IO
              * error hook so a client that installed one can intercept;
              * otherwise it terminates.
@@ -3496,6 +3519,7 @@ int convertEvent(Display *display,
         LOG("SDL_MOUSEWHEEL\n");
         {
 #ifdef LIBX11_COMPAT_SDL3
+
             /* SDL3 wheel deltas are floats carrying any sub-notch fraction
              * directly in x/y, so accumulate them through the same notch filter
              * the SDL2 precise path used.
@@ -3505,6 +3529,7 @@ int convertEvent(Display *display,
 #else
             int wy = sdlEvent->wheel.y, wx = sdlEvent->wheel.x;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
+
             /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y while
              * leaving x/y at 0. Accumulate those fractions so smooth wheels do
              * not turn each partial delta into a full X11 wheel click.
@@ -4144,6 +4169,7 @@ int XNextEvent(Display *display, XEvent *event_return)
         }
         LOG("Got unknown SDL event %d, dropping.\n", event.type);
         bumpEventSerial();
+
         /* Do NOT fabricate a fake Expose: a wrong event type confuses Motif's
          * translation tables and Xt's event dispatcher far worse than a brief
          * spin in this loop. Wait for the next real event instead.
@@ -4334,6 +4360,7 @@ int XFlush(Display *display)
     // https://tronche.com/gui/x/xlib/event-handling/XFlush.html
     pumpEventsSafe();
     drainSdlEventsToPutBack(display);
+
     /* Real X11 batches drawing on the server and flushes here. libx11-compat
      * accumulates primitives in the renderer's back buffer and only presents on
      * flush so partial frames don't reach the screen.
@@ -4668,6 +4695,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
         GET_WINDOW_POS(eventWindow, event->x, event->y);
         event->override_redirect =
             GET_WINDOW_STRUCT(eventWindow)->overrideRedirect;
+
         /* Deliver clones to every recipient except the last; the last keeps the
          * original allocation via eventData.
          */
@@ -4927,6 +4955,7 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
 
     if (!eventData)
         return !eventNeeded;
+
     /* enqueueEvent only owns the heap event once it actually pushes onto the
      * SDL queue. If SDL_RegisterEvents has never succeeded the call fails
      * without taking ownership, so free here to avoid a leak.
@@ -5025,6 +5054,7 @@ static Bool checkTypedEvent(Display *display,
         pumpEventsSafe();
     int qlen = 0;
     LockDisplay(display);
+
     /* Flush dispatch commands parked while a handoff was pending, so a client
      * pumping only through XCheckTypedEvent still drives them.
      */

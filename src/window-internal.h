@@ -236,4 +236,11 @@ void applyNetWmStateAction(Display *display,
  */
 void applyNetWmStateFromProperty(Window window);
 
+/* True for the bit gravities whose retained contents stay pinned at the
+ * top-left (0,0) corner on resize: NorthWestGravity and StaticGravity. The
+ * resize backing-copy and expose paths model only this anchor and discard/full-
+ * clear every other gravity, so they share this one predicate to stay in sync.
+ */
+Bool bitGravityIsTopLeftAnchored(int bitGravity);
+
 #endif /* WINDOWINTERNAL_H */

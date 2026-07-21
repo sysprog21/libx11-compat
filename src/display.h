@@ -44,6 +44,13 @@ int displayLockReleaseForHandoff(void);
 Bool displayLockHandoffPending(void);
 void displayLockReacquire(int depth);
 
+/* True once a client has called XInitThreads (upstream locking.c installs the
+ * lock hooks then, and never for a single-threaded client). Callers use it to
+ * skip in-place mutation that would be unsafe under concurrent same-display
+ * access, since the compat font/draw paths do not take LockDisplay themselves.
+ */
+Bool compatDisplayThreadsInitialized(void);
+
 /* Publish the current HiDPI backing scale as a CARDINAL property
  * (_LIBX11_COMPAT_HIDPI_SCALE, scale * 1000 rounded) on the root window, and
  * post the PropertyNotify. Clients that render at a fixed point size (e.g. the

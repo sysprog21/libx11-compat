@@ -312,6 +312,7 @@ void deleteWindowMapping(Window window)
 {
     ensureMappingListLock();
     lockMappingList();
+
     /* Indirect pointer walk: link points at the slot that references the
      * current node, so unlinking the head needs no special case.
      */
@@ -542,6 +543,7 @@ void topLevelWindowHostPosition(Window window,
         return;
 
     WindowStruct *ws = GET_WINDOW_STRUCT(window);
+
     /* Only promoted windows carry physical-pixel geometry; a self-scaling
      * toolkit records a >1 backing ratio but keeps X11 geometry logical, so
      * effectiveHiDpiScale collapses it to 1.0 and this transform is skipped.
@@ -910,6 +912,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     if (windowStruct->shapeClipMask)
         SDL_FreeSurface(windowStruct->shapeClipMask);
     free(windowStruct->colormapWindows);
+
     /* Per-window accelerated present resources. The streaming texture belongs
      * to presentRenderer, so destroy it first, then the renderer; both must go
      * before SDL_DestroyWindow below since the renderer is bound to sdlWindow.
@@ -918,6 +921,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
      */
     if (windowStruct->presentTexture)
         SDL_DestroyTexture(windowStruct->presentTexture);
+
     /* presentRenderer is destroyed directly, not through destroyWindowRenderer:
      * the put-image, text, and stipple caches only ever build textures on the
      * window sdlRenderer (getWindowRenderer) or the SCREEN renderer, never on
@@ -941,6 +945,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
 
     if (windowStruct->sdlWindow) {
 #if SDL_VERSION_ATLEAST(2, 0, 5)
+
         /* Detach any live modal-for binding so the host WM does not keep
          * blocking the parent shell once this child is gone. SDL_DestroyWindow
          * cleans up child resources but parent state on some platforms
@@ -1564,24 +1569,139 @@ static Bool restackWindow(Display *display,
     }
 }
 
+typedef struct {
+    SDL_Surface *surface;
+    SDL_Rect dst;
+} MovedWindowSnapshot;
+
+static Bool parentRectToTop(Window parent, SDL_Rect *rect, Window *top)
+{
+    Window window = parent;
+    while (window != None && window != SCREEN_WINDOW) {
+        if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
+            *top = window;
+            return True;
+        }
+        int x = 0, y = 0;
+        GET_WINDOW_POS(window, x, y);
+        rect->x += x;
+        rect->y += y;
+        window = GET_PARENT(window);
+    }
+    return False;
+}
+
+static MovedWindowSnapshot snapshotMovedWindow(Window window,
+                                               int oldX,
+                                               int oldY,
+                                               int oldWidth,
+                                               int oldHeight)
+{
+    MovedWindowSnapshot snapshot = {0};
+    Window parent = GET_PARENT(window);
+    if (parent == None || IS_INPUT_ONLY(window) ||
+        GET_WINDOW_STRUCT(window)->mapState == UnMapped ||
+        GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
+        return snapshot;
+
+    SDL_Rect oldRect = {oldX, oldY, oldWidth, oldHeight};
+    SDL_Rect parentBounds = {0, 0, 0, 0};
+    GET_WINDOW_DIMS(parent, parentBounds.w, parentBounds.h);
+    SDL_Rect visible;
+    if (!SDL_IntersectRect(&oldRect, &parentBounds, &visible))
+        return snapshot;
+
+    /* Only relocate pixels when the child sits fully inside its parent at the
+     * old position. A clip against parentBounds means the snapshot would miss
+     * the off-parent slice, and because the caller skips the post-move backing
+     * clear whenever a snapshot is restored, that newly-visible slice would
+     * keep stale pixels until the client repaints. Fall back to clear+expose
+     * there.
+     */
+    if (visible.w != oldWidth || visible.h != oldHeight)
+        return snapshot;
+
+    snapshot.dst =
+        (SDL_Rect) {visible.x - oldX, visible.y - oldY, visible.w, visible.h};
+    const pixman_region32_t *visibleRegion = ensureVisibleRegion(window);
+    pixman_box32_t dstBox = {
+        snapshot.dst.x,
+        snapshot.dst.y,
+        snapshot.dst.x + snapshot.dst.w,
+        snapshot.dst.y + snapshot.dst.h,
+    };
+    if (pixman_region32_contains_rectangle(visibleRegion, &dstBox) !=
+        PIXMAN_REGION_IN)
+        return (MovedWindowSnapshot) {0};
+
+    Window top = None;
+    if (!parentRectToTop(parent, &visible, &top))
+        return snapshot;
+
+    SDL_Renderer *topRenderer = getWindowRenderer(top);
+    snapshot.surface = getRenderSurfaceRect(topRenderer, &visible);
+    return snapshot;
+}
+
+static Bool restoreMovedWindowSnapshot(Window window,
+                                       MovedWindowSnapshot *snapshot)
+{
+    if (!snapshot->surface)
+        return False;
+
+    SDL_Renderer *renderer = getWindowRenderer(window);
+    SDL_Texture *texture =
+        renderer ? SDL_CreateTextureFromSurface(renderer, snapshot->surface)
+                 : NULL;
+    SDL_FreeSurface(snapshot->surface);
+    snapshot->surface = NULL;
+    if (!texture)
+        return False;
+
+    Bool restored = False;
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE);
+    if (SDL_RenderCopy(renderer, texture, NULL, &snapshot->dst) == 0) {
+        invalidateSdlDrawStateCache();
+        presentDrawableRectIfVisible(window, &snapshot->dst);
+        restored = True;
+    }
+    SDL_DestroyTexture(texture);
+    return restored;
+}
+
+/* exceptChild is the window whose old footprint is being cleared when it MOVED:
+ * it shares the parent backing, so its pre-move pixels linger there, and when
+ * the new footprint overlaps the old one an ordinary XClearArea would protect
+ * the child and leave that overlap as a ghost. The caller snapshots the child's
+ * old pixels before this clear and restores them into the new footprint after
+ * it. Pass None for a shrink-in-place, where the origin is unchanged: there the
+ * smaller footprint is top-left aligned inside the old one and still holds
+ * valid pixels, so the child must stay clipped and only the vacated L-shape is
+ * cleared.
+ */
 static void postParentExposureForOldArea(Display *display,
                                          Window window,
                                          int oldX,
                                          int oldY,
                                          int oldWidth,
-                                         int oldHeight)
+                                         int oldHeight,
+                                         Window exceptChild)
 {
     Window parent = GET_PARENT(window);
     if (parent == None || IS_INPUT_ONLY(parent) ||
         GET_WINDOW_STRUCT(parent)->mapState == UnMapped)
         return;
-    XClearArea(display, parent, oldX, oldY, (unsigned int) oldWidth,
-               (unsigned int) oldHeight, False);
+
+    compatClearWindowAreaExceptChild(
+        display, parent, oldX, oldY, (unsigned int) oldWidth,
+        (unsigned int) oldHeight, False, exceptChild);
     SDL_Rect exposed = {oldX, oldY, oldWidth, oldHeight};
     postExposeEvent(display, parent, &exposed, 1);
 }
 
-static void postMovedWindowExposure(Display *display, Window window)
+static void postMovedWindowExposure(Display *display,
+                                    Window window,
+                                    Bool clearBacking)
 {
     Window parent = GET_PARENT(window);
     if (parent == None || IS_INPUT_ONLY(window) ||
@@ -1611,9 +1731,16 @@ static void postMovedWindowExposure(Display *display, Window window)
         .w = visible.w,
         .h = visible.h,
     };
-    XClearArea(display, window, expose.x, expose.y, (unsigned int) expose.w,
-               (unsigned int) expose.h, False);
+    if (clearBacking) {
+        XClearArea(display, window, expose.x, expose.y, (unsigned int) expose.w,
+                   (unsigned int) expose.h, False);
+    }
     postExposeEvent(display, window, &expose, 1);
+}
+
+Bool bitGravityIsTopLeftAnchored(int bitGravity)
+{
+    return bitGravity == NorthWestGravity || bitGravity == StaticGravity;
 }
 
 /* Returns True when it has already posted a full-window Expose for a mapped
@@ -1654,9 +1781,8 @@ static Bool postResizeExpose(Display *display,
      * full-window clear for any bit gravity this path does not model: always
      * correct, just without the flash-avoidance optimization.
      */
-    Bool topLeftAnchored = windowStruct->bitGravity == NorthWestGravity ||
-                           windowStruct->bitGravity == StaticGravity;
-    Bool clearWholeWindow = !topLeftAnchored;
+    Bool clearWholeWindow =
+        !bitGravityIsTopLeftAnchored(windowStruct->bitGravity);
 
     if (!IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
         SDL_Rect fullWindow = {
@@ -1761,15 +1887,29 @@ void resizeWindowTexture(Window window)
     SDL_RenderClear(windowRenderer);
 
     /* Carry the overlapping region of the previous backing into the new one
-     * before the client repaints. On a live resize the client (e.g. xwpe) needs
-     * a few frames to reflow and redraw its grid at the new size; without this
+     * before the client repaints. On a live resize the client needs a few
+     * frames to reflow and redraw at the new size, and during the macOS modal
+     * resize loop it gets no events at all until the drag ends; without this
      * copy the freshly-cleared backing shows the background colour for those
-     * frames, which reads as a flicker/flash during the drag. Copying the
-     * common top-left region keeps the last-good content on screen until the
-     * repaint lands. Only pixels outside the overlap stay at the background.
+     * frames, which reads as a flash during the drag and, if the client only
+     * partially repaints afterward (e.g. an empty editor pane it never
+     * redraws), a persistent grey area. Copying the common top-left region
+     * keeps the last-good content on screen until the repaint lands.
+     *
+     * Skip the copy only for a bit gravity that RETAINS at a non-top-left
+     * anchor (NorthEastGravity/CenterGravity/etc): there the top-left overlap
+     * is semantically the wrong pixels, so discard and let the full Expose
+     * repaint. ForgetGravity keeps no retained pixels by definition, so the
+     * top-left copy is a harmless flash-avoidance (stale until repaint), not a
+     * wrong-anchor artifact, and NorthWestGravity/StaticGravity pin at top-left
+     * where it is exactly correct.
      */
+    Bool retainingNonTopLeft =
+        windowStruct->bitGravity != ForgetGravity &&
+        !bitGravityIsTopLeftAnchored(windowStruct->bitGravity);
     int oldW = 0, oldH = 0;
-    if (SDL_QueryTexture(oldTexture, NULL, NULL, &oldW, &oldH) == 0 &&
+    if (!retainingNonTopLeft &&
+        SDL_QueryTexture(oldTexture, NULL, NULL, &oldW, &oldH) == 0 &&
         oldW > 0 && oldH > 0) {
         int copyW = oldW < (int) windowStruct->w ? oldW : (int) windowStruct->w;
         int copyH = oldH < (int) windowStruct->h ? oldH : (int) windowStruct->h;
@@ -1879,6 +2019,7 @@ Bool configureWindow(Display *display,
      * the main-thread invariant at the SDL source.
      */
     requireMainEventThread("configureWindow");
+
     /* Validate here, on the main thread, rather than in the XConfigureWindow /
      * XMoveWindow / XResizeWindow entry points: those run on the calling
      * worker, where reading the window's WindowStruct would race a concurrent
@@ -1906,6 +2047,7 @@ Bool configureWindow(Display *display,
     int oldX, oldY, oldWidth, oldHeight;
     GET_WINDOW_POS(window, oldX, oldY);
     GET_WINDOW_DIMS(window, oldWidth, oldHeight);
+    MovedWindowSnapshot moveSnapshot = {0};
     Bool resizedWindow = False;
     int resizedWidth = oldWidth, resizedHeight = oldHeight;
     if (!restackWindow(display, window, value_mask, values))
@@ -1930,6 +2072,11 @@ Bool configureWindow(Display *display,
                                       &windowStruct->y);
             }
         } else {
+            if (windowStruct->mapState != UnMapped &&
+                (oldX != x || oldY != y)) {
+                moveSnapshot = snapshotMovedWindow(window, oldX, oldY, oldWidth,
+                                                   oldHeight);
+            }
             windowStruct->x = x;
             windowStruct->y = y;
         }
@@ -1938,6 +2085,7 @@ Bool configureWindow(Display *display,
     }
     if (HAS_VALUE(value_mask, CWWidth) || HAS_VALUE(value_mask, CWHeight)) {
         int width = oldWidth, height = oldHeight;
+
         /* A zero or negative width/height is a protocol BadValue. Report it so
          * a client that installed its own error handler still learns of the bad
          * request. The default handler is non-fatal, and toolkits routinely
@@ -1950,6 +2098,8 @@ Bool configureWindow(Display *display,
         if ((HAS_VALUE(value_mask, CWWidth) && values->width <= 0) ||
             (HAS_VALUE(value_mask, CWHeight) && values->height <= 0)) {
             handleError(0, display, window, 0, BadValue, 0);
+            if (moveSnapshot.surface)
+                SDL_FreeSurface(moveSnapshot.surface);
             return False;
         }
         if (HAS_VALUE(value_mask, CWWidth))
@@ -2019,8 +2169,11 @@ Bool configureWindow(Display *display,
      * site only marks the cache stale.
      */
     invalidateVisibleRegionForTopLevel(window);
-    if (!postEvent(display, window, ConfigureNotify))
+    if (!postEvent(display, window, ConfigureNotify)) {
+        if (moveSnapshot.surface)
+            SDL_FreeSurface(moveSnapshot.surface);
         return False;
+    }
     if (resizedWindow)
         postResizeConfigureForMappedChildren(
             display, window, oldWidth, oldHeight, resizedWidth, resizedHeight);
@@ -2039,11 +2192,18 @@ Bool configureWindow(Display *display,
          (unsigned int) oldHeight != windowStruct->h)) {
         if (oldX != windowStruct->x || oldY != windowStruct->y) {
             postParentExposureForOldArea(display, window, oldX, oldY, oldWidth,
-                                         oldHeight);
-            postMovedWindowExposure(display, window);
+                                         oldHeight, window);
+            Bool sameSize = (unsigned int) oldWidth == windowStruct->w &&
+                            (unsigned int) oldHeight == windowStruct->h;
+            Bool restored =
+                sameSize && restoreMovedWindowSnapshot(window, &moveSnapshot);
+            if (!sameSize && moveSnapshot.surface)
+                SDL_FreeSurface(moveSnapshot.surface);
+            postMovedWindowExposure(display, window, !restored);
         } else {
             Bool postedFullWindowExpose =
                 postResizeExpose(display, window, oldWidth, oldHeight);
+
             /* Skip this full-window Expose when postResizeExpose already
              * emitted one (the mapped top-level whole-window-clear path), so
              * the client does not receive two identical full-window exposes.
@@ -2059,8 +2219,11 @@ Bool configureWindow(Display *display,
             }
             if ((unsigned int) oldWidth > windowStruct->w ||
                 (unsigned int) oldHeight > windowStruct->h) {
+                /* Shrink in place: the window keeps its top-left content, so it
+                 * must stay clipped; only the vacated L-shape is cleared.
+                 */
                 postParentExposureForOldArea(display, window, oldX, oldY,
-                                             oldWidth, oldHeight);
+                                             oldWidth, oldHeight, None);
             }
         }
     }

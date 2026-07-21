@@ -1,0 +1,12 @@
+diff --git a/demos/lib/Exm/Simple.c b/demos/lib/Exm/Simple.c
+--- a/demos/lib/Exm/Simple.c
++++ b/demos/lib/Exm/Simple.c
+@@ -319,7 +319,7 @@ ClassInitialize( void )
+  *****************************************************************************/
+ static void ClassPartInitialize(WidgetClass wclass)
+ {
+- ExmSimpleWidgetClass wc = (ExmSimpleWidgetClass)widgetClass;
++ ExmSimpleWidgetClass wc = (ExmSimpleWidgetClass)wclass;
+  ExmSimpleWidgetClass sc = (ExmSimpleWidgetClass) wc->core_class.superclass;
+ 
+  /* The following code allows subclasses of ExmSimple to inherit certain 
