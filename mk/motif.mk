@@ -1,4 +1,4 @@
-MOTIF_COMMIT := 11cd50b42991e8f11a13522fd820d736cc2f7fcf
+MOTIF_COMMIT := 1f62cee9d8b8bae6a55c8e1dec1c4e8f1ace1d2f
 MOTIF_URL := https://github.com/thentenaar/motif
 MOTIF_SRC_DIR := $(OUT)/upstream/motif
 MOTIF_SRC_STAMP := $(MOTIF_SRC_DIR)/.source-stamp
@@ -35,6 +35,7 @@ MOTIF_YACC ?= $(shell if [ -x /opt/homebrew/opt/bison/bin/bison ]; then printf '
 
 MOTIF_CFLAGS ?= -g -O0
 MOTIF_LIBS ?= -lm
+MOTIF_UIL_LIBS = $(MOTIF_LIBS) -lXt-compat -lX11-compat
 MOTIF_CONFIGURE_LDFLAGS := -L$(abspath $(OUT))
 
 ifeq ($(UNAME_S),Darwin)
@@ -161,7 +162,10 @@ $(MOTIF_SRC_STAMP): mk/motif.mk $(MOTIF_PATCHES) $(MOTIF_PATCH_LIST_FILE)
 	$(Q)test -d $(MOTIF_SRC_DIR)/.git || \
 	    git clone $(MOTIF_GIT_Q) $(MOTIF_URL) $(MOTIF_SRC_DIR)
 	$(Q)cd $(MOTIF_SRC_DIR) && \
-	    git checkout $(MOTIF_GIT_Q) --detach $(MOTIF_COMMIT) && \
+	    { git ls-tree $(MOTIF_COMMIT) >/dev/null 2>&1 || \
+	      git fetch $(MOTIF_GIT_Q) origin $(MOTIF_COMMIT) || \
+	      git fetch $(MOTIF_GIT_Q) origin; } && \
+	    git checkout $(MOTIF_GIT_Q) -f --detach $(MOTIF_COMMIT) && \
 	    git reset --hard $(MOTIF_GIT_Q) $(MOTIF_COMMIT) >/dev/null && \
 	    git clean $(MOTIF_GIT_Q) -fdx >/dev/null
 	$(Q)set -e; for patch in $(abspath $(MOTIF_PATCHES)); do \
@@ -244,7 +248,7 @@ $(MOTIF_DEMOS_BUILD_STAMP): $(MOTIF_DEMOS_CONFIG_STAMP)
 	@echo "  MAKE    motif uil"
 	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(MOTIF_DEMOS_BUILD_DIR)/tools/wml CPP="$(CC) -E" CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_LIBS)" \
 	    $(call motif_log_redirect,$(abspath $(MOTIF_DEMOS_BUILD_DIR))/build.log)
-	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(MOTIF_DEMOS_BUILD_DIR)/clients/uil CPP="$(CC) -E" CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_LIBS)" \
+	$(Q)$(motif_runtime_env) $(MOTIF_SUBMAKE) -C $(MOTIF_DEMOS_BUILD_DIR)/clients/uil CPP="$(CC) -E" CFLAGS="$(MOTIF_CFLAGS)" LIBS="$(MOTIF_UIL_LIBS)" \
 	    $(call motif_log_redirect,$(abspath $(MOTIF_DEMOS_BUILD_DIR))/build.log)
 	$(call motif_glw_step,$(MOTIF_DEMOS_BUILD_DIR))
 	@echo "  MAKE    motif demos"

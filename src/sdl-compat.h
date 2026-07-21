@@ -287,6 +287,7 @@ static inline SDL_Renderer *xc_CreateRenderer(SDL_Window *win, Uint32 flags)
     (void) flags;
     return SDL_CreateRenderer(win, NULL);
 }
+
 /* SDL3 dropped the SDL_RENDERER_* flag word; xc_CreateRenderer ignores flags
  * there, so this token is only a portable spelling for the call site.
  */
@@ -441,6 +442,19 @@ static inline int xc_BlitScaled(SDL_Surface *src,
                                  SDL_SCALEMODE_LINEAR)
                ? 0
                : -1;
+}
+
+/* Scale-mode-aware surface blit, so the software present path can match the
+ * accelerated present's nearest-at-integer-scale policy. xc_BlitScaled stays
+ * linear for callers that do not care.
+ */
+static inline int xc_BlitScaledMode(SDL_Surface *src,
+                                    const SDL_Rect *srcrect,
+                                    SDL_Surface *dst,
+                                    SDL_Rect *dstrect,
+                                    SDL_ScaleMode mode)
+{
+    return SDL_BlitSurfaceScaled(src, srcrect, dst, dstrect, mode) ? 0 : -1;
 }
 
 /* SDL3 removed SDL_QueryTexture; size comes from SDL_GetTextureSize and the
@@ -836,9 +850,29 @@ static inline SDL_Renderer *xc_CreateRenderer(SDL_Window *win, Uint32 flags)
 #define XC_SCALEMODE_NEAREST SDL_ScaleModeNearest
 #define XC_SCALEMODE_LINEAR SDL_ScaleModeLinear
 
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+
+/* Match the SDL3 wrapper's signature. SDL2 SDL_BlitScaled box-samples with no
+ * per-call scale mode, so the mode is advisory: integer-scale present wants
+ * nearest, which is what SDL2 already does, and the rare fractional software
+ * fallback stays nearest here rather than linear. Guarded like the call site,
+ * since SDL_ScaleMode and the callers both need 2.0.12.
+ */
+static inline int xc_BlitScaledMode(SDL_Surface *src,
+                                    const SDL_Rect *srcrect,
+                                    SDL_Surface *dst,
+                                    SDL_Rect *dstrect,
+                                    SDL_ScaleMode mode)
+{
+    (void) mode;
+    return SDL_BlitScaled(src, srcrect, dst, dstrect);
+}
+#endif
+
 #endif /* LIBX11_COMPAT_SDL3 */
 
 #if defined(__linux__)
+
 /* Native X11 window id of an SDL window, or 0 when it is not an X11 window (the
  * dummy driver). SDL2 implements this in the wrapper shim so SDL_syswm.h and
  * its X11 headers stay out of the compat Xlib sources; SDL3 exposes it through

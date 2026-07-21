@@ -530,6 +530,7 @@ static int test_keyboard(Display *display)
           "XKeysymToKeycode(XK_t) does not round-trip");
     CHECK(execCode == 0 || execCode != tCode,
           "XKeysymToKeycode(XK_Execute) aliases onto the 't' keycode");
+
     /* Forward direction: an ASCII/canonical key must win over a 0x4000xxxx
      * scancode key that truncates onto the same 8-bit keycode. The raw keycode
      * 13 that a Return key event carries is shared with SDLK_AC_HOME
@@ -569,6 +570,7 @@ static int test_keyboard(Display *display)
     CHECK(modifier_slot_has(modmap, LockMapIndex,
                             XKeysymToKeycode(display, XK_Caps_Lock)),
           "modifier map missing caps lock");
+
     /* Both Alt halves share Mod1 to match the standard X server convention and
      * stay consistent with convertModifierState's KMOD_ALT -> Mod1Mask mapping.
      */
@@ -600,6 +602,7 @@ static int test_keyboard(Display *display)
     keyEvent.xkey.display = display;
     keyEvent.xkey.window = probeWindow;
     keyEvent.xkey.keycode = XKeysymToKeycode(display, XK_a);
+
     /* XFilterEvent must never swallow a real key, regardless of X focus state.
      * The host input method consumes composition at the SDL layer, so anything
      * that reaches a client here is a real key or a committed-IM delivery that
@@ -617,6 +620,7 @@ static int test_keyboard(Display *display)
     syncKeyboardFocusFromHost(probeWindow);
     CHECK(!XFilterEvent(&keyEvent, probeWindow),
           "XFilterEvent dropped a real key with host focus set");
+
     /* A committed-IM KeyPress rides a synthetic event with keycode 0 and the
      * commit id in subwindow; it must pass through too so the client can pull
      * the text with XmbLookupString.
@@ -656,12 +660,14 @@ static int test_keyboard(Display *display)
           "child FocusIn from parent did not use NotifyAncestor");
     XSetInputFocus(display, None, RevertToParent, CurrentTime);
     XGetInputFocus(display, &focused, &revert);
+
     /* Per Xlib spec XGetInputFocus reports the actual target: None for None,
      * PointerRoot for PointerRoot. The previous behavior collapsed both into
      * PointerRoot, which was non-conformant.
      */
     CHECK(focused == None,
           "XGetInputFocus after None focus should report None");
+
     /* Window-to-None per Xlib 10.7.1: the relationship between a window and a
      * non-window focus target is nonlinear (no shared hierarchy), so the leaf
      * gets NotifyNonlinear and each strict ancestor below the root gets
@@ -678,6 +684,7 @@ static int test_keyboard(Display *display)
     CHECK(focusEvent.xfocus.detail == NotifyNonlinearVirtual,
           "FocusOut to None on focus ancestor did not use "
           "NotifyNonlinearVirtual");
+
     /* Round-trip the PointerRoot case so a future regression that re-collapses
      * the two non-window targets in XGetInputFocus is caught at this test.
      */
@@ -777,6 +784,7 @@ static int test_keyboard(Display *display)
     CHECK(sawRevertFocusIn,
           "cascading destroy discarded the child-revert FocusIn on the "
           "parent");
+
     /* Drain any other events the cascade emitted (FocusOut on the parent from
      * its own auto-revert, DestroyNotify, etc.) so they do not bleed into later
      * subtests that assert XNextEvent ordering.
@@ -1331,6 +1339,7 @@ static int test_compat_stubs(Display *display)
               &saturatedW, &saturatedH);
     CHECK(saturatedW == 100 && saturatedH == 100,
           "XGeometry parsed width/height was clobbered");
+
     /* anchorPixelWidth = 100 * (INT_MAX/2) is far above INT_MAX, so
      * DisplayWidth - anchorPixelWidth - border clamps to INT_MIN.
      */
@@ -1600,6 +1609,75 @@ static int exercise_fixed_font_program(Display *display)
           "fixed-font program XSetFont failed");
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(pixmap, renderer);
+
+    if (compatHiDpiPromoteToolkits()) {
+        double savedScale = compatGlobalHiDpiScale();
+        compatSetGlobalHiDpiScale(1.0);
+        XFontStruct *scaleFixed = XLoadQueryFont(display, "fixed");
+        int scaleLoaded = scaleFixed != NULL && scaleFixed->fid != None;
+        int scaleStartedAt1x = scaleLoaded && scaleFixed->ascent == 11 &&
+                               XTextWidth(scaleFixed, "A", 1) == 6;
+        compatSetGlobalHiDpiScale(2.0);
+        int scaleWidthSynced =
+            scaleLoaded && XTextWidth(scaleFixed, "A", 1) == 12;
+        int scaleStructSynced =
+            scaleLoaded && scaleFixed->ascent == 22 && scaleFixed->descent == 4;
+
+        XFontStruct *scaleQuery =
+            scaleLoaded ? XQueryFont(display, scaleFixed->fid) : NULL;
+        int scaleQueryLoaded = scaleQuery != NULL;
+        int scaleQuerySynced = scaleQuery && scaleQuery->ascent == 22 &&
+                               scaleQuery->descent == 4 &&
+                               scaleQuery->max_bounds.width == 12;
+        XFreeFontInfo(NULL, scaleQuery, scaleQuery ? 1 : 0);
+
+        Pixmap scalePixmap =
+            scaleLoaded
+                ? XCreatePixmap(display, root, 32, 32,
+                                DefaultDepth(display, DefaultScreen(display)))
+                : None;
+        GC scaleGc = scalePixmap != None
+                         ? XCreateGC(display, scalePixmap, 0, NULL)
+                         : NULL;
+        int scaleImageStringOk =
+            scaleGc && XSetFont(display, scaleGc, scaleFixed->fid) &&
+            XSetForeground(display, scaleGc, 0x00FF0000) &&
+            XFillRectangle(display, scalePixmap, scaleGc, 0, 0, 32, 32) &&
+            XSetForeground(display, scaleGc, 0x00000000) &&
+            XSetBackground(display, scaleGc, 0x00FFFFFF) &&
+            XDrawImageString(display, scalePixmap, scaleGc, 2, 22, " ", 1);
+        SDL_Renderer *scaleRenderer = NULL;
+        if (scalePixmap != None)
+            GET_RENDERER(scalePixmap, scaleRenderer);
+        SDL_Surface *scaleSurface =
+            scaleRenderer ? getRenderSurface(scaleRenderer) : NULL;
+        int scaleReadbackOk = scaleSurface != NULL;
+        int scaleBackgroundSynced =
+            scaleSurface && pixel_is_rgb(scaleSurface, 2, 1, 255, 255, 255);
+        SDL_FreeSurface(scaleSurface);
+        if (scaleGc)
+            XFreeGC(display, scaleGc);
+        if (scalePixmap != None)
+            XFreePixmap(display, scalePixmap);
+        if (scaleFixed)
+            XFreeFont(display, scaleFixed);
+        compatSetGlobalHiDpiScale(savedScale);
+        CHECK(scaleLoaded, "scale-sync fixed font did not load");
+        CHECK(scaleStartedAt1x,
+              "scale-sync fixed font did not start at 1x metrics");
+        CHECK(scaleWidthSynced, "scale-sync XTextWidth kept stale fixed width");
+        CHECK(scaleStructSynced,
+              "scale-sync XTextWidth kept stale fixed ascent/descent");
+        CHECK(scaleQueryLoaded, "scale-sync XQueryFont failed");
+        CHECK(scaleQuerySynced,
+              "scale-sync XQueryFont kept stale core metrics");
+        CHECK(scalePixmap != None, "scale-sync pixmap creation failed");
+        CHECK(scaleGc != NULL, "scale-sync GC creation failed");
+        CHECK(scaleImageStringOk, "scale-sync XDrawImageString failed");
+        CHECK(scaleReadbackOk, "scale-sync readback failed");
+        CHECK(scaleBackgroundSynced,
+              "scale-sync image-string background used stale metrics");
+    }
 
     /* Verify each text API in isolation: clear to white, draw once, and confirm
      * that draw alone put black pixels down. Sharing one pixmap across all
@@ -2608,6 +2686,7 @@ static int test_drawing_coverage(Display *display)
     CHECK(XFillRectangle(display, arcPx, arcGc, 0, 0, 24, 12),
           "arc-mode clear failed");
     CHECK(XSetForeground(display, arcGc, 0xFFFF0000), "arc-mode red failed");
+
     /* Width 10 stays under the legacy 16-pixel cutoff. Before the fix, the
      * small-arc fallback always rendered as ArcPieSlice and would have filled
      * the center pixel for both modes. After the fix the path accelerator
@@ -2624,6 +2703,7 @@ static int test_drawing_coverage(Display *display)
     GET_RENDERER(arcPx, arcRenderer);
     SDL_Surface *arcSurface = getRenderSurface(arcRenderer);
     CHECK(arcSurface, "arc-mode getRenderSurface failed");
+
     /* Pixel (cx+2, cy-1) relative to each arc lies inside the pie wedge
      * triangle but on the center side of the chord, i.e. inside pie and outside
      * chord. Chord arc is at (0,1); pie arc is at (12,1).
@@ -2673,6 +2753,7 @@ static int test_drawing_coverage(Display *display)
           "XDrawPoints CoordModePrevious accumulation broke");
     CHECK(pixel_is_rgb(batchSurface, 12, 3, 255, 255, 255),
           "XDrawPoints CoordModePrevious second accumulation broke");
+
     /* XDrawRectangles per X11 spec outlines (w+1)x(h+1): rect {5,8,3,3} has
      * corners (5,8) and (8,11); rect {10,10,4,4} has corners (10,10) and
      * (14,14). The far corner check would fail under the old SDL w-by-h
@@ -2684,6 +2765,7 @@ static int test_drawing_coverage(Display *display)
           "XDrawRectangles first rect missing bottom-right corner");
     CHECK(pixel_is_rgb(batchSurface, 14, 14, 0, 0, 255),
           "XDrawRectangles second rect missing X11-spec bottom-right corner");
+
     /* Interior must stay background to confirm the call outlined, not filled.
      */
     CHECK(pixel_is_rgb(batchSurface, 6, 9, 0, 0, 0),
@@ -2746,6 +2828,7 @@ static int test_drawing_coverage(Display *display)
           "dash segment black failed");
     CHECK(XFillRectangle(display, dashSegPx, dashSegGc, 0, 0, 16, 16),
           "dash segment clear failed");
+
     /* Pattern {2, 2} with length-8 segments gives a verifiable on/off/on/off
      * sequence. The off-dash pixels (3 and 7 along each segment) must be
      * background; pass a length where only an end-pixel check would pass
@@ -2772,6 +2855,7 @@ static int test_drawing_coverage(Display *display)
           "dashed XDrawSegments off-gap pixel was drawn");
     CHECK(pixel_is_rgb(dashSegSurface, 4, 12, 255, 255, 255),
           "dashed XDrawSegments second on-dash missing");
+
     /* Segment 2 must restart the dash pattern: the same gap at the same
      * relative offset confirms the per-segment phase reset.
      */
@@ -3062,6 +3146,7 @@ static int test_pixmap_readback_uncached(Display *display)
 {
     int screen = DefaultScreen(display);
     Window root = RootWindow(display, screen);
+
     /* BIG * BIG must exceed MAX_CACHED_PIXMAP_PIXELS (2048 * 2048); both sides
      * stay well under common max-texture limits.
      */
@@ -3080,6 +3165,7 @@ static int test_pixmap_readback_uncached(Display *display)
     unsigned long before = x11compat_pixmap_readback_reads;
     XImage *img = XGetImage(display, pm, 8, 8, 12, 12, AllPlanes, ZPixmap);
     CHECK(img != NULL, "XGetImage on large (uncached) pixmap failed");
+
     /* XGetImage returns the compat's canonical XColor (0xAARRGGBB), so mask off
      * the alpha byte to compare RGB. Patch (10,10) maps to (2,2) in a read that
      * starts at (8,8).
@@ -3113,6 +3199,7 @@ static int test_xgetimage_color_roundtrip(Display *display)
     Window root = RootWindow(display, screen);
     Colormap cmap = DefaultColormap(display, screen);
     enum { W = 8, H = 8 };
+
     /* Compare RGB only; the pixmap has no meaningful alpha and the bug was a
      * channel shift, not an alpha change. RGB occupies the low 24 bits of the
      * compat's XColor.
@@ -3415,6 +3502,7 @@ static int test_images(Display *display)
     CHECK(XPutImage(display, firstWindow, imageGc, cacheImage, 0, 0, 0, 0, 2,
                     2) == 1,
           "first XPutImage cache draw failed");
+
     /* Renderer-unification: mapped top-level windows share the SCREEN renderer,
      * so XDestroyWindow no longer triggers a renderer destruction or a
      * corresponding cache invalidation. The load- bearing safety property is
@@ -3772,6 +3860,7 @@ static int test_events(Display *display)
           "restack lower child destroy failed");
     while (XCheckTypedEvent(display, Expose, &out)) {
     }
+
     /* Drain any other events the window setup left queued (async map/configure
      * notifications from the shared SDL queue) so the ordering assertion below
      * sees exactly the send-event followed by the generated Expose, not a stale
@@ -3930,6 +4019,7 @@ static int test_events(Display *display)
           "XTranslateCoordinates unmapped overlap lookup failed");
     CHECK(translatedChild == lowerOverlap,
           "XTranslateCoordinates returned an unmapped child");
+
     /* Tear the offsetWindow subtree down before the rest of the test reuses
      * `window` for unrelated checks; XDestroyWindow recursively frees
      * offsetChild, lowerOverlap, and upperOverlap.
@@ -4743,6 +4833,7 @@ static int test_events(Display *display)
           "XGrabPointer did not post EnterNotify");
     CHECK(out.xcrossing.mode == NotifyGrab,
           "XGrabPointer EnterNotify used wrong mode");
+
     /* A second active grab by the same client is a regrab: it updates the
      * active grab instead of reporting AlreadyGrabbed.
      */
@@ -4937,6 +5028,7 @@ static int test_events(Display *display)
                      &textureWidth, &textureHeight);
     CHECK(textureWidth == 48 && textureHeight == 40,
           "backing texture did not resize to SDL dimensions");
+
     /* Option 1b HiDPI promotion: under the unit-test SDL driver the window
      * surface size equals its logical size, so the per-window scale stays 1.0
      * and X11 geometry (checked above as 48x40) equals the logical points. True
@@ -4953,6 +5045,7 @@ static int test_events(Display *display)
           "resize backing red foreground failed");
     CHECK(XFillRectangle(display, window, resizeGc, 0, 0, 12, 12),
           "resize backing stale fill failed");
+
     /* A resize that grows a dimension must wipe the subtree to background so no
      * stale pixels from the old (smaller) frame survive: exercise that path by
      * resizing larger than the current 48x40 backing. A same-size or shrinking
@@ -5125,6 +5218,7 @@ static int test_events(Display *display)
         childBeforeGravity.y + (44 - parentBeforeGravity.height) / 2;
     CHECK(movedAttrs.x == expectedGravityX && movedAttrs.y == expectedGravityY,
           "window gravity did not move child before GravityNotify");
+
     /* A gravity-driven move generates GravityNotify only, never a
      * ConfigureNotify: the child's parent-relative geometry changed but it was
      * not reconfigured.
@@ -5145,6 +5239,7 @@ static int test_events(Display *display)
     CHECK(XResizeWindow(display, window, 60, 44), "third parent resize failed");
     CHECK(XCheckTypedWindowEvent(display, gravityChild, GravityNotify, &out),
           "second parent resize did not move gravity child");
+
     /* The grandchild's geometry relative to its parent is unchanged, so it gets
      * neither GravityNotify nor ConfigureNotify. It is still exposed because a
      * top-level resize repaints the whole subtree.
@@ -5291,6 +5386,7 @@ static int test_events(Display *display)
     CHECK(
         !XCheckTypedWindowEvent(display, hostStillChild, ConfigureNotify, &out),
         "host resize gave unmoved child a spurious ConfigureNotify");
+
     /* UnmapGravity children are unmapped by the resize, with an UnmapNotify
      * whose from_configure is True (the unmap is a side effect of the resize).
      */
@@ -5908,6 +6004,7 @@ static int test_ewmh_wm_state_clientmessage(Display *display)
     event.xclient.message_type = privateAtom;
     CHECK(XSendEvent(display, root, False, NoEventMask, &event),
           "ewmh: private ClientMessage send failed");
+
     /* NoEventMask should accept on root; either way the dispatch is not
      * involved. Drain any queued events to keep the test isolated.
      */
@@ -6097,6 +6194,7 @@ static int test_ewmh_close_window_clientmessage(Display *display)
     XC_SET_WINDOW_SUBEVENT(&closeEvent, SDL_WINDOWEVENT_CLOSE);
     CHECK(SDL_PushEvent(&closeEvent) == 1,
           "ewmh-close: SDL close event was filtered before conversion");
+
     /* The window selects StructureNotifyMask, so map/configure notifications
      * can sit in the queue ahead of the WM_DELETE_WINDOW ClientMessage the SDL
      * close generates. Drain ClientMessages for this window and keep the one
@@ -6233,6 +6331,7 @@ static int test_mwm_hints_apply(Display *display)
     CHECK(XChangeProperty(display, child, motif, motif, 32, PropModeReplace,
                           (unsigned char *) premapHints, 5),
           "motif-hints: reparent XChangeProperty failed");
+
     /* Modal + transient_for on window (already mapped above) so the replay has
      * a driver-independent observable: deferredTransientApplied flips iff
      * applyTransientForRelationship ran after the reparent. The border / resize
@@ -6424,6 +6523,7 @@ static int test_normal_hints_resizable(Display *display)
     openHints.base_width = 80;
     openHints.base_height = 40;
     XSetWMNormalHints(display, resizable, &openHints);
+
     /* Driver-independent observable: the pure decoder must say resizable. This
      * is what fails without the fix, even under SDL_VIDEODRIVER=dummy.
      */
@@ -6535,33 +6635,39 @@ static int test_snap_axis_to_increment(Display *display)
     /* Exact multiple is unchanged: 80 + 8*15 = 200. */
     CHECK(libx11CompatSnapAxisToIncrement(200, 8, 80, 80) == 200,
           "snap: exact multiple should be preserved");
+
     /* Just past a boundary drops to the boundary: 80 + 8*14 = 192; 199 -> 192.
      */
     CHECK(libx11CompatSnapAxisToIncrement(199, 8, 80, 40) == 192,
           "snap: one below a multiple should round down");
+
     /* Zero base (PBaseSize absent) anchors at 0: (1730/font)*font. With inc 12,
      * 1730 -> (1730/12)*12 = 144*12 = 1728. This is the xwpe remainder-band
      * case: a 1730px window snaps to 1728, killing the 2px band.
      */
     CHECK(libx11CompatSnapAxisToIncrement(1730, 12, 0, 12) == 1728,
           "snap: zero-base 1730 inc 12 should snap to 1728");
+
     /* Minimum clamp: rounding down would fall below min, and min sits above the
      * base+inc floor, so min wins. base 0 inc 20, current 30 -> (30/20)*20 =
      * 20, below min 50; base+inc is 20, so 50 (>= 20) is the final result.
      */
     CHECK(libx11CompatSnapAxisToIncrement(30, 20, 0, 50) == 50,
           "snap: result below min should clamp to min");
+
     /* Base size (i == 0) is reachable: a size in [base, base+inc) rounds down
      * to base, not up to base+inc. base 80 inc 8, current 84 -> 80 + (4/8)*8 =
      * 80.
      */
     CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 0) == 80,
           "snap: a size within one increment of base rounds down to base");
+
     /* Both clamps active: pick the larger (min beats base+inc when min bigger).
      * base 80 inc 8 gives base+inc 88; min 100 is larger, so 100 wins.
      */
     CHECK(libx11CompatSnapAxisToIncrement(84, 8, 80, 100) == 100,
           "snap: min above base+inc should take precedence");
+
     /* Guard: non-positive increment is a no-op (returns current unchanged), so
      * a client that never published PResizeInc is never resized.
      */
@@ -6795,6 +6901,7 @@ static int test_windows(Display *display)
           "wide rectangle draw did not schedule a present");
     CHECK(wideRectTopStruct->hasPresentRect,
           "wide rectangle draw did not store a present rectangle");
+
     /* Wide-line XDrawRectangle stores the geometric rect inflated by the stroke
      * pad on each side (arcStrokePad returns lineWidth when > 1), matching what
      * arcDamageRect produces for arcs. For (16, 16, 8, 8) with lineWidth = 9
@@ -7181,6 +7288,7 @@ static int test_windows(Display *display)
           "viewport restore failed");
     GC childClipGc = XCreateGC(display, parent, 0, NULL);
     CHECK(childClipGc != NULL, "ClipByChildren GC creation failed");
+
     /* Earlier in this test child1 was stacked above child2, so child2's (0, 0,
      * 4, 4) corner now falls under child1 and the sibling occlusion clip would
      * drop the fill before it ever reaches parent's shared backing. Raise
@@ -7206,6 +7314,7 @@ static int test_windows(Display *display)
           "parent clear erased mapped child contents");
     SDL_FreeSurface(clipSurface);
     XFreeGC(display, childClipGc);
+
     /* Restore the pre-probe stacking order so the XCirculateSubwindowsUp test
      * below still sees [child2, child1] and raises child2 to the top as
      * expected.
@@ -7235,6 +7344,49 @@ static int test_windows(Display *display)
           "child move did not expose uncovered parent pixels");
     CHECK(visibility.xexpose.x == 5 && visibility.xexpose.y == 6,
           "parent Expose after child move used unexpected coordinates");
+
+    Window moveTop =
+        XCreateSimpleWindow(display, root, 140, 140, 40, 40, 0, 0, 0);
+    Window moveChild =
+        XCreateSimpleWindow(display, moveTop, 4, 4, 12, 12, 0, 0, 0);
+    CHECK(moveTop != None && moveChild != None,
+          "overlapping child move setup failed");
+    XSelectInput(display, moveTop, ExposureMask);
+    XSelectInput(display, moveChild, StructureNotifyMask | ExposureMask);
+    CHECK(XMapWindow(display, moveTop), "child move top map failed");
+    CHECK(XMapWindow(display, moveChild), "child move child map failed");
+    GC moveGc = XCreateGC(display, moveChild, 0, NULL);
+    CHECK(moveGc, "child move GC failed");
+    CHECK(XSetForeground(display, moveGc, 0xFF112233),
+          "child move color setup failed");
+    CHECK(XFillRectangle(display, moveChild, moveGc, 0, 0, 12, 12),
+          "child move fill failed");
+    while (XCheckWindowEvent(display, moveTop, ExposureMask, &visibility)) {
+    }
+    while (XCheckWindowEvent(display, moveChild,
+                             StructureNotifyMask | ExposureMask, &visibility)) {
+    }
+    WindowStruct *moveTopStruct = GET_WINDOW_STRUCT(moveTop);
+    moveTopStruct->hasPresented = True;
+    moveTopStruct->needsPresent = False;
+    moveTopStruct->hasPresentRect = False;
+    CHECK(XMoveWindow(display, moveChild, 8, 8),
+          "overlapping child move configure failed");
+    SDL_Renderer *moveRenderer = getWindowRenderer(moveTop);
+    SDL_Surface *moveSurface = getRenderSurface(moveRenderer);
+    CHECK(moveSurface, "overlapping child move readback failed");
+    CHECK(pixel_is_rgb(moveSurface, 8, 8, 17, 34, 51),
+          "overlapping child move did not preserve child contents");
+    SDL_FreeSurface(moveSurface);
+    CHECK(moveTopStruct->needsPresent && moveTopStruct->hasPresentRect,
+          "overlapping child move did not schedule preserved contents");
+    CHECK(moveTopStruct->presentRect.x == 4 &&
+              moveTopStruct->presentRect.y == 4 &&
+              moveTopStruct->presentRect.w == 16 &&
+              moveTopStruct->presentRect.h == 16,
+          "overlapping child move present rect missed old or new footprint");
+    XFreeGC(display, moveGc);
+    XDestroyWindow(display, moveTop);
 
     Window mappedParent =
         XCreateSimpleWindow(display, root, 70, 70, 64, 64, 0, 0, 0);
@@ -7814,6 +7966,7 @@ static int test_fonts(Display *display)
         int stampBlackFirst = count_rgb_pixels(textSurface, 0, 0, 0);
         SDL_FreeSurface(textSurface);
         CHECK(stampBlackFirst > 0, "text stamp first draw produced no black");
+
         /* Overwrite the stamped cell with the background; this must invalidate
          * the stamp recorded by the first draw.
          */
@@ -7828,6 +7981,7 @@ static int test_fonts(Display *display)
         SDL_FreeSurface(textSurface);
         CHECK(stampBlackCleared < stampBlackFirst,
               "text stamp overwrite did not clear the cell");
+
         /* Redraw the identical label. If the overwrite failed to drop the
          * stamp, the skip leaves the cell cleared and the black never returns.
          */
@@ -7942,6 +8096,7 @@ static int test_fonts(Display *display)
                 XCreateGC(display, DefaultRootWindow(display), 0, NULL);
             CHECK(measureGc != NULL,
                   "XQueryTextExtents GC metric GC creation failed");
+
             /* A GC with no font set must still measure via a temporary fallback
              * font, and must not retain that font afterward.
              */
@@ -7975,6 +8130,59 @@ static int test_fonts(Display *display)
                 st != 0,
                 "XQueryTextExtents16 must accept a GC-retained unloaded font");
             XFreeGC(display, measureGc);
+        }
+    }
+
+    /* Mixed-DPI face rebuild: a core font opened at one backing scale must
+     * reopen at the destination monitor's scale when the window moves between
+     * differently scaled displays, so text lands at the right physical size.
+     * Drive it through the global HiDPI scale the DISPLAY_CHANGED handler
+     * updates. Only meaningful when core-font HiDPI scaling is active for this
+     * process (no self-scaling/GTK/Xt toolkit linked, which holds for the check
+     * binary); skip otherwise since the size would not track the scale by
+     * design. Uses the non-core "helvetica" alias so the queried metrics come
+     * from the rebuilt TTF face rather than the fixed-bitmap core table, which
+     * scales its metrics independently of the face.
+     */
+    if (compatHiDpiPromoteToolkits()) {
+        double savedScale = compatGlobalHiDpiScale();
+        Font scaleFont = XLoadFont(display, "helvetica");
+
+        /* Measure at 1x, 2x, then back to 1x, freeing each struct and restoring
+         * the global scale before asserting, so a failing CHECK (which returns
+         * immediately) cannot leak the font or leave the scale changed for the
+         * tests that run after this one. -1 marks a query that returned NULL.
+         */
+        int ascent1 = -1, ascent2 = -1, ascentBack = -1;
+        if (scaleFont != None) {
+            compatSetGlobalHiDpiScale(1.0);
+            XFontStruct *at1x = XQueryFont(display, scaleFont);
+            if (at1x) {
+                ascent1 = at1x->ascent;
+                XFreeFontInfo(NULL, at1x, 1);
+            }
+            compatSetGlobalHiDpiScale(2.0); /* window moved to a 2x monitor */
+            XFontStruct *at2x = XQueryFont(display, scaleFont);
+            if (at2x) {
+                ascent2 = at2x->ascent;
+                XFreeFontInfo(NULL, at2x, 1);
+            }
+            compatSetGlobalHiDpiScale(1.0); /* and back to a 1x monitor */
+            XFontStruct *back = XQueryFont(display, scaleFont);
+            if (back) {
+                ascentBack = back->ascent;
+                XFreeFontInfo(NULL, back, 1);
+            }
+            XUnloadFont(display, scaleFont);
+        }
+        compatSetGlobalHiDpiScale(savedScale);
+        if (scaleFont != None) {
+            CHECK(ascent1 > 0, "mixed-DPI: XQueryFont at 1x failed");
+            CHECK(
+                ascent2 >= ascent1 * 3 / 2,
+                "mixed-DPI: face did not enlarge to ~2x after scale increase");
+            CHECK(ascentBack == ascent1,
+                  "mixed-DPI: face did not return to 1x after scale decrease");
         }
     }
     return 1;
@@ -8045,6 +8253,7 @@ static int test_extensions(Display *display)
     CHECK(XkbQueryExtension(display, &xkbOpcode, &xkbEvent, &xkbError,
                             &xkbMajor, &xkbMinor),
           "XkbQueryExtension must report supported");
+
     /* MIT-SHM holds the highest built-in event base; derive the bound from it
      * rather than a literal so a reserve bump cannot silently invalidate this.
      */
@@ -8060,6 +8269,7 @@ static int test_extensions(Display *display)
     CHECK(first->major_opcode > 0 && first->first_event > 0 &&
               first->first_error > 0,
           "extension codes were not populated");
+
     /* Auto-assigned codes must sit above fixed built-ins plus synthetic XKB so
      * directly-registered extensions never land on a reserved code.
      */
@@ -8317,6 +8527,7 @@ static int test_extensions(Display *display)
     CHECK(XShmQueryExtension(display), "XShmQueryExtension should be true");
     CHECK(XShmGetEventBase(display) != 0,
           "XShmGetEventBase should return a synthetic base");
+
     /* The generic probe must agree with XShmGetEventBase: report MIT-SHM
      * present and hand back the same event base, so ShmCompletion derives to
      * one value from either path.
@@ -8327,6 +8538,7 @@ static int test_extensions(Display *display)
           "XQueryExtension should report MIT-SHM");
     CHECK(shmOpcode > 0 && shmEvBase == XShmGetEventBase(display),
           "XQueryExtension MIT-SHM disagrees with XShmGetEventBase");
+
     /* MIT-SHM must not reuse another extension's error base; SHAPE holds 128.
      */
     int shapeOp2 = 0, shapeEv2 = 0, shapeErr2 = 0;
@@ -8338,6 +8550,7 @@ static int test_extensions(Display *display)
     Bool sharedPix = True;
     CHECK(XShmQueryVersion(display, &shmMajor, &shmMinor, &sharedPix),
           "XShmQueryVersion failed");
+
     /* XShmCreatePixmap currently ignores its shared-memory buffer (creates a
      * regular pixmap), so the compat layer reports shared_pixmaps=False to keep
      * callers from relying on semantics the implementation does not honor.
@@ -8466,6 +8679,7 @@ static int test_extensions(Display *display)
     xkbMinor = 1;
     evBase = 99;
     errBase = 98;
+
     /* xfreerdp / Motif / GTK probe XkbUseExtension and XkbQueryExtension before
      * any keyboard work and refuse to start when either reports unavailable.
      * The compat layer reports "available" with synthetic opcode / event /
@@ -8534,6 +8748,7 @@ static int test_selection(Display *display)
     CHECK(!XCheckTypedWindowEvent(display, root, CreateNotify, &rootEvent),
           "internal clipboard requestor leaked CreateNotify on root");
     XSelectInput(display, root, NoEventMask);
+
     /* Claiming CLIPBOARD lazily creates the hidden requestor as a child of the
      * root; it must stay out of a client's XQueryTree walk.
      */
@@ -8633,6 +8848,7 @@ static int test_selection(Display *display)
      */
     for (int i = 0; i < 4; i++)
         XPending(display);
+
     /* Drain stale SelectionRequests left by the earlier owner1/owner2 claims
      * (each CLIPBOARD claim now fires an outbound fetch); those dummy owners
      * never answered, so only the request from the claim below should remain.
@@ -8660,6 +8876,7 @@ static int test_selection(Display *display)
     notify.xselection.property = reqProp;
     notify.xselection.time = CurrentTime;
     XSendEvent(display, requestor, False, 0, &notify);
+
     /* Drain until the swallowed SelectionNotify has driven the push, rather
      * than assuming a fixed pump count.
      */
@@ -8988,6 +9205,7 @@ static int test_selection(Display *display)
     for (int iter = 0; iter < 64 && !incrDone; iter++) {
         XPending(display);
         XEvent pe;
+
         /* Each property delete the layer posts acks a chunk; send the next one,
          * then a zero-length chunk to terminate.
          */
@@ -9105,6 +9323,7 @@ static int test_selection(Display *display)
     nE.xselection.property = propE;
     nE.xselection.time = CurrentTime;
     XSendEvent(display, rqE, False, 0, &nE);
+
     /* Drain the reply and its own SDL_CLIPBOARDUPDATE echo. The echo must be
      * recognized as ours and not revoke the owner we just set.
      */
@@ -9120,6 +9339,7 @@ static int test_selection(Display *display)
     XEvent stray;
     while (XCheckTypedEvent(display, SelectionRequest, &stray)) {
     }
+
     /* Drain any SelectionClear left over from earlier owner transitions so the
      * one asserted below is unambiguously from the expiry.
      */
@@ -9190,6 +9410,7 @@ static int test_xrm(Display *display)
     }
     deepNames[ARRAY_LENGTH(deepNames) - 1] = NULLQUARK;
     deepClasses[ARRAY_LENGTH(deepClasses) - 1] = NULLQUARK;
+
     /* The prefix-encoding bridge needs 3 + 2 * n slots (db + count + name
      * quarks + class quarks + NULL terminator). A list_length too small for
      * that layout must return False so libXt's _XtDisplayInitialize doubling
@@ -9509,6 +9730,7 @@ static int test_input_methods(Display *display)
     }
     XFree(styles);
     CHECK(hasCallbackStyle, "XIMPreeditCallbacks was not advertised");
+
     /* XGetIMValues must advertise the same styles XCreateIC accepts, including
      * the over-the-spot Area/Position styles served by the internal renderer,
      * so clients can actually select them.
@@ -9568,6 +9790,7 @@ static int test_input_methods(Display *display)
     SDL_zero(editingEvent);
     editingEvent.type = SDL_TEXTEDITING;
     XC_SET_EDITING_EVENT(editingEvent, "zh");
+
     /* Caret sits between the two composed characters; it must be reported as
      * such, not snapped to the end of the preedit.
      */
@@ -9656,11 +9879,13 @@ static int test_input_methods(Display *display)
             XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
                       XNClientWindow, client, XNFocusWindow, focus, NULL);
         CHECK(ic2, "XCreateIC failed for second IC");
+
         /* Modifying a non-focused IC must not disable text input for the
          * currently focused IC
          */
         CHECK(!XSetICValues(ic2, XNClientWindow, replacementClient, NULL),
               "XSetICValues failed for second IC client window");
+
         /* Verify that text input still works on the focused IC: ASCII keydown
          * is delivered raw, and the paired SDL_TEXTINPUT is suppressed.
          */
@@ -9999,6 +10224,7 @@ static int test_input_methods(Display *display)
     CHECK(callbackLen == 1 && callbackBuf[0] == 'x' && callbackKeysym == XK_x &&
               callbackStatus == XLookupBoth,
           "callback-style committed text was not available to lookup");
+
     /* A plain commit with no preedit in progress (events.c still clears preedit
      * with an empty string first) must not emit a spurious empty draw callback.
      */
@@ -10165,6 +10391,7 @@ static int test_input_methods(Display *display)
               "outgoing IC done callback did not fire during focus switch");
         CHECK(focusSwitchVictim == NULL,
               "incoming IC was not destroyed by the focus-switch callback");
+
         /* Focus must remain on the live outgoing IC, not the freed incoming
          * one: a further edit still reaches outIC's draw callback. If the freed
          * IC had been installed this would dereference it.
@@ -10682,6 +10909,7 @@ static void test_live_resize_reentrant_close(int newPixelWidth,
     liveResizeReentrantSawInPresent = libx11CompatInLiveResizePresent();
     if (liveResizeReentrantCloseTarget) {
         XCloseDisplay(liveResizeReentrantCloseTarget);
+
         /* If the close were NOT deferred it would have torn the display down
          * here, dropping the open count; capture it to assert deferral.
          */
@@ -10695,6 +10923,227 @@ static void test_live_resize_reentrant_close(int newPixelWidth,
  * by default, registering flips Has() and routes Invoke() to the callback with
  * the exact size once, and registering NULL clears it again.
  */
+static int test_coalesce_gate(Display *display)
+{
+    (void) display;
+
+    /* Zero-clock guard: if the monotonic clock ever reads 0 (unavailable), the
+     * coalesce gate must count as expired so a stuck deadline cannot suppress
+     * presents forever. This is the whole point of the guard in coalesceActive.
+     */
+    CHECK(coalesceGateExpired(0, 1),
+          "dead clock (now=0) did not expire a near coalesce deadline");
+    CHECK(coalesceGateExpired(0, (uint64_t) -1),
+          "dead clock (now=0) did not expire a far-future coalesce deadline");
+
+    /* A live clock still gates normally: active before the deadline, expired at
+     * or after it.
+     */
+    CHECK(!coalesceGateExpired(5, 10),
+          "live clock before the deadline wrongly expired the gate");
+    CHECK(coalesceGateExpired(10, 10),
+          "live clock at the deadline did not expire the gate");
+    CHECK(coalesceGateExpired(20, 10),
+          "live clock past the deadline did not expire the gate");
+    return 1;
+}
+
+static int test_present_software_fallback(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+
+    /* Force a window onto the accelerated present path and make its present
+     * fail, so the mid-run demotion to the software SDL_GetWindowSurface path
+     * runs. Forcing the path plus injecting the failure is the only way to
+     * reach the fallback deterministically.
+     */
+    int demotionsBefore = libx11CompatSoftwareDemotionCountForTest();
+    Window w = XCreateSimpleWindow(display, root, 0, 0, 40, 30, 0, 0, 0);
+    CHECK(w != None, "software-fallback: window create failed");
+
+    /* Arm the global fault-injection knobs only after the one early-return
+     * CHECK above, so a window-create failure cannot leak forced-accelerated
+     * mode or a still-armed one-shot present failure into later tests. The
+     * one-shot clears itself when consumed by an accelerated present below;
+     * forced mode is reset before the remaining asserts.
+     */
+    libx11CompatForceAcceleratedPresentForTest(True);
+    libx11CompatFailAcceleratedPresentOnceForTest();
+    XMapWindow(display, w);
+    XFlush(display);
+
+    /* XMapWindow presents synchronously; pump and present a few more times so
+     * the assertions do not depend on that timing.
+     */
+    for (int i = 0; i < 8; i++) {
+        SDL_PumpEvents();
+        drawWindowDataToScreen();
+    }
+    WindowStruct *ws = GET_WINDOW_STRUCT(w);
+    int demoted = ws && ws->presentUsesSoftware;
+    int rendererGone = ws && ws->presentRenderer == NULL;
+    int presented = ws && !ws->needsPresent;
+    int demotionHappened =
+        libx11CompatSoftwareDemotionCountForTest() > demotionsBefore;
+
+    /* Some drivers cannot create an accelerated renderer even when the force
+     * flag is set: SDL2's dummy video driver on headless CI hands back none, so
+     * realizeTopLevelWindow puts the window on the software path immediately
+     * and the mid-run demotion is unreachable. That shows up as a window that
+     * ended on software with no demotion recorded (never promoted, so nothing
+     * to demote). Skip there rather than fail; the fallback stays covered on
+     * any driver that can host an accelerated renderer (SDL3 dummy, real
+     * drivers).
+     */
+    int neverAccelerated = ws && ws->presentUsesSoftware &&
+                           !ws->presentRenderer && !demotionHappened;
+
+    /* Restore global test state and clean up before asserting so a failure
+     * cannot leak the forced-accelerated mode into later tests.
+     */
+    libx11CompatForceAcceleratedPresentForTest(False);
+    XDestroyWindow(display, w);
+    if (neverAccelerated) {
+        fprintf(stderr,
+                "software-fallback: accelerated renderer unavailable on "
+                "this driver; skipping demotion check\n");
+        return 1;
+    }
+    CHECK(ws != NULL, "software-fallback: no window struct");
+    CHECK(demotionHappened,
+          "software-fallback: no accelerated->software demotion occurred (was "
+          "the window ever on the accelerated path?)");
+    CHECK(demoted,
+          "software-fallback: window not demoted to software after accelerated "
+          "failure");
+    CHECK(rendererGone,
+          "software-fallback: presentRenderer not torn down on demotion");
+    CHECK(presented,
+          "software-fallback: frame not presented via the software fallback");
+    return 1;
+}
+
+/* Child windows share the top-level backing, so a child's pixels linger there
+ * after it moves. When the old and new footprints overlap, clearing the vacated
+ * area must not be clipped by the child at its new position, or stale pixels in
+ * the overlap survive as a ghost (seen as doubled text on XEphem's splash
+ * toggle when a post-realize layout pass nudged the widget up a few pixels).
+ * This covers a grandchild whose glyph-like content is not repainted after the
+ * move: only the grandparent's vacated-area clear can erase the ghost.
+ */
+static int test_moved_child_clears_overlap(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    unsigned long white = 0xFFFFFFFF;
+    Window grand =
+        XCreateSimpleWindow(display, root, 0, 0, 100, 100, 0, 0, white);
+    CHECK(grand != None, "moved-child: grandparent create failed");
+    Window parent =
+        XCreateSimpleWindow(display, grand, 10, 10, 40, 40, 0, 0, white);
+    CHECK(parent != None, "moved-child: parent create failed");
+    Window kid =
+        XCreateSimpleWindow(display, parent, 0, 0, 40, 40, 0, 0, white);
+    CHECK(kid != None, "moved-child: child create failed");
+
+    /* A red sibling of parent overlapping the parent's old footprint. Excluding
+     * only the mover from the clear must still clip this sibling, so its pixels
+     * survive the move.
+     */
+    Window sibling =
+        XCreateSimpleWindow(display, grand, 10, 46, 40, 10, 0, 0, 0xFFFF0000);
+    CHECK(sibling != None, "moved-child: sibling create failed");
+    XMapWindow(display, grand);
+    XMapWindow(display, parent);
+    XMapWindow(display, kid);
+    XMapWindow(display, sibling);
+    XFlush(display);
+
+    /* A thin black strip in the child, like a glyph row, at child y=5 so it
+     * lands at grandparent-absolute y=15 while the parent sits at y=10.
+     */
+    GC gc = XCreateGC(display, kid, 0, NULL);
+    CHECK(gc, "moved-child: GC create failed");
+    CHECK(XSetForeground(display, gc, 0xFF000000),
+          "moved-child: set black failed");
+    CHECK(XFillRectangle(display, kid, gc, 0, 5, 40, 2),
+          "moved-child: strip fill failed");
+    XFlush(display);
+
+    /* Nudge the parent up 5px: old footprint (10,10 40x40) and new footprint
+     * (10,5 40x40) overlap over y 10..45, so the strip at y=15 sits inside the
+     * overlap that the buggy clip-by-children would have skipped.
+     */
+    CHECK(XMoveWindow(display, parent, 10, 5), "moved-child: move failed");
+    XFlush(display);
+
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(grand, renderer);
+    SDL_Surface *surface = getRenderSurface(renderer);
+    CHECK(surface != NULL, "moved-child: grandparent readback failed");
+
+    /* The strip's old row (grandparent-absolute y=15) must be back to the white
+     * background; the child is not repainted here, so a surviving black pixel
+     * is the ghost.
+     */
+    int cleared = pixel_is_rgb(surface, 20, 15, 255, 255, 255);
+
+    /* The sibling (grandparent-absolute y=46..56) overlaps the cleared old
+     * footprint at y=46..50 and must still be clipped out of it, so its red
+     * pixels stay put.
+     */
+    int siblingKept = pixel_is_rgb(surface, 20, 48, 255, 0, 0);
+    SDL_FreeSurface(surface);
+    XFreeGC(display, gc);
+    XDestroyWindow(display, grand);
+    CHECK(cleared, "moved-child: stale overlap pixels left a ghost after move");
+    CHECK(siblingKept, "moved-child: clear wrongly erased a clipped sibling");
+    return 1;
+}
+
+/* Companion to test_moved_child_clears_overlap: a shrink in place keeps its
+ * origin, so the smaller footprint is a top-left subset of the old one and
+ * still holds valid pixels. Only the vacated L-shape must be cleared; the
+ * retained region must stay clipped. This guards against the mover-exclusion
+ * leaking into the shrink caller and wiping live content back to parent
+ * background.
+ */
+static int test_shrink_child_keeps_content(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window parent =
+        XCreateSimpleWindow(display, root, 0, 0, 100, 100, 0, 0, 0xFFFFFFFF);
+    CHECK(parent != None, "shrink-child: parent create failed");
+    Window kid =
+        XCreateSimpleWindow(display, parent, 10, 10, 40, 40, 0, 0, 0xFFFF0000);
+    CHECK(kid != None, "shrink-child: child create failed");
+    XMapWindow(display, parent);
+    XMapWindow(display, kid);
+    XFlush(display);
+
+    /* Shrink 40x40 -> 20x20 with the origin fixed at (10,10). The retained
+     * footprint is parent-absolute (10,10 20x20); the vacated L-shape is the
+     * rest of the old (10,10 40x40).
+     */
+    CHECK(XResizeWindow(display, kid, 20, 20), "shrink-child: resize failed");
+    XFlush(display);
+
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(parent, renderer);
+    SDL_Surface *surface = getRenderSurface(renderer);
+    CHECK(surface != NULL, "shrink-child: parent readback failed");
+
+    /* Inside the retained footprint the child's red must survive; the vacated
+     * L-shape must be back to the white parent background.
+     */
+    int retained = pixel_is_rgb(surface, 15, 15, 255, 0, 0);
+    int vacatedCleared = pixel_is_rgb(surface, 40, 40, 255, 255, 255);
+    SDL_FreeSurface(surface);
+    XDestroyWindow(display, parent);
+    CHECK(retained, "shrink-child: clear wiped the retained top-left content");
+    CHECK(vacatedCleared, "shrink-child: vacated L-shape not cleared");
+    return 1;
+}
+
 static int test_live_resize_reflow_hook(Display *display)
 {
     (void) display;
@@ -10769,6 +11218,7 @@ static int test_live_resize_reflow_hook(Display *display)
         libx11CompatRunDeferredDisplayClose(); /* drain the deferred victim */
         return 0;
     }
+
     /* Deferred: the re-entrant close left the open count untouched, both at the
      * moment of the call and after the present frame unwound.
      */
@@ -11222,6 +11672,7 @@ static int test_shape_mask(Display *display)
 static int test_shape_mask_intersection(Display *display)
 {
     enum { W = 20, H = 20 };
+
     /* The bounding hole sits in the top-left quadrant, the clip hole in the
      * bottom-right; they don't overlap so each verifies one mask independently.
      */
@@ -11401,6 +11852,7 @@ static int test_sibling_occlusion_clip(Display *display)
     unsigned long lowerColor = 0xFF112233;
     CHECK(XSetForeground(display, gc, baselineColor),
           "sibling: baseline foreground setup failed");
+
     /* Pre-fill the entire lower window to give every pixel inside it a stable
      * baseline. With sibling occlusion clipping, the pixels that fall under
      * "upper" do not receive the baseline either, so the test captures the
@@ -11661,6 +12113,7 @@ static int test_timeline_counters(Display *display)
           "configure counter did not advance");
     CHECK(timelineCounter(TIMELINE_KIND_DESTROY) > baseDestroy,
           "destroy counter did not advance");
+
     /* Don't assert Expose: dummy SDL driver may not always deliver one in the
      * time check_test gives, and the unit-test path runs synchronously without
      * an event pump iteration.
@@ -11705,12 +12158,14 @@ static int test_state_snapshot(Display *display)
           "snapshot path template truncated");
     int fd = mkstemp(path);
     CHECK(fd >= 0, "mkstemp failed");
+
     /* stateSnapshotRequestAndWait reopens the path with fopen("w") on the main
      * thread; close our fd so the open does not race the kernel handle.
      */
     close(fd);
 
     int rc = stateSnapshotRequestAndWait(path);
+
     /* In the unit-test environment the SDL event pump may not drain the
      * SDL_USEREVENT round-trip; treat -4 (timed-out wait) as a soft skip but
      * still verify that the request was at least dispatched without a hard
@@ -11852,6 +12307,7 @@ struct lockHammerArgs {
     Display *display;
     Window window;
     int index;
+
     /* Single-display phase asserts the returned event's window; the two-display
      * phase does not, because the one shared SDL queue can cross-deliver a
      * legitimately-signed event to the other display's drain.
@@ -11876,6 +12332,7 @@ static void *lockHammerThread(void *p)
         XLockDisplay(display);
         XPutBackEvent(display, &ev);
         XUnlockDisplay(display);
+
         /* Also route a copy through the SDL event queue so the XPending /
          * XEventsQueued / XCheckTypedEvent drains below actually contend on
          * drainSdlEventsToPutBack's SDL_PeepEvents path, not just the put-back
@@ -12011,6 +12468,7 @@ struct dispatchProbe {
 static void dispatchProbeFn(void *p)
 {
     struct dispatchProbe *probe = (struct dispatchProbe *) p;
+
     /* Publish ranOn before ran: a correct dispatch runs this on the main thread
      * and the main-thread reader sees both, but if a regression ran it on the
      * worker the SDL_AtomicSet release orders ranOn so the reader still
@@ -12045,11 +12503,13 @@ static int test_main_dispatch(Display *display)
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, dispatchWorker, &probe) == 0,
           "pthread_create failed");
+
     /* Pump until the queued thunk has run. Cap the spin so a broken dispatch
      * fails instead of hanging the suite.
      */
     for (int i = 0; i < 100000 && !SDL_AtomicGet(&probe.ran); i++)
         XPending(display);
+
     /* Assert before joining: a broken dispatch leaves the worker blocked
      * forever in runOnMainThread, so joining it would hang. Abort instead of
      * returning with a worker still pointing at this stack frame.
@@ -12071,6 +12531,7 @@ static int test_main_dispatch(Display *display)
 struct offThreadWinArgs {
     Display *display;
     Window window;
+
     /* Interned on the main thread and passed in: the WM-state property writes
      * below need them, and interning off-thread would race the main thread's
      * XPending on the shared atom table.
@@ -12172,6 +12633,7 @@ static int test_off_thread_window_calls(Display *display)
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, offThreadWinWorker, &a) == 0,
           "pthread_create failed");
+
     /* Pump so the routed XMapWindow/XStoreName run on this (main) thread. Cap
      * the spin so a broken router fails instead of hanging (see
      * test_main_dispatch).
@@ -12266,6 +12728,7 @@ static void *lockedMapWorker(void *p)
     struct lockedMapArgs *a = (struct lockedMapArgs *) p;
     XLockDisplay(a->display);
     XMapWindow(a->display, a->window);
+
     /* Store under the lock while mapped: drives XStoreName's SDL_SetWindowTitle
      * branch through the handoff with the display lock held.
      */
@@ -12291,6 +12754,7 @@ static int test_off_thread_locked_map(void)
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, lockedMapWorker, &a) == 0,
           "pthread_create failed");
+
     /* Pump so the routed calls run here. If the deadlock fix regressed, the
      * worker holds the lock while blocked and this XPending wedges in
      * LockDisplay (a hang, surfaced as a CI timeout) rather than returning.
@@ -12360,6 +12824,7 @@ static int test_off_thread_lock_contention(void)
           "pthread_create failed");
     CHECK_ABORT(pthread_create(&t2, NULL, contendWorker, &contender) == 0,
                 "pthread_create failed");
+
     /* Pump so the holder's handoffs run on this thread. A deadlocked gate
      * wedges XPending in LockDisplay (hang -> timeout); a working gate drains
      * promptly.
@@ -12583,6 +13048,7 @@ static void *drainRaceRouter(void *p)
 static void *drainRaceDrainer(void *p)
 {
     struct drainRaceArgs *a = (struct drainRaceArgs *) p;
+
     /* XCheckTypedEvent drains the SDL queue and runs convertEvent (so it can
      * steal the router's MAIN_DISPATCH events and exercise the re-push), but
      * does not flush/present, so it does not add a second off-main
@@ -12613,6 +13079,7 @@ static int test_off_thread_drain_race(void)
           "pthread_create failed");
     CHECK_ABORT(pthread_create(&drainer, NULL, drainRaceDrainer, &a) == 0,
                 "pthread_create failed");
+
     /* Main pumps so the routed thunks run here; the drainer steals some events
      * and must re-queue them rather than run them off-main.
      */
@@ -12703,6 +13170,7 @@ int main(void)
     run_test("selection", test_selection);
     run_test("properties", test_properties);
     run_test("text_property_list", test_text_property_list);
+
     /* ICCCM / EWMH / MWM compliance block. ICCCM covers the WM_* core (hints,
      * transient_for); EWMH covers _NET_WM_* state and root ClientMessage
      * routing; MWM covers Motif-specific _MOTIF_WM_HINTS decoding. Grouped here
@@ -12732,6 +13200,10 @@ int main(void)
     run_test("sibling_occlusion_shape_extends_outside_frame",
              test_sibling_occlusion_shape_extends_outside_frame);
     run_test("overlap_pointer_routing", test_overlap_pointer_routing);
+    run_test("coalesce_gate", test_coalesce_gate);
+    run_test("present_software_fallback", test_present_software_fallback);
+    run_test("moved_child_clears_overlap", test_moved_child_clears_overlap);
+    run_test("shrink_child_keeps_content", test_shrink_child_keeps_content);
     run_test("live_resize_reflow_hook", test_live_resize_reflow_hook);
     run_test("main_dispatch", test_main_dispatch);
     run_test("off_thread_window_calls", test_off_thread_window_calls);
@@ -12745,6 +13217,7 @@ int main(void)
                     test_main_dispatch_handoff_order);
     run_thread_test("main_dispatch_deferred_xnext",
                     test_main_dispatch_deferred_xnext);
+
     /* Threading last: XInitThreads is global and permanent (see the note above
      * test_display_lock_threads).
      */

@@ -17,28 +17,3 @@ diff --git a/demos/lib/Xmd/Print.c b/demos/lib/Xmd/Print.c
      pw -> print.printers[pw -> print.num_printers] = XtNewString(buf);
      pw -> print.is_printer[pw -> print.num_printers] = ! is_path;
      pw -> print.num_printers++;
-diff --git a/lib/Xm/XmExtUtil.c b/lib/Xm/XmExtUtil.c
---- a/lib/Xm/XmExtUtil.c
-+++ b/lib/Xm/XmExtUtil.c
-@@ -349,7 +349,7 @@ _XmGetMBStringFromXmString(XmString xmstr)
- 	{
-     	case XmSTRING_COMPONENT_TEXT:
- 	case XmSTRING_COMPONENT_LOCALE_TEXT:
--	    length += strlen( newText );
-+	    length += u_length;
- 	    break;
-  	case XmSTRING_COMPONENT_SEPARATOR:
- 	    length += 1;
-@@ -396,7 +396,11 @@ _XmGetMBStringFromXmString(XmString xmstr)
- 	{
-     	case XmSTRING_COMPONENT_TEXT:
- 	case XmSTRING_COMPONENT_LOCALE_TEXT:
--	    strcat(text, newText);
-+	    {
-+		size_t text_len = strlen(text);
-+		memcpy(text + text_len, newText, u_length);
-+		text[text_len + u_length] = '\0';
-+	    }
- 	    break;
-  	case XmSTRING_COMPONENT_SEPARATOR:
- 	    strcat(text, "\n");

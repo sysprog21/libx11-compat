@@ -184,6 +184,18 @@ Bool libx11CompatForceSoftwarePresent(void);
  */
 Bool libx11CompatAcceleratedPresentUsable(void);
 
+/* Test hooks for the accelerated-present software fallback (see tests/check.c
+ * test_present_software_fallback). ForceAcceleratedPresentForTest makes
+ * realizeTopLevelWindow put a window on the accelerated path even where the
+ * probe reports it unusable (the headless CI driver), and FailAccelerated-
+ * PresentOnceForTest makes the next accelerated present fail, so the mid-run
+ * demotion to the software path can be exercised. Both default off.
+ */
+void libx11CompatForceAcceleratedPresentForTest(Bool on);
+Bool libx11CompatAcceleratedPresentForcedForTest(void);
+void libx11CompatFailAcceleratedPresentOnceForTest(void);
+int libx11CompatSoftwareDemotionCountForTest(void);
+
 /* Coalesce a client repaint burst so its intermediate XFlush/XSync presents do
  * not reach the screen (see the deadline notes in drawing.c). begin arms the
  * hold at the point a host-resize ConfigureNotify is produced; end presents the
@@ -192,6 +204,12 @@ Bool libx11CompatAcceleratedPresentUsable(void);
  */
 void beginCoalesceClientRepaint(void);
 void endCoalesceClientRepaint(void);
+
+/* Pure coalesce-gate decision, exposed for the zero-clock regression test. See
+ * src/drawing.c: a clock reading of 0 (monotonic clock unavailable) counts as
+ * an expired gate so a stuck deadline cannot suppress presents forever.
+ */
+Bool coalesceGateExpired(uint64_t now, uint64_t deadline);
 Bool presentWakeOwnsEventType(Uint32 eventType);
 void cancelPresentWakeTimer(void);
 void markWindowNeedsPresent(Window window);
@@ -239,6 +257,21 @@ void applySdlDrawState(SDL_Renderer *renderer,
                        SDL_BlendMode blendMode,
                        unsigned long color);
 void invalidateGcStateCache(GC gc);
+
+/* XClearArea with an extra exceptChild: that mapped child of w is not clipped
+ * out of the background fill. Used to erase a moved child's vacated footprint
+ * from the shared top-level backing, where the ordinary clip-by-children would
+ * protect the child at its new position and leave a stale ghost in the overlap.
+ * Pass None for plain XClearArea semantics.
+ */
+int compatClearWindowAreaExceptChild(Display *dpy,
+                                     Window w,
+                                     int x,
+                                     int y,
+                                     unsigned int width,
+                                     unsigned int height,
+                                     Bool exposures,
+                                     Window exceptChild);
 
 /* Call after any direct SDL_SetRenderDrawColor / SDL_SetRenderDrawBlendMode
  * that does not go through applySdlDrawState. Otherwise the next cached apply
