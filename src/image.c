@@ -26,6 +26,8 @@ static struct {
     int textureHeight;
 } putImageScratch;
 
+unsigned long x11compat_xputimage_direct_uploads = 0;
+
 /* XPutImage from multiple threads would otherwise race on the scratch pixel
  * buffer's realloc and the staging texture's create/destroy. The mutex is
  * created lazily on first use and kept for the lifetime of the process: tearing
@@ -45,6 +47,7 @@ static SDL_mutex *ensurePutImageScratchLock(void)
     SDL_AtomicUnlock(&putImageScratchLockInitLock);
     return lock;
 }
+
 /* Return the acquired mutex so the caller pairs lock/unlock against the exact
  * pointer it locked. Reading putImageScratchLock unlocked at unlock time would
  * race against another thread initializing it (or, if SDL_CreateMutex returned
@@ -154,6 +157,19 @@ static int renderRgba8888Locked(Drawable drawable,
     if (shapeOk)
         presentDrawableRectIfVisible(drawable, &dst);
     return 1;
+}
+
+/* One-shot reachability probe: set X11COMPAT_REPORT_XPUTIMAGE to have the
+ * process print, at exit, how many XPutImage calls actually took the zero-copy
+ * RGBA8888 direct upload. Standard clients build images through XCreateImage,
+ * which forces canonical masks that never match the fast path, so a real
+ * workload that reports 0 here is not banking the optimization.
+ */
+__attribute__((destructor)) static void reportDirectUploads(void)
+{
+    if (getenv("X11COMPAT_REPORT_XPUTIMAGE"))
+        fprintf(stderr, "x11compat: XPutImage direct RGBA8888 uploads: %lu\n",
+                x11compat_xputimage_direct_uploads);
 }
 
 void freeImageStorage(void)
@@ -277,6 +293,36 @@ static Bool imageUsesCanonicalColorMasks(const XImage *image)
 {
     return image->format == ZPixmap && image->bits_per_pixel == 32 &&
            image->depth >= 24;
+}
+
+static Bool imageRowsAreRgba8888(Display *display, const XImage *image)
+{
+    /* Bound depth at 32 so the depth == 32 (real alpha) versus depth < 32
+     * (padding low byte) split downstream is exhaustive. A malformed depth
+     * above 32 falls through to the general path instead of silently taking the
+     * padding branch and having its low byte forced opaque.
+     */
+    return image->format == ZPixmap && image->bits_per_pixel == 32 &&
+           image->depth >= 24 && image->depth <= 32 &&
+           image->byte_order == imageByteOrder(display) &&
+           image->red_mask == 0xFF000000ul &&
+           image->green_mask == 0x00FF0000ul &&
+           image->blue_mask == 0x0000FF00ul;
+}
+
+/* Base address of row y within a 32-bit ZPixmap's source rectangle. The direct
+ * upload and both XPutImage swizzle loops share this one copy of the stride and
+ * src-offset arithmetic rather than open-coding the overflow-prone offset three
+ * times. The width and stride bounds checks in XPutImage keep the result inside
+ * the caller buffer.
+ */
+static const char *zpixmap32Row(const XImage *image,
+                                int src_x,
+                                int src_y,
+                                unsigned int y)
+{
+    return image->data + (size_t) image->bytes_per_line * ((size_t) src_y + y) +
+           (size_t) src_x * sizeof(Uint32);
 }
 
 static Bool isValidBitmapPad(int bitmapPad)
@@ -743,11 +789,58 @@ int XPutImage(Display *display,
         }
     }
 
+    GraphicContext *graphicContext =
+        image->format == XYBitmap ? GET_GC(gc) : NULL;
+    SDL_mutex *scratchLock = lockPutImageScratch();
+    if (imageRowsAreRgba8888(display, image)) {
+        if (image->depth == 32) {
+            /* The low byte is a real alpha channel, so the caller rows are
+             * already in the staging texture's layout: upload them straight
+             * through with no per-pixel work.
+             */
+            int result = renderRgba8888Locked(
+                drawable, gc, renderer, zpixmap32Row(image, src_x, src_y, 0),
+                image->bytes_per_line, dest_x, dest_y, width, height);
+            if (result == 1)
+                x11compat_xputimage_direct_uploads++;
+            unlockPutImageScratch(scratchLock);
+            return result;
+        }
+
+        /* Depth below 32 leaves the low byte as padding, not alpha. Copying the
+         * rows raw would upload a zero alpha and the image would vanish into
+         * SDL's alpha-aware blend, so force each pixel opaque through the
+         * scratch buffer, matching the alpha promotion xColorToRgba8888 applies
+         * on the general path. The byte-order match in the predicate means the
+         * memcpy word already carries the pixel in RGBA8888 order.
+         */
+        Uint32 *data =
+            ensurePutImageScratchBuffer((size_t) width * (size_t) height);
+        if (!data) {
+            unlockPutImageScratch(scratchLock);
+            handleOutOfMemory(0, display, 0, 0);
+            return -1;
+        }
+        for (unsigned int y = 0; y < height; y++) {
+            const char *srcRow = zpixmap32Row(image, src_x, src_y, y);
+            Uint32 *dst = data + (size_t) y * width;
+            for (unsigned int x = 0; x < width; x++) {
+                Uint32 color;
+                memcpy(&color, srcRow + x * sizeof(Uint32), sizeof(Uint32));
+                dst[x] = color | 0x000000FFu;
+            }
+        }
+        int result = renderRgba8888Locked(drawable, gc, renderer, data,
+                                          (int) (width * sizeof(Uint32)),
+                                          dest_x, dest_y, width, height);
+        unlockPutImageScratch(scratchLock);
+        return result;
+    }
+
     /* Hold the scratch lock across pixel build + texture upload + RenderCopy so
      * a concurrent XPutImage cannot realloc the pixel buffer or destroy the
      * staging texture mid-flight.
      */
-    SDL_mutex *scratchLock = lockPutImageScratch();
     Uint32 *data =
         ensurePutImageScratchBuffer((size_t) width * (size_t) height);
     if (!data) {
@@ -756,8 +849,6 @@ int XPutImage(Display *display,
         return -1;
     }
 
-    GraphicContext *graphicContext =
-        image->format == XYBitmap ? GET_GC(gc) : NULL;
     if (!image->data) {
         if (image->format == XYBitmap && graphicContext) {
             Uint32 background = xColorToRgba8888(graphicContext->background);
@@ -778,10 +869,7 @@ int XPutImage(Display *display,
          * vectorizes.
          */
         for (unsigned int y = 0; y < height; y++) {
-            const char *srcRow =
-                image->data +
-                (size_t) image->bytes_per_line * ((size_t) src_y + y) +
-                (size_t) src_x * sizeof(Uint32);
+            const char *srcRow = zpixmap32Row(image, src_x, src_y, y);
             Uint32 *dst = data + y * width;
             for (unsigned int x = 0; x < width; x++) {
                 Uint32 color;

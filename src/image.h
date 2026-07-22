@@ -12,4 +12,9 @@ void invalidatePutImageStagingTexture(SDL_Renderer *renderer);
  */
 SDL_Renderer *getPutImageStagingTextureRenderer(void);
 
+/* Test hook: number of XPutImage calls that handed caller rows directly to the
+ * RGBA8888 staging texture instead of swizzling through the scratch buffer.
+ */
+extern unsigned long x11compat_xputimage_direct_uploads;
+
 #endif /* IMAGE_H */
