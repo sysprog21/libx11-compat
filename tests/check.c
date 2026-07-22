@@ -10,6 +10,7 @@
 #include <X11/extensions/Xdamage.h>
 #include <X11/extensions/Xrandr.h>
 #include <X11/Xatom.h>
+#include <X11/Xregion.h>
 #include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #include <X11/Xlibint.h>
@@ -1078,6 +1079,8 @@ static int test_gc(Display *display)
     XUnionRectWithRegion(&clipRects[0], region, region);
     XUnionRectWithRegion(&clipRects[1], region, region);
     CHECK(XSetRegion(display, gc, region), "XSetRegion failed");
+    CHECK(gContext->clipRectanglesSet && gContext->clipRectCount == 2,
+          "XSetRegion did not preserve region rect count in GC clip");
     XDestroyRegion(region);
     CHECK(XSetClipMask(display, gc, None), "XSetClipMask(None) failed");
 
@@ -3714,6 +3717,51 @@ static int test_path_accelerator(Display *display)
     return 1;
 }
 
+static int add_region_rect(Region region,
+                           short x,
+                           short y,
+                           unsigned short width,
+                           unsigned short height)
+{
+    XRectangle rect = {x, y, width, height};
+    return XUnionRectWithRegion(&rect, region, region);
+}
+
+static int check_region_boxes(Region region, const BOX *boxes, long count)
+{
+    CHECK(region->numRects == count, "Region public rect count wrong");
+    for (long i = 0; i < count; i++) {
+        CHECK(region->rects[i].x1 == boxes[i].x1 &&
+                  region->rects[i].y1 == boxes[i].y1 &&
+                  region->rects[i].x2 == boxes[i].x2 &&
+                  region->rects[i].y2 == boxes[i].y2,
+              "Region public rect box wrong");
+    }
+    if (count == 0) {
+        CHECK(region->extents.x1 == 0 && region->extents.y1 == 0 &&
+                  region->extents.x2 == 0 && region->extents.y2 == 0,
+              "Region public empty extents wrong");
+        return 1;
+    }
+    BOX extents = boxes[0];
+    for (long i = 1; i < count; i++) {
+        if (boxes[i].x1 < extents.x1)
+            extents.x1 = boxes[i].x1;
+        if (boxes[i].y1 < extents.y1)
+            extents.y1 = boxes[i].y1;
+        if (boxes[i].x2 > extents.x2)
+            extents.x2 = boxes[i].x2;
+        if (boxes[i].y2 > extents.y2)
+            extents.y2 = boxes[i].y2;
+    }
+    CHECK(region->extents.x1 == extents.x1 &&
+              region->extents.y1 == extents.y1 &&
+              region->extents.x2 == extents.x2 &&
+              region->extents.y2 == extents.y2,
+          "Region public extents wrong");
+    return 1;
+}
+
 static int test_regions(Display *display)
 {
     (void) display;
@@ -3768,6 +3816,102 @@ static int test_regions(Display *display)
     CHECK(XEqualRegion(a, copy), "XEqualRegion failed for identical regions");
     CHECK(!XEqualRegion(a, b), "XEqualRegion accepted different regions");
 
+    CHECK(XUnionRegion(a, a, copy), "clone via XUnionRegion failed");
+    CHECK(XOffsetRegion(copy, 4, -2), "translate clone failed");
+    BOX translated[] = {{4, 14, -2, 8}};
+    CHECK(check_region_boxes(copy, translated, 1),
+          "translated public boxes wrong");
+    CHECK(XPointInRegion(copy, 4, -2) && !XPointInRegion(copy, 14, 8),
+          "translated half-open membership wrong");
+
+    Region full = XCreateRegion();
+    Region cut = XCreateRegion();
+    CHECK(full != NULL && cut != NULL, "photon Region allocation failed");
+    CHECK(add_region_rect(full, 0, 0, 10, 10), "full rect add failed");
+    CHECK(add_region_rect(cut, 3, 3, 4, 4), "center cut add failed");
+    CHECK(XSubtractRegion(full, cut, out), "center subtract failed");
+    BOX centerBoxes[] = {
+        {0, 10, 0, 3},
+        {0, 3, 3, 7},
+        {7, 10, 3, 7},
+        {0, 10, 7, 10},
+    };
+    CHECK(check_region_boxes(out, centerBoxes, 4),
+          "center subtract boxes wrong");
+    CHECK(XPointInRegion(out, 1, 1) && !XPointInRegion(out, 4, 4) &&
+              XPointInRegion(out, 8, 4),
+          "center subtract membership wrong");
+
+    XDestroyRegion(cut);
+    cut = XCreateRegion();
+    CHECK(cut != NULL, "corner cut Region allocation failed");
+    CHECK(add_region_rect(cut, 0, 0, 4, 4), "corner cut add failed");
+    CHECK(XSubtractRegion(full, cut, out), "corner subtract failed");
+    BOX cornerBoxes[] = {
+        {4, 10, 0, 4},
+        {0, 10, 4, 10},
+    };
+    CHECK(check_region_boxes(out, cornerBoxes, 2),
+          "corner subtract boxes wrong");
+
+    CHECK(XSubtractRegion(full, full, out), "full cover subtract failed");
+    CHECK(XEmptyRegion(out), "full cover subtract left region non-empty");
+    CHECK(check_region_boxes(out, NULL, 0), "empty public boxes wrong");
+
+    XDestroyRegion(cut);
+    cut = XCreateRegion();
+    CHECK(cut != NULL, "non-overlap cut Region allocation failed");
+    CHECK(add_region_rect(cut, 20, 0, 4, 4), "non-overlap cut add failed");
+    CHECK(XSubtractRegion(full, cut, out), "non-overlap subtract failed");
+    BOX fullBox[] = {{0, 10, 0, 10}};
+    CHECK(check_region_boxes(out, fullBox, 1), "non-overlap changed region");
+
+    CHECK(XIntersectRegion(full, cut, out), "non-overlap intersect failed");
+    CHECK(XEmptyRegion(out), "non-overlap intersect was not empty");
+    CHECK(check_region_boxes(out, NULL, 0),
+          "non-overlap intersect public boxes wrong");
+
+    CHECK(add_region_rect(out, 0, 0, 0, 10), "zero width add failed");
+    CHECK(add_region_rect(out, 0, 0, 10, 0), "zero height add failed");
+    CHECK(XEmptyRegion(out), "zero-size rectangles produced a region");
+    CHECK(check_region_boxes(out, NULL, 0), "zero-size public boxes wrong");
+
+    Region left = XCreateRegion();
+    Region right = XCreateRegion();
+    CHECK(left != NULL && right != NULL, "adjacent Region allocation failed");
+    CHECK(add_region_rect(left, 0, 0, 5, 10), "left rect add failed");
+    CHECK(add_region_rect(right, 5, 0, 5, 10), "right rect add failed");
+    CHECK(XIntersectRegion(left, right, out), "shared-edge intersect failed");
+    CHECK(XEmptyRegion(out), "shared-edge rectangles intersected");
+    CHECK(XUnionRegion(left, right, out), "horizontal coalesce failed");
+    CHECK(check_region_boxes(out, fullBox, 1),
+          "horizontal coalesce boxes wrong");
+    CHECK(XUnionRegion(left, right, left), "in-place union failed");
+    CHECK(check_region_boxes(left, fullBox, 1), "in-place union boxes wrong");
+
+    Region top = XCreateRegion();
+    Region bottom = XCreateRegion();
+    CHECK(top != NULL && bottom != NULL, "vertical Region allocation failed");
+    CHECK(add_region_rect(top, 0, 0, 10, 5), "top rect add failed");
+    CHECK(add_region_rect(bottom, 0, 5, 10, 5), "bottom rect add failed");
+    CHECK(XUnionRegion(top, bottom, out), "vertical coalesce failed");
+    CHECK(check_region_boxes(out, fullBox, 1), "vertical coalesce boxes wrong");
+
+    Region aliasFull = XCreateRegion();
+    Region aliasCut = XCreateRegion();
+    CHECK(aliasFull != NULL && aliasCut != NULL,
+          "alias Region allocation failed");
+    CHECK(add_region_rect(aliasFull, 0, 0, 10, 10), "alias full add failed");
+    CHECK(add_region_rect(aliasCut, 3, 3, 4, 4), "alias cut add failed");
+    CHECK(XSubtractRegion(aliasFull, aliasCut, aliasFull),
+          "in-place subtract failed");
+    CHECK(check_region_boxes(aliasFull, centerBoxes, 4),
+          "in-place subtract boxes wrong");
+    CHECK(XIntersectRegion(aliasFull, full, aliasFull),
+          "in-place intersect failed");
+    CHECK(check_region_boxes(aliasFull, centerBoxes, 4),
+          "in-place intersect boxes wrong");
+
     XPoint triangle[] = {{0, 0}, {6, 0}, {0, 6}};
     Region polygon = XPolygonRegion(triangle, 3, EvenOddRule);
     CHECK(polygon != NULL, "XPolygonRegion failed");
@@ -3777,6 +3921,14 @@ static int test_regions(Display *display)
           "XPolygonRegion accepted exterior point");
     XDestroyRegion(polygon);
 
+    XDestroyRegion(bottom);
+    XDestroyRegion(top);
+    XDestroyRegion(aliasCut);
+    XDestroyRegion(aliasFull);
+    XDestroyRegion(right);
+    XDestroyRegion(left);
+    XDestroyRegion(cut);
+    XDestroyRegion(full);
     XDestroyRegion(copy);
     XDestroyRegion(out);
     XDestroyRegion(b);

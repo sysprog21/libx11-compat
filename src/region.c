@@ -21,6 +21,10 @@ typedef struct XCompatRegion {
 #define GET_COMPAT_REGION(region) ((XCompatRegion *) (void *) region)
 #define GET_P_REGION(region) (&GET_COMPAT_REGION(region)->pixman)
 
+/* BOX (Xregion.h) is laid out x1, x2, y1, y2, but pixman_box16_t is x1, y1, x2,
+ * y2. The field orders differ, so a struct copy or memcpy would transpose y1
+ * and x2 and silently corrupt every coordinate. Assign field by field.
+ */
 static void setBoxFromPixman(BOX *dst, const pixman_box16_t *src)
 {
     dst->x1 = src->x1;
@@ -68,7 +72,7 @@ int XDestroyRegion(Region region)
     return 1;
 }
 
-Region XCreateRegion()
+Region XCreateRegion(void)
 {
     // https://tronche.com/gui/x/xlib/utilities/regions/XCreateRegion.html
     XCompatRegion *region = calloc(1, sizeof(*region));
@@ -292,6 +296,7 @@ Region XPolygonRegion(XPoint *points, int count, int fill_rule)
     Region region = XCreateRegion();
     if (!region || !points || count < 3)
         return region;
+
     /* +1 trailing closing point. Compute in size_t to avoid signed overflow
      * when count is near INT_MAX, then bound by allocator-safe size.
      */
