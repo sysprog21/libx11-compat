@@ -316,29 +316,23 @@ static Bool hasUnmappedAncestor(Window window)
 
 /* Whether to promote a top-level's X11 geometry from logical points to physical
  * pixels on a HiDPI backing (see the promotion block in realizeTopLevelWindow).
- * Fixed-pixel clients (Athena, raw Xlib such as xwpe) draw at literal X pixel
- * coordinates and need the promotion to render crisply at native resolution.
+ * Fixed-pixel clients draw at literal X pixel coordinates, so the default path
+ * leaves their X geometry logical and uniformly upscales the finished backing.
  * Toolkits such as Tk and Motif lay widgets out in logical points, so promoting
  * their X11 geometry behind their back double-scales and the layout settles
  * wrong. They still use a HiDPI SDL backing; the present path scales their
  * logical backing to it.
  *
- * Detect toolkits that lay out at fixed logical geometry by their linked entry
- * points, the same way the GLX layer probes gl4es. Self-scaling toolkits
- * (Tk/Motif) and Xt/Athena apps (xcircuit) settle their layout wrong when their
- * X11 geometry is promoted behind their back, so they take the uniform-upscale
- * present path instead. Qt 2.3 (Osiris) is not caught by these probes and stays
- * on the promotion path.
+ * The physical-pixel promotion path is off by default (opt-in via
+ * LIBX11_COMPAT_HIDPI_PROMOTE) because it changes the X11 dimensions clients
+ * observe; fixed-size clients then keep painting only their requested logical
+ * area and leave the rest of the Retina backing blank.
  *
- * This must stay in lockstep with coreFontsUseHiDpiScale: an app that is not
- * promoted must not have its core fonts scaled either, or the font scale and
- * the present upscale compound and the text comes out twice too large.
+ * The geometry-promotion branch below and core-font scaling in font.c both gate
+ * on compatHiDpiPromoteToolkits, so they cannot drift: an app that is not
+ * promoted keeps 1x core fonts too, or the font scale and the present upscale
+ * compound and the text comes out twice too large.
  */
-static Bool compatHiDpiPromoteEnabled(void)
-{
-    return compatHiDpiPromoteToolkits();
-}
-
 static Bool realizeTopLevelWindow(Display *display, Window window)
 {
     /* SDL_CreateWindow and the renderer setup below are main-thread-only on
@@ -375,7 +369,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
      * silently ignores the flag on displays without high-DPI, so leaving it
      * always-on is safe.
      */
-    Bool promoteHiDpi = compatHiDpiPromoteEnabled();
+    Bool promoteHiDpi = compatHiDpiPromoteToolkits();
     flags |= SDL_WINDOW_ALLOW_HIGHDPI;
     int hostX = windowStruct->x, hostY = windowStruct->y;
     topLevelWindowHostPosition(window, windowStruct->x, windowStruct->y, &hostX,

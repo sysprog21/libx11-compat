@@ -51,15 +51,15 @@ void displayLockReacquire(int depth);
  */
 Bool compatDisplayThreadsInitialized(void);
 
-/* Publish the current HiDPI backing scale as a CARDINAL property
+/* Publish the effective HiDPI client scale as a CARDINAL property
  * (_LIBX11_COMPAT_HIDPI_SCALE, scale * 1000 rounded) on the root window, and
  * post the PropertyNotify. Clients that render at a fixed point size (e.g. the
- * xwpe Cairo/Pango backend) read this to scale their glyphs with the monitor's
- * backing so the apparent grid stays consistent across a mixed-DPI monitor
- * move; on a real X server the property is simply absent and clients fall back
- * to 1.0. Called at XOpenDisplay once the root window exists and again whenever
- * a window moves to a display with a different backing scale. No-op when the
- * root window is not yet initialized.
+ * xwpe Cairo/Pango backend) read this to match this shim's geometry contract.
+ * Promotion-disabled builds publish 1.0 even on a HiDPI host; on a real X
+ * server the property is simply absent and clients fall back to 1.0. Called at
+ * XOpenDisplay once the root window exists and again whenever a window moves to
+ * a display with a different backing scale. No-op when the root window is not
+ * yet initialized.
  */
 void compatPublishHiDpiScaleProperty(Display *display);
 
