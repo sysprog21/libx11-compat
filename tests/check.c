@@ -1613,74 +1613,48 @@ static int exercise_fixed_font_program(Display *display)
     SDL_Renderer *renderer = NULL;
     GET_RENDERER(pixmap, renderer);
 
-    if (compatHiDpiPromoteToolkits()) {
-        double savedScale = compatGlobalHiDpiScale();
-        compatSetGlobalHiDpiScale(1.0);
-        XFontStruct *scaleFixed = XLoadQueryFont(display, "fixed");
-        int scaleLoaded = scaleFixed != NULL && scaleFixed->fid != None;
-        int scaleStartedAt1x = scaleLoaded && scaleFixed->ascent == 11 &&
-                               XTextWidth(scaleFixed, "A", 1) == 6;
-        compatSetGlobalHiDpiScale(2.0);
-        int scaleWidthSynced =
-            scaleLoaded && XTextWidth(scaleFixed, "A", 1) == 12;
-        int scaleStructSynced =
-            scaleLoaded && scaleFixed->ascent == 22 && scaleFixed->descent == 4;
-
-        XFontStruct *scaleQuery =
-            scaleLoaded ? XQueryFont(display, scaleFixed->fid) : NULL;
-        int scaleQueryLoaded = scaleQuery != NULL;
-        int scaleQuerySynced = scaleQuery && scaleQuery->ascent == 22 &&
-                               scaleQuery->descent == 4 &&
-                               scaleQuery->max_bounds.width == 12;
-        XFreeFontInfo(NULL, scaleQuery, scaleQuery ? 1 : 0);
-
-        Pixmap scalePixmap =
-            scaleLoaded
-                ? XCreatePixmap(display, root, 32, 32,
-                                DefaultDepth(display, DefaultScreen(display)))
-                : None;
-        GC scaleGc = scalePixmap != None
-                         ? XCreateGC(display, scalePixmap, 0, NULL)
-                         : NULL;
-        int scaleImageStringOk =
-            scaleGc && XSetFont(display, scaleGc, scaleFixed->fid) &&
-            XSetForeground(display, scaleGc, 0x00FF0000) &&
-            XFillRectangle(display, scalePixmap, scaleGc, 0, 0, 32, 32) &&
-            XSetForeground(display, scaleGc, 0x00000000) &&
-            XSetBackground(display, scaleGc, 0x00FFFFFF) &&
-            XDrawImageString(display, scalePixmap, scaleGc, 2, 22, " ", 1);
-        SDL_Renderer *scaleRenderer = NULL;
-        if (scalePixmap != None)
-            GET_RENDERER(scalePixmap, scaleRenderer);
-        SDL_Surface *scaleSurface =
-            scaleRenderer ? getRenderSurface(scaleRenderer) : NULL;
-        int scaleReadbackOk = scaleSurface != NULL;
-        int scaleBackgroundSynced =
-            scaleSurface && pixel_is_rgb(scaleSurface, 2, 1, 255, 255, 255);
-        SDL_FreeSurface(scaleSurface);
-        if (scaleGc)
-            XFreeGC(display, scaleGc);
-        if (scalePixmap != None)
-            XFreePixmap(display, scalePixmap);
-        if (scaleFixed)
-            XFreeFont(display, scaleFixed);
-        compatSetGlobalHiDpiScale(savedScale);
-        CHECK(scaleLoaded, "scale-sync fixed font did not load");
-        CHECK(scaleStartedAt1x,
-              "scale-sync fixed font did not start at 1x metrics");
-        CHECK(scaleWidthSynced, "scale-sync XTextWidth kept stale fixed width");
-        CHECK(scaleStructSynced,
-              "scale-sync XTextWidth kept stale fixed ascent/descent");
-        CHECK(scaleQueryLoaded, "scale-sync XQueryFont failed");
-        CHECK(scaleQuerySynced,
-              "scale-sync XQueryFont kept stale core metrics");
-        CHECK(scalePixmap != None, "scale-sync pixmap creation failed");
-        CHECK(scaleGc != NULL, "scale-sync GC creation failed");
-        CHECK(scaleImageStringOk, "scale-sync XDrawImageString failed");
-        CHECK(scaleReadbackOk, "scale-sync readback failed");
-        CHECK(scaleBackgroundSynced,
-              "scale-sync image-string background used stale metrics");
-    }
+    /* Promotion is disabled, so core-font metrics must stay at their native 1x
+     * values regardless of the global HiDPI scale. Lock in the inverse of the
+     * old scale-sync behavior: changing the scale must not move the metrics.
+     */
+    double savedScale = compatGlobalHiDpiScale();
+    XFontStruct *scaleFixed = XLoadQueryFont(display, "fixed");
+    int scaleLoaded = scaleFixed != NULL && scaleFixed->fid != None;
+    int scaleStartedAt1x = scaleLoaded && scaleFixed->ascent == 11 &&
+                           XTextWidth(scaleFixed, "A", 1) == 6;
+    compatSetGlobalHiDpiScale(2.0);
+    int scaleWidthPinned = scaleLoaded && XTextWidth(scaleFixed, "A", 1) == 6;
+    int scaleStructPinned =
+        scaleLoaded && scaleFixed->ascent == 11 && scaleFixed->descent == 2;
+    compatPublishHiDpiScaleProperty(display);
+    Atom scaleAtom = XInternAtom(display, HIDPI_SCALE_PROPERTY_NAME, False);
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long nitems = 0, bytesAfter = 0;
+    unsigned char *prop = NULL;
+    int propertyPinned =
+        XGetWindowProperty(display, root, scaleAtom, 0, 1, False, XA_CARDINAL,
+                           &actualType, &actualFormat, &nitems, &bytesAfter,
+                           &prop) == Success &&
+        actualType == XA_CARDINAL && actualFormat == 32 && nitems == 1 &&
+        prop && ((long *) prop)[0] == HIDPI_SCALE_PROPERTY_FIXED_POINT;
+    if (prop)
+        XFree(prop);
+    if (scaleFixed)
+        XFreeFont(display, scaleFixed);
+    compatSetGlobalHiDpiScale(savedScale);
+    compatPublishHiDpiScaleProperty(display);
+    CHECK(scaleLoaded, "scale-pin fixed font did not load");
+    CHECK(scaleStartedAt1x, "scale-pin fixed font did not start at 1x metrics");
+    CHECK(scaleWidthPinned,
+          "scale-pin XTextWidth moved with global scale despite disabled "
+          "promotion");
+    CHECK(scaleStructPinned,
+          "scale-pin ascent/descent moved with global scale despite disabled "
+          "promotion");
+    CHECK(propertyPinned,
+          "scale-pin root property advertised global scale despite disabled "
+          "promotion");
 
     /* Verify each text API in isolation: clear to white, draw once, and confirm
      * that draw alone put black pixels down. Sharing one pixmap across all
@@ -5246,13 +5220,11 @@ static int test_events(Display *display)
     CHECK(textureWidth == 48 && textureHeight == 40,
           "backing texture did not resize to SDL dimensions");
 
-    /* Option 1b HiDPI promotion: under the unit-test SDL driver the window
-     * surface size equals its logical size, so the per-window scale stays 1.0
-     * and X11 geometry (checked above as 48x40) equals the logical points. True
-     * 2x promotion is exercised manually on Retina plus the xwpe resize smoke
-     * test; here we lock in the no-op 1.0 path so the pixel==point invariant
-     * cannot silently regress.
+    /* HiDPI promotion is disabled. Fixed-size raw Xlib clients create/draw in
+     * logical X dimensions, so promoting their backing to physical pixels
+     * leaves their content in the top-left quadrant on Retina displays.
      */
+    CHECK(!compatHiDpiPromoteToolkits(), "HiDPI promotion should default off");
     CHECK(GET_WINDOW_STRUCT(window)->hiDpiScaleX == 1.0 &&
               GET_WINDOW_STRUCT(window)->hiDpiScaleY == 1.0,
           "HiDPI scale should be 1.0 under the unit-test SDL driver");
@@ -8350,26 +8322,16 @@ static int test_fonts(Display *display)
         }
     }
 
-    /* Mixed-DPI face rebuild: a core font opened at one backing scale must
-     * reopen at the destination monitor's scale when the window moves between
-     * differently scaled displays, so text lands at the right physical size.
-     * Drive it through the global HiDPI scale the DISPLAY_CHANGED handler
-     * updates. Only meaningful when core-font HiDPI scaling is active for this
-     * process (no self-scaling/GTK/Xt toolkit linked, which holds for the check
-     * binary); skip otherwise since the size would not track the scale by
-     * design. Uses the non-core "helvetica" alias so the queried metrics come
-     * from the rebuilt TTF face rather than the fixed-bitmap core table, which
-     * scales its metrics independently of the face.
+    /* Promotion is disabled, so a TTF face queried through the non-core
+     * "helvetica" alias must not track the global HiDPI scale: moving the
+     * window to a 2x monitor must leave its metrics unchanged. Lock in the
+     * inverse of the old mixed-DPI rebuild behavior. Free each struct and
+     * restore the scale before asserting so a failing CHECK cannot leak the
+     * font or leave the scale changed for later tests. -1 marks a NULL query.
      */
-    if (compatHiDpiPromoteToolkits()) {
+    {
         double savedScale = compatGlobalHiDpiScale();
         Font scaleFont = XLoadFont(display, "helvetica");
-
-        /* Measure at 1x, 2x, then back to 1x, freeing each struct and restoring
-         * the global scale before asserting, so a failing CHECK (which returns
-         * immediately) cannot leak the font or leave the scale changed for the
-         * tests that run after this one. -1 marks a query that returned NULL.
-         */
         int ascent1 = -1, ascent2 = -1, ascentBack = -1;
         if (scaleFont != None) {
             compatSetGlobalHiDpiScale(1.0);
@@ -8395,11 +8357,11 @@ static int test_fonts(Display *display)
         compatSetGlobalHiDpiScale(savedScale);
         if (scaleFont != None) {
             CHECK(ascent1 > 0, "mixed-DPI: XQueryFont at 1x failed");
-            CHECK(
-                ascent2 >= ascent1 * 3 / 2,
-                "mixed-DPI: face did not enlarge to ~2x after scale increase");
+            CHECK(ascent2 == ascent1,
+                  "mixed-DPI: face enlarged with scale despite disabled "
+                  "promotion");
             CHECK(ascentBack == ascent1,
-                  "mixed-DPI: face did not return to 1x after scale decrease");
+                  "mixed-DPI: face metrics drifted after scale round-trip");
         }
     }
     return 1;

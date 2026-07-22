@@ -71,7 +71,7 @@ make examples
 build/examples/2048
 ```
 
-The bundle covers a 2048 game, a paint demo, Conway's Game of Life, an analog clock, an interactive Mandelbrot viewer, a single-runner Processing-style showcase, an SDL-backed clipboard `TARGETS` probe, and the upstream X.Org `x11perf` benchmark.
+The bundle covers a 2048 game, a paint demo, Conway's Game of Life, an analog clock, an interactive Mandelbrot viewer, a single-runner Processing-style showcase, an SDL-backed clipboard probe, and the upstream X.Org `x11perf` benchmark.
 See [`docs/EXAMPLES.md`](docs/EXAMPLES.md) for the API each example exercises.
 The screenshot above is from the larger ViolaWWW port described in [Larger Workloads Under Investigation](#larger-workloads-under-investigation).
 

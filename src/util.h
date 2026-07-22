@@ -24,6 +24,7 @@
 #ifdef DEBUG_LIBX11_COMPAT
 #define LOG(msg, args...) fprintf(stderr, msg, ##args)
 #else
+
 /* Release builds short-circuit the call so args are still type-checked and
  * marked as "used", but never executed.
  */
@@ -83,14 +84,12 @@ int libx11CompatWarnUnimplemented(void);
 #include "X11/Xlib.h"
 
 Bool compatSelfScalingToolkitLoaded(void);
-Bool compatGtkCoreFontToolkitLoaded(void);
-Bool compatXtToolkitLoaded(void);
 
-/* True when the loaded toolkit set gets its X11 geometry promoted to backing
- * pixels: none of the self-scaling, GTK core-font, or Xt toolkits is present.
- * Window geometry promotion and core-font scaling both gate on this, so they
- * share one predicate instead of each spelling out the toolkit checks and
- * drifting apart.
+/* HiDPI is handled by presenting the client-sized X backing through SDL's
+ * high-DPI output, not by changing X11 geometry behind the client's back. This
+ * predicate gates the older physical-pixel promotion path, off by default and
+ * opt-in via LIBX11_COMPAT_HIDPI_PROMOTE. Centralizing it keeps geometry
+ * promotion and core-font scaling on one switch so they cannot drift.
  */
 Bool compatHiDpiPromoteToolkits(void);
 

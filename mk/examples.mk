@@ -1,4 +1,5 @@
-EXAMPLE_NAMES := 2048 paint life clock mandel processing clipboard catclock
+EXAMPLE_NAMES := 2048 paint life clock mandel processing clipboard catclock \
+    moire
 EXAMPLE_BINS := $(addprefix $(OUT)/examples/,$(EXAMPLE_NAMES))
 X11PERF_DIR := examples/x11perf
 X11PERF_SRCS := \

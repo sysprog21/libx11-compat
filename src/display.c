@@ -25,6 +25,7 @@
 #include "image.h"
 #include "input-method.h"
 #include "mac-live-resize.h"
+#include "util.h"
 
 #ifndef SDL_HINT_VIDEO_X11_XKB
 #define SDL_HINT_VIDEO_X11_XKB "SDL_VIDEO_X11_XKB"
@@ -281,7 +282,8 @@ void compatPublishHiDpiScaleProperty(Display *display)
     Atom scaleAtom = internalInternAtom(HIDPI_SCALE_PROPERTY_NAME);
     if (scaleAtom == None)
         return;
-    long fixed = lround(globalHiDpiScale * HIDPI_SCALE_PROPERTY_FIXED_POINT);
+    double scale = compatHiDpiPromoteToolkits() ? globalHiDpiScale : 1.0;
+    long fixed = lround(scale * HIDPI_SCALE_PROPERTY_FIXED_POINT);
     if (fixed < 0)
         fixed = 0;
 
@@ -857,10 +859,10 @@ Display *XOpenDisplay(_Xconst char *display_name)
         XSetFontPath(display, NULL, 0);
     }
 
-    /* Advertise the probed HiDPI backing scale on the root window so clients
-     * that render at a fixed point size can scale their glyphs to match the
-     * promoted physical-pixel geometry. Kept current on a monitor move by the
-     * SDL_WINDOWEVENT_DISPLAY_CHANGED handler.
+    /* Advertise the effective HiDPI client scale on the root window so clients
+     * that render at a fixed point size match this shim's geometry contract.
+     * Kept current on a monitor move by the SDL_WINDOWEVENT_DISPLAY_CHANGED
+     * handler.
      */
     compatPublishHiDpiScaleProperty(display);
     return display;

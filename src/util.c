@@ -106,48 +106,20 @@ Bool compatSelfScalingToolkitLoaded(void)
     return False;
 }
 
-Bool compatGtkCoreFontToolkitLoaded(void)
-{
-    if (dlsym(RTLD_DEFAULT, "gdk_font_load"))
-        return True;
-
-    static const char *gtkLibs[] = {
-        "libgtk1.dylib",
-        "libgtk1.so",
-        "libgtk.dylib",
-        "libgtk.so",
-    };
-    for (size_t i = 0; i < ARRAY_LENGTH(gtkLibs); i++) {
-        if (loadedLibraryHasSymbol(gtkLibs[i], "gdk_font_load"))
-            return True;
-    }
-    return False;
-}
-
-/* X Toolkit Intrinsics apps (Athena, Xaw, xcircuit's Xw) lay widgets out at
- * fixed pixel geometry using core-font metrics, so promoting their X11 geometry
- * clusters the widgets into the top-left quadrant of the 2x window and scaling
- * their core fonts double-scales the text. Detect Xt like the other toolkits so
- * they take the uniform-upscale path instead. Motif is Xt too but is caught
- * first by compatSelfScalingToolkitLoaded.
- */
-Bool compatXtToolkitLoaded(void)
-{
-    if (dlsym(RTLD_DEFAULT, "XtCreateWidget"))
-        return True;
-
-    static const char *xtLibs[] = {"libXt.6.dylib", "libXt.dylib", "libXt.so.6",
-                                   "libXt.so"};
-    for (size_t i = 0; i < ARRAY_LENGTH(xtLibs); i++)
-        if (loadedLibraryHasSymbol(xtLibs[i], "XtCreateWidget"))
-            return True;
-    return False;
-}
-
 Bool compatHiDpiPromoteToolkits(void)
 {
-    return !compatSelfScalingToolkitLoaded() &&
-           !compatGtkCoreFontToolkitLoaded() && !compatXtToolkitLoaded();
+    /* Promoting a client's X11 geometry from logical points to physical pixels
+     * is disabled by default: fixed-size raw Xlib clients keep painting only
+     * their requested logical area and leave the rest of a Retina backing
+     * blank. LIBX11_COMPAT_HIDPI_PROMOTE opts back into the promotion path for
+     * debugging or a future workload that lays out in physical pixels.
+     */
+    static int promote = -1;
+    if (promote < 0) {
+        const char *env = getenv("LIBX11_COMPAT_HIDPI_PROMOTE");
+        promote = env && env[0] && strcmp(env, "0") != 0;
+    }
+    return promote ? True : False;
 }
 
 Bool initArray(Array *a, size_t initialSize)
