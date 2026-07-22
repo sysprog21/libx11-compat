@@ -3353,6 +3353,59 @@ static int test_xshm_put_image(Display *display)
     return 1;
 }
 
+/* Drive the XPutImage RGBA8888 fast path at one depth. Depth 32 carries a real
+ * alpha channel and takes the zero-copy direct upload; a lower depth has a
+ * padding low byte the fast path must force opaque through the scratch buffer.
+ * lowByte is OR'd into every source pixel (0xFFu for depth 32, 0u for the pad
+ * case), and expectDirect says whether the direct-upload counter should tick.
+ * Either way the visible RGB must survive intact.
+ *
+ * Returns 1 on success, 0 on the first failed check (which also bumps the
+ * shared failure count).
+ */
+static int check_rgba8888_putimage(Display *display,
+                                   Window window,
+                                   GC gc,
+                                   int depth,
+                                   Uint32 lowByte,
+                                   Bool expectDirect)
+{
+    Uint32 *pixels = calloc(4, sizeof(Uint32));
+    CHECK(pixels, "RGBA8888 image data allocation failed");
+    pixels[0] = 0x11223300u | lowByte;
+    pixels[1] = 0x44556600u | lowByte;
+    pixels[2] = 0x77889900u | lowByte;
+    pixels[3] = 0xAABBCC00u | lowByte;
+    XImage *image =
+        XCreateImage(display, DefaultVisual(display, DefaultScreen(display)),
+                     depth, ZPixmap, 0, (char *) pixels, 2, 2, 32, 0);
+    CHECK(image, "RGBA8888 XCreateImage failed");
+    image->red_mask = 0xFF000000ul;
+    image->green_mask = 0x00FF0000ul;
+    image->blue_mask = 0x0000FF00ul;
+    Pixmap pixmap = XCreatePixmap(
+        display, window, 2, 2, DefaultDepth(display, DefaultScreen(display)));
+    CHECK(pixmap != None, "RGBA8888 pixmap creation failed");
+    unsigned long directBefore = x11compat_xputimage_direct_uploads;
+    CHECK(XPutImage(display, pixmap, gc, image, 0, 0, 0, 0, 2, 2) == 1,
+          "RGBA8888 XPutImage failed");
+    CHECK(x11compat_xputimage_direct_uploads ==
+              directBefore + (expectDirect ? 1u : 0u),
+          "RGBA8888 XPutImage took the wrong upload path");
+    SDL_Renderer *renderer = NULL;
+    GET_RENDERER(pixmap, renderer);
+    SDL_Surface *surface = getRenderSurface(renderer);
+    CHECK(surface, "RGBA8888 render surface unavailable");
+    CHECK(pixel_is_rgb(surface, 0, 0, 0x11, 0x22, 0x33),
+          "RGBA8888 upload corrupted the first pixel");
+    CHECK(pixel_is_rgb(surface, 1, 1, 0xAA, 0xBB, 0xCC),
+          "RGBA8888 upload corrupted the last pixel");
+    SDL_FreeSurface(surface);
+    XDestroyImage(image);
+    XFreePixmap(display, pixmap);
+    return 1;
+}
+
 static int test_images(Display *display)
 {
     CHECK(XImageByteOrder(display) == ImageByteOrder(display),
@@ -3583,6 +3636,18 @@ static int test_images(Display *display)
     SDL_FreeSurface(alphaSurface);
     XFreePixmap(display, alphaPixmap);
     XDestroyImage(alphaImage);
+
+    /* Depth 32 has a real alpha channel and takes the zero-copy direct upload.
+     * Depth 24 shares the RGBA8888 masks but its low byte is padding, so the
+     * fast path must force it opaque through the scratch buffer and must not
+     * tick the direct-upload counter.
+     */
+    CHECK(check_rgba8888_putimage(display, secondWindow, imageGc, 32, 0xFFu,
+                                  True),
+          "depth-32 RGBA8888 direct upload failed");
+    CHECK(
+        check_rgba8888_putimage(display, secondWindow, imageGc, 24, 0u, False),
+        "depth-24 RGBA8888 opaque upload failed");
 
     XSetWindowAttributes inputAttrs;
     memset(&inputAttrs, 0, sizeof(inputAttrs));
