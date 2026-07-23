@@ -443,6 +443,8 @@ static Bool containsIgnoreCase(const char *text, const char *needle)
     return False;
 }
 
+static Bool wantsMonospaceFallback(const char *name);
+
 static Bool isFontAlias(const char *name)
 {
     if (!name)
@@ -455,18 +457,15 @@ static Bool isFontAlias(const char *name)
      * -adobe-times- is not fixed-width, but x11perf requests it for TR10/TR24
      * tests and would otherwise abort on XOpenFont(None).
      */
-    return !strcasecmp(name, "fixed") || !strcasecmp(name, "variable") ||
-           !strcasecmp(name, "cursor") || !strcasecmp(name, "6x13") ||
-           !strcasecmp(name, "7x13") || !strcasecmp(name, "7x13bold") ||
-           !strcasecmp(name, "8x13") || !strcasecmp(name, "7x14") ||
-           !strcasecmp(name, "9x13") || !strcasecmp(name, "9x15") ||
-           !strcasecmp(name, "9x18") || !strcasecmp(name, "12x24") ||
-           !strncasecmp(name, "-misc-fixed-", 12) ||
-           !strncasecmp(name, "-jis-fixed-", 11) ||
+    return wantsMonospaceFallback(name) || !strcasecmp(name, "fixed") ||
+           !strcasecmp(name, "variable") || !strcasecmp(name, "cursor") ||
+           !strcasecmp(name, "6x13") || !strcasecmp(name, "7x13") ||
+           !strcasecmp(name, "7x13bold") || !strcasecmp(name, "8x13") ||
+           !strcasecmp(name, "7x14") || !strcasecmp(name, "9x13") ||
+           !strcasecmp(name, "9x15") || !strcasecmp(name, "9x18") ||
+           !strcasecmp(name, "12x24") ||
            containsIgnoreCase(name, "helvetica") ||
            containsIgnoreCase(name, "helv") ||
-           containsIgnoreCase(name, "courier") ||
-           containsIgnoreCase(name, "lucidatypewriter") ||
            containsIgnoreCase(name, "adobe-times") ||
            containsIgnoreCase(name, "times") ||
            containsIgnoreCase(name, "schoolbook") ||
@@ -824,6 +823,32 @@ static char xlfdSpacingCode(const char *name)
     }
 }
 
+/* True when a family hint or XLFD asks for a fixed-pitch face: a known
+ * monospace family or an XLFD SPACING code of m (monospaced) or c (character
+ * cell). Single source of truth shared by the core alias resolver, the alias
+ * gate, and the Xft fallback openers so every path picks the same pitch for the
+ * same request.
+ */
+static Bool wantsMonospaceFallback(const char *name)
+{
+    char spacing = xlfdSpacingCode(name);
+    return containsIgnoreCase(name, "-misc-fixed-") ||
+           containsIgnoreCase(name, "-jis-fixed-") ||
+           containsIgnoreCase(name, "courier") ||
+           containsIgnoreCase(name, "typewriter") ||
+           containsIgnoreCase(name, "monospace") || spacing == 'm' ||
+           spacing == 'c';
+}
+
+/* True for the serif families the fallback chain routes to a Times substitute.
+ */
+static Bool wantsSerifFallback(const char *name)
+{
+    return containsIgnoreCase(name, "times") ||
+           containsIgnoreCase(name, "adobe-times") ||
+           containsIgnoreCase(name, "schoolbook");
+}
+
 /* Convert an XLFD POINT_SIZE (decipoints) to pixels at the catalog DPI, then
  * apply the one differential-verified nudge: Helvetica's 12pt (120 decipoints)
  * baseline renders at 16px, not the 17px the naive conversion yields.
@@ -1145,22 +1170,14 @@ static FontCacheEntry *findAliasedFontForName(const char *name)
         return findAliasedFixedWidthFont();
 
     /* Monospace is otherwise opt-in: a known fixed-pitch family or an XLFD
-     * SPACING code of "m" (monospaced) or "c" (character cell). Core fixed
-     * XLFD families stay fixed even when old clients wildcard SPACING. Check
-     * this before the serif/sans families so lucidatypewriter resolves
-     * fixed-pitch, not to a "lucida" sans branch.
+     * SPACING code of "m" (monospaced) or "c" (character cell). Core fixed XLFD
+     * families stay fixed even when old clients wildcard SPACING. Check this
+     * before the serif/sans families so lucidatypewriter resolves fixed-pitch,
+     * not to a "lucida" sans branch.
      */
-    char spacing = xlfdSpacingCode(name);
-    if (containsIgnoreCase(name, "-misc-fixed-") ||
-        containsIgnoreCase(name, "-jis-fixed-") ||
-        containsIgnoreCase(name, "courier") ||
-        containsIgnoreCase(name, "typewriter") ||
-        containsIgnoreCase(name, "monospace") || spacing == 'm' ||
-        spacing == 'c')
+    if (wantsMonospaceFallback(name))
         return findAliasedFixedWidthFont();
-    if (containsIgnoreCase(name, "times") ||
-        containsIgnoreCase(name, "adobe-times") ||
-        containsIgnoreCase(name, "schoolbook"))
+    if (wantsSerifFallback(name))
         return findProbeFont(SERIF_PROBE_PATHS,
                              ARRAY_LENGTH(SERIF_PROBE_PATHS));
 
@@ -1250,21 +1267,26 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
                                             char **openedPath)
 {
     TTF_Font *font = NULL;
-    if (containsIgnoreCase(name, "times") ||
-        containsIgnoreCase(name, "adobe-times") ||
-        containsIgnoreCase(name, "schoolbook")) {
-        font = openRenderableProbeFont(SERIF_PROBE_PATHS,
-                                       ARRAY_LENGTH(SERIF_PROBE_PATHS), size,
-                                       skipPath, openedPath);
+    if (wantsMonospaceFallback(name)) {
+        font = openRenderableProbeFont(MONOSPACE_PROBE_PATHS,
+                                       ARRAY_LENGTH(MONOSPACE_PROBE_PATHS),
+                                       size, skipPath, openedPath);
         if (font)
             return font;
-    }
-    if (containsIgnoreCase(name, "helvetica") ||
-        containsIgnoreCase(name, "helv") ||
-        containsIgnoreCase(name, "lucida") ||
-        containsIgnoreCase(name, "arial") ||
-        ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
-         strstr(name, "-p-"))) {
+    } else {
+        if (wantsSerifFallback(name)) {
+            font = openRenderableProbeFont(SERIF_PROBE_PATHS,
+                                           ARRAY_LENGTH(SERIF_PROBE_PATHS),
+                                           size, skipPath, openedPath);
+            if (font)
+                return font;
+        }
+
+        /* Generic and wildcard hints, and a serif request on a host missing the
+         * serif probe files, default to proportional sans, weight aware,
+         * matching findAliasedFontForName so core and Xft text share pitch for
+         * the same request.
+         */
         if (containsIgnoreCase(name, "bold")) {
             font = openRenderableProbeFont(SANS_BOLD_PROBE_PATHS,
                                            ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS),
@@ -1278,6 +1300,10 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
         if (font)
             return font;
     }
+
+    /* Last-resort net for a host missing the preferred family: any monospace
+     * face, then any renderable cached font below.
+     */
     font = openRenderableProbeFont(MONOSPACE_PROBE_PATHS,
                                    ARRAY_LENGTH(MONOSPACE_PROBE_PATHS), size,
                                    skipPath, openedPath);
@@ -1315,21 +1341,26 @@ static TTF_Font *openRenderableFallbackFontForChar(const char *name,
                                                    Uint32 codepoint)
 {
     TTF_Font *font = NULL;
-    if (containsIgnoreCase(name, "times") ||
-        containsIgnoreCase(name, "adobe-times") ||
-        containsIgnoreCase(name, "schoolbook")) {
-        font = openRenderableProbeFontForChar(SERIF_PROBE_PATHS,
-                                              ARRAY_LENGTH(SERIF_PROBE_PATHS),
-                                              size, skipPath, codepoint);
+    if (wantsMonospaceFallback(name)) {
+        font = openRenderableProbeFontForChar(
+            MONOSPACE_PROBE_PATHS, ARRAY_LENGTH(MONOSPACE_PROBE_PATHS), size,
+            skipPath, codepoint);
         if (font)
             return font;
-    }
-    if (containsIgnoreCase(name, "helvetica") ||
-        containsIgnoreCase(name, "helv") ||
-        containsIgnoreCase(name, "lucida") ||
-        containsIgnoreCase(name, "arial") ||
-        ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
-         strstr(name, "-p-"))) {
+    } else {
+        if (wantsSerifFallback(name)) {
+            font = openRenderableProbeFontForChar(
+                SERIF_PROBE_PATHS, ARRAY_LENGTH(SERIF_PROBE_PATHS), size,
+                skipPath, codepoint);
+            if (font)
+                return font;
+        }
+
+        /* Generic and wildcard hints, and a serif request on a host missing the
+         * serif probe files, default to proportional sans, weight aware,
+         * matching findAliasedFontForName so core and Xft text share pitch for
+         * the same request.
+         */
         if (containsIgnoreCase(name, "bold")) {
             font = openRenderableProbeFontForChar(
                 SANS_BOLD_PROBE_PATHS, ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS),
@@ -1343,6 +1374,10 @@ static TTF_Font *openRenderableFallbackFontForChar(const char *name,
         if (font)
             return font;
     }
+
+    /* Last-resort net for a host missing the preferred family: any monospace
+     * face, then any renderable cached font below.
+     */
     font = openRenderableProbeFontForChar(MONOSPACE_PROBE_PATHS,
                                           ARRAY_LENGTH(MONOSPACE_PROBE_PATHS),
                                           size, skipPath, codepoint);
