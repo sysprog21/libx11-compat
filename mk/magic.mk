@@ -125,19 +125,10 @@ $(MAGIC_SOURCE_STAMP): mk/magic.mk
 	    git clean -fdxq
 	$(Q)printf '%s\n' '$(MAGIC_REVISION)' > $@
 
-.PHONY: magic magic-check check-magic-ogl-wrapper \
+.PHONY: magic check-magic-ogl-wrapper \
     check-magic-no-unexpected-stubs check-smoke-magic magic-clean
 ## Build Magic against the private Tcl/TkX11 and libx11-compat
 magic: $(MAGIC_BUILD_STAMP)
-
-## Verify Magic starts, maps a layout window, and the whole stack is private
-magic-check: $(MAGIC_BUILD_STAMP)
-	$(Q)$(PYTHON) scripts/check-magic.py \
-	    --magic $(abspath $(MAGIC_BIN)) \
-	    --cad-root $(abspath $(MAGIC_PREFIX))/lib \
-	    --out $(abspath $(OUT)) \
-	    --home $(abspath $(MAGIC_BUILD_DIR))/home \
-	    --tcltk-prefix $(abspath $(TCLTK_PREFIX))
 
 ## Verify the default TkCon wrapper can start the OpenGL display.
 check-magic-ogl-wrapper: $(MAGIC_BUILD_STAMP) $(MAGIC_GL_DEPS)
@@ -165,10 +156,17 @@ endif
 ## CI runs it in its own job, the same split mosaic uses.
 check-smoke-magic: $(MAGIC_SMOKE_OUT)/.stamp
 
-## Assert the Magic replay reaches no unexpected unimplemented Xlib calls
+## Gate the Magic replay: no unexpected unimplemented Xlib calls, and no host
+## X11 / Aqua Tk linked into the Magic or private Tcl/Tk stack. The replay smoke
+## already proved Magic starts, maps, and paints a real x11 layout window, so
+## the audit is a static link check over the built artifacts, not a relaunch.
 check-magic-no-unexpected-stubs: check-smoke-magic
 	$(Q)$(PYTHON) scripts/check-magic.py \
 	    --scan-log $(abspath $(MAGIC_SMOKE_OUT))/logs/magic-startup.log
+	$(Q)$(PYTHON) scripts/check-magic.py --audit \
+	    --cad-root $(abspath $(MAGIC_PREFIX))/lib \
+	    --out $(abspath $(OUT)) \
+	    --tcltk-prefix $(abspath $(TCLTK_PREFIX))
 
 $(MAGIC_SMOKE_OUT)/.stamp: FORCE $(MAGIC_SMOKE_DEPS)
 	$(Q)rm -rf $(abspath $(MAGIC_SMOKE_OUT))/work $(abspath $(MAGIC_SMOKE_OUT))/home
