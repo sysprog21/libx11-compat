@@ -9,8 +9,8 @@ window, so this script never relaunches Magic just to re-check that):
   --audit     Fail if magicexec, magicdnull, or tclmagic, or the private
               wish / libtk / libtcl, link a host X11 / Aqua Tk library.
 
-The host-link audit is shared with check-tcltk.py; it is imported rather
-than copied so the two gates cannot drift.
+The host-link audit lives in host-link-audit.py; it is imported rather than
+copied so this gate and any other caller cannot drift.
 """
 
 import argparse
@@ -24,7 +24,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 
 def _load_audit():
     spec = importlib.util.spec_from_file_location(
-        "tcltk_gate", os.path.join(_HERE, "check-tcltk.py")
+        "host_link_audit", os.path.join(_HERE, "host-link-audit.py")
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -68,6 +68,17 @@ def scan_stub_log(log_path, allow):
     )
 
 
+def first_existing(directory, names):
+    """Path of the first candidate basename that exists in directory, else None.
+    An artifact may carry the platform shared-object suffix (.dylib vs .so) or a
+    version suffix, so callers pass the candidates in preference order."""
+    for name in names:
+        path = os.path.join(directory, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def audit_tcltk_stack(audit, tcltk_prefix, out_dir):
     """Return (host-link failures, missing artifacts) for the private
     Tcl/TkX11 binaries so one gate can prove the whole stack is private."""
@@ -80,10 +91,7 @@ def audit_tcltk_stack(audit, tcltk_prefix, out_dir):
         ("libtcl", libdir, ("libtcl8.6.dylib", "libtcl8.6.so")),
     ]
     for label, d, names in wanted:
-        found = next(
-            (os.path.join(d, n) for n in names if os.path.exists(os.path.join(d, n))),
-            None,
-        )
+        found = first_existing(d, names)
         if found:
             targets.append(found)
         else:
@@ -106,14 +114,7 @@ def run_link_audit(cad_root, out_dir, tcltk_prefix):
     ]
     targets, missing = [], []
     for label, names, required in wanted:
-        found = next(
-            (
-                os.path.join(tcl_dir, n)
-                for n in names
-                if os.path.exists(os.path.join(tcl_dir, n))
-            ),
-            None,
-        )
+        found = first_existing(tcl_dir, names)
         if found:
             targets.append(found)
         elif required:
@@ -131,16 +132,16 @@ def run_link_audit(cad_root, out_dir, tcltk_prefix):
     stack = " / ".join(os.path.basename(t) for t in targets)
 
     # Extend the audit across the private Tcl/TkX11 binaries so one gate proves
-    # the whole stack, not just the Magic-side artifacts, is private.
-    if tcltk_prefix:
-        tcltk_bad, tcltk_missing = audit_tcltk_stack(audit, tcltk_prefix, out_dir)
-        if tcltk_missing:
-            sys.exit(
-                "FAIL: expected Tcl/Tk artifacts missing for link audit: "
-                + ", ".join(tcltk_missing)
-            )
-        bad += tcltk_bad
-        stack += " / wish / libtk / libtcl"
+    # the whole stack, not just the Magic-side artifacts, is private. main()
+    # requires --tcltk-prefix for --audit, so it is always present here.
+    tcltk_bad, tcltk_missing = audit_tcltk_stack(audit, tcltk_prefix, out_dir)
+    if tcltk_missing:
+        sys.exit(
+            "FAIL: expected Tcl/Tk artifacts missing for link audit: "
+            + ", ".join(tcltk_missing)
+        )
+    bad += tcltk_bad
+    stack += " / wish / libtk / libtcl"
 
     if bad:
         print("FAIL: host X11 / Aqua Tk linked into the Magic stack:")

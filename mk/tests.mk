@@ -69,6 +69,8 @@ check-unit: $(CHECK_BINS)
 	done
 	@printf "$(BLUE)RUN$(RESET) tests/check-api-symbols.py\n"
 	$(Q)LIBX11_COMPAT_GLX=$(GLX) $(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
+	@printf "$(BLUE)RUN$(RESET) tests/check-host-link-audit.py\n"
+	$(Q)$(PYTHON) tests/check-host-link-audit.py
 
 ## Full local regression suite: unit tests, motif link/demos gates, the
 ## replay smoke tier, and the SSH-backed differential screenshots. The
