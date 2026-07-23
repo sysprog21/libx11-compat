@@ -468,8 +468,11 @@ jobs:
       - name: Build and run the display-lock threading test under TSan
         env:
           TSAN_FLAGS: "-fsanitize=thread -fno-omit-frame-pointer -g -O1"
-          # A data race aborts the process (non-zero exit fails the job).
-          TSAN_OPTIONS: halt_on_error=1
+          # A data race aborts the process (non-zero exit fails the job). The
+          # suppressions file silences libdbus's own lock-order inversion (a
+          # third-party mutex cycle reached via SDL from XOpenDisplay), which
+          # would otherwise intermittently flake this gate; see tests/tsan.supp.
+          TSAN_OPTIONS: "halt_on_error=1 suppressions=${{ github.workspace }}/tests/tsan.supp"
         run: |
           make CFLAGS_EXTRA="$TSAN_FLAGS" LDFLAGS="$TSAN_FLAGS" \
             -j"$(nproc)" build/tests/check

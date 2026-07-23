@@ -38,10 +38,38 @@ def test_classification(audit):
         ("libtk8.6.so", False),  # private Tk, not a host X client lib
         ("libtcl8.6.so", False),
         ("/System/Library/Frameworks/Tk.framework/Tk", True),  # Aqua Tk marker
+        # \b boundary in HOST_LIB_RE: libXt is a host lib, but libXtstuff is an
+        # unrelated basename that must not be swallowed by the Xt alternative.
+        ("libXt.so.6", True),
+        ("libXtstuff.so", False),
     ]
     for dep, want in cases:
         got = audit.is_host_x11(dep)
         assert got == want, f"is_host_x11({dep!r}) = {got}, want {want}"
+
+
+def test_alias_farm_exemption(audit):
+    # is_private_dep exempts exactly the Tcl/Tk alias farm directory
+    # (<out>/tcltk-build/lib-aliases), where host-spelled sonames like libX11.so
+    # are symlinks onto our compat shim. This is the most delicate branch: it
+    # must exempt the farm (canonicalizing the directory, since the entries are
+    # symlinks) yet must NOT exempt a host lib sitting elsewhere under --out.
+    out = tempfile.mkdtemp()
+    farm = os.path.join(out, "tcltk-build", "lib-aliases")
+    os.makedirs(farm)
+    compat = os.path.join(out, "libX11-compat.so")
+    open(compat, "w").close()
+    # A host-spelled soname that is really a symlink into the farm -> private.
+    alias = os.path.join(farm, "libX11.so")
+    os.symlink(compat, alias)
+    assert audit.is_host_x11(alias, out) is False, "alias-farm entry must be private"
+    # Same host soname sitting elsewhere under --out (not the farm) -> host.
+    stray = os.path.join(out, "libX11.so.6")
+    open(stray, "w").close()
+    assert audit.is_host_x11(stray, out) is True, "a stray host lib under --out is not exempt"
+    # The exemption must not depend on out_dir being passed: without it, the
+    # farm path is classified purely on its basename -> host.
+    assert audit.is_host_x11(alias) is True, "no out_dir: farm path falls back to basename"
 
 
 def test_uninspectable_is_reported_not_raised(audit):
@@ -85,6 +113,7 @@ def test_otool_fails_closed_on_non_object(audit):
 if __name__ == "__main__":
     audit = load_audit()
     test_classification(audit)
+    test_alias_farm_exemption(audit)
     test_uninspectable_is_reported_not_raised(audit)
     test_otool_fails_closed_on_non_object(audit)
     print("OK: host-link audit classifier tests passed")
