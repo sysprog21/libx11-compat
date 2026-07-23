@@ -789,6 +789,41 @@ static Bool xlfdNumericField(const char *name, int index, int *valueReturn)
     }
 }
 
+/* Return the XLFD SPACING field (logical index 11, the single-letter pitch code
+ * p/m/c) folded to lower case, or 0 when it is absent, wildcarded, or not a
+ * single letter. Reading the actual field, rather than a substring match on
+ * "-m-"/"-c-", avoids tripping on a one-letter foundry/family and catches an
+ * upper-case code.
+ */
+static char xlfdSpacingCode(const char *name)
+{
+    if (!name)
+        return 0;
+
+    /* Field 11 with the leading '-', one less without it, matching the
+     * pixel/point field offsets in requestedFontSize.
+     */
+    int spacingField = name[0] == '-' ? 11 : 10;
+    const char *fieldStart = name;
+    int field = 0;
+    for (const char *p = name;; p++) {
+        if (*p != '-' && *p != '\0')
+            continue;
+        if (field == spacingField) {
+            if ((size_t) (p - fieldStart) != 1)
+                return 0;
+            char c = fieldStart[0];
+            if (c >= 'A' && c <= 'Z')
+                c = (char) (c - 'A' + 'a');
+            return c;
+        }
+        if (*p == '\0')
+            return 0;
+        field++;
+        fieldStart = p + 1;
+    }
+}
+
 /* Convert an XLFD POINT_SIZE (decipoints) to pixels at the catalog DPI, then
  * apply the one differential-verified nudge: Helvetica's 12pt (120 decipoints)
  * baseline renders at 16px, not the 17px the naive conversion yields.
@@ -894,24 +929,6 @@ int x11compat_font_pixel_size(const char *name)
     return requestedFontSize(name);
 }
 
-/* Match only the exact Motif fallback XLFD shape
- * "-<foundry>-times-medium-r-normal--14-...-iso8859-1[-encoding]". Substring
- * matches on "times" and "iso8859-1" were too permissive: legitimate
- * proportional Times-Bold-Italic 14pt requests got rerouted to the 6x13
- * fixed-width font. Anchor on the dashed field markers so non-medium,
- * non-roman, non-normal, or wildcarded foundry-but-not-times XLFDs miss.
- */
-static Bool isMotifTimesIso14Fallback(const char *name)
-{
-    if (!name)
-        return False;
-    if (!containsIgnoreCase(name, "-times-medium-r-normal-"))
-        return False;
-    if (!containsIgnoreCase(name, "-iso8859-1"))
-        return False;
-    return requestedFontSize(name) == 14;
-}
-
 static Bool coreFontMetricsForNameRaw(const char *name,
                                       short *ascent,
                                       short *descent,
@@ -938,14 +955,11 @@ static Bool coreFontMetricsForNameRaw(const char *name,
         {"9x15", 12, 3, 9}, {"9x18", 14, 4, 9}, {"12x24", 22, 2, 12},
     };
     if (loadFixedBitmapFont()) {
-        /* "fixed"/"cursor" and thentenaar/motif's hellomotifi18n Mrm request
-         * for -*-times-medium-r-normal--14-*-iso8859-1 both fall back to the
-         * 6x13 geometry on the native Xvfb baseline, so resolve them to that
-         * entry.
+        /* "fixed" and "cursor" are the classic bitmap aliases X clients expect
+         * to resolve to the 6x13 core geometry.
          */
         const char *lookup = name;
-        if (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
-            isMotifTimesIso14Fallback(name))
+        if (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor"))
             lookup = "6x13";
         for (size_t i = 0; i < sizeof(fixedFonts) / sizeof(fixedFonts[0]);
              i++) {
@@ -960,20 +974,20 @@ static Bool coreFontMetricsForNameRaw(const char *name,
 
     /* XLFD family names are case-insensitive per the X11 spec, so "-Helvetica-"
      * / "-HELVETICA-" must take the same override path as the lowercase form.
+     * These pin Helvetica ascent/descent to the native-X baseline so layout
+     * stays identical across hosts whose TTF Helvetica substitute differs
+     * (macOS Helvetica vs node11 DejaVu Sans). Enforced by check.c and the
+     * Motif layout differential, so this is metric normalization, not the
+     * times-14 monospace trap that was removed.
      */
-    if (containsIgnoreCase(name, "-helvetica-") &&
-        requestedFontSize(name) == 16) {
-        *ascent = 16;
-        *descent = 4;
-        *width = 0;
-        return True;
-    }
-    if (containsIgnoreCase(name, "-helvetica-") &&
-        requestedFontSize(name) == 19) {
-        *ascent = 19;
-        *descent = 4;
-        *width = 0;
-        return True;
+    if (containsIgnoreCase(name, "-helvetica-")) {
+        int size = requestedFontSize(name);
+        if (size == 16 || size == 19) {
+            *ascent = (short) size;
+            *descent = 4;
+            *width = 0;
+            return True;
+        }
     }
     return False;
 }
@@ -1014,10 +1028,8 @@ static Bool usesFixedFallbackFont(const char *name)
 {
     if (!name)
         return False;
-    if (!strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
-        !strcasecmp(name, "6x13"))
-        return True;
-    return isMotifTimesIso14Fallback(name);
+    return !strcasecmp(name, "fixed") || !strcasecmp(name, "cursor") ||
+           !strcasecmp(name, "6x13");
 }
 
 #include "font-6x13-bitmap.h"
@@ -1119,35 +1131,50 @@ static FontCacheEntry *findAliasedFontForName(const char *name)
 {
     if (usesFixedFallbackFont(name))
         return findAliasedFixedWidthFont();
-    if (!strcasecmp(name, "variable"))
-        return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
+
+    /* Core bitmap aliases (7x13, 8x13, 9x15, 12x24, ...) carry fixed-pitch
+     * metrics from the table in coreFontMetricsForNameRaw, which reports a
+     * width there and 0 for the proportional Helvetica pins. Render them
+     * fixed-pitch so glyph advances match those metrics; sans below would draw
+     * proportional glyphs under monospace metrics.
+     */
+    short coreAscent, coreDescent, coreWidth;
+    if (coreFontMetricsForNameRaw(name, &coreAscent, &coreDescent,
+                                  &coreWidth) &&
+        coreWidth > 0)
+        return findAliasedFixedWidthFont();
+
+    /* Monospace is otherwise opt-in: a known fixed-pitch family or an XLFD
+     * SPACING code of "m" (monospaced) or "c" (character cell). Core fixed
+     * XLFD families stay fixed even when old clients wildcard SPACING. Check
+     * this before the serif/sans families so lucidatypewriter resolves
+     * fixed-pitch, not to a "lucida" sans branch.
+     */
+    char spacing = xlfdSpacingCode(name);
+    if (containsIgnoreCase(name, "-misc-fixed-") ||
+        containsIgnoreCase(name, "-jis-fixed-") ||
+        containsIgnoreCase(name, "courier") ||
+        containsIgnoreCase(name, "typewriter") ||
+        containsIgnoreCase(name, "monospace") || spacing == 'm' ||
+        spacing == 'c')
+        return findAliasedFixedWidthFont();
     if (containsIgnoreCase(name, "times") ||
         containsIgnoreCase(name, "adobe-times") ||
         containsIgnoreCase(name, "schoolbook"))
         return findProbeFont(SERIF_PROBE_PATHS,
                              ARRAY_LENGTH(SERIF_PROBE_PATHS));
-    if (containsIgnoreCase(name, "helvetica") ||
-        containsIgnoreCase(name, "helv") ||
-        containsIgnoreCase(name, "lucida") ||
-        containsIgnoreCase(name, "arial")) {
-        if (containsIgnoreCase(name, "bold")) {
-            return findProbeFont(SANS_BOLD_PROBE_PATHS,
-                                 ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS));
-        }
-        return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
-    }
-    if ((strstr(name, "-medium-r-") || strstr(name, "-bold-r-")) &&
-        strstr(name, "-p-")) {
-        if (containsIgnoreCase(name, "bold")) {
-            return findProbeFont(SANS_BOLD_PROBE_PATHS,
-                                 ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS));
-        }
-        return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
-    }
+
+    /* Default for any other family, including the wildcarded "-*-*-<weight>-r-
+     * normal-...-iso8859-1" that Motif's default label and button fontLists
+     * request: a proportional sans face, weight aware. Real X hands a generic
+     * request a variable font, so defaulting to monospace here made Motif menu
+     * push buttons (medium weight) render fixed-pitch while bold labels came
+     * out proportional, splitting one menu across two fonts.
+     */
     if (containsIgnoreCase(name, "bold"))
         return findProbeFont(SANS_BOLD_PROBE_PATHS,
                              ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS));
-    return findAliasedFixedWidthFont();
+    return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
 }
 
 static Bool fontCanRenderText(TTF_Font *font)

@@ -1,0 +1,24 @@
+Preserve a push-button gadget's resolved fontList.
+
+XmPushButtonGadget's InitializePrehook overwrote an already-resolved font
+(from XmNfontList / XmNrenderTable resources) with the inherited button
+default render table, because the guard was inverted. XmeGetDefaultRenderTable
+walks to the parent for XmBUTTON_FONTLIST, so a push button in a menu lost its
+own fontList and fell back to the ancestor default, which resolves to the
+monospace "fixed" font. Toggle and cascade gadgets have no such prehook, so a
+single pulldown rendered its push items monospace while toggles and cascades
+stayed proportional. Match the base class (LabelG.c) and the sibling path at
+PushBG.c:2087, which correctly set the default only when no font is present.
+
+diff --git a/lib/Xm/PushBG.c b/lib/Xm/PushBG.c
+index 26dad283..f76287a4 100644
+--- a/lib/Xm/PushBG.c
++++ b/lib/Xm/PushBG.c
+@@ -1771,6 +1771,6 @@ SecondaryObjectCreate(
+ static void InitializePrehook(Widget req, Widget new_w, ArgList args,
+                               Cardinal *num_args)
+ {
+-	if (LabG_Font(new_w))
++	if (!LabG_Font(new_w))
+ 		LabG_Font(new_w) = XmeGetDefaultRenderTable(new_w, XmBUTTON_FONTLIST);
+ }

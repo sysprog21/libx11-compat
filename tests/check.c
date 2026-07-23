@@ -8110,6 +8110,60 @@ static int test_fonts(Display *display)
                   "XLFD pixel-size resolution regressed for a table entry");
         }
 
+        /* Family resolution must be pitch-correct. A wildcarded generic family,
+         * which is what Motif's default label and button fontLists request, is
+         * proportional; fixed pitch is opt-in through a known monospace family
+         * or an XLFD "m"/"c" spacing field. The menu push button (medium) and
+         * label or toggle (bold) rows are the regression that split one
+         * pulldown across a proportional and a fixed-pitch font when the
+         * wildcard default was monospace: both must resolve proportional so the
+         * menu stays one font. min_bounds.width != max_bounds.width is the
+         * precise pitch test, cross checked against the glyph advance below.
+         */
+        struct {
+            const char *name;
+            int proportional;
+        } pitchTable[] = {
+            {"-*-*-medium-r-normal-*-14-*-iso8859-1", 1},
+            {"-*-*-bold-r-normal-*-14-*-*-*-*-*-iso8859-1", 1},
+            {"-adobe-times-medium-r-normal-*-20-*-*-*-*-*-*-*", 1},
+            {"-adobe-helvetica-medium-r-normal-*-14-*-*-*-*-*-*-*", 1},
+            {"-misc-fixed-medium-r-normal--13-*-*-*-*-*-iso8859-1", 0},
+            {"-jis-fixed-medium-r-normal--13-*-*-*-*-*-iso8859-1", 0},
+            {"-adobe-courier-medium-r-normal-*-17-*-*-*-*-*-*-*", 0},
+            {"-*-lucidatypewriter-medium-r-normal-*-14-*-*-*-*-*-iso8859-1", 0},
+            {"-foo-bar-medium-r-normal--14-*-*-*-m-*-iso8859-1", 0},
+            {"-foo-bar-medium-r-normal--14-*-*-*-M-*-iso8859-1", 0},
+            {"fixed", 0},
+            {"9x15", 0},
+            {"12x24", 0},
+        };
+        for (size_t t = 0; t < sizeof(pitchTable) / sizeof(pitchTable[0]);
+             t++) {
+            XFontStruct *pf = XLoadQueryFont(display, pitchTable[t].name);
+            CHECK(pf != NULL && pf->fid != None,
+                  "font pitch table entry failed to load");
+            int isProportional = pf->min_bounds.width != pf->max_bounds.width;
+            if (isProportional != pitchTable[t].proportional) {
+                fprintf(
+                    stderr, "font pitch '%s': expected %s, got %s\n",
+                    pitchTable[t].name,
+                    pitchTable[t].proportional ? "proportional" : "monospace",
+                    isProportional ? "proportional" : "monospace");
+            }
+            CHECK(isProportional == pitchTable[t].proportional,
+                  "font family resolved to the wrong pitch");
+            int narrow = XTextWidth(pf, "iiii", 4);
+            int wide = XTextWidth(pf, "WWWW", 4);
+            if (pitchTable[t].proportional) {
+                CHECK(narrow < wide,
+                      "proportional font did not vary glyph advance");
+            } else {
+                CHECK(narrow == wide, "fixed-pitch font varied glyph advance");
+            }
+            XFreeFont(display, pf);
+        }
+
         Window root = RootWindow(display, DefaultScreen(display));
         Pixmap pixmap =
             XCreatePixmap(display, root, 96, 32,
