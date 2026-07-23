@@ -1801,6 +1801,57 @@ static int exercise_fixed_font_program(Display *display)
     CHECK(readback_rightmost_black(renderer) > multi16Right,
           "XDrawText16 did not advance ink by the item delta");
 
+    /* Exercise the font-switch re-query path the retain-one refactor added:
+     * item 1 selects a second, distinct font, so the loop must free the first
+     * retained XFontStruct and query the second. That is exactly two queries
+     * for the run, and the only place a double-free or leak could hide.
+     */
+    XFontStruct *second = XLoadQueryFont(display, "9x15");
+    CHECK(second != NULL && second->fid != None,
+          "second distinct font did not load");
+    CHECK(second->fid != fixed->fid, "second font shares the fixed font id");
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program switch clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program switch fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program switch black setup failed");
+    XTextItem switchItems[3] = {
+        {.chars = "aa", .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = "bb", .nchars = 2, .delta = 1, .font = second->fid},
+        {.chars = "cc", .nchars = 2, .delta = 1, .font = None},
+    };
+    queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText(display, pixmap, gc, 2, fixed->ascent, switchItems, 3),
+          "fixed-font program font-switch XDrawText failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 2,
+          "font-switch XDrawText did not re-query once per distinct font");
+    CHECK(readback_black_count(renderer) > 0,
+          "font-switch XDrawText rendered no pixels");
+
+    XChar2b switchAa[] = {{0, 'a'}, {0, 'a'}};
+    XChar2b switchBb[] = {{0, 'b'}, {0, 'b'}};
+    XChar2b switchCc[] = {{0, 'c'}, {0, 'c'}};
+    XTextItem16 switch16[3] = {
+        {.chars = switchAa, .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = switchBb, .nchars = 2, .delta = 1, .font = second->fid},
+        {.chars = switchCc, .nchars = 2, .delta = 1, .font = None},
+    };
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program switch16 clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program switch16 fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program switch16 black setup failed");
+    queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText16(display, pixmap, gc, 2, fixed->ascent, switch16, 3),
+          "fixed-font program font-switch XDrawText16 failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 2,
+          "font-switch XDrawText16 did not re-query once per distinct font");
+    CHECK(readback_black_count(renderer) > 0,
+          "font-switch XDrawText16 rendered no pixels");
+    XFreeFont(display, second);
+
     CHECK(XSetForeground(display, gc, 0x00FFFFFF),
           "fixed-font program clear color setup failed");
     int rowHeight = fixed->ascent + fixed->descent;
