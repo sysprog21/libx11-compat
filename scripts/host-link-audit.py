@@ -114,13 +114,15 @@ def audit_no_host_x11(paths, out_dir=None):
         if not os.path.exists(p):
             continue
         # An artifact ldd/otool cannot inspect (a static binary, a non-ELF
-        # wrapper script) is reported as a clean audit failure rather than
-        # crashing the whole gate with a traceback. Still fail-closed: an
-        # uninspectable artifact counts as bad, so the audit never passes on a
-        # binary it could not actually read. Other artifacts keep being audited.
+        # wrapper script), or a missing/unrunnable inspection tool itself
+        # (OSError, e.g. ldd not on PATH), is reported as a clean audit failure
+        # rather than crashing the whole gate with a traceback. Still
+        # fail-closed: an uninspectable artifact counts as bad, so the audit
+        # never passes on a binary it could not actually read. Other artifacts
+        # keep being audited.
         try:
             deps = dep_paths(p)
-        except RuntimeError as error:
+        except (OSError, RuntimeError) as error:
             bad.append(f"{os.path.basename(p)}: not inspectable ({error})")
             continue
         for dep in deps:

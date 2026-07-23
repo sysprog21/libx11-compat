@@ -73,20 +73,26 @@ def test_alias_farm_exemption(audit):
 
 
 def test_uninspectable_is_reported_not_raised(audit):
-    # An artifact ldd/otool cannot read must surface as a clean audit failure,
-    # never propagate as a traceback that aborts the whole gate.
+    # An artifact ldd/otool cannot read, or a missing inspection tool, must
+    # surface as a clean audit failure, never propagate as a traceback that
+    # aborts the whole gate. RuntimeError is a nonzero tool exit; OSError (e.g.
+    # FileNotFoundError) is the tool binary itself being absent or unrunnable.
     original = audit.dep_paths
+    for error in (
+        RuntimeError("ldd failed: not a dynamic executable"),
+        FileNotFoundError(2, "No such file or directory", "ldd"),
+    ):
 
-    def boom(_path):
-        raise RuntimeError("ldd failed: not a dynamic executable")
+        def boom(_path, _error=error):
+            raise _error
 
-    audit.dep_paths = boom
-    try:
-        bad = audit.audit_no_host_x11([__file__])  # a path that exists
-    finally:
-        audit.dep_paths = original
-    assert bad, "an uninspectable artifact must count as an audit failure"
-    assert "not inspectable" in bad[0], f"expected a clean message, got {bad!r}"
+        audit.dep_paths = boom
+        try:
+            bad = audit.audit_no_host_x11([__file__])  # a path that exists
+        finally:
+            audit.dep_paths = original
+        assert bad, f"an uninspectable artifact must fail the audit ({error!r})"
+        assert "not inspectable" in bad[0], f"expected a clean message, got {bad!r}"
 
 
 def test_otool_fails_closed_on_non_object(audit):
