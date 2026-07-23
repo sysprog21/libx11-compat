@@ -74,6 +74,10 @@ jobs:
   # gaps) without gating the PR until it too has a green track record. Smoke
   # replays stay on Linux until an offscreen macOS replay path lands.
   workloads:
+    # Name the leg by app alone; without this GitHub derives the job name from
+    # every matrix field (src, mk, patches, exp), so the run list reads
+    # "workloads (cinepaint, build/upstream/cinepaint, mk/cinepaint.mk, ...)".
+    name: ${{ matrix.app }}
     runs-on: macos-14
     # Per-leg gating: blocking for proven apps, non-blocking for exp: true.
     continue-on-error: ${{ matrix.exp }}
