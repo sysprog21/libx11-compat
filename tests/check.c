@@ -4917,8 +4917,11 @@ static int test_events(Display *display)
         SDL_GetWindowID(GET_WINDOW_STRUCT(pointerParent)->sdlWindow);
     hintMotion.motion.x = 18;
     hintMotion.motion.y = 21;
+    resetPointerResolveDescentCount();
     CHECK(convertEvent(display, &hintMotion, &out, True) == 0,
           "SDL child motion did not convert");
+    CHECK(pointerResolveDescentCount() == 1,
+          "SDL child motion resolved pointer target more than once");
     CHECK(out.type == MotionNotify && out.xmotion.window == pointerChild,
           "SDL motion did not target containing child");
     CHECK(out.xmotion.x == 8 && out.xmotion.y == 9 &&
@@ -12456,6 +12459,40 @@ static int test_overlap_pointer_routing(Display *display)
           "overlap owner-events grab release produced no ButtonRelease");
     CHECK(XUngrabPointer(display, CurrentTime),
           "overlap owner-events pointer ungrab failed");
+
+    SDL_Event hover;
+    SDL_zero(hover);
+    hover.type = SDL_MOUSEMOTION;
+    hover.motion.windowID = SDL_GetWindowID(lowerSdl);
+    hover.motion.x = 20;
+    hover.motion.y = 20;
+
+    /* Primes internal hover tracking so the passive grab below resolves through
+     * the override-redirect window. Neither window selects motion or crossing
+     * masks, so this delivers no X event and convertEvent reports -1.
+     */
+    CHECK(convertEvent(display, &hover, &out, True) == -1,
+          "overlap hover motion unexpectedly produced a delivered event");
+
+    CHECK(
+        XGrabButton(display, Button1, AnyModifier, upper, True, ButtonPressMask,
+                    GrabModeAsync, GrabModeAsync, None, None) == Success,
+        "overlap passive button grab failed");
+    ev.type = SDL_MOUSEBUTTONDOWN;
+    SDL_PushEvent(&ev);
+
+    CHECK(XCheckTypedEvent(display, ButtonPress, &out),
+          "overlap owner-events passive grab click produced no ButtonPress");
+    CHECK(out.xbutton.window == upper,
+          "owner-events passive grab did not route through the active "
+          "override-redirect grab");
+    ev.type = SDL_MOUSEBUTTONUP;
+    SDL_PushEvent(&ev);
+    CHECK(
+        XCheckTypedEvent(display, ButtonRelease, &out),
+        "overlap owner-events passive grab release produced no ButtonRelease");
+    CHECK(XUngrabButton(display, Button1, AnyModifier, upper) == Success,
+          "overlap passive button ungrab failed");
 
     XDestroyWindow(display, upper);
     XDestroyWindow(display, lower);

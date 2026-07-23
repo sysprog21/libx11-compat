@@ -7,6 +7,7 @@
 
 #define SEND_EVENT_CODE 1
 #define INTERNAL_EVENT_CODE 2
+
 /* Snapshot the replay target window's backing surface to a path. Carried on
  * SDL_USEREVENT.user.data1 (path, allocated by replay thread, freed by the
  * main-thread handler). Used by the in-process smoke-snapshot path to bypass
@@ -14,6 +15,7 @@
  * pump just long enough that synthetic input goes undelivered.
  */
 #define SNAPSHOT_EVENT_CODE 3
+
 /* Resize the replay target window. user.data1 carries width, user.data2 carries
  * height, each as intptr_t. Runs synchronously on the main thread
  * (SDL_SetWindowSize is main-thread only on macOS). Used by the replay engine's
@@ -21,11 +23,13 @@
  * without depending on the OS window manager.
  */
 #define RESIZE_EVENT_CODE 4
+
 /* Flush pending top-level backing textures to their SDL windows. Posted by the
  * drawing layer after X drawing operations that happen away from a blocking
  * XNextEvent/XFlush path, such as Motif popup menu expose redraws.
  */
 #define PRESENT_EVENT_CODE 5
+
 /* Set keyboard focus to the X subwindow under a replay-target-local point.
  * user.data1 carries the target-local x, user.data2 the y, each as intptr_t.
  * Runs synchronously on the main thread so the window-tree walk and
@@ -33,6 +37,7 @@
  * replay engine's focus-at verb.
  */
 #define FOCUS_AT_EVENT_CODE 6
+
 /* Run an arbitrary thunk on the main event thread. user.data1 carries a
  * MainDispatchCmd pointer (see src/main-dispatch.c) that lives on the blocked
  * worker's stack. Off-main-thread Xlib entry points that touch SDL route their
@@ -48,12 +53,14 @@ int initEventPipe(Display *display);
 void closeEventPipe(Display *display);
 void captureMainEventThreadIfUnset(void);
 void releaseMainEventThread(void);
+
 /* True when the current thread is the captured main event thread, or when no
  * main thread has been captured yet (still single-threaded). runOnMainThread
  * and the SDL-touching entry points that route through it test this to decide
  * whether to run inline or hop to the main thread.
  */
 Bool libx11CompatOnMainEventThread(void);
+
 /* Refresh SDL's cached input state (mouse buttons, position, modifiers) when
  * the caller is on the main event thread. XQueryPointer relies on this so a
  * client busy-polling pointer state, like xwpe's button-release wait, observes
@@ -63,6 +70,7 @@ void pumpEventsSafe(void);
 void wakeEventPipeForExternalEvent(Display *display);
 unsigned int convertModifierState(Uint16 mod);
 Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...);
+
 /* Post a WM_DELETE_WINDOW ClientMessage if the window opted into the protocol
  * via WM_PROTOCOLS; returns True when posted. Shared by the SDL window-close
  * path (convertEvent) and the EWMH _NET_CLOSE_WINDOW path (events-ewmh.c) so
@@ -102,6 +110,8 @@ void postSyntheticWindowResize(Display *display,
 void clearActivePointerWindow(void);
 void clearPointerStateForWindow(Window window);
 void releaseButtonGrabsForWindow(Window window);
+void resetPointerResolveDescentCount(void);
+unsigned long pointerResolveDescentCount(void);
 
 /* Option 1b: SDL delivers pointer coordinates in logical points while X11
  * window geometry is stored in physical pixels. Multiply an incoming SDL point
