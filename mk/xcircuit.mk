@@ -42,15 +42,18 @@ XCIRCUIT_CPPFLAGS += -D_DEFAULT_SOURCE
 # pointer-types, deprecated-non-prototype) to gcc makes -Wno-error=
 # reject an unknown warning, and every compile including configure's own
 # link test fails with "C compiler cannot create executables".
+#
+# incompatible-pointer-types is common to both compilers: the bundled Xw
+# widget set passes concrete widget-instance pointers where a generic
+# Widget is expected, which recent clang (Xcode 15+) also promotes to an
+# error by default.
 XCIRCUIT_CFLAGS := $(CFLAGS) $(CFLAGS_EXTRA) \
     -Wno-error=implicit-int \
-    -Wno-error=implicit-function-declaration
+    -Wno-error=implicit-function-declaration \
+    -Wno-error=incompatible-pointer-types
 ifeq ($(UNAME_S),Darwin)
   XCIRCUIT_CFLAGS += -Wno-error=incompatible-function-pointer-types \
       -Wno-deprecated-non-prototype
-endif
-ifeq ($(UNAME_S),Linux)
-  XCIRCUIT_CFLAGS += -Wno-error=incompatible-pointer-types
 endif
 XCIRCUIT_LDFLAGS := -L$(abspath $(XCIRCUIT_LIB_ALIASES)) \
     -L$(abspath $(TCLTK_LIBDIR)) -L$(abspath $(OUT)) $(XCIRCUIT_RPATH_FLAGS)

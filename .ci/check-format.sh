@@ -3,7 +3,8 @@
 # Verify clang-format-20 conformance for tracked C/H files under
 # include/, src/, and tests/. Examples are excluded because
 # examples/x11perf/ ships verbatim from xorg and intentionally keeps
-# upstream style.
+# upstream style. include/X11/Xpoll.h is excluded for the same reason:
+# it is a resolved copy of xorgproto's Xpoll.h and keeps upstream style.
 #
 # clang-format-20 is required: older releases produce different output
 # for the .clang-format style used in this tree.
@@ -37,6 +38,7 @@ while IFS= read -r -d '' file; do
 done < <(git ls-files -z -- \
     'include/*.h' 'include/**/*.h' \
     'src/*.c' 'src/*.h' \
-    'tests/*.c' 'tests/*.h')
+    'tests/*.c' 'tests/*.h' \
+    ':!include/X11/Xpoll.h')
 
 exit $ret

@@ -1,0 +1,315 @@
+name: macOS
+
+# The shim's whole purpose is to run X11 apps natively on macOS, yet all CI so
+# far runs on Linux (ubuntu-24.04), where every Cocoa/CoreAudio/native path is
+# compiled out. This job builds on a real macOS runner, exercises `make install`
+# into a prefix, and links a tiny downstream against `-lX11 -lXft -lXext` so the
+# standard-name aliases and rpath are proven to resolve as a consumer sees them
+# (e.g. a native xwpe built with `--with-libx11-compat=$PREFIX`).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# macOS runner minutes are scarce; cancel superseded PR runs (never on main).
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build-install-link:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          # The runner image pre-taps aws/tap; untap it so Homebrew's tap-trust
+          # check stays quiet (we only install core formulae below).
+          brew untap aws/tap 2>/dev/null || true
+          brew install sdl3 sdl3_ttf pixman pkgconf
+
+      # Build and install the full X11 stack, including the Xt/Xmu/Xaw alias set
+      # that Motif/Athena apps link. libXt needs <X11/Xpoll.h>, which the shim
+      # now ships in include/X11/, so a clean macOS runner (no system Xorg
+      # headers) can build it -- exercising that here is the point.
+      - name: Build and install into a prefix
+        run: >-
+          make install
+          SDL_BACKEND=sdl3
+          PREFIX="$RUNNER_TEMP/prefix"
+
+      - name: Show the installed tree
+        run: |
+          ls -l "$RUNNER_TEMP/prefix/lib"
+          ls "$RUNNER_TEMP/prefix/include/X11" | head
+
+      - name: Link a downstream against the installed shim
+        run: |
+          PFX="$RUNNER_TEMP/prefix"
+          cat > "$RUNNER_TEMP/probe.c" <<'EOF'
+          #include <X11/Xlib.h>
+          int main(void) { Display *d = XOpenDisplay(0); (void)d; return 0; }
+          EOF
+          cc "$RUNNER_TEMP/probe.c" -o "$RUNNER_TEMP/probe" \
+            -I"$PFX/include" \
+            -L"$PFX/lib" -Wl,-rpath,"$PFX/lib" \
+            -L"$(brew --prefix)/lib" \
+            -lX11 -lXft -lXext
+          echo "linked ok; confirming it resolved to the shim:"
+          otool -L "$RUNNER_TEMP/probe"
+          otool -L "$RUNNER_TEMP/probe" | grep -q libX11-compat
+
+  # Build every downstream workload on a real macOS runner. jserv asked for
+  # this on PR #58: the Linux demo-build jobs prove nothing about the native
+  # (Cocoa/CoreAudio) paths, so surface macOS-only compatibility gaps by
+  # compiling the actual apps against the shim here.
+  #
+  # All 14 apps below have several consecutive green rounds on macos-14
+  # (arm64), so they are blocking (exp: false) -- a regression now fails CI
+  # instead of merging silently. New/experimental targets go in as exp: true,
+  # which flips continue-on-error on just that leg: it can build (and surface
+  # gaps) without gating the PR until it too has a green track record. Smoke
+  # replays stay on Linux until an offscreen macOS replay path lands.
+  workloads:
+    runs-on: macos-14
+    # Per-leg gating: blocking for proven apps, non-blocking for exp: true.
+    continue-on-error: ${{ matrix.exp }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Xlib-direct apps (no libXt) and the Motif/Athena set (need libXt,
+        # hence <X11/Xpoll.h>, which the shim now ships).
+        #
+        # `src` is the upstream source dir the build clones/extracts into
+        # ($(OUT)/upstream/..., OUT=build), and `mk`/`patches` feed the
+        # source-cache key so a change to the recipe or its patches busts
+        # the cache -- exactly the exact-match, no-fallback discipline the
+        # Linux jobs in ci.yml use (a stale patched tree is worse than a
+        # reclone). Only gimp-motif's mk/patches names differ from `app`.
+        # `exp` gates blocking vs. non-blocking (see continue-on-error above).
+        #
+        # `tarball` is the download cache path for the four apps that fetch a
+        # release tarball into build/upstream/.cache (gimp/xfig/grace/xclock);
+        # it is excluded from the shared upstream cache and folded into that
+        # app's recipe-hashed source cache instead, so a recipe change busts
+        # the pinned tarball too (matching ci.yml's per-app tarball caching).
+        # Clone-based apps leave it empty.
+        #
+        # `smoke` lists the make smoke target(s) to run after the build for
+        # apps whose replays drive the in-process offscreen engine (no display
+        # server) -- xmms, xephem, grace and xwpe hardcode (or default to)
+        # --offscreen, so they replay headlessly on the runner. The smoke step
+        # is itself non-blocking (continue-on-error) for now: the build gates,
+        # the replay only reports, until it has its own green track record on
+        # macOS. The other apps either need Xvfb/xdotool (not offscreen-ready)
+        # or have no replay yet, so they leave `smoke` empty and build-only.
+        include:
+          - { app: gtk1,       src: build/upstream/gtk1,          mk: mk/gtk1.mk,       patches: compat/gtk1-patches/**,     tarball: "",                                              exp: false, smoke: "" }
+          - { app: xmms,       src: build/upstream/xmms,          mk: mk/xmms.mk,       patches: compat/xmms-patches/**,     tarball: "",                                              exp: false, smoke: "check-smoke-xmms-startup check-smoke-xmms-window" }
+          - { app: cinepaint,  src: build/upstream/cinepaint,     mk: mk/cinepaint.mk,  patches: compat/cinepaint-patches/**, tarball: "",                                              exp: false, smoke: "" }
+          - { app: osiris,     src: build/upstream/osiris,        mk: mk/osiris.mk,     patches: compat/osiris-patches/**,   tarball: "",                                              exp: false, smoke: "" }
+          - { app: motif,      src: build/upstream/motif,         mk: mk/motif.mk,      patches: compat/motif-patches/**,    tarball: "",                                              exp: false, smoke: "" }
+          - { app: gimp-motif, src: build/upstream/gimp-0.54.1,   mk: mk/gimp-motif.mk, patches: compat/gimp-patches/**,      tarball: build/upstream/.cache/gimp-0.54.1.fixed.tar.gz,  exp: false, smoke: "" }
+          - { app: xfig,       src: build/upstream/xfig-3.2.9a,   mk: mk/xfig.mk,       patches: compat/xfig-patches/**,     tarball: build/upstream/.cache/xfig-3.2.9a.tar.xz,        exp: false, smoke: "" }
+          - { app: xephem,     src: build/upstream/xephem-src,    mk: mk/xephem.mk,     patches: compat/xephem-patches/**,   tarball: "",                                              exp: false, smoke: "check-smoke-xephem" }
+          - { app: grace,      src: build/upstream/grace-5.1.25,  mk: mk/grace.mk,      patches: compat/grace-patches/**,    tarball: build/upstream/.cache/grace-5.1.25.tar.gz,       exp: false, smoke: "check-smoke-grace" }
+          - { app: mosaic,     src: build/upstream/mosaic,        mk: mk/mosaic.mk,     patches: compat/mosaic-patches/**,   tarball: "",                                              exp: false, smoke: "" }
+          - { app: violawww,   src: build/upstream/violawww-src,  mk: mk/violawww.mk,   patches: compat/violawww-patches/**, tarball: "",                                              exp: false, smoke: "" }
+          - { app: xcircuit,   src: build/upstream/xcircuit-src,  mk: mk/xcircuit.mk,   patches: compat/xcircuit-patches/**, tarball: "",                                              exp: false, smoke: "" }
+          - { app: xnedit,     src: build/upstream/xnedit,        mk: mk/xnedit.mk,     patches: compat/xnedit-patches/**,   tarball: "",                                              exp: false, smoke: "" }
+          - { app: xclock,     src: build/upstream/xclock-1.1.1,  mk: mk/xclock.mk,     patches: compat/xclock-patches/**,   tarball: build/upstream/.cache/xclock-1.1.1.tar.xz,       exp: false, smoke: "" }
+          # xwpe is new to the macOS runner, so it enters non-blocking
+          # (exp: true) per the on-ramp rule and is flipped to exp: false once
+          # it has its own green rounds here. Its six replays all hardcode
+          # --offscreen, so the smoke runs headless like the others.
+          - { app: xwpe,       src: build/upstream/xwpe,          mk: mk/xwpe.mk,       patches: compat/xwpe-patches/**,     tarball: "",                                              exp: true,  smoke: "check-smoke-xwpe" }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          # Quiet Homebrew's tap-trust check (the runner pre-taps aws/tap).
+          brew untap aws/tap 2>/dev/null || true
+          # Core shim deps plus the union of what the workload build systems
+          # need: autotools+bison+flex (autoreconf apps), cmake (gtk1/
+          # cinepaint/xmms), meson+ninja (osiris), texinfo (xwpe's makeinfo doc
+          # target, which the Linux runners have preinstalled), and the image/
+          # font/crypto libraries a few apps link (jpeg/libpng/freetype/openssl).
+          # flex is keg-only, so put it on PATH for the lexer builds. ccache is
+          # wired below via its compiler-shim dir (see the Configure ccache step).
+          brew install \
+            sdl3 sdl3_ttf pixman pkgconf ccache \
+            cmake meson ninja texinfo \
+            autoconf automake libtool bison flex gawk m4 \
+            jpeg libpng freetype fontconfig openssl@3 json-c ncurses
+          # flex and texinfo are both keg-only (macOS ships older BSD flex and
+          # a stale makeinfo, so Homebrew does not symlink them into its bin);
+          # put both on PATH so the lexer builds and xwpe's makeinfo doc target
+          # pick up the Homebrew versions.
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix texinfo)/bin" >> "$GITHUB_PATH"
+          # Pillow backs the offscreen replay smoke's image assertions
+          # (scripts/run-ui-replay.py imports PIL). The Linux jobs get it via
+          # apt's python3-pil; on macOS install it into the same python3 that
+          # the Makefile drives (PYTHON ?= python3). The runner's python3 is
+          # PEP 668 externally-managed, so --break-system-packages is required.
+          python3 -m pip install --break-system-packages --upgrade Pillow
+
+      # Cache the shared upstream tree (Xorg tarballs + extracted headers that
+      # sync-upstream-headers.py fetches), whose only recipe input is
+      # sync-upstream-headers.py. Every per-app source tree and every
+      # downloaded release tarball is excluded so a recipe/patch change busts
+      # only that app's own cache below, never this shared, recipe-agnostic
+      # layer. Because all matrix legs share this one key, the excludes are the
+      # full union of per-app paths (not just this leg's) -- mirroring how each
+      # hand-written ci.yml job lists the whole set. The extracted source dirs
+      # match !${{ matrix.src }} on their own leg, but the union guarantees a
+      # tree another leg populated never leaks in either.
+      - name: Cache upstream tarballs and extracted source/headers
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/${{ matrix.app }}
+            !${{ matrix.src }}
+            !build/upstream/gtk1
+            !build/upstream/xmms
+            !build/upstream/cinepaint
+            !build/upstream/osiris
+            !build/upstream/motif
+            !build/upstream/gimp-*
+            !build/upstream/xfig-*
+            !build/upstream/xephem-src
+            !build/upstream/grace-*
+            !build/upstream/mosaic
+            !build/upstream/violawww-src
+            !build/upstream/xcircuit-src
+            !build/upstream/xnedit
+            !build/upstream/xclock-*
+            !build/upstream/xwpe
+            !build/upstream/.cache/gimp-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/.cache/grace-*
+            !build/upstream/.cache/xclock-*
+          key: upstream-src-v3-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v3-${{ runner.os }}-
+
+      # Per-app upstream source clone/extraction. Exact-match key only (no
+      # restore-keys): a hit must correspond to the current recipe + patches,
+      # or a stale patched tree would build silently. On a miss the build just
+      # re-clones/re-extracts, which is safe. Keyed like ci.yml's per-app
+      # "Cache <app> source clone" steps. For the four tarball apps the
+      # downloaded release archive (matrix.tarball) is cached alongside the
+      # extracted tree under the same recipe hash, so a hit skips both the
+      # re-download and the re-extract, and a recipe bump re-fetches.
+      - name: Cache ${{ matrix.app }} source
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ matrix.src }}
+            ${{ matrix.tarball }}
+          key: ${{ matrix.app }}-src-${{ runner.os }}-${{ hashFiles(matrix.mk, matrix.patches) }}
+
+      # Per-app ccache. Keyed on the commit so each push saves a fresh entry,
+      # with a restore-key fallback to the newest prior entry for this app so a
+      # PR still warms from main. Distinct per app because include paths differ
+      # between builds (an object cache shared across apps churns needlessly).
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/ccache
+          key: ccache-${{ matrix.app }}-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.app }}-v1-${{ runner.os }}-
+
+      - name: Configure ccache
+        run: |
+          # macOS Homebrew ccache defaults its cache dir to ~/Library/Caches/
+          # ccache (unlike Linux's ~/.cache/ccache), which is what the cache
+          # step above stores.
+          #
+          # Route compiles through ccache via Homebrew's compiler shim dir
+          # rather than a "CC=ccache clang" prefix: the CMake-based recipes
+          # (gtk1, cinepaint) pass -DCMAKE_C_COMPILER='$(CC)', and CMake treats
+          # a two-token value as one executable name it then cannot find. The
+          # libexec shims keep CC=clang single-token while still hitting ccache
+          # for autotools, CMake and meson builds alike.
+          ccache --max-size=1024M
+          ccache --zero-stats
+          echo "$(brew --prefix ccache)/libexec" >> "$GITHUB_PATH"
+
+      - name: Build ${{ matrix.app }} against the compat shim
+        env:
+          SDL_BACKEND: sdl3
+        run: |
+          # mk/motif.mk auto-detects Homebrew's bison for the Mrm parser on
+          # macOS, so MOTIF_YACC does not need to be set here (unlike the
+          # Linux jobs, where bison installs no /usr/bin/yacc).
+          make "${{ matrix.app }}" -j"$(sysctl -n hw.ncpu)"
+
+      # Offscreen replay smoke for the apps that support it (matrix.smoke set).
+      # These replays drive the in-process snapshot engine with --offscreen, so
+      # no display server (Xvfb) is needed -- exactly the headless macOS replay
+      # path the plan called for. Kept non-blocking (continue-on-error) while
+      # the replays earn a green track record on macos-14: a smoke regression
+      # reports here without gating the already-blocking build. SDL_VIDEODRIVER=
+      # dummy matches the offscreen demo/smoke steps in ci.yml.
+      - name: Smoke replay ${{ matrix.app }} (offscreen)
+        id: smoke
+        if: ${{ matrix.smoke != '' }}
+        continue-on-error: true
+        env:
+          SDL_BACKEND: sdl3
+          SDL_VIDEODRIVER: dummy
+        run: |
+          make ${{ matrix.smoke }} -j"$(sysctl -n hw.ncpu)"
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+      - name: Show the first error on failure
+        if: failure()
+        run: |
+          log="build/${{ matrix.app }}/build.log"
+          echo "::group::${log}"
+          [ -f "$log" ] && tail -80 "$log" || echo "no build.log"
+          echo "::endgroup::"
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.app }}-build-log
+          path: build/${{ matrix.app }}/build.log
+          if-no-files-found: ignore
+
+      # Capture the replay artifacts (screenshots, state snapshots, JSONL
+      # timeline, render-stats) when a smoke replay fails. Gated on the smoke
+      # step's own outcome rather than job failure() because the step is
+      # continue-on-error, so a replay failure does not fail the job -- this is
+      # the only hook that fires on a smoke regression.
+      #
+      # !cancelled() is required: an if: expression has an implicit success()
+      # guard, and since the smoke step is continue-on-error the job stays in
+      # success state on a smoke failure -- so success() alone would still run
+      # this step (a non-empty ${{ }} string is truthy). !cancelled() lifts the
+      # implicit guard so the outcome == 'failure' comparison actually decides
+      # it, restricting the upload to real smoke failures (skipped/success legs
+      # do not upload). Named per app so matrix legs do not collide; otherwise
+      # mirrors ci.yml's "Upload UI smoke artifacts" (build/ui-smoke, warn,
+      # 7-day retention).
+      - name: Upload UI smoke artifacts on smoke failure
+        if: ${{ !cancelled() && steps.smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.app }}-ui-smoke
+          path: build/ui-smoke
+          if-no-files-found: warn
+          retention-days: 7

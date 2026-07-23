@@ -29,6 +29,16 @@ ifeq ($(UNAME_S),Darwin)
   CINEPAINT_PLATFORM_CFLAGS += -I/opt/homebrew/opt/gettext/include
   CINEPAINT_PLATFORM_LDFLAGS += -L/opt/homebrew/opt/gettext/lib \
       -Wl,-rpath,/opt/homebrew/opt/gettext/lib -lintl
+  # Homebrew ships libpng keg-only on the CI runners, so its headers live
+  # under $(brew --prefix libpng)/include rather than the main include dir.
+  # The png plug-in includes <pnglibconf.h> at top level, so put the keg
+  # include/lib dirs on the search path (harmless when libpng is already
+  # linked into the main prefix, as on a dev box).
+  CINEPAINT_LIBPNG_PREFIX := $(shell brew --prefix libpng 2>/dev/null)
+  ifneq ($(CINEPAINT_LIBPNG_PREFIX),)
+    CINEPAINT_PLATFORM_CFLAGS += -I$(CINEPAINT_LIBPNG_PREFIX)/include
+    CINEPAINT_PLATFORM_LDFLAGS += -L$(CINEPAINT_LIBPNG_PREFIX)/lib
+  endif
 endif
 
 $(CINEPAINT_SOURCE_STAMP): mk/cinepaint.mk
