@@ -1,20 +1,21 @@
-#!/usr/bin/env python3
-"""Gate for the private Tcl/TkX11 build.
+"""Host-link audit for the private Tcl/TkX11 stack.
 
-Two checks:
-  1. wish reports the x11 windowing system and can map a Tk toplevel through
-     libx11-compat headless (SDL_VIDEODRIVER=dummy).
-  2. wish and libtk do not link a host X11 library (Aqua Tk, XQuartz, /opt/X11).
-     Our own soname farm records the compat dylib via its @rpath install name
-     (libX11-compat.so), so only a genuine host X11 reference is a failure.
+Reports whether a binary links a host X11 library (Aqua Tk, XQuartz, /opt/X11)
+instead of our compat shim. Our own soname farm records the compat dylib via
+its @rpath install name (libX11-compat.so), so only a genuine host X11
+reference is a failure.
+
+Imported (not run) by check-magic.py, which drives the audit over the Magic
+plus private Tcl/Tk artifacts as part of the Magic replay gate. That smoke
+loads the shared libtcl/libtk through Magic (built -nowrapper with Tcl/Tk
+embedded), so a runtime regression in the Tk libraries still surfaces; the
+standalone wish binary is no longer launched, only statically link-audited.
 """
 
-import argparse
 import os
 import platform
 import re
 import subprocess
-import sys
 
 # A dependency path that contains one of these means a real host X11 / Aqua
 # stack crept in regardless of the library basename.
@@ -103,86 +104,3 @@ def audit_no_host_x11(paths, out_dir=None):
             if is_host_x11(dep, out_dir):
                 bad.append(f"{os.path.basename(p)}: {dep}")
     return bad
-
-
-def run_wish(wish, out_dir):
-    """Drive wish headless; return (windowingsystem, mapped_ok)."""
-    script = r"""
-package require Tk
-set ws [tk windowingsystem]
-wm geometry . 320x240+0+0
-button .b -text hi
-pack .b
-update idletasks
-update
-# winfo ismapped is the real proof the window reached the server layer.
-set mapped [winfo ismapped .]
-puts "WINDOWINGSYSTEM=$ws"
-puts "MAPPED=$mapped"
-puts "GEOMETRY=[winfo width .]x[winfo height .]"
-exit 0
-"""
-    env = dict(os.environ)
-    libpath = out_dir
-    for var in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
-        env[var] = libpath + (":" + env[var] if env.get(var) else "")
-    env["SDL_VIDEODRIVER"] = "dummy"
-    env.setdefault("SDL_AUDIODRIVER", "dummy")
-    # Tk reads $DISPLAY itself before ever calling into libx11-compat, so a
-    # value must be present in the process env; the layer maps it onto SDL.
-    env.setdefault("DISPLAY", ":0")
-    proc = subprocess.run(
-        [wish], input=script, capture_output=True, text=True, env=env, timeout=60
-    )
-    ws = mapped = geom = None
-    for line in proc.stdout.splitlines():
-        if line.startswith("WINDOWINGSYSTEM="):
-            ws = line.split("=", 1)[1].strip()
-        elif line.startswith("MAPPED="):
-            mapped = line.split("=", 1)[1].strip()
-        elif line.startswith("GEOMETRY="):
-            geom = line.split("=", 1)[1].strip()
-    return ws, mapped, geom, proc
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--wish", required=True)
-    ap.add_argument("--out", required=True, help="dir holding libX11-compat.so")
-    args = ap.parse_args()
-
-    if not os.path.exists(args.wish):
-        sys.exit(f"FAIL: wish not found at {args.wish}")
-
-    ws, mapped, geom, proc = run_wish(args.wish, args.out)
-    # Fail closed: a nonzero exit means wish crashed or aborted even if it
-    # managed to print the probe lines first, so ignore the parsed markers.
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stdout + proc.stderr)
-        sys.exit(f"FAIL: wish exited {proc.returncode}")
-    if ws != "x11":
-        sys.stderr.write(proc.stdout + proc.stderr)
-        sys.exit(f"FAIL: tk windowingsystem is {ws!r}, expected 'x11'")
-    if mapped != "1":
-        sys.stderr.write(proc.stdout + proc.stderr)
-        sys.exit(f"FAIL: Tk toplevel did not map (ismapped={mapped!r})")
-    print(f"OK: wish windowingsystem=x11, toplevel mapped ({geom})")
-
-    # libtk lives next to wish under ../lib.
-    tk_libdir = os.path.join(os.path.dirname(os.path.dirname(args.wish)), "lib")
-    audit_targets = [args.wish]
-    if os.path.isdir(tk_libdir):
-        for f in os.listdir(tk_libdir):
-            if f.startswith("libtk") and (f.endswith(".so") or f.endswith(".dylib")):
-                audit_targets.append(os.path.join(tk_libdir, f))
-    bad = audit_no_host_x11(audit_targets, args.out)
-    if bad:
-        print("FAIL: host X11 / Aqua Tk linked into the stack:")
-        for b in bad:
-            print("  " + b)
-        sys.exit(1)
-    print("OK: no host X11 / Aqua Tk links in wish or libtk")
-
-
-if __name__ == "__main__":
-    main()

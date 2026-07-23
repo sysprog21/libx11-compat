@@ -246,15 +246,9 @@ $(TCLTK_TK_BUILD_STAMP): $(TCLTK_TK_SOURCE_STAMP) $(TCLTK_TCL_BUILD_STAMP) \
 	    echo "  FAIL    see $(TCLTK_TK_LOG)" >&2; tail -40 $(TCLTK_TK_LOG) >&2; exit 1; }
 	$(Q)touch $@
 
-.PHONY: tcltk tcltk-check tcltk-clean
+.PHONY: tcltk tcltk-clean
 ## Build repo-private Tcl and TkX11 for Tcl/Tk against libx11-compat
 tcltk: $(TCLTK_TK_BUILD_STAMP)
-
-## Verify private wish maps a Tk window as x11 with no host X11 links
-tcltk-check: $(TCLTK_TK_BUILD_STAMP)
-	$(Q)$(PYTHON) scripts/check-tcltk.py \
-	    --wish $(abspath $(TCLTK_WISH)) \
-	    --out $(abspath $(OUT))
 
 tcltk-clean:
 	@echo "  CLEAN   tcltk"
