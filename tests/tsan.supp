@@ -1,0 +1,19 @@
+# ThreadSanitizer suppressions for the display-lock threading gate
+# (build/tests/check under -fsanitize=thread).
+#
+# libdbus, pulled in transitively by SDL for desktop integration, locks its
+# own internal mutexes in opposite orders across the connection paths reached
+# from XOpenDisplay and XCloseDisplay. TSan intermittently reports this as a
+# lock-order inversion between two libdbus mutexes (M0 => M1 => M0). The cycle
+# is entirely inside libdbus, a third-party library we do not control, and both
+# mutexes are libdbus-internal; our own recursive display lock is a separate
+# mutex in src/display.c and is unaffected.
+#
+# called_from_lib disables interception only when libdbus is the direct caller
+# of the mutex op, which is exactly the observed cycle (pthread_mutex_lock is
+# called straight from libdbus frames). This is deliberately narrow: a genuine
+# inversion involving our own display lock is locked from src/display.c, not
+# from libdbus, so it stays fully instrumented. A module-wide deadlock:libdbus-1
+# rule would instead swallow any report that merely transits libdbus, including
+# a real cross-boundary cycle against our mutex, so it is intentionally omitted.
+called_from_lib:libdbus-1.so

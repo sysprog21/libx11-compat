@@ -37,6 +37,19 @@ def dep_paths(path):
         proc = subprocess.run(["otool", "-L", path], capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"otool -L {path} failed: {proc.stderr.strip()}")
+        # otool exits 0 even on a non-object file, printing "is not an object
+        # file" and emitting no dependency listing. A valid mach-o always prints
+        # at least its own path header, so empty stdout means nothing was
+        # inspected. Fail closed on that, matching ldd's nonzero exit on a
+        # non-ELF artifact, so a broken artifact cannot pass the audit blind.
+        if (
+            "is not an object file" in (proc.stdout + proc.stderr)
+            or not proc.stdout.strip()
+        ):
+            raise RuntimeError(
+                f"otool -L {path} inspected no object file: "
+                f"{(proc.stderr or proc.stdout).strip()}"
+            )
         deps = []
         # First line is the binary's own path/id; skip it. Each dependency line
         # is "<path> (compatibility version X, current version Y)".
@@ -100,7 +113,19 @@ def audit_no_host_x11(paths, out_dir=None):
     for p in paths:
         if not os.path.exists(p):
             continue
-        for dep in dep_paths(p):
+        # An artifact ldd/otool cannot inspect (a static binary, a non-ELF
+        # wrapper script), or a missing/unrunnable inspection tool itself
+        # (OSError, e.g. ldd not on PATH), is reported as a clean audit failure
+        # rather than crashing the whole gate with a traceback. Still
+        # fail-closed: an uninspectable artifact counts as bad, so the audit
+        # never passes on a binary it could not actually read. Other artifacts
+        # keep being audited.
+        try:
+            deps = dep_paths(p)
+        except (OSError, RuntimeError) as error:
+            bad.append(f"{os.path.basename(p)}: not inspectable ({error})")
+            continue
+        for dep in deps:
             if is_host_x11(dep, out_dir):
                 bad.append(f"{os.path.basename(p)}: {dep}")
     return bad
