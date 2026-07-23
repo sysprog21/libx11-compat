@@ -27,6 +27,11 @@ on:
     branches: [main, cicd]
   pull_request:
     branches: [main]
+    # The differential suite compares Linux X11 rendering against the shim; it
+    # has nothing to exercise for a change that only touches the macOS CI
+    # workflow, so skip it there rather than burn (and time out) Linux runners.
+    paths-ignore:
+      - '.github/workflows/macos.yml'
   workflow_dispatch:
 
 # PR reruns cancel older queued differential work; main pushes never
