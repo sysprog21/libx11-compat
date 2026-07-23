@@ -849,6 +849,91 @@ static Bool wantsSerifFallback(const char *name)
            containsIgnoreCase(name, "schoolbook");
 }
 
+/* The fallback face families, in the pitch/style order the probe chains prefer.
+ * Single classification shared by the core alias resolver and both Xft openers
+ * so a family maps to the same face everywhere.
+ */
+typedef enum {
+    FALLBACK_MONOSPACE,
+    FALLBACK_SERIF,
+    FALLBACK_SANS_BOLD,
+    FALLBACK_SANS,
+} FallbackFamily;
+
+/* Longest chain fallbackChain can emit: a bold serif degrades through SERIF,
+ * SANS_BOLD, SANS, then the MONOSPACE net. Callers size their chain buffer with
+ * this so the bound and the producer stay in lockstep.
+ */
+#define FALLBACK_CHAIN_MAX 4
+
+static FallbackFamily classifyFallbackFamily(const char *name)
+{
+    if (wantsMonospaceFallback(name))
+        return FALLBACK_MONOSPACE;
+    if (wantsSerifFallback(name))
+        return FALLBACK_SERIF;
+    if (containsIgnoreCase(name, "bold"))
+        return FALLBACK_SANS_BOLD;
+    return FALLBACK_SANS;
+}
+
+static const char *const *fallbackProbePaths(FallbackFamily family,
+                                             size_t *count)
+{
+    switch (family) {
+    case FALLBACK_MONOSPACE:
+        *count = ARRAY_LENGTH(MONOSPACE_PROBE_PATHS);
+        return MONOSPACE_PROBE_PATHS;
+    case FALLBACK_SERIF:
+        *count = ARRAY_LENGTH(SERIF_PROBE_PATHS);
+        return SERIF_PROBE_PATHS;
+    case FALLBACK_SANS_BOLD:
+        *count = ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS);
+        return SANS_BOLD_PROBE_PATHS;
+    case FALLBACK_SANS:
+        *count = ARRAY_LENGTH(SANS_PROBE_PATHS);
+        return SANS_PROBE_PATHS;
+    }
+    *count = 0;
+    return NULL;
+}
+
+/* Ordered families an Xft opener tries for one request: the classified family
+ * first, then graceful degradations for a host missing the preferred faces.
+ * Monospace is the universal fixed-pitch net, so it trails every non-monospace
+ * request and appears exactly once; a monospace request has nothing better to
+ * fall back to.
+ *
+ * Returns the entry count, filling chain (needs room for FALLBACK_CHAIN_MAX).
+ */
+static size_t fallbackChain(const char *name, FallbackFamily *chain)
+{
+    Bool bold = containsIgnoreCase(name, "bold");
+    size_t n = 0;
+    switch (classifyFallbackFamily(name)) {
+    case FALLBACK_MONOSPACE:
+        chain[n++] = FALLBACK_MONOSPACE;
+        break;
+    case FALLBACK_SERIF:
+        chain[n++] = FALLBACK_SERIF;
+        if (bold)
+            chain[n++] = FALLBACK_SANS_BOLD;
+        chain[n++] = FALLBACK_SANS;
+        chain[n++] = FALLBACK_MONOSPACE;
+        break;
+    case FALLBACK_SANS_BOLD:
+        chain[n++] = FALLBACK_SANS_BOLD;
+        chain[n++] = FALLBACK_SANS;
+        chain[n++] = FALLBACK_MONOSPACE;
+        break;
+    case FALLBACK_SANS:
+        chain[n++] = FALLBACK_SANS;
+        chain[n++] = FALLBACK_MONOSPACE;
+        break;
+    }
+    return n;
+}
+
 /* Convert an XLFD POINT_SIZE (decipoints) to pixels at the catalog DPI, then
  * apply the one differential-verified nudge: Helvetica's 12pt (120 decipoints)
  * baseline renders at 16px, not the 17px the naive conversion yields.
@@ -1169,29 +1254,25 @@ static FontCacheEntry *findAliasedFontForName(const char *name)
         coreWidth > 0)
         return findAliasedFixedWidthFont();
 
-    /* Monospace is otherwise opt-in: a known fixed-pitch family or an XLFD
-     * SPACING code of "m" (monospaced) or "c" (character cell). Core fixed XLFD
-     * families stay fixed even when old clients wildcard SPACING. Check this
-     * before the serif/sans families so lucidatypewriter resolves fixed-pitch,
-     * not to a "lucida" sans branch.
+    /* Classify the family once, then map it to a face. Monospace is opt-in: a
+     * known fixed-pitch family or an XLFD SPACING code of "m" (monospaced) or
+     * "c" (character cell), which classifyFallbackFamily tests first so
+     * lucidatypewriter stays fixed rather than taking a "lucida" sans branch,
+     * and which resolves to the core fixed bitmap. Every other family maps to
+     * its TTF probe list: a generic or wildcarded
+     * "-*-*-<weight>-r-normal-...-iso8859-1", which is what Motif's label and
+     * button fontLists request, defaults to proportional sans, weight aware.
+     * Real X hands a generic request a variable font, so defaulting to
+     * monospace here made Motif menu push buttons (medium weight) render
+     * fixed-pitch while bold labels came out proportional, splitting one menu
+     * across two fonts.
      */
-    if (wantsMonospaceFallback(name))
+    FallbackFamily family = classifyFallbackFamily(name);
+    if (family == FALLBACK_MONOSPACE)
         return findAliasedFixedWidthFont();
-    if (wantsSerifFallback(name))
-        return findProbeFont(SERIF_PROBE_PATHS,
-                             ARRAY_LENGTH(SERIF_PROBE_PATHS));
-
-    /* Default for any other family, including the wildcarded "-*-*-<weight>-r-
-     * normal-...-iso8859-1" that Motif's default label and button fontLists
-     * request: a proportional sans face, weight aware. Real X hands a generic
-     * request a variable font, so defaulting to monospace here made Motif menu
-     * push buttons (medium weight) render fixed-pitch while bold labels came
-     * out proportional, splitting one menu across two fonts.
-     */
-    if (containsIgnoreCase(name, "bold"))
-        return findProbeFont(SANS_BOLD_PROBE_PATHS,
-                             ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS));
-    return findProbeFont(SANS_PROBE_PATHS, ARRAY_LENGTH(SANS_PROBE_PATHS));
+    size_t count;
+    const char *const *paths = fallbackProbePaths(family, &count);
+    return findProbeFont(paths, count);
 }
 
 static Bool fontCanRenderText(TTF_Font *font)
@@ -1266,49 +1347,21 @@ static TTF_Font *openRenderableFallbackFont(const char *name,
                                             const char *skipPath,
                                             char **openedPath)
 {
+    /* Walk the classified probe chain (see fallbackChain): the preferred face
+     * first, degrading to sans and then the monospace net. Keeps core and Xft
+     * text on the same face for a request and probes the monospace paths once.
+     */
     TTF_Font *font = NULL;
-    if (wantsMonospaceFallback(name)) {
-        font = openRenderableProbeFont(MONOSPACE_PROBE_PATHS,
-                                       ARRAY_LENGTH(MONOSPACE_PROBE_PATHS),
-                                       size, skipPath, openedPath);
-        if (font)
-            return font;
-    } else {
-        if (wantsSerifFallback(name)) {
-            font = openRenderableProbeFont(SERIF_PROBE_PATHS,
-                                           ARRAY_LENGTH(SERIF_PROBE_PATHS),
-                                           size, skipPath, openedPath);
-            if (font)
-                return font;
-        }
-
-        /* Generic and wildcard hints, and a serif request on a host missing the
-         * serif probe files, default to proportional sans, weight aware,
-         * matching findAliasedFontForName so core and Xft text share pitch for
-         * the same request.
-         */
-        if (containsIgnoreCase(name, "bold")) {
-            font = openRenderableProbeFont(SANS_BOLD_PROBE_PATHS,
-                                           ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS),
-                                           size, skipPath, openedPath);
-            if (font)
-                return font;
-        }
-        font = openRenderableProbeFont(SANS_PROBE_PATHS,
-                                       ARRAY_LENGTH(SANS_PROBE_PATHS), size,
-                                       skipPath, openedPath);
+    FallbackFamily chain[FALLBACK_CHAIN_MAX];
+    size_t stages = fallbackChain(name, chain);
+    for (size_t s = 0; s < stages; s++) {
+        size_t count;
+        const char *const *paths = fallbackProbePaths(chain[s], &count);
+        font =
+            openRenderableProbeFont(paths, count, size, skipPath, openedPath);
         if (font)
             return font;
     }
-
-    /* Last-resort net for a host missing the preferred family: any monospace
-     * face, then any renderable cached font below.
-     */
-    font = openRenderableProbeFont(MONOSPACE_PROBE_PATHS,
-                                   ARRAY_LENGTH(MONOSPACE_PROBE_PATHS), size,
-                                   skipPath, openedPath);
-    if (font)
-        return font;
     if (!fontCache)
         return NULL;
     for (size_t i = 0; i < fontCache->length; i++) {
@@ -1340,49 +1393,21 @@ static TTF_Font *openRenderableFallbackFontForChar(const char *name,
                                                    const char *skipPath,
                                                    Uint32 codepoint)
 {
+    /* Same classified probe chain as openRenderableFallbackFont, but each probe
+     * also requires the glyph for codepoint so a fallback face that lacks it is
+     * skipped rather than silently rendering tofu.
+     */
     TTF_Font *font = NULL;
-    if (wantsMonospaceFallback(name)) {
-        font = openRenderableProbeFontForChar(
-            MONOSPACE_PROBE_PATHS, ARRAY_LENGTH(MONOSPACE_PROBE_PATHS), size,
-            skipPath, codepoint);
-        if (font)
-            return font;
-    } else {
-        if (wantsSerifFallback(name)) {
-            font = openRenderableProbeFontForChar(
-                SERIF_PROBE_PATHS, ARRAY_LENGTH(SERIF_PROBE_PATHS), size,
-                skipPath, codepoint);
-            if (font)
-                return font;
-        }
-
-        /* Generic and wildcard hints, and a serif request on a host missing the
-         * serif probe files, default to proportional sans, weight aware,
-         * matching findAliasedFontForName so core and Xft text share pitch for
-         * the same request.
-         */
-        if (containsIgnoreCase(name, "bold")) {
-            font = openRenderableProbeFontForChar(
-                SANS_BOLD_PROBE_PATHS, ARRAY_LENGTH(SANS_BOLD_PROBE_PATHS),
-                size, skipPath, codepoint);
-            if (font)
-                return font;
-        }
-        font = openRenderableProbeFontForChar(SANS_PROBE_PATHS,
-                                              ARRAY_LENGTH(SANS_PROBE_PATHS),
-                                              size, skipPath, codepoint);
+    FallbackFamily chain[FALLBACK_CHAIN_MAX];
+    size_t stages = fallbackChain(name, chain);
+    for (size_t s = 0; s < stages; s++) {
+        size_t count;
+        const char *const *paths = fallbackProbePaths(chain[s], &count);
+        font = openRenderableProbeFontForChar(paths, count, size, skipPath,
+                                              codepoint);
         if (font)
             return font;
     }
-
-    /* Last-resort net for a host missing the preferred family: any monospace
-     * face, then any renderable cached font below.
-     */
-    font = openRenderableProbeFontForChar(MONOSPACE_PROBE_PATHS,
-                                          ARRAY_LENGTH(MONOSPACE_PROBE_PATHS),
-                                          size, skipPath, codepoint);
-    if (font)
-        return font;
     if (!fontCache)
         return NULL;
     for (size_t i = 0; i < fontCache->length; i++) {
