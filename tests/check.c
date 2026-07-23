@@ -23,6 +23,7 @@
 #include "drawing.h"
 #include "display.h"
 #include "events.h"
+#include "font.h"
 #include "gc.h"
 #include "mac-live-resize.h"
 #include "image.h"
@@ -1699,6 +1700,36 @@ static int exercise_fixed_font_program(Display *display)
           "fixed-font program XDrawText failed");
     CHECK(readback_black_count(renderer) > 0,
           "fixed-font program XDrawText rendered no pixels");
+
+    /* A multi-item run over one font must query the font once, not per item:
+     * the second item switches font to None (keep the current font), so the
+     * whole run is a single distinct font.
+     */
+    XTextItem multi[3] = {
+        {.chars = "aa", .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = "bb", .nchars = 2, .delta = 1, .font = None},
+        {.chars = "cc", .nchars = 2, .delta = 1, .font = None},
+    };
+    size_t queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText(display, pixmap, gc, 2, fixed->ascent, multi, 3),
+          "fixed-font program multi-item XDrawText failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 1,
+          "multi-item XDrawText queried the font more than once per run");
+
+    /* Same one-query-per-run guarantee for the 16-bit path. */
+    XChar2b wideAa[] = {{0, 'a'}, {0, 'a'}};
+    XChar2b wideBb[] = {{0, 'b'}, {0, 'b'}};
+    XChar2b wideCc[] = {{0, 'c'}, {0, 'c'}};
+    XTextItem16 multi16[3] = {
+        {.chars = wideAa, .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = wideBb, .nchars = 2, .delta = 1, .font = None},
+        {.chars = wideCc, .nchars = 2, .delta = 1, .font = None},
+    };
+    queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText16(display, pixmap, gc, 2, fixed->ascent, multi16, 3),
+          "fixed-font program multi-item XDrawText16 failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 1,
+          "multi-item XDrawText16 queried the font more than once per run");
 
     CHECK(XSetForeground(display, gc, 0x00FFFFFF),
           "fixed-font program clear color setup failed");

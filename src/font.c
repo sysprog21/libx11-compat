@@ -2193,6 +2193,16 @@ XFontStruct *XLoadQueryFont(Display *display, _Xconst char *name)
     return fontStruct;
 }
 
+/* Counts successful XFontStruct allocations so tests can prove the text-item
+ * draw paths query a font once per run, not once per item.
+ */
+static size_t fontQueryCount = 0;
+
+size_t compatFontQueryCount(void)
+{
+    return fontQueryCount;
+}
+
 static XFontStruct *queryFontStruct(Display *display,
                                     XID fontId,
                                     Bool requireClientUsable)
@@ -2227,6 +2237,7 @@ static XFontStruct *queryFontStruct(Display *display,
         applyCoreFontMetrics(fontStruct, resource->coreAscent,
                              resource->coreDescent, resource->coreWidth);
     }
+    fontQueryCount++;
     return fontStruct;
 }
 

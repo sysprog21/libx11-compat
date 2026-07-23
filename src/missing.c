@@ -1498,6 +1498,12 @@ int XDrawText16(register Display *dpy,
     GraphicContext *gContext = GET_GC(gc);
     Font oldFont = gContext->font;
     int cursor = x;
+
+    /* Query the font once per distinct font in the run, not once per item: see
+     * XDrawText for the allocation-churn rationale.
+     */
+    XFontStruct *fontStruct = NULL;
+    Font metricsFont = None;
     for (int i = 0; i < nitems; i++) {
         cursor += items[i].delta;
         if (items[i].font != None) {
@@ -1507,18 +1513,22 @@ int XDrawText16(register Display *dpy,
         if (items[i].chars && items[i].nchars > 0) {
             if (!XDrawString16(dpy, d, gc, cursor, y, items[i].chars,
                                items[i].nchars)) {
+                XFreeFontInfo(NULL, fontStruct, 1);
                 gContext->font = oldFont;
                 GC_BUMP_GENERATION(gContext);
                 return 0;
             }
-            XFontStruct *fontStruct = XQueryFont(dpy, gContext->font);
-            if (fontStruct) {
+            if (!fontStruct || metricsFont != gContext->font) {
+                XFreeFontInfo(NULL, fontStruct, 1);
+                fontStruct = XQueryFont(dpy, gContext->font);
+                metricsFont = gContext->font;
+            }
+            if (fontStruct)
                 cursor +=
                     XTextWidth16(fontStruct, items[i].chars, items[i].nchars);
-                XFreeFontInfo(NULL, fontStruct, 1);
-            }
         }
     }
+    XFreeFontInfo(NULL, fontStruct, 1);
     if (gContext->font != oldFont) {
         gContext->font = oldFont;
         GC_BUMP_GENERATION(gContext);
@@ -1715,6 +1725,13 @@ int XDrawText(register Display *dpy,
     GraphicContext *gContext = GET_GC(gc);
     Font oldFont = gContext->font;
     int cursor = x;
+
+    /* Query the font once per distinct font in the run, not once per item: a
+     * multi-segment Motif/Xaw label reuses the same font across items, so
+     * re-querying per item just churns XFontStruct allocations.
+     */
+    XFontStruct *fontStruct = NULL;
+    Font metricsFont = None;
     for (int i = 0; i < nitems; i++) {
         cursor += items[i].delta;
         if (items[i].font != None) {
@@ -1724,18 +1741,22 @@ int XDrawText(register Display *dpy,
         if (items[i].chars && items[i].nchars > 0) {
             if (!XDrawString(dpy, d, gc, cursor, y, items[i].chars,
                              items[i].nchars)) {
+                XFreeFontInfo(NULL, fontStruct, 1);
                 gContext->font = oldFont;
                 GC_BUMP_GENERATION(gContext);
                 return 0;
             }
-            XFontStruct *fontStruct = XQueryFont(dpy, gContext->font);
-            if (fontStruct) {
+            if (!fontStruct || metricsFont != gContext->font) {
+                XFreeFontInfo(NULL, fontStruct, 1);
+                fontStruct = XQueryFont(dpy, gContext->font);
+                metricsFont = gContext->font;
+            }
+            if (fontStruct)
                 cursor +=
                     XTextWidth(fontStruct, items[i].chars, items[i].nchars);
-                XFreeFontInfo(NULL, fontStruct, 1);
-            }
         }
     }
+    XFreeFontInfo(NULL, fontStruct, 1);
     if (gContext->font != oldFont) {
         gContext->font = oldFont;
         GC_BUMP_GENERATION(gContext);
