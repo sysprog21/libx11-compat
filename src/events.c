@@ -1496,6 +1496,102 @@ static Bool windowSelectsAny(Window window, long mask)
            (GET_WINDOW_STRUCT(window)->eventMask & mask) != 0;
 }
 
+typedef struct {
+    Window deepest;
+    Window hoverDeepest;
+} PointerHit;
+
+/* Test-only instrumentation: counts pointer tree descents so check.c can assert
+ * each event resolves its target once. The relaxed atomic add is negligible;
+ * the reset/read helpers below carry external linkage solely so the separately
+ * linked test binary can reach them.
+ */
+static unsigned long pointerResolveDescents = 0;
+
+void resetPointerResolveDescentCount(void)
+{
+    __atomic_store_n(&pointerResolveDescents, 0, __ATOMIC_RELAXED);
+}
+
+unsigned long pointerResolveDescentCount(void)
+{
+    return __atomic_load_n(&pointerResolveDescents, __ATOMIC_RELAXED);
+}
+
+static Window countedContainingWindow(Window window, int x, int y)
+{
+    __atomic_add_fetch(&pointerResolveDescents, 1, __ATOMIC_RELAXED);
+    return getContainingWindow(window, x, y);
+}
+
+/* Descend from base to the deepest window under a root-relative point. Root
+ * coordinates are already base-local when base is the root itself; otherwise
+ * subtract base's origin first.
+ */
+static Window descendFromBase(Window base, Window root, int rootX, int rootY)
+{
+    int localX = rootX, localY = rootY;
+    if (base != root) {
+        int bx = 0, by = 0;
+        GET_WINDOW_POS(base, bx, by);
+        localX = rootX - bx;
+        localY = rootY - by;
+    }
+    return countedContainingWindow(base, localX, localY);
+}
+
+static Window directChildFromDeepest(Window window, Window deepest)
+{
+    Window child = deepest;
+    while (child != None && child != window && IS_TYPE(child, WINDOW)) {
+        Window parent = GET_PARENT(child);
+        if (parent == window)
+            return child;
+        child = parent;
+    }
+    return None;
+}
+
+static PointerHit resolvePointerHit(Window root,
+                                    Window clickTopLevel,
+                                    int rootX,
+                                    int rootY)
+{
+    PointerHit hit = {None, None};
+    Window rootChild = getDirectChildContainingPoint(root, rootX, rootY);
+    Window base = None;
+
+    if (rootChild != None && rootChild != clickTopLevel &&
+        IS_TYPE(rootChild, WINDOW) &&
+        GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
+        pointerHoverIsWithin(rootChild) && getGrabbedPointerWindow() != None) {
+        base = rootChild;
+    } else if (clickTopLevel != None && clickTopLevel != SCREEN_WINDOW &&
+               IS_TYPE(clickTopLevel, WINDOW) &&
+               GET_PARENT(clickTopLevel) == root) {
+        int tlx = 0, tly = 0, tlw = 0, tlh = 0;
+        GET_WINDOW_POS(clickTopLevel, tlx, tly);
+        GET_WINDOW_DIMS(clickTopLevel, tlw, tlh);
+        int localX = rootX - tlx, localY = rootY - tly;
+        if (localX >= 0 && localX < tlw && localY >= 0 && localY < tlh)
+            base = clickTopLevel;
+    }
+
+    if (base == None)
+        base = rootChild != None ? rootChild : root;
+
+    hit.deepest = descendFromBase(base, root, rootX, rootY);
+    if (hit.deepest == None && base != rootChild) {
+        base = rootChild != None ? rootChild : root;
+        hit.deepest = descendFromBase(base, root, rootX, rootY);
+    }
+    if (base == root || base == rootChild || rootChild == None)
+        hit.hoverDeepest = hit.deepest;
+    else
+        hit.hoverDeepest = descendFromBase(rootChild, root, rootX, rootY);
+    return hit;
+}
+
 #if SDL_VERSION_ATLEAST(2, 0, 18)
 
 /* Fold a sub-notch precise wheel delta into an integer notch. When the raw
@@ -1528,53 +1624,14 @@ static int accumulateWheelNotch(int raw, float precise, float *accum)
 
 static Window selectPointerEventWindow(Display *display,
                                        Window root,
-                                       Window clickTopLevel,
                                        int rootX,
                                        int rootY,
+                                       Window deepest,
                                        long mask,
                                        Window *subwindowReturn,
                                        int *eventXReturn,
                                        int *eventYReturn)
 {
-    Window deepest = None;
-    Window rootChild = getDirectChildContainingPoint(root, rootX, rootY);
-    if (rootChild != None && rootChild != clickTopLevel &&
-        IS_TYPE(rootChild, WINDOW) &&
-        GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
-        pointerHoverIsWithin(rootChild) && getGrabbedPointerWindow() != None) {
-        int rx = 0, ry = 0;
-        GET_WINDOW_POS(rootChild, rx, ry);
-        deepest = getContainingWindow(rootChild, rootX - rx, rootY - ry);
-    }
-
-    /* SDL tells us which top-level the pointer event belongs to (the window the
-     * user actually clicked on screen). Trust that over a global stacking
-     * search: a top-level's logical position in the window model can diverge
-     * from its real on-screen placement (e.g. an image window the toolkit
-     * created over the toolbox in the model but that the host placed elsewhere
-     * on screen), and a global getContainingWindow would then misroute a click
-     * on the visible window to whichever top-level overlaps it in the model.
-     * Descend from clickTopLevel using coordinates relative to it; rootX/rootY
-     * were derived from the same logical origin, so the offset cancels out.
-     */
-    if (clickTopLevel != None && clickTopLevel != SCREEN_WINDOW &&
-        IS_TYPE(clickTopLevel, WINDOW) && GET_PARENT(clickTopLevel) == root &&
-        deepest == None) {
-        int tlx = 0, tly = 0, tlw = 0, tlh = 0;
-        GET_WINDOW_POS(clickTopLevel, tlx, tly);
-        GET_WINDOW_DIMS(clickTopLevel, tlw, tlh);
-        int localX = rootX - tlx, localY = rootY - tly;
-
-        /* Only constrain to the reported top-level when the point is actually
-         * inside it. A drag-release outside the captured window arrives with
-         * that window's id but out-of-bounds coordinates; fall through to the
-         * global search so it lands on the window really under the pointer.
-         */
-        if (localX >= 0 && localX < tlw && localY >= 0 && localY < tlh)
-            deepest = getContainingWindow(clickTopLevel, localX, localY);
-    }
-    if (deepest == None)
-        deepest = getContainingWindow(root, rootX, rootY);
     Window eventWindow = deepest;
     while (eventWindow != None && eventWindow != SCREEN_WINDOW &&
            !windowSelectsAny(eventWindow, mask)) {
@@ -1586,16 +1643,15 @@ static Window selectPointerEventWindow(Display *display,
     translateRootPointToWindow(display, root, eventWindow, rootX, rootY,
                                eventXReturn, eventYReturn);
     if (subwindowReturn)
-        *subwindowReturn = getDirectChildContainingPoint(
-            eventWindow, *eventXReturn, *eventYReturn);
+        *subwindowReturn = directChildFromDeepest(eventWindow, deepest);
     return eventWindow;
 }
 
 static Bool routePointerGrabEvent(Display *display,
                                   Window root,
-                                  Window clickTopLevel,
                                   int rootX,
                                   int rootY,
+                                  Window deepest,
                                   long mask,
                                   Window *eventWindow,
                                   Window *subwindowReturn,
@@ -1608,7 +1664,7 @@ static Bool routePointerGrabEvent(Display *display,
 
     if (getPointerGrabOwnerEvents()) {
         Window ownerWindow = selectPointerEventWindow(
-            display, root, clickTopLevel, rootX, rootY, mask, subwindowReturn,
+            display, root, rootX, rootY, deepest, mask, subwindowReturn,
             eventXReturn, eventYReturn);
         if (ownerWindow != None) {
             *eventWindow = ownerWindow;
@@ -1623,8 +1679,10 @@ static Bool routePointerGrabEvent(Display *display,
     translateRootPointToWindow(display, root, grabWindow, rootX, rootY,
                                eventXReturn, eventYReturn);
     if (subwindowReturn) {
-        *subwindowReturn = getDirectChildContainingPoint(
-            grabWindow, *eventXReturn, *eventYReturn);
+        *subwindowReturn = directChildFromDeepest(grabWindow, deepest);
+        if (*subwindowReturn == None)
+            *subwindowReturn = getDirectChildContainingPoint(
+                grabWindow, *eventXReturn, *eventYReturn);
     }
     return True;
 }
@@ -2273,11 +2331,10 @@ void clearPointerStateForWindow(Window window)
 static Bool postPointerCrossingEvents(Display *display,
                                       int rootX,
                                       int rootY,
+                                      Window newHoverWindow,
                                       unsigned int state,
                                       Time time)
 {
-    Window newHoverWindow = getContainingWindow(SCREEN_WINDOW, rootX, rootY);
-
     /* Hold activePointerWindowLock through the path walks AND the
      * appendPointerCrossingEvent calls, not just the initial snapshot. Both
      * reviewers (PR #7 round 4) flagged a UAF window in the earlier shape: this
@@ -2742,17 +2799,20 @@ int convertEvent(Display *display,
                 xEvent->xbutton.y_root, xEvent->xbutton.button,
                 xEvent->xbutton.state);
         }
+        PointerHit buttonHit =
+            resolvePointerHit(xEvent->xbutton.root, sdlButtonWindow,
+                              xEvent->xbutton.x_root, xEvent->xbutton.y_root);
 
         /* Explicit XGrabPointer routing owns the event when
          * routePointerGrabEvent returns True; otherwise fall back to the normal
          * pointer-window selection (with a sticky ButtonRelease delivery to the
          * last button-press recipient).
          */
-        if (!routePointerGrabEvent(display, xEvent->xbutton.root,
-                                   sdlButtonWindow, xEvent->xbutton.x_root,
-                                   xEvent->xbutton.y_root, buttonMask,
-                                   &eventWindow, &xEvent->xbutton.subwindow,
-                                   &xEvent->xbutton.x, &xEvent->xbutton.y)) {
+        if (!routePointerGrabEvent(
+                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root, buttonHit.deepest, buttonMask,
+                &eventWindow, &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                &xEvent->xbutton.y)) {
             if (type == ButtonRelease && activePointerSnapshot != None &&
                 windowSelectsAny(activePointerSnapshot, buttonMask)) {
                 eventWindow = activePointerSnapshot;
@@ -2760,12 +2820,15 @@ int convertEvent(Display *display,
                     display, xEvent->xbutton.root, eventWindow,
                     xEvent->xbutton.x_root, xEvent->xbutton.y_root,
                     &xEvent->xbutton.x, &xEvent->xbutton.y);
-                xEvent->xbutton.subwindow = getDirectChildContainingPoint(
-                    eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
+                xEvent->xbutton.subwindow =
+                    directChildFromDeepest(eventWindow, buttonHit.deepest);
+                if (xEvent->xbutton.subwindow == None)
+                    xEvent->xbutton.subwindow = getDirectChildContainingPoint(
+                        eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
             } else {
                 eventWindow = selectPointerEventWindow(
-                    display, xEvent->xbutton.root, sdlButtonWindow,
-                    xEvent->xbutton.x_root, xEvent->xbutton.y_root, buttonMask,
+                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                    xEvent->xbutton.y_root, buttonHit.deepest, buttonMask,
                     &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
                     &xEvent->xbutton.y);
             }
@@ -2819,12 +2882,16 @@ int convertEvent(Display *display,
         translateSdlPointToRoot(display, sdlMotionWindow, sdlMotionX,
                                 sdlMotionY, &xEvent->xmotion.x_root,
                                 &xEvent->xmotion.y_root);
+        PointerHit motionHit =
+            resolvePointerHit(xEvent->xmotion.root, sdlMotionWindow,
+                              xEvent->xmotion.x_root, xEvent->xmotion.y_root);
         unsigned int motionButtonState = pointerButtonStateSnapshot();
         unsigned int motionState =
             convertModifierState(SDL_GetModState()) | motionButtonState;
         Bool crossingQueued = postPointerCrossingEvents(
             display, xEvent->xmotion.x_root, xEvent->xmotion.y_root,
-            motionState, XC_EVENT_TIME_MS(sdlEvent->motion.timestamp));
+            motionHit.hoverDeepest, motionState,
+            XC_EVENT_TIME_MS(sdlEvent->motion.timestamp));
         long motionMask = motionMaskForButtonState(motionButtonState);
 
         /* Explicit XGrabPointer routing owns the event when
@@ -2832,11 +2899,11 @@ int convertEvent(Display *display,
          * button-press grab (snapshot != None) wins, falling back to regular
          * pointer-window selection.
          */
-        if (!routePointerGrabEvent(display, xEvent->xmotion.root,
-                                   sdlMotionWindow, xEvent->xmotion.x_root,
-                                   xEvent->xmotion.y_root, motionMask,
-                                   &eventWindow, &xEvent->xmotion.subwindow,
-                                   &xEvent->xmotion.x, &xEvent->xmotion.y)) {
+        if (!routePointerGrabEvent(
+                display, xEvent->xmotion.root, xEvent->xmotion.x_root,
+                xEvent->xmotion.y_root, motionHit.deepest, motionMask,
+                &eventWindow, &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
+                &xEvent->xmotion.y)) {
             lockActivePointerWindow();
             Window snapshot = activePointerWindow;
             unlockActivePointerWindow();
@@ -2846,12 +2913,15 @@ int convertEvent(Display *display,
                     display, xEvent->xmotion.root, eventWindow,
                     xEvent->xmotion.x_root, xEvent->xmotion.y_root,
                     &xEvent->xmotion.x, &xEvent->xmotion.y);
-                xEvent->xmotion.subwindow = getDirectChildContainingPoint(
-                    eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
+                xEvent->xmotion.subwindow =
+                    directChildFromDeepest(eventWindow, motionHit.deepest);
+                if (xEvent->xmotion.subwindow == None)
+                    xEvent->xmotion.subwindow = getDirectChildContainingPoint(
+                        eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
             } else {
                 eventWindow = selectPointerEventWindow(
-                    display, xEvent->xmotion.root, sdlMotionWindow,
-                    xEvent->xmotion.x_root, xEvent->xmotion.y_root, motionMask,
+                    display, xEvent->xmotion.root, xEvent->xmotion.x_root,
+                    xEvent->xmotion.y_root, motionHit.deepest, motionMask,
                     &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
                     &xEvent->xmotion.y);
             }
@@ -3590,16 +3660,19 @@ int convertEvent(Display *display,
             translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
                                     &xEvent->xbutton.x_root,
                                     &xEvent->xbutton.y_root);
+            PointerHit wheelHit = resolvePointerHit(
+                xEvent->xbutton.root, sdlWheelWindow, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root);
             if (!routePointerGrabEvent(
-                    display, xEvent->xbutton.root, sdlWheelWindow,
-                    xEvent->xbutton.x_root, xEvent->xbutton.y_root,
-                    ButtonPressMask, &eventWindow, &xEvent->xbutton.subwindow,
+                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                    xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,
+                    &eventWindow, &xEvent->xbutton.subwindow,
                     &xEvent->xbutton.x, &xEvent->xbutton.y)) {
                 eventWindow = selectPointerEventWindow(
-                    display, xEvent->xbutton.root, sdlWheelWindow,
-                    xEvent->xbutton.x_root, xEvent->xbutton.y_root,
-                    ButtonPressMask, &xEvent->xbutton.subwindow,
-                    &xEvent->xbutton.x, &xEvent->xbutton.y);
+                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                    xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,
+                    &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                    &xEvent->xbutton.y);
             }
             if (eventWindow == None)
                 return -1;
