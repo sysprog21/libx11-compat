@@ -3008,8 +3008,8 @@ static void childExcludedRegion(Window window,
                                 const SDL_Rect *rect,
                                 pixman_region32_t *region)
 {
-    pixman_region32_init_rect(region, rect->x, rect->y, (unsigned int) rect->w,
-                              (unsigned int) rect->h);
+    regionInitRectSafe(region, rect->x, rect->y, (unsigned int) rect->w,
+                       (unsigned int) rect->h);
     Window *children = GET_CHILDREN(window);
     size_t childCount = GET_WINDOW_STRUCT(window)->children.length;
     for (size_t i = 0; i < childCount; i++) {
@@ -3020,8 +3020,8 @@ static void childExcludedRegion(Window window,
         if (childStruct->inputOnly || childStruct->mapState != Mapped)
             continue;
         pixman_region32_t childRegion;
-        pixman_region32_init_rect(&childRegion, childStruct->x, childStruct->y,
-                                  childStruct->w, childStruct->h);
+        regionInitRectSafe(&childRegion, childStruct->x, childStruct->y,
+                           childStruct->w, childStruct->h);
         pixman_region32_subtract(region, region, &childRegion);
         pixman_region32_fini(&childRegion);
     }

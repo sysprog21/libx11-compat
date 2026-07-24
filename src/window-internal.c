@@ -1347,6 +1347,21 @@ static Bool siblingOccluderIntersectsWindow(WindowStruct *siblingStruct,
     return x1 < (int64_t) winW && y1 < (int64_t) winH && x2 > 0 && y2 > 0;
 }
 
+/* See the declaration in window-internal.h for why the range guard exists. */
+void regionInitRectSafe(pixman_region32_t *region,
+                        int x,
+                        int y,
+                        unsigned int w,
+                        unsigned int h)
+{
+    if (w == 0 || h == 0 || (int64_t) x + (int64_t) w > INT_MAX ||
+        (int64_t) y + (int64_t) h > INT_MAX) {
+        pixman_region32_init(region);
+        return;
+    }
+    pixman_region32_init_rect(region, x, y, w, h);
+}
+
 /* Build the sibling-occlusion region for "window" in window-local coords.
  * Starts from the full (0,0,w,h) frame and subtracts each higher sibling
  * encountered while walking up the ancestor chain, translated into the window's
@@ -1362,7 +1377,7 @@ void computeVisibleRegion(Window window, pixman_region32_t *out)
         return;
     }
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
-    pixman_region32_init_rect(out, 0, 0, windowStruct->w, windowStruct->h);
+    regionInitRectSafe(out, 0, 0, windowStruct->w, windowStruct->h);
 
     /* (winOX, winOY) holds the window's origin expressed in the current
      * ancestor's parent's coordinate frame. Initially that's just (window.x,

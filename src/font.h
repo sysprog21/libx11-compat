@@ -1,6 +1,7 @@
 #ifndef FONT_H
 #define FONT_H
 
+#include <stddef.h>
 #include <X11/Xlib.h>
 #include "sdl-ttf-compat.h"
 
@@ -23,6 +24,13 @@ TTF_Font *compatFontOpenFamilyFallbackForChar(const char *familyHint,
 
 Bool compatFontIsClientUsable(Font fontXid);
 XFontStruct *compatFontQueryRetained(Display *display, Font fontXid);
+
+/* Best-effort test instrumentation: a monotonic count of XFontStruct
+ * allocations via the query path. Read from single-threaded unit tests to
+ * confirm the text-item draw loop queries once per font run, not per item. Not
+ * synchronized, matching the rest of the unlocked font path.
+ */
+size_t compatFontQueryCount(void);
 Bool compatFontRetainForGC(Font fontXid);
 void compatFontReleaseForGC(Font fontXid);
 int compatFontClose(Display *display, Font fontXid);
@@ -32,6 +40,7 @@ int compatFontClose(Display *display, Font fontXid);
  * SDL_DestroyRenderer to keep the cache from holding a dangling pointer.
  */
 void invalidateTextCacheForRenderer(SDL_Renderer *renderer);
+
 /* Drop cached text entries for a Font XID being closed (XUnloadFont,
  * XFreeFont). The TTF_Font behind the entry will be torn down by the caller;
  * without this, a later cache hit would feed a freed font into a re-render

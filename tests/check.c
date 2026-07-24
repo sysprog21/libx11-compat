@@ -23,6 +23,7 @@
 #include "drawing.h"
 #include "display.h"
 #include "events.h"
+#include "font.h"
 #include "gc.h"
 #include "mac-live-resize.h"
 #include "image.h"
@@ -1562,6 +1563,27 @@ static int readback_black_count(SDL_Renderer *renderer)
     return count;
 }
 
+/* Rightmost x column holding a black pixel, or -1 if the surface is blank. Lets
+ * a text draw prove that per-item deltas advance ink horizontally.
+ */
+static int readback_rightmost_black(SDL_Renderer *renderer)
+{
+    SDL_Surface *surface = getRenderSurface(renderer);
+    if (!surface)
+        return -1;
+    int rightmost = -1;
+    for (int y = 0; y < surface->h; y++) {
+        for (int x = surface->w - 1; x > rightmost; x--) {
+            if (pixel_is_rgb(surface, x, y, 0, 0, 0)) {
+                rightmost = x;
+                break;
+            }
+        }
+    }
+    SDL_FreeSurface(surface);
+    return rightmost;
+}
+
 static int exercise_fixed_font_program(Display *display)
 {
     XFontStruct *fixed = XLoadQueryFont(display, "fixed");
@@ -1699,6 +1721,136 @@ static int exercise_fixed_font_program(Display *display)
           "fixed-font program XDrawText failed");
     CHECK(readback_black_count(renderer) > 0,
           "fixed-font program XDrawText rendered no pixels");
+
+    /* A multi-item run over one font must query the font once, not per item
+     * (the None-font items keep the current font, so the whole run is a single
+     * distinct font), and must still render ink and advance the cursor by each
+     * item delta. Clear first so the assertions measure this draw alone.
+     */
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program multi-item clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program multi-item fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program multi-item black setup failed");
+    XTextItem multi[3] = {
+        {.chars = "aa", .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = "bb", .nchars = 2, .delta = 1, .font = None},
+        {.chars = "cc", .nchars = 2, .delta = 1, .font = None},
+    };
+    size_t queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText(display, pixmap, gc, 2, fixed->ascent, multi, 3),
+          "fixed-font program multi-item XDrawText failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 1,
+          "multi-item XDrawText queried the font more than once per run");
+    CHECK(readback_black_count(renderer) > 0,
+          "multi-item XDrawText rendered no pixels");
+    int multiRight = readback_rightmost_black(renderer);
+    CHECK(multiRight >= 0, "multi-item XDrawText produced no ink to locate");
+
+    /* Redraw with a large leading delta: the same glyphs must land farther
+     * right, proving the per-item delta actually shifts the cursor.
+     */
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program delta-shift clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program delta-shift fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program delta-shift black setup failed");
+    multi[0].delta = 40;
+    CHECK(XDrawText(display, pixmap, gc, 2, fixed->ascent, multi, 3),
+          "fixed-font program delta-shifted XDrawText failed");
+    CHECK(readback_rightmost_black(renderer) > multiRight,
+          "XDrawText did not advance ink by the item delta");
+
+    /* Same render, query-once, and delta coverage for the 16-bit path. */
+    XChar2b wideAa[] = {{0, 'a'}, {0, 'a'}};
+    XChar2b wideBb[] = {{0, 'b'}, {0, 'b'}};
+    XChar2b wideCc[] = {{0, 'c'}, {0, 'c'}};
+    XTextItem16 multi16[3] = {
+        {.chars = wideAa, .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = wideBb, .nchars = 2, .delta = 1, .font = None},
+        {.chars = wideCc, .nchars = 2, .delta = 1, .font = None},
+    };
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program multi-item16 clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program multi-item16 fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program multi-item16 black setup failed");
+    queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText16(display, pixmap, gc, 2, fixed->ascent, multi16, 3),
+          "fixed-font program multi-item XDrawText16 failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 1,
+          "multi-item XDrawText16 queried the font more than once per run");
+    CHECK(readback_black_count(renderer) > 0,
+          "multi-item XDrawText16 rendered no pixels");
+    int multi16Right = readback_rightmost_black(renderer);
+    CHECK(multi16Right >= 0,
+          "multi-item XDrawText16 produced no ink to locate");
+
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program delta-shift16 clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program delta-shift16 fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program delta-shift16 black setup failed");
+    multi16[0].delta = 40;
+    CHECK(XDrawText16(display, pixmap, gc, 2, fixed->ascent, multi16, 3),
+          "fixed-font program delta-shifted XDrawText16 failed");
+    CHECK(readback_rightmost_black(renderer) > multi16Right,
+          "XDrawText16 did not advance ink by the item delta");
+
+    /* Exercise the font-switch re-query path the retain-one refactor added:
+     * item 1 selects a second, distinct font, so the loop must free the first
+     * retained XFontStruct and query the second. That is exactly two queries
+     * for the run, and the only place a double-free or leak could hide.
+     */
+    XFontStruct *second = XLoadQueryFont(display, "9x15");
+    CHECK(second != NULL && second->fid != None,
+          "second distinct font did not load");
+    CHECK(second->fid != fixed->fid, "second font shares the fixed font id");
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program switch clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program switch fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program switch black setup failed");
+    XTextItem switchItems[3] = {
+        {.chars = "aa", .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = "bb", .nchars = 2, .delta = 1, .font = second->fid},
+        {.chars = "cc", .nchars = 2, .delta = 1, .font = None},
+    };
+    queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText(display, pixmap, gc, 2, fixed->ascent, switchItems, 3),
+          "fixed-font program font-switch XDrawText failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 2,
+          "font-switch XDrawText did not re-query once per distinct font");
+    CHECK(readback_black_count(renderer) > 0,
+          "font-switch XDrawText rendered no pixels");
+
+    XChar2b switchAa[] = {{0, 'a'}, {0, 'a'}};
+    XChar2b switchBb[] = {{0, 'b'}, {0, 'b'}};
+    XChar2b switchCc[] = {{0, 'c'}, {0, 'c'}};
+    XTextItem16 switch16[3] = {
+        {.chars = switchAa, .nchars = 2, .delta = 0, .font = fixed->fid},
+        {.chars = switchBb, .nchars = 2, .delta = 1, .font = second->fid},
+        {.chars = switchCc, .nchars = 2, .delta = 1, .font = None},
+    };
+    CHECK(XSetForeground(display, gc, 0x00FFFFFF),
+          "fixed-font program switch16 clear failed");
+    CHECK(XFillRectangle(display, pixmap, gc, 0, 0, 128, 48),
+          "fixed-font program switch16 fill failed");
+    CHECK(XSetForeground(display, gc, 0x00000000),
+          "fixed-font program switch16 black setup failed");
+    queriesBefore = compatFontQueryCount();
+    CHECK(XDrawText16(display, pixmap, gc, 2, fixed->ascent, switch16, 3),
+          "fixed-font program font-switch XDrawText16 failed");
+    CHECK(compatFontQueryCount() - queriesBefore == 2,
+          "font-switch XDrawText16 did not re-query once per distinct font");
+    CHECK(readback_black_count(renderer) > 0,
+          "font-switch XDrawText16 rendered no pixels");
+    XFreeFont(display, second);
 
     CHECK(XSetForeground(display, gc, 0x00FFFFFF),
           "fixed-font program clear color setup failed");
@@ -8077,6 +8229,65 @@ static int test_fonts(Display *display)
             }
             CHECK(resolved == xlfdSizeTable[t].expected,
                   "XLFD pixel-size resolution regressed for a table entry");
+        }
+
+        /* Family resolution must be pitch-correct. A wildcarded generic family,
+         * which is what Motif's default label and button fontLists request, is
+         * proportional; fixed pitch is opt-in through a known monospace family
+         * or an XLFD "m"/"c" spacing field. The menu push button (medium) and
+         * label or toggle (bold) rows are the regression that split one
+         * pulldown across a proportional and a fixed-pitch font when the
+         * wildcard default was monospace: both must resolve proportional so the
+         * menu stays one font. min_bounds.width != max_bounds.width is the
+         * precise pitch test, cross checked against the glyph advance below.
+         */
+        struct {
+            const char *name;
+            int proportional;
+        } pitchTable[] = {
+            {"-*-*-medium-r-normal-*-14-*-iso8859-1", 1},
+            {"-*-*-bold-r-normal-*-14-*-*-*-*-*-iso8859-1", 1},
+            {"-adobe-times-medium-r-normal-*-20-*-*-*-*-*-*-*", 1},
+            {"-adobe-helvetica-medium-r-normal-*-14-*-*-*-*-*-*-*", 1},
+            {"-misc-fixed-medium-r-normal--13-*-*-*-*-*-iso8859-1", 0},
+            {"-jis-fixed-medium-r-normal--13-*-*-*-*-*-iso8859-1", 0},
+            {"-adobe-courier-medium-r-normal-*-17-*-*-*-*-*-*-*", 0},
+            {"-*-lucidatypewriter-medium-r-normal-*-14-*-*-*-*-*-iso8859-1", 0},
+            {"-foo-bar-medium-r-normal--14-*-*-*-m-*-iso8859-1", 0},
+            {"-foo-bar-medium-r-normal--14-*-*-*-M-*-iso8859-1", 0},
+            /* A c-spacing XLFD with a non-iso8859 registry must still resolve
+             * fixed-pitch: the alias gate has to see the parsed spacing field,
+             * not just the iso8859 registry, to route it to the resolver.
+             */
+            {"-foo-bar-medium-r-normal--14-*-*-*-c-*-iso10646-1", 0},
+            {"fixed", 0},
+            {"9x15", 0},
+            {"12x24", 0},
+        };
+        for (size_t t = 0; t < sizeof(pitchTable) / sizeof(pitchTable[0]);
+             t++) {
+            XFontStruct *pf = XLoadQueryFont(display, pitchTable[t].name);
+            CHECK(pf != NULL && pf->fid != None,
+                  "font pitch table entry failed to load");
+            int isProportional = pf->min_bounds.width != pf->max_bounds.width;
+            if (isProportional != pitchTable[t].proportional) {
+                fprintf(
+                    stderr, "font pitch '%s': expected %s, got %s\n",
+                    pitchTable[t].name,
+                    pitchTable[t].proportional ? "proportional" : "monospace",
+                    isProportional ? "proportional" : "monospace");
+            }
+            CHECK(isProportional == pitchTable[t].proportional,
+                  "font family resolved to the wrong pitch");
+            int narrow = XTextWidth(pf, "iiii", 4);
+            int wide = XTextWidth(pf, "WWWW", 4);
+            if (pitchTable[t].proportional) {
+                CHECK(narrow < wide,
+                      "proportional font did not vary glyph advance");
+            } else {
+                CHECK(narrow == wide, "fixed-pitch font varied glyph advance");
+            }
+            XFreeFont(display, pf);
         }
 
         Window root = RootWindow(display, DefaultScreen(display));
