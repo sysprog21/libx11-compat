@@ -112,6 +112,20 @@ Window createInternalWindow(Display *display,
                             unsigned long valueMask,
                             XSetWindowAttributes *attributes);
 
+/* Initialize region to the given rect, or to an empty region when the rect is
+ * empty or its right or bottom edge (x + w, y + h) would overflow pixman's
+ * int32 coordinate space. Motif transiently sizes widget windows (unsigned)-1
+ * before geometry management runs; feeding that to pixman_region32_init_rect
+ * overflows the edge, which logs "Invalid rectangle passed" and clips the
+ * window to nothing (the empty-gray dialog bug). Any rect that fits is passed
+ * through unchanged, so legitimately large windows keep their exact region.
+ */
+void regionInitRectSafe(pixman_region32_t *region,
+                        int x,
+                        int y,
+                        unsigned int w,
+                        unsigned int h);
+
 /* Sibling-occlusion clipping support. computeVisibleRegion writes the
  * caller-owned region (which must be uninitialized) and is the slow path;
  * drawing code should go through ensureVisibleRegion, which recomputes only
