@@ -662,6 +662,23 @@ static inline void xc_SetTextInputRect(const SDL_Rect *rect)
         SDL_SetTextInputArea(w, rect, 0);
 }
 
+/* SDL3 xdg_popup-backed window: positioned by an (x,y) offset relative to a
+ * parent surface, which is the only way to place a menu correctly on Wayland (a
+ * client cannot self-position a top-level). flags must carry
+ * SDL_WINDOW_POPUP_MENU or SDL_WINDOW_TOOLTIP. No title argument: popups are
+ * never decorated. Used only by the override-redirect realize path; there is no
+ * SDL2 equivalent, so the caller guards this behind LIBX11_COMPAT_SDL3.
+ */
+static inline SDL_Window *xc_CreatePopupWindow(SDL_Window *parent,
+                                               int x,
+                                               int y,
+                                               int w,
+                                               int h,
+                                               Uint64 flags)
+{
+    return SDL_CreatePopupWindow(parent, x, y, w, h, (SDL_WindowFlags) flags);
+}
+
 /* SDL3 split the modal relationship into parent + modal flag. */
 static inline int xc_SetWindowModalFor(SDL_Window *modal, SDL_Window *parent)
 {

@@ -385,8 +385,48 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         window, windowStruct->w, windowStruct->h, compatGlobalHiDpiScale());
     int createW = (int) windowStruct->w;
     int createH = (int) windowStruct->h;
-    SDL_Window *sdlWindow = SDL_CreateWindow(windowStruct->windowName, hostX,
-                                             hostY, createW, createH, flags);
+    SDL_Window *sdlWindow = NULL;
+#ifdef LIBX11_COMPAT_SDL3
+
+    /* A Wayland client cannot self-position a top-level, so an
+     * override-redirect popup created as an ordinary window floats wherever the
+     * compositor drops it, detached from the menu bar that spawned it. When a
+     * mapped parent contains the popup's anchor, create it as an xdg_popup
+     * anchored to that parent at a relative offset instead, so it lands where
+     * the toolkit asked. BORDERLESS/ALWAYS_ON_TOP are implied by and invalid
+     * for a popup, so drop them; keep HIDDEN, high-density, and input-focus
+     * intent from flags.
+     */
+    if (windowStruct->overrideRedirect) {
+        int offsetX = 0, offsetY = 0;
+        Window popupParent =
+            findPopupParentToplevel(window, &offsetX, &offsetY);
+        WindowStruct *parentStruct =
+            popupParent != None ? GET_WINDOW_STRUCT(popupParent) : NULL;
+        if (parentStruct && parentStruct->sdlWindow) {
+            Uint64 popupFlags =
+                SDL_WINDOW_POPUP_MENU |
+                (flags & ~((Uint64) (SDL_WINDOW_BORDERLESS |
+                                     SDL_WINDOW_ALWAYS_ON_TOP)));
+            sdlWindow =
+                xc_CreatePopupWindow(parentStruct->sdlWindow, offsetX, offsetY,
+                                     createW, createH, popupFlags);
+            if (sdlWindow) {
+                windowStruct->popupParent = popupParent;
+                LOG("realizeTopLevelWindow: window=%lu popup parent=%lu "
+                    "offset=(%d,%d)\n",
+                    window, popupParent, offsetX, offsetY);
+            } else {
+                LOG("SDL_CreatePopupWindow failed for %lu: %s; using "
+                    "absolute top-level\n",
+                    window, SDL_GetError());
+            }
+        }
+    }
+#endif
+    if (!sdlWindow)
+        sdlWindow = SDL_CreateWindow(windowStruct->windowName, hostX, hostY,
+                                     createW, createH, flags);
     if (!sdlWindow) {
         LOG("SDL_CreateWindow failed in %s: %s\n", __func__, SDL_GetError());
         handleError(0, display, None, 0, BadMatch, 0);
@@ -433,7 +473,12 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         }
     }
 
-    if (windowStruct->overrideRedirect) {
+    /* A parent-anchored popup is always on top of its parent by construction;
+     * always-on-top is invalid for an xdg_popup and was masked out of its
+     * create flags, so only force it on an absolutely positioned
+     * override-redirect top-level.
+     */
+    if (windowStruct->overrideRedirect && windowStruct->popupParent == None) {
 #if SDL_VERSION_ATLEAST(2, 0, 16)
         SDL_SetWindowAlwaysOnTop(sdlWindow, SDL_TRUE);
 #endif
@@ -530,7 +575,12 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
                                  physH != (int) windowStruct->h)) {
                 windowStruct->w = (unsigned int) physW;
                 windowStruct->h = (unsigned int) physH;
-                if (windowStruct->overrideRedirect) {
+
+                /* A parent-anchored popup owns no absolute host position; its
+                 * offset is relative to the parent surface, so leave it alone.
+                 */
+                if (windowStruct->overrideRedirect &&
+                    windowStruct->popupParent == None) {
                     int scaledHostX = windowStruct->x;
                     int scaledHostY = windowStruct->y;
                     topLevelWindowHostPosition(window, windowStruct->x,
@@ -592,11 +642,51 @@ static void replayDeferredWmProperties(Display *display, Window window)
     }
 }
 
-static void unrealizeTopLevelWindow(Window window)
+/* Tear down every SDL3 xdg_popup anchored to window before its SDL surface is
+ * destroyed, so nothing is stranded with a dangling child surface. A still
+ * mapped popup is unmapped through the full path (grab release, mapState flip,
+ * UnmapNotify), which unrealizes it. But a popup already flipped to UnMapped by
+ * an SDL hide event still holds its anchored sdlWindow, and unmapWindowInternal
+ * returns early for an already-unmapped window without unrealizing it, so force
+ * the unrealize whenever a collected child still owns an sdlWindow. That both
+ * frees the surface before the parent's is destroyed and guarantees progress:
+ * every collected child ends with sdlWindow cleared, so collectPopupChildren
+ * stops matching it and the loop converges. Recursion through unmap/unrealize
+ * drains cascade submenus. Collect first, then tear down outside the
+ * mapping-list lock collectPopupChildren holds, draining in batches so the
+ * fixed snapshot is not a teardown cap.
+ */
+void drainAnchoredPopups(Display *display, Window window)
+{
+    Window popupChildren[32];
+    size_t popupChildCount;
+    do {
+        popupChildCount = collectPopupChildren(
+            window, popupChildren,
+            sizeof popupChildren / sizeof popupChildren[0]);
+        for (size_t i = 0; i < popupChildCount; i++) {
+            unmapWindowInternal(display, popupChildren[i], False);
+            WindowStruct *ws = GET_WINDOW_STRUCT(popupChildren[i]);
+            if (ws && ws->sdlWindow)
+                unrealizeTopLevelWindow(display, popupChildren[i]);
+        }
+    } while (popupChildCount > 0);
+}
+
+void unrealizeTopLevelWindow(Display *display, Window window)
 {
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (!windowStruct->sdlWindow)
         return;
+
+    /* Clear this window's own anchor before draining its popup children. The
+     * anchor is recomputed at each realize, so a window remapped later must not
+     * carry a stale parent; clearing it here also breaks any anchor cycle (a
+     * remapped popup anchored to a peer that anchors back) so the recursive
+     * drain below cannot loop forever.
+     */
+    windowStruct->popupParent = None;
+    drainAnchoredPopups(display, window);
 
     /* If this top-level was the replay/XTest injection target, retire the
      * cached ID so the next mapped shell can take its place.
@@ -1256,6 +1346,16 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
          */
         requireMainEventThread("XUnmapWindow");
 
+        /* Unmap any anchored SDL3 xdg_popup children first, so their pointer
+         * grabs are released, their mapState flips to UnMapped, and their
+         * UnmapNotify is posted before this window's SDL surface (which owns
+         * theirs) is destroyed. Without this, unrealizing the parent would
+         * strand a popup logically mapped with no surface, so a later
+         * XMapWindow could not recreate it and a live menu grab could keep
+         * routing input to an invisible shell.
+         */
+        drainAnchoredPopups(display, window);
+
         /* Report the unmap before tearing down the SDL window. A client that
          * selected StructureNotifyMask (Tk wraps every toplevel, and its
          * WaitForEvent blocks up to 2 seconds for the UnmapNotify when it
@@ -1267,7 +1367,7 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
         windowStruct->sdlRenderer = NULL;
         destroyWindowRenderer(sdlRenderer);
-        unrealizeTopLevelWindow(window);
+        unrealizeTopLevelWindow(display, window);
     } else if (GET_WINDOW_STRUCT(GET_PARENT(window))->mapState != UnMapped) {
         postEvent(display, window, UnmapNotify, fromConfigure);
         SDL_Rect exposeRect = {windowStruct->x, windowStruct->y,
@@ -1586,7 +1686,7 @@ static int reparentWindowImpl(Display *display,
                 windowStruct->y = oldY;
                 return 0;
             }
-            unrealizeTopLevelWindow(window);
+            unrealizeTopLevelWindow(display, window);
         } else if (!wasTopLevel && parent == SCREEN_WINDOW) {
             if (!realizeTopLevelWindow(display, window)) {
                 removeChildFromParent(window);

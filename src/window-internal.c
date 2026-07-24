@@ -152,6 +152,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->shapeClipOffsetY = 0;
     windowStruct->deferredTransientParent = None;
     windowStruct->deferredTransientApplied = False;
+    windowStruct->popupParent = None;
 
     /* pixman_region32_init is the only safe zero state for a region; a
      * memset/bare zero would crash on the first fini. The valid flag stays
@@ -640,6 +641,107 @@ size_t collectMappedOverrideRedirectWindows(Window *out, size_t max)
     return written;
 }
 
+/* Find the parent surface to anchor an override-redirect popup to, for the SDL3
+ * xdg_popup path. A Wayland client cannot self-position a top-level, so a menu
+ * must be born as a popup positioned relative to an already-mapped parent. Pick
+ * the innermost mapped realized window whose rectangle contains the popup's
+ * top-left anchor: for a menu dropping off a menu bar that is the application
+ * shell, and for a cascade submenu it is the parent menu popup, a smaller rect
+ * that also contains the anchor, so smallest-area-wins yields the correct
+ * grab-chain parent.
+ *
+ * Returns None when nothing contains the anchor, in which case the caller keeps
+ * the absolute-position top-level path. The offset is computed in the same X11
+ * logical coordinates both windows were positioned in, so their difference
+ * recovers exactly the offset the toolkit intended regardless of where the host
+ * actually placed the parent.
+ */
+Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY)
+{
+    WindowStruct *pop = GET_WINDOW_STRUCT(popup);
+    if (!pop)
+        return None;
+    long long anchorX = pop->x;
+    long long anchorY = pop->y;
+    Window best = None;
+    long long bestArea = 0;
+    ensureMappingListLock();
+    lockMappingList();
+    for (WindowSdlIdMapper *m = mappingListStart; m; m = m->next) {
+        if (m->window == popup || !IS_TYPE(m->window, WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(m->window);
+        if (!ws || !ws->sdlWindow || ws->mapState != Mapped)
+            continue;
+
+        /* w/h may be HiDPI-promoted to physical pixels while x/y and the popup
+         * anchor stay in logical points, so normalize the extent back to
+         * logical before the test. effectiveHiDpiScale is 1.0 for self-scaling
+         * toolkits such as Motif, leaving this a no-op there. All math is
+         * widened to 64 bits so the extent and area cannot overflow. Adjacent
+         * cascade/menu-bar popups commonly anchor exactly on the right or
+         * bottom edge, so accept those edges as containing the anchor for
+         * parent selection.
+         */
+        long long left = ws->x;
+        long long top = ws->y;
+        long long right =
+            left +
+            (long long) ((double) ws->w / effectiveHiDpiScaleX(ws) + 0.5);
+        long long bottom =
+            top + (long long) ((double) ws->h / effectiveHiDpiScaleY(ws) + 0.5);
+        if (anchorX < left || anchorY < top || anchorX > right ||
+            anchorY > bottom)
+            continue;
+
+        /* Skip a degenerate zero-area parent: a mapped window transiently sized
+         * to zero in a dimension (Motif does this mid-setup) would otherwise
+         * win as the "smallest" containing rect and misanchor the popup onto an
+         * invisible artifact.
+         */
+        long long area = (right - left) * (bottom - top);
+        if (area <= 0)
+            continue;
+        if (best == None || area < bestArea) {
+            best = m->window;
+            bestArea = area;
+        }
+    }
+    if (best != None) {
+        WindowStruct *pws = GET_WINDOW_STRUCT(best);
+        if (offsetX)
+            *offsetX = anchorX - pws->x;
+        if (offsetY)
+            *offsetY = anchorY - pws->y;
+    }
+    unlockMappingList();
+    return best;
+}
+
+/* Collect realized override-redirect popups anchored to parent, so the caller
+ * can tear them down before it destroys parent's SDL window. On SDL3
+ * SDL_DestroyWindow recursively destroys owned popup children, which would
+ * leave their WindowStruct pointing at a freed SDL_Window; unrealizing them
+ * first through our own path frees their present resources and clears
+ * sdlWindow. Fills out[0..max) and returns the count written.
+ */
+size_t collectPopupChildren(Window parent, Window *out, size_t max)
+{
+    size_t written = 0;
+    ensureMappingListLock();
+    lockMappingList();
+    for (WindowSdlIdMapper *m = mappingListStart; m && written < max;
+         m = m->next) {
+        if (!IS_TYPE(m->window, WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(m->window);
+        if (ws && ws->popupParent == parent && ws->sdlWindow)
+            out[written++] = m->window;
+    }
+    unlockMappingList();
+    return written;
+}
+
 Window getWindowFromId(Uint32 sdlWindowId)
 {
     /* Read the Window value while holding the lock; returning the node pointer
@@ -867,6 +969,18 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     Window *children = GET_CHILDREN(window);
     for (i = 0; i < windowStruct->children.length; i++)
         destroyWindow(display, children[i], False);
+
+    /* Unmap any SDL3 xdg_popup anchored to this window before its SDL window is
+     * destroyed below. An override-redirect popup is a sibling under the root,
+     * not an X child, so the recursion above never reaches it; yet SDL owns it
+     * as a popup child and SDL_DestroyWindow would free it here, leaving the
+     * popup's WindowStruct with a dangling sdlWindow that later
+     * configure/teardown paths would touch. Only a realized window can be a
+     * popup parent, so the sdlWindow gate skips the mapping-list walk for the
+     * unrealized child widgets that make up the bulk of a destroyed tree.
+     */
+    if (windowStruct->sdlWindow)
+        drainAnchoredPopups(display, window);
 
     /* Auto-revert per Xlib spec; post-order recursion means each ancestor's
      * check sees the updated focus as the cascade unwinds.
@@ -2075,7 +2189,20 @@ Bool configureWindow(Display *display,
             x = values->x;
         if (HAS_VALUE(value_mask, CWY))
             y = values->y;
-        if (isMappedTopLevelWindow) {
+        if (isMappedTopLevelWindow && windowStruct->popupParent != None) {
+            /* A parent-anchored popup is positioned relative to its parent
+             * surface, not in absolute host coordinates, so a Motif menu that
+             * repositions itself after mapping recomputes the same relative
+             * offset the realize path used.
+             */
+            WindowStruct *parentStruct =
+                GET_WINDOW_STRUCT(windowStruct->popupParent);
+            if (parentStruct)
+                SDL_SetWindowPosition(windowStruct->sdlWindow,
+                                      x - parentStruct->x, y - parentStruct->y);
+            windowStruct->x = x;
+            windowStruct->y = y;
+        } else if (isMappedTopLevelWindow) {
             int hostX = x, hostY = y;
             topLevelWindowHostPosition(window, x, y, &hostX, &hostY);
             SDL_SetWindowPosition(windowStruct->sdlWindow, hostX, hostY);

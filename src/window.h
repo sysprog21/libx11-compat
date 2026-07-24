@@ -18,6 +18,7 @@ typedef struct {
 typedef enum {
     UnMapped,
     Mapped,
+
     /* A child mapped while an ancestor is unmapped keeps MapRequested until
      * that ancestor becomes mapped. Unmapping an ancestor does not demote
      * already mapped descendants; XGetWindowAttributes reports them as
@@ -31,20 +32,24 @@ typedef struct {
     Window parent;
     /* List of children */
     Array children;
+
     /* This is the drawing target of the window and its children while it is
      * unmapped. Might be NULL.
      */
     SDL_Texture *sdlTexture;
+
     /* This is the SDL Window handler to the real window of this window. Only
      * set if this window is a mapped top level window.
      */
     SDL_Window *sdlWindow;
+
     /* Cached SDL_MetalView (a CAMetalLayer-backed view) created once by the
      * optional GLX layer for on-screen ANGLE rendering, reused across surface
      * rebuilds so resizes do not stack layers or leak views. void * to avoid a
      * hard SDL_Metal type dependency here; NULL unless GLX bound this window.
      */
     void *glxMetalView;
+
     /* Composite scratch for an offscreen GLX child widget: a streaming staging
      * texture and a CPU row-flip buffer, both sized to glxCompositeW x
      * glxCompositeH and reused across frames. glxCompositeToWindow reallocates
@@ -56,6 +61,7 @@ typedef struct {
     unsigned char *glxCompositeFlip;
     int glxCompositeW;
     int glxCompositeH;
+
     /* Readback scratch for the same widget, filled by glReadPixels before the
      * flip. Cached here (grown on demand, sized by glxReadbackCap) so it is
      * freed with the window and never leaks per thread; see
@@ -63,6 +69,7 @@ typedef struct {
      */
     unsigned char *glxReadbackBuf;
     size_t glxReadbackCap;
+
     /* True when a top-level window's backing texture must be copied to its
      * SDL_Window surface on the next flush/sync.
      */
@@ -70,6 +77,7 @@ typedef struct {
     Bool hasPresentRect;
     Bool loggedPresentScale;
     SDL_Rect presentRect;
+
     /* Dirty region in window-local coords for the next present.
      * drawWindowDataToScreen walks this region and emits one
      * SDL_RenderReadPixels per rect, then submits the whole set via
@@ -81,14 +89,17 @@ typedef struct {
      */
     pixman_region32_t dirty;
     Bool fullyDirty;
+
     /* True after a mapped top-level window has completed at least one
      * successful update to its SDL_Window surface.
      */
     Bool hasPresented;
     Bool contentsMergedToParent;
+
     /* The renderer of this window. Only set if sdlWindow or sdlTexture is set.
      */
     SDL_Renderer *sdlRenderer;
+
     /* Per-window accelerated present path. When a top-level window is realized
      * an accelerated SDL_Renderer is created directly on its SDL_Window; if
      * that succeeds the window presents its SCREEN-backing pixels through
@@ -117,6 +128,7 @@ typedef struct {
     int x, y;
     /* The dimensions of this window. */
     unsigned int w, h;
+
     /* Physical-pixel / SDL-logical-point ratio for this top-level window.
      * hiDpiPromoted says whether this window's X11 geometry (w/h above) uses
      * those physical pixels. Self-scaling toolkits such as Motif/Tk keep X11
@@ -126,6 +138,7 @@ typedef struct {
     double hiDpiScaleX;
     double hiDpiScaleY;
     Bool hiDpiPromoted;
+
     /* Cached WM_NORMAL_HINTS resize increments (ICCCM PResizeInc), in the same
      * physical-pixel space as w/h. A real window manager snaps user resizes to
      * these; there is none here, so the shim replays that behaviour at drag end
@@ -141,6 +154,7 @@ typedef struct {
     int baseHeight;
     int minWidth;
     int minHeight;
+
     /* Live-resize coalescing state, per top-level so two
      * simultaneously-resizing windows do not overwrite each other's tracking (a
      * shared global would make neither ever settle). liveResizeLastSeen* is
@@ -151,6 +165,7 @@ typedef struct {
     int liveResizeLastSeenW;
     int liveResizeLastSeenH;
     int liveResizeSettleTicks;
+
     /* Nonzero while configureWindow is applying a client-initiated resize via
      * SDL_SetWindowSize. That call makes SDL post its own RESIZED/SIZE_CHANGED,
      * which the event filter must not turn into a second ConfigureNotify
@@ -160,6 +175,7 @@ typedef struct {
      * the filter can run on SDL's event thread.
      */
     SDL_atomic_t suppressSdlResizeEcho;
+
     /* One-shot: armed by showTopLevelWindow before SDL_ShowWindow. A mapped
      * top-level already posts an explicit MapNotify next to the show, so the
      * MapNotify that the SDL SHOWN echo would synthesize in convertEvent is
@@ -168,6 +184,7 @@ typedef struct {
      * caller thread and read on the event thread.
      */
     SDL_atomic_t suppressSdlShowMap;
+
     /* Logical (point) size the drag-end increment snap last wrote via
      * SDL_SetWindowSize. That snap runs inside the live-resize present frame
      * and cannot pump to flush the echo, so it cannot use the flag above;
@@ -186,9 +203,11 @@ typedef struct {
     int colormapWindowsCount;
     Window *colormapWindows;
     Array properties;
+
     /* The window name. Only used if this window has a corresponding sdlWindow.
      */
     char *windowName;
+
     /* The icon of this window. Only used if this window has a corresponding
      * sdlWindow.
      */
@@ -200,6 +219,7 @@ typedef struct {
     int depth;
     int bitGravity;
     int winGravity;
+
     /* Indicates if this window is Mapped, if mapping it is requested or if it
      * is Unmapped.
      */
@@ -213,12 +233,23 @@ typedef struct {
     SDL_Surface *shapeClipMask;
     int shapeClipOffsetX;
     int shapeClipOffsetY;
+
     /* WM_TRANSIENT_FOR target stored before either window is realized;
      * applyTransientForRelationship reads this at realize time to wire
      * SDL_SetWindowModalFor once the modal flag is also set.
      */
     Window deferredTransientParent;
     Bool deferredTransientApplied;
+
+    /* For an override-redirect popup realized as an SDL3 xdg_popup: the mapped
+     * parent surface it is anchored to. None when this window is not a
+     * parent-anchored popup (every SDL2 window, and any SDL3 override-redirect
+     * window for which no containing parent was found, which falls back to an
+     * absolutely positioned top-level). Read by configureWindow to reposition
+     * the popup relative to its parent instead of in absolute host coordinates.
+     */
+    Window popupParent;
+
     /* Cached sibling-occlusion clip in window-local coords. Equals (0,0,w,h)
      * minus the union of higher siblings on this window's parent, walked up the
      * ancestor chain. Recomputed lazily through ensureVisibleRegion;
