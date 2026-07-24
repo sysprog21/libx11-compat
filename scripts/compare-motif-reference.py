@@ -183,6 +183,14 @@ set -eu
 mkdir -p '{remote_build}' '{remote_out}'
 cd '{remote_build}'
 if [ ! -f .configure-stamp ]; then
+  # Building the reference Motif --with-xft needs the system Xft/fontconfig dev
+  # packages. This script runs on a pre-provisioned host and does not apt-get,
+  # so fail loudly if they are missing rather than let configure silently
+  # disable Xft and skew the both-sides-Xft differential baseline.
+  pkg-config --exists 'xft >= 2' fontconfig || {{
+    echo "reference host missing Xft/fontconfig dev packages (libxft-dev libfontconfig1-dev) needed for --with-xft" >&2
+    exit 1
+  }}
   PKG_CONFIG_PATH="${{PKG_CONFIG_PATH:-}}" \\
   CPP="gcc -E" \\
   CPPFLAGS="-include stdlib.h" \\
@@ -190,7 +198,7 @@ if [ ! -f .configure-stamp ]; then
   YACC="yacc" \\
   '{remote_src}/configure' \\
     --prefix='{remote_out}/motif-install' \\
-    --disable-glw --disable-tests --without-xft \\
+    --disable-glw --disable-tests --with-xft \\
     --with-jpeg=no --with-png=no --with-xrandr=no \\
     --with-xrender=no --with-xcursor=no --with-xinerama=no \\
     --enable-demos

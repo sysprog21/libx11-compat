@@ -44,7 +44,7 @@ concurrency:
 
 env:
   COMMON_BUILD_PKGS: "clang ccache make pkg-config python3 libsdl2-dev libsdl2-ttf-dev libpixman-1-dev"
-  MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4"
+  MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4 libfontconfig1-dev libxft-dev"
   # Osiris (Qt 2.3.2 fork) configures with Meson and builds with Ninja,
   # and Osiris itself hard-depends on libjpeg, libpng, and freetype for
   # image loading + font rendering (the xft/opengl/sm probes are gated

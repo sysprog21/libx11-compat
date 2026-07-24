@@ -75,6 +75,7 @@ struct _FcPattern {
     FcPatternEntry *entries;
     int length;
     int capacity;
+
     /* Real fontconfig reference-counts patterns; many Xft clients (Motif, older
      * GTK) destroy the pattern they pass to XftFontOpenPattern as soon as the
      * call returns and rely on the font's internal pattern surviving via the
@@ -161,6 +162,7 @@ static FcBool reservePatternEntry(FcPattern *pattern)
     int newCapacity = pattern->capacity ? pattern->capacity * 2 : 8;
     if (newCapacity <= pattern->capacity)
         return FcFalse;
+
     /* Guard newCapacity * sizeof(FcPatternEntry) against size_t wrap before
      * realloc - relevant on 32-bit hosts where a very large caller-built
      * pattern could overflow the multiplication.
@@ -692,6 +694,19 @@ FcPattern *FcNameParse(const FcChar8 *name)
     return pattern;
 }
 
+/* Library init/teardown. Real fontconfig lazily scans config and font dirs
+ * here; this shim discovers fonts on demand through src/font.c, so there is
+ * nothing to build up front. Motif's Display.c calls FcInit at display open and
+ * FcFini at close when built --with-xft, so both must exist and FcInit must
+ * report success or Motif treats the Xft subsystem as unavailable.
+ */
+FcBool FcInit(void)
+{
+    return FcTrue;
+}
+
+void FcFini(void) {}
+
 FcBool FcConfigSubstitute(FcConfig *config, FcPattern *pattern, int kind)
 {
     (void) config;
@@ -970,6 +985,7 @@ static TTF_Font *openFallbackForCharSet(const char *family,
         if (font)
             TTF_CloseFont(font);
     }
+
     /* No single host font covers the whole requested charset (for example a
      * Latin + CJK mix on a box without a CJK font). Real Xft never refuses the
      * pattern here; it returns a base font and resolves the rest per glyph at
@@ -983,6 +999,7 @@ static TTF_Font *openFontFromPattern(FcPattern *pattern)
 {
     int size = patternSize(pattern);
     const FcCharSet *requestedCharset = patternCharSet(pattern);
+
     /* FC_FILE wins because the caller named an exact file. Anything else routes
      * through the shared font-family fallback chain in src/font.c so xft and
      * the core XLoadQueryFont path agree on which TTF backs "helvetica" /
@@ -1090,6 +1107,7 @@ FcPattern *XftFontMatch(Display *dpy,
             *result = FcResultNoMatch;
         return NULL;
     }
+
     /* Real Xft returns a fresh pattern owned by the caller. Keep the match
      * independent so later edits to the original pattern cannot change it.
      */
@@ -1135,6 +1153,7 @@ XftFont *XftFontOpenPattern(Display *dpy, FcPattern *pattern)
         free(font);
         return NULL;
     }
+
     /* Take a protective reference for clients that destroy the pattern after
      * this call. XftFontClose releases this extra reference as well as the
      * ownership reference transferred to XftFontOpenPattern.
@@ -1280,6 +1299,17 @@ XftDraw *XftDrawCreate(Display *dpy,
     return draw;
 }
 
+/* Draw target bound to a 1-bit pixmap rather than a visual. Motif calls this
+ * only as a fallback for when XftDrawCreate returns NULL (XmRenderT.c), which
+ * this shim's XftDrawCreate never does for a valid drawable, so in practice it
+ * is unreachable; it exists so the Motif Xft path links. A mono bitmap has no
+ * visual or colormap, matching real XftDrawCreateBitmap.
+ */
+XftDraw *XftDrawCreateBitmap(Display *dpy, Pixmap bitmap)
+{
+    return XftDrawCreate(dpy, bitmap, NULL, None);
+}
+
 void XftDrawDestroy(XftDraw *draw)
 {
     if (draw)
@@ -1319,6 +1349,7 @@ Bool XftDrawSetClipRectangles(XftDraw *draw,
     }
     if (!rects || (size_t) n > SIZE_MAX / sizeof(XftClipRect))
         return False;
+
     /* Build the replacement before touching the live clip so a failed
      * allocation or invalid input leaves the existing clip intact instead of
      * silently dropping it (the API has no way to report a partial failure).
@@ -1569,6 +1600,7 @@ static void drawUtf8String(XftDraw *draw,
         SDL_FreeSurface(glyphs);
         return;
     }
+
     /* Clip the source/destination rect against the drawable's bounds so a
      * string that overflows the drawable - common at edges and when clients
      * pass y past the baseline - paints only its visible portion instead of
@@ -1618,6 +1650,7 @@ static void drawUtf8String(XftDraw *draw,
         SDL_FreeSurface(glyphs);
         return;
     }
+
     /* Composite the glyph on the GPU instead of reading the destination back
      * for a CPU blend. The previous XGetImage/blendPixel/XPutImage path forced
      * a full-pixmap SDL_RenderReadPixels per glyph (XPutImage re-dirties the
@@ -1636,6 +1669,7 @@ static void drawUtf8String(XftDraw *draw,
     if (!texture)
         return;
     SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+
     /* TTF_RenderUTF8_Blended already bakes the colour's alpha into the surface
      * pixels (per-glyph coverage * colour alpha) on the SDL_ttf versions this
      * links against, so the texture alpha comes solely from those pixels; an
@@ -1650,6 +1684,7 @@ static void drawUtf8String(XftDraw *draw,
     SDL_Rect destRect = {destX, destY, rectW, rectH};
     ShapeGuard sg;
     shapeGuardBegin(&sg, draw->drawable, renderer, &destRect);
+
     /* Clip to the drawable's sibling visible region the same way the core-font
      * path does (font.c), so Xft text into a child obscured by a higher-stacked
      * sibling cannot paint over that sibling. getWindowRenderer resolves every
@@ -1663,6 +1698,7 @@ static void drawUtf8String(XftDraw *draw,
     for (int clip = 0; clip < clipCount; clip++) {
         if (!setGcClipForIteration(renderer, NULL, clip, draw->drawable))
             continue;
+
         /* No clip set means draw unclipped; a clip that was set but holds no
          * rects is an empty region, so nothing is visible and the glyph is
          * skipped. Only clipRectCount alone cannot tell these apart.
@@ -1673,6 +1709,7 @@ static void drawUtf8String(XftDraw *draw,
         }
         if (draw->clipRectCount <= 0)
             continue;
+
         /* Xft clip rects share the drawable/viewport space of the base+sibling
          * clip just installed, so intersect each one with that clip (read back
          * from the renderer) and copy per rect.
@@ -1693,6 +1730,7 @@ static void drawUtf8String(XftDraw *draw,
         }
     }
     clearRendererClip(renderer);
+
     /* If the post-draw shape composite failed, masked-out pixels may still be
      * on the renderer; skip the present so the next draw recomposes from a
      * fresh baseline rather than flashing stale output (mirrors image.c).
@@ -1783,6 +1821,7 @@ static void textExtentsUtf8(XftFont *font,
     int h = 0;
     if (TTF_SizeUTF8(compat->ttf, text, &w, &h) != 0)
         return;
+
     /* XGlyphInfo packs width/height as unsigned short and x/y/xOff/yOff as
      * signed short. SDL_ttf returns int and silently widens; raw casting wraps
      * long strings (advances flip negative) and a client doing layout math sees
@@ -1892,6 +1931,7 @@ FcBool XftCharExists(Display *dpy, XftFont *font, FcChar32 ucs4)
     (void) dpy;
     if (!font)
         return FcFalse;
+
     /* The synthesized charset only seeds a few default ranges, so it is not a
      * reliable authority on what the rasterizer can draw. A universal charset
      * still short-circuits to FcTrue; otherwise defer to TTF_GlyphIsProvided,
@@ -1971,6 +2011,7 @@ void XftDrawRect(XftDraw *draw,
         XFreeGC(draw->display, gc);
         return;
     }
+
     /* Clip the fill against each clip rectangle. Opaque fills tolerate the
      * overlap that intersecting regions would produce. Edges are computed in
      * long long so caller-controlled dimensions cannot signed-overflow.

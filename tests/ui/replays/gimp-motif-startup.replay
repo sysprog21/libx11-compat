@@ -6,7 +6,13 @@
 # pixel-exact reference, so it stays robust to font-fallback differences
 # between hosts.
 delay 3000
-wait-window "[Gg]imp" 5000
+# Generous window-map budget: the differential launches the system-side and
+# compat-side GIMPs concurrently, and with Motif built --with-xft the compat
+# toolbox startup does real fontconfig/freetype/SDL_ttf work, so on a
+# two-core CI runner the two cold starts contend and either can map its
+# toolbox well past a tight 5s bound. This is a max wait (it proceeds the
+# instant the window appears), so the smoke path is not slowed.
+wait-window "[Gg]imp" 15000
 # Let the toolbox reflow and brush/pixmap Expose churn drain before the
 # snapshot (new replays use wait-converge from the start).
 wait-converge 200 2 50 200 15000
