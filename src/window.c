@@ -673,6 +673,25 @@ void drainAnchoredPopups(Display *display, Window window)
     } while (popupChildCount > 0);
 }
 
+/* Re-run an anchored popup's xdg_positioner against its parent so the
+ * compositor recomputes the popup's geometry from the window's current size and
+ * relative offset. Used after a resize (SDL_SetWindowSize grows only the
+ * surface buffer, not the immutable popup geometry) so a menu resized while
+ * mapped stops rendering clipped to its creation rectangle. The offset is the
+ * same parent-relative delta the realize and move paths use; both windows carry
+ * X11 logical coordinates, so their difference is the intended offset.
+ */
+void repositionAnchoredPopup(Window window)
+{
+    WindowStruct *ws = GET_WINDOW_STRUCT(window);
+    if (!ws || !ws->sdlWindow || ws->popupParent == None)
+        return;
+    WindowStruct *parent = GET_WINDOW_STRUCT(ws->popupParent);
+    if (!parent || !parent->sdlWindow)
+        return;
+    SDL_SetWindowPosition(ws->sdlWindow, ws->x - parent->x, ws->y - parent->y);
+}
+
 void unrealizeTopLevelWindow(Display *display, Window window)
 {
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);

@@ -584,9 +584,11 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
          * physical pixel geometry with no RESIZED, and the handler there
          * re-promotes the window and reflows the client. Let those through, and
          * only when they map to a known top-level; keep dropping everything
-         * else (MOVED included - a bare move needs no client reflow and,
+         * else. A bare MOVED is dropped too (it needs no client reflow and,
          * arriving asynchronously here, would inject spurious
-         * ConfigureNotifies).
+         * ConfigureNotifies) with one exception handled just below: an anchored
+         * popup's MOVED carries a compositor slide/flip that ws->x/y must
+         * track.
          */
         Uint32 sub = XC_WINDOW_SUBEVENT(event);
         Bool resizeSubevent = sub == SDL_WINDOWEVENT_RESIZED ||
@@ -595,8 +597,26 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
 #if SDL_VERSION_ATLEAST(2, 0, 18)
         displayChangedSubevent = sub == SDL_WINDOWEVENT_DISPLAY_CHANGED;
 #endif
+
+        /* A bare MOVED is normally dropped (see above), but an anchored
+         * xdg_popup that the compositor slid or flipped to keep on screen
+         * reports its new parent-relative position only through MOVED. That
+         * must reach convertEvent so ws->x/y tracks where the popup actually
+         * landed; otherwise pointer-to-root translation for a grabbed submenu
+         * stays offset by the slide. Let a popup MOVED through; convertEvent
+         * updates ws->x/y and emits no client event for it.
+         */
+        Bool popupMoveSubevent = False;
+        if (sub == SDL_WINDOWEVENT_MOVED) {
+            Window movedWindow = getWindowFromId(event->window.windowID);
+            if (movedWindow != None && IS_TYPE(movedWindow, WINDOW)) {
+                WindowStruct *mws = GET_WINDOW_STRUCT(movedWindow);
+                if (mws && mws->popupParent != None)
+                    popupMoveSubevent = True;
+            }
+        }
         if (sub != SDL_WINDOWEVENT_CLOSE && !resizeSubevent &&
-            !displayChangedSubevent)
+            !displayChangedSubevent && !popupMoveSubevent)
             return 0;
         if (displayChangedSubevent &&
             getWindowFromId(event->window.windowID) == None)
@@ -1467,6 +1487,33 @@ static void translateSdlPointToRoot(Display *display,
         translateWindowPoint(sdlWindow, SCREEN_WINDOW, localX, localY, rootX,
                              rootY);
     }
+}
+
+/* Map a top-level's SDL-reported host origin to the absolute X11 logical origin
+ * kept in ws->x/y. SDL reports an anchored xdg_popup's position relative to its
+ * parent surface, so recover the absolute origin by adding the parent's own
+ * absolute origin (both windows live in the same X11 logical space). Without
+ * this a compositor slide/flip would store the small parent-relative offset as
+ * the popup's absolute origin and every pointer event routed through it would
+ * land off by the parent offset. Absolute top-levels take the ordinary
+ * host-to-logical mapping.
+ */
+static void sdlTopLevelOriginToX11(Window window,
+                                   int sdlX,
+                                   int sdlY,
+                                   int *outX,
+                                   int *outY)
+{
+    WindowStruct *ws = GET_WINDOW_STRUCT(window);
+    if (ws && ws->popupParent != None) {
+        WindowStruct *parent = GET_WINDOW_STRUCT(ws->popupParent);
+        if (parent) {
+            *outX = parent->x + sdlX;
+            *outY = parent->y + sdlY;
+            return;
+        }
+    }
+    topLevelWindowLogicalPosition(window, sdlX, sdlY, outX, outY);
 }
 
 /* Shared HiDPI point scaler; see the declaration in events.h for the rationale.
@@ -2987,12 +3034,25 @@ int convertEvent(Display *display,
             LOG("Window %d moved to %d,%d\n", sdlEvent->window.windowID,
                 sdlEvent->window.data1, sdlEvent->window.data2);
             if (eventWindow != None) {
-                int logicalX = sdlEvent->window.data1;
-                int logicalY = sdlEvent->window.data2;
-                topLevelWindowLogicalPosition(eventWindow, logicalX, logicalY,
-                                              &logicalX, &logicalY);
-                GET_WINDOW_STRUCT(eventWindow)->x = logicalX;
-                GET_WINDOW_STRUCT(eventWindow)->y = logicalY;
+                int logicalX, logicalY;
+                sdlTopLevelOriginToX11(eventWindow, sdlEvent->window.data1,
+                                       sdlEvent->window.data2, &logicalX,
+                                       &logicalY);
+                WindowStruct *movedStruct = GET_WINDOW_STRUCT(eventWindow);
+                movedStruct->x = logicalX;
+                movedStruct->y = logicalY;
+
+                /* Only an anchored popup's MOVED reaches convertEvent (the SDL
+                 * filter drops every other bare move), and it arrives because
+                 * the compositor slid or flipped the popup, not because the
+                 * client asked. Update ws->x/y so pointer translation tracks
+                 * the real position, but emit no ConfigureNotify: the toolkit
+                 * still believes it placed the menu where it requested, and a
+                 * configure it never asked for would fight its own menu
+                 * tracking.
+                 */
+                if (movedStruct->popupParent != None)
+                    return -1;
             }
 
             /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
@@ -3019,7 +3079,7 @@ int convertEvent(Display *display,
                 xEvent->xconfigure.x = sdlEvent->window.data1;
                 xEvent->xconfigure.y = sdlEvent->window.data2;
                 if (eventWindow != None) {
-                    topLevelWindowLogicalPosition(
+                    sdlTopLevelOriginToX11(
                         eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
                 }
@@ -3028,7 +3088,7 @@ int convertEvent(Display *display,
                     SDL_GetWindowFromID(sdlEvent->window.windowID),
                     &xEvent->xconfigure.x, &xEvent->xconfigure.y);
                 if (eventWindow != None) {
-                    topLevelWindowLogicalPosition(
+                    sdlTopLevelOriginToX11(
                         eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
 

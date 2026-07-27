@@ -33,6 +33,7 @@ size_t collectMappedOverrideRedirectWindows(Window *out, size_t max);
 Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY);
 size_t collectPopupChildren(Window parent, Window *out, size_t max);
 void drainAnchoredPopups(Display *display, Window window);
+void repositionAnchoredPopup(Window window);
 void unrealizeTopLevelWindow(Display *display, Window window);
 void destroyScreenWindow(Display *display);
 void destroyWindow(Display *display, Window window, Bool freeParentData);

@@ -2178,6 +2178,7 @@ Bool configureWindow(Display *display,
     GET_WINDOW_DIMS(window, oldWidth, oldHeight);
     MovedWindowSnapshot moveSnapshot = {0};
     Bool resizedWindow = False;
+    Bool popupNeedsReposition = False;
     int resizedWidth = oldWidth, resizedHeight = oldHeight;
     if (!restackWindow(display, window, value_mask, values))
         return False;
@@ -2191,17 +2192,15 @@ Bool configureWindow(Display *display,
             y = values->y;
         if (isMappedTopLevelWindow && windowStruct->popupParent != None) {
             /* A parent-anchored popup is positioned relative to its parent
-             * surface, not in absolute host coordinates, so a Motif menu that
-             * repositions itself after mapping recomputes the same relative
-             * offset the realize path used.
+             * surface, not in absolute host coordinates. Record the new anchor
+             * and defer the actual reposition to the single call after the size
+             * block below, so a combined move+resize re-runs the positioner
+             * once at the final size instead of first at the stale size.
              */
-            WindowStruct *parentStruct =
-                GET_WINDOW_STRUCT(windowStruct->popupParent);
-            if (parentStruct)
-                SDL_SetWindowPosition(windowStruct->sdlWindow,
-                                      x - parentStruct->x, y - parentStruct->y);
             windowStruct->x = x;
             windowStruct->y = y;
+            if (x != oldX || y != oldY)
+                popupNeedsReposition = True;
         } else if (isMappedTopLevelWindow) {
             int hostX = x, hostY = y;
             topLevelWindowHostPosition(window, x, y, &hostX, &hostY);
@@ -2240,6 +2239,15 @@ Bool configureWindow(Display *display,
         if ((HAS_VALUE(value_mask, CWWidth) && values->width <= 0) ||
             (HAS_VALUE(value_mask, CWHeight) && values->height <= 0)) {
             handleError(0, display, window, 0, BadValue, 0);
+
+            /* The move half of a combined request is already committed to
+             * ws->x/y above (the non-popup branch also moved its SDL window
+             * eagerly). Apply the deferred popup reposition here too before
+             * bailing on the bad resize, so the popup surface does not diverge
+             * from ws->x/y and leave pointer translation offset.
+             */
+            if (popupNeedsReposition)
+                repositionAnchoredPopup(window);
             if (moveSnapshot.surface)
                 SDL_FreeSurface(moveSnapshot.surface);
             return False;
@@ -2294,12 +2302,29 @@ Bool configureWindow(Display *display,
             windowStruct->h = (unsigned int) height;
             if (windowStruct->sdlTexture)
                 resizeWindowTexture(window);
+            if (isMappedTopLevelWindow && windowStruct->popupParent != None)
+                popupNeedsReposition = True;
             hasChanged = True;
             resizedWindow = True;
             resizedWidth = width;
             resizedHeight = height;
         }
     }
+
+    /* Re-run an anchored popup's positioner exactly once, after both the move
+     * and resize blocks have settled windowStruct->x/y and the SDL window size.
+     * An xdg_popup's geometry is fixed by its positioner at creation, and
+     * SDL_SetWindowSize only grows the surface buffer, so without this the
+     * compositor keeps clipping a menu resized after mapping (Motif switching
+     * the armed pulldown from a short menu to a taller one) to its creation
+     * rectangle. Doing it here, rather than inside each block, repositions a
+     * combined move+resize a single time at the final geometry instead of first
+     * at the stale size. Only anchored popups need it (popupParent is set only
+     * on the SDL3 popup path); absolute top-levels move and resize through the
+     * SDL_SetWindowPosition/Size calls above alone.
+     */
+    if (popupNeedsReposition)
+        repositionAnchoredPopup(window);
 
     if (!hasChanged)
         return True;
