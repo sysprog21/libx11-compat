@@ -1328,6 +1328,60 @@ int XMapWindow(Display *display, Window window)
     return mapWindowImpl(display, window);
 }
 
+#ifndef LIBX11_COMPAT_SDL3
+
+/* Mark every mapped top-level other than exclude that overlaps rect for a
+ * present. Under SDL2 talking to a backing/remote X server (Xvnc), the
+ * cross-window Expose that a real X server sends to windows below a torn-down
+ * popup or a moved-away window is not reliably delivered to a sibling
+ * top-level's SDL event queue, so the vacated region keeps the old pixels as
+ * residue. Forcing a present makes those siblings redraw. Root children are the
+ * top-levels, and rect plus each sibling rect share the same X11 logical space,
+ * so a plain rectangle overlap decides who needs it. Not needed on SDL3, where
+ * the Wayland compositor repaints below a dismissed popup on its own.
+ */
+void repaintTopLevelsOverlappingRect(Window exclude, SDL_Rect rect)
+{
+    /* Walks the screen child list and marks siblings for present; the callers
+     * (unmap/destroy/move teardown) all run on the main event thread, and
+     * markWindowNeedsPresent touches SDL. Assert the invariant so a future
+     * off-main caller fails loudly instead of racing the child list.
+     */
+    requireMainEventThread("repaintTopLevelsOverlappingRect");
+    if (SCREEN_WINDOW == None)
+        return;
+    WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    if (!screen)
+        return;
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    for (size_t i = 0; i < screen->children.length; i++) {
+        Window w = children[i];
+
+        /* A child torn down mid-teardown lingers in the array typed
+         * CLOSED_WINDOW with a NULL struct (destroyScreenWindowImpl destroys
+         * the top-levels with freeParentData=False, so they stay listed).
+         * Filter it on the type slot before IS_MAPPED_TOP_LEVEL_WINDOW
+         * dereferences the struct, matching drawWindowDataToScreen.
+         */
+        if (w == exclude || !IS_TYPE(w, WINDOW) ||
+            !IS_MAPPED_TOP_LEVEL_WINDOW(w))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(w);
+
+        /* Plain rectangle overlap in int64 so a hostile window dimension cannot
+         * overflow the signed sum, matching this file's geometry discipline. No
+         * SDL_* call here, so no wrapper thunk is needed on the SDL2 backend.
+         */
+        int64_t sx = ws->x, sy = ws->y, sw = ws->w, sh = ws->h;
+        int64_t rx = rect.x, ry = rect.y, rw = rect.w, rh = rect.h;
+        if (sw <= 0 || sh <= 0 || rw <= 0 || rh <= 0)
+            continue;
+        if (rx < sx + sw && rx + rw > sx && ry < sy + sh && ry + rh > sy)
+            markWindowNeedsPresent(w);
+    }
+}
+#endif
+
 /* Core unmap bookkeeping shared by XUnmapWindow and the
  * win_gravity=UnmapGravity path. fromConfigure stamps UnmapNotify: true when
  * the unmap is a side effect of a parent resize (UnmapGravity), false for a
@@ -1383,10 +1437,25 @@ void unmapWindowInternal(Display *display, Window window, Bool fromConfigure)
          * below already posts it; the top-level path must too.
          */
         postEvent(display, window, UnmapNotify, fromConfigure);
+#ifndef LIBX11_COMPAT_SDL3
+        SDL_Rect closedRect = {windowStruct->x, windowStruct->y,
+                               clampToIntRange((int64_t) windowStruct->w),
+                               clampToIntRange((int64_t) windowStruct->h)};
+#endif
         SDL_Renderer *sdlRenderer = windowStruct->sdlRenderer;
         windowStruct->sdlRenderer = NULL;
         destroyWindowRenderer(sdlRenderer);
         unrealizeTopLevelWindow(display, window);
+#ifndef LIBX11_COMPAT_SDL3
+
+        /* This top-level's SDL window is gone; repaint whatever it covered so
+         * its pixels do not linger on the siblings below. Any top-level counts,
+         * not just a menu popup: closing an editor window uncovers the same
+         * way, and Xvnc delivers those siblings no Expose either.
+         */
+        repaintTopLevelsOverlappingRect(window, closedRect);
+        drawWindowDataToScreen();
+#endif
     } else if (GET_WINDOW_STRUCT(GET_PARENT(window))->mapState != UnMapped) {
         postEvent(display, window, UnmapNotify, fromConfigure);
         SDL_Rect exposeRect = {windowStruct->x, windowStruct->y,

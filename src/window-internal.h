@@ -41,6 +41,25 @@ Window getContainingWindow(Window window, int x, int y);
 Window getDirectChildContainingPoint(Window window, int x, int y);
 Bool windowPointInsideBoundingShape(WindowStruct *windowStruct, int x, int y);
 void windowAbsoluteOrigin(Window window, int *xReturn, int *yReturn);
+
+/* Saturate an int64 to the int range. Shared by the popup-anchor geometry in
+ * window.c and window-internal.c so a hostile coordinate clamps instead of
+ * wrapping.
+ */
+int clampToIntRange(int64_t v);
+
+#ifndef LIBX11_COMPAT_SDL3
+/* Force a present on every mapped top-level other than exclude that overlaps
+ * rect. Used on SDL2 to repaint siblings a torn-down popup or a moved window
+ * uncovered, since Xvnc does not reliably deliver their Expose. Scope is
+ * intentionally the three paths that shrink a top-level's on-screen footprint
+ * for real on SDL2: unmap, destroy, and a window-manager move. A client
+ * XLowerWindow/XRestackWindows only reorders our internal child list (FVWM owns
+ * the SDL/X stacking, so nothing is uncovered on screen), and a client shrink
+ * via XResizeWindow is not covered here yet.
+ */
+void repaintTopLevelsOverlappingRect(Window exclude, SDL_Rect rect);
+#endif
 void translateWindowPoint(Window sourceWindow,
                           Window destinationWindow,
                           int sourceX,

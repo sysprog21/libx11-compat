@@ -92,6 +92,9 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->liveResizeLastSeenH = 0;
     windowStruct->liveResizeSettleTicks = 0;
     SDL_AtomicSet(&windowStruct->suppressSdlResizeEcho, 0);
+    SDL_AtomicSet(&windowStruct->moveEchoValid, 0);
+    windowStruct->moveEchoHostX = 0;
+    windowStruct->moveEchoHostY = 0;
     SDL_AtomicSet(&windowStruct->suppressSdlShowMap, 0);
     windowStruct->snapEchoW = 0;
     windowStruct->snapEchoH = 0;
@@ -351,7 +354,7 @@ void registerWindowMapping(Window window, Uint32 sdlWindowId)
     unlockMappingList();
 }
 
-static int clampToIntRange(int64_t v)
+int clampToIntRange(int64_t v)
 {
     if (v > INT_MAX)
         return INT_MAX;
@@ -1058,6 +1061,11 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     free(windowStruct->glxReadbackBuf);
 
     if (windowStruct->sdlWindow) {
+#ifndef LIBX11_COMPAT_SDL3
+        SDL_Rect closedRect = {windowStruct->x, windowStruct->y,
+                               clampToIntRange((int64_t) windowStruct->w),
+                               clampToIntRange((int64_t) windowStruct->h)};
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 5)
 
         /* Detach any live modal-for binding so the host WM does not keep
@@ -1072,6 +1080,27 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
 #endif
         replayTargetForgetWindow(SDL_GetWindowID(windowStruct->sdlWindow));
         SDL_DestroyWindow(windowStruct->sdlWindow);
+        windowStruct->sdlWindow = NULL;
+#ifndef LIBX11_COMPAT_SDL3
+
+        /* This top-level's SDL window is gone; repaint whatever it covered so
+         * its pixels do not linger on the siblings below, matching the
+         * XUnmapWindow teardown. XDestroyWindow (Motif closes an editor window
+         * this way) never routes through unmapWindowInternal, and Xvnc delivers
+         * the uncovered siblings no Expose, so without this the closed window's
+         * pixels stay as residue. sdlWindow is nulled above so the present pass
+         * skips this now-torn-down window while it briefly stays in the screen
+         * child list. Gate on freeParentData, which is set only for a genuine
+         * client destroy (XDestroyWindow, XDestroySubwindows): the recursion
+         * into child widgets and the XCloseDisplay screen teardown pass False,
+         * and repainting there would present siblings that are themselves about
+         * to be destroyed, once per closing window (O(n^2) over the teardown).
+         */
+        if (freeParentData) {
+            repaintTopLevelsOverlappingRect(window, closedRect);
+            drawWindowDataToScreen();
+        }
+#endif
     }
     deleteWindowMapping(window);
     if (!windowStruct->internal)
@@ -2204,6 +2233,34 @@ Bool configureWindow(Display *display,
         } else if (isMappedTopLevelWindow) {
             int hostX = x, hostY = y;
             topLevelWindowHostPosition(window, x, y, &hostX, &hostY);
+
+            /* SDL_SetWindowPosition makes SDL echo a MOVED for this window.
+             * This move is client-initiated and already gets its
+             * ConfigureNotify from the postEvent below, so record the exact
+             * host origin as an echo token (mirroring the resize path's
+             * snapEcho) and the filter drops the matching MOVED, or a bare move
+             * would deliver two ConfigureNotifies since the filter now lets a
+             * mapped top-level MOVED through to clear the drag trail. Only arm
+             * on a real position change: an unmoved window emits no echo, and a
+             * stale token could otherwise match an unrelated later MOVED. No
+             * pump is needed: the token matches whenever the echo arrives,
+             * synchronous or not, so it avoids the re-entrant mid-configure
+             * event processing the old pump forced. A reparenting WM (FVWM on
+             * Xvnc) reports a frame-adjusted origin that will not match, so
+             * such a client XMoveWindow still sees one benign extra
+             * ConfigureNotify.
+             */
+            if (x != oldX || y != oldY) {
+                windowStruct->moveEchoHostX = hostX;
+                windowStruct->moveEchoHostY = hostY;
+
+                /* Publish the coordinates before the valid flag: SDL_AtomicSet
+                 * carries a full barrier, so the filter that reads the flag
+                 * with SDL_AtomicGet sees the matching origin, never a torn
+                 * one.
+                 */
+                SDL_AtomicSet(&windowStruct->moveEchoValid, 1);
+            }
             SDL_SetWindowPosition(windowStruct->sdlWindow, hostX, hostY);
             if (windowStruct->overrideRedirect) {
                 windowStruct->x = x;

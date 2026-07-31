@@ -268,18 +268,6 @@ static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
 #endif
 }
 
-/* Clamp an int64 coordinate to the int range SDL and the X protocol use, so a
- * hostile client-supplied offset cannot wrap on the way to SDL_WarpMouseGlobal.
- */
-static int clampToIntRange(int64_t v)
-{
-    if (v > INT_MAX)
-        return INT_MAX;
-    if (v < INT_MIN)
-        return INT_MIN;
-    return (int) v;
-}
-
 /* Walk from `window` up to its top-level (the window whose parent is the root),
  * accumulating each intermediate window's physical-pixel offset into offX and
  * offY and returning the top-level through topReturn. Child window geometry

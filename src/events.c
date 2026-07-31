@@ -613,6 +613,29 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
                 WindowStruct *mws = GET_WINDOW_STRUCT(movedWindow);
                 if (mws && mws->popupParent != None)
                     popupMoveSubevent = True;
+#ifndef LIBX11_COMPAT_SDL3
+                /* SDL2/X11: a window-manager move (opaque drag) uncovers the
+                 * top-levels below the window's old position, but Xvnc does not
+                 * deliver their Expose, so their old pixels linger as a drag
+                 * trail. Let the MOVED through so convertEvent can repaint
+                 * them. A client XMoveWindow's own SDL echo is different:
+                 * configureWindow recorded the host origin it wrote and posts
+                 * the one ConfigureNotify itself (repainting the vacated region
+                 * through its move snapshot), so drop the echo whose origin
+                 * matches and clear the token, or the move would deliver two
+                 * ConfigureNotifies. A genuine WM drag reports a different
+                 * origin and is kept.
+                 */
+                else if (mws && IS_MAPPED_TOP_LEVEL_WINDOW(movedWindow)) {
+                    if (SDL_AtomicGet(&mws->moveEchoValid) &&
+                        event->window.data1 == mws->moveEchoHostX &&
+                        event->window.data2 == mws->moveEchoHostY) {
+                        SDL_AtomicSet(&mws->moveEchoValid, 0);
+                        return 0;
+                    }
+                    popupMoveSubevent = True;
+                }
+#endif
             }
         }
         if (sub != SDL_WINDOWEVENT_CLOSE && !resizeSubevent &&
@@ -3034,25 +3057,42 @@ int convertEvent(Display *display,
             LOG("Window %d moved to %d,%d\n", sdlEvent->window.windowID,
                 sdlEvent->window.data1, sdlEvent->window.data2);
             if (eventWindow != None) {
+                WindowStruct *movedStruct = GET_WINDOW_STRUCT(eventWindow);
+#ifndef LIBX11_COMPAT_SDL3
+                /* Old on-screen rect (before ws->x/y is updated below) is the
+                 * region a window-manager move vacates on the top-levels under
+                 * it. Captured for the SDL2 repaint further down.
+                 */
+                SDL_Rect vacated = {movedStruct->x, movedStruct->y,
+                                    clampToIntRange((int64_t) movedStruct->w),
+                                    clampToIntRange((int64_t) movedStruct->h)};
+#endif
                 int logicalX, logicalY;
                 sdlTopLevelOriginToX11(eventWindow, sdlEvent->window.data1,
                                        sdlEvent->window.data2, &logicalX,
                                        &logicalY);
-                WindowStruct *movedStruct = GET_WINDOW_STRUCT(eventWindow);
                 movedStruct->x = logicalX;
                 movedStruct->y = logicalY;
 
-                /* Only an anchored popup's MOVED reaches convertEvent (the SDL
-                 * filter drops every other bare move), and it arrives because
-                 * the compositor slid or flipped the popup, not because the
-                 * client asked. Update ws->x/y so pointer translation tracks
-                 * the real position, but emit no ConfigureNotify: the toolkit
-                 * still believes it placed the menu where it requested, and a
-                 * configure it never asked for would fight its own menu
-                 * tracking.
+                /* An anchored popup's MOVED arrives because the compositor slid
+                 * or flipped it, not because the client asked. Update ws->x/y
+                 * so pointer translation tracks the real position, but emit no
+                 * ConfigureNotify: the toolkit still believes it placed the
+                 * menu where it requested, and a configure it never asked for
+                 * would fight its own menu tracking.
                  */
                 if (movedStruct->popupParent != None)
                     return -1;
+#ifndef LIBX11_COMPAT_SDL3
+                /* SDL2/X11 window-manager move: repaint the top-levels this
+                 * window uncovered at its old position, since Xvnc delivers
+                 * them no Expose, so the drag trail clears. Then fall through
+                 * to the ConfigureNotify below: a move-only configure carries
+                 * no size change, so the client just learns its new position
+                 * with no reflow.
+                 */
+                repaintTopLevelsOverlappingRect(eventWindow, vacated);
+#endif
             }
 
             /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single

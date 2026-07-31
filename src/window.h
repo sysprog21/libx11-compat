@@ -176,6 +176,30 @@ typedef struct {
      */
     SDL_atomic_t suppressSdlResizeEcho;
 
+    /* Coordinate token for the move path, mirroring snapEchoW/snapEchoH on the
+     * resize path. configureWindow records the exact host origin it wrote via
+     * SDL_SetWindowPosition for a client XMoveWindow (and posts the one
+     * ConfigureNotify itself); the event filter drops the SDL MOVED echo whose
+     * data1/data2 match that origin, clearing the token, so a bare move does
+     * not escape as a second ConfigureNotify (the filter otherwise lets a
+     * mapped top-level MOVED through to repaint the drag trail). Matching on
+     * the exact origin rather than a timing window means the echo is caught
+     * whenever it arrives without a mid-configure pump, and a genuine WM drag
+     * to a different position is always kept. A reparenting WM that reports a
+     * frame-adjusted origin still slips one benign extra ConfigureNotify
+     * through, same as before. moveEchoValid gates use since the origin can be
+     * zero or negative. The filter reads on SDL's event thread while
+     * configureWindow writes on the main thread, so moveEchoValid is atomic:
+     * configureWindow writes the coordinates and then SDL_AtomicSet(valid), and
+     * the filter SDL_AtomicGet(valid) before reading the coordinates. SDL's
+     * atomics carry a full barrier, so a valid token always exposes a
+     * consistent origin (no torn coordinate read) rather than relying on store
+     * ordering.
+     */
+    SDL_atomic_t moveEchoValid;
+    int moveEchoHostX;
+    int moveEchoHostY;
+
     /* One-shot: armed by showTopLevelWindow before SDL_ShowWindow. A mapped
      * top-level already posts an explicit MapNotify next to the show, so the
      * MapNotify that the SDL SHOWN echo would synthesize in convertEvent is
