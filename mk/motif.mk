@@ -136,6 +136,7 @@ MOTIF_COMMON_CONFIGURE_FLAGS := \
     --prefix=$(abspath $(OUT)/motif-install) \
     $(MOTIF_GLW_FLAG) \
     --disable-tests \
+    --disable-dependency-tracking \
     --with-xft \
     --with-jpeg=no \
     --with-png=no \
