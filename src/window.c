@@ -353,6 +353,18 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     if (windowStruct->overrideRedirect) {
         flags |= SDL_WINDOW_BORDERLESS;
         flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+
+#ifndef LIBX11_COMPAT_SDL3
+        /* SDL2 path only: the SDL3 backend routes override-redirect popups
+         * through xc_CreatePopupWindow above. On SDL2, BORDERLESS alone leaves
+         * the window WM-managed, so a real window manager (FVWM) reparents it,
+         * draws a title bar on every menu, and its map/unmap leaves ghosting.
+         * The TOOLTIP window type makes SDL2's X11 driver set
+         * override_redirect, so the WM ignores the menu entirely. Supported
+         * since SDL 2.0.5, so it is safe on the 2.0.10 floor.
+         */
+        flags |= SDL_WINDOW_TOOLTIP;
+#endif
     }
     if (windowStruct->eventMask & KeyPressMask ||
         windowStruct->eventMask & KeyReleaseMask) {
@@ -386,8 +398,8 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     int createW = (int) windowStruct->w;
     int createH = (int) windowStruct->h;
     SDL_Window *sdlWindow = NULL;
-#ifdef LIBX11_COMPAT_SDL3
 
+#ifdef LIBX11_COMPAT_SDL3
     /* A Wayland client cannot self-position a top-level, so an
      * override-redirect popup created as an ordinary window floats wherever the
      * compositor drops it, detached from the menu bar that spawned it. When a
@@ -413,6 +425,8 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
                                      createW, createH, popupFlags);
             if (sdlWindow) {
                 windowStruct->popupParent = popupParent;
+                windowStruct->popupAnchorX = windowStruct->x;
+                windowStruct->popupAnchorY = windowStruct->y;
                 LOG("realizeTopLevelWindow: window=%lu popup parent=%lu "
                     "offset=(%d,%d)\n",
                     window, popupParent, offsetX, offsetY);
@@ -689,7 +703,15 @@ void repositionAnchoredPopup(Window window)
     WindowStruct *parent = GET_WINDOW_STRUCT(ws->popupParent);
     if (!parent || !parent->sdlWindow)
         return;
-    SDL_SetWindowPosition(ws->sdlWindow, ws->x - parent->x, ws->y - parent->y);
+
+    /* Widen to int64 before the subtraction so a hostile anchor cannot wrap the
+     * parent-relative offset, matching findPopupParentToplevel and the geometry
+     * math in window-internal.c.
+     */
+    int64_t relX = (int64_t) ws->popupAnchorX - popupAnchorOriginX(parent);
+    int64_t relY = (int64_t) ws->popupAnchorY - popupAnchorOriginY(parent);
+    SDL_SetWindowPosition(ws->sdlWindow, clampToIntRange(relX),
+                          clampToIntRange(relY));
 }
 
 void unrealizeTopLevelWindow(Display *display, Window window)
@@ -705,6 +727,8 @@ void unrealizeTopLevelWindow(Display *display, Window window)
      * drain below cannot loop forever.
      */
     windowStruct->popupParent = None;
+    windowStruct->popupAnchorX = windowStruct->x;
+    windowStruct->popupAnchorY = windowStruct->y;
     drainAnchoredPopups(display, window);
 
     /* If this top-level was the replay/XTest injection target, retire the

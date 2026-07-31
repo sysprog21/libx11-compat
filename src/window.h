@@ -271,8 +271,12 @@ typedef struct {
      * window for which no containing parent was found, which falls back to an
      * absolutely positioned top-level). Read by configureWindow to reposition
      * the popup relative to its parent instead of in absolute host coordinates.
+     * popupAnchorX/Y keep the client-requested X11 origin; ws->x/y may later
+     * track the compositor-adjusted actual origin for pointer translation.
      */
     Window popupParent;
+    int popupAnchorX;
+    int popupAnchorY;
 
     /* Cached sibling-occlusion clip in window-local coords. Equals (0,0,w,h)
      * minus the union of higher siblings on this window's parent, walked up the
@@ -305,6 +309,22 @@ static inline double effectiveHiDpiScaleX(const WindowStruct *ws)
 static inline double effectiveHiDpiScaleY(const WindowStruct *ws)
 {
     return ws->hiDpiPromoted && ws->hiDpiScaleY > 0.0 ? ws->hiDpiScaleY : 1.0;
+}
+
+/* Origin a popup is anchored against. A nested popup keeps its client-requested
+ * X11 origin in popupAnchorX/Y while ws->x/y may drift to the compositor slid
+ * position; parent selection and child positioning must use the requested one.
+ * Single-sourced so the containment test, the create-time offset, and the
+ * reposition cannot disagree, which is exactly how the anchor once drifted.
+ */
+static inline int popupAnchorOriginX(const WindowStruct *ws)
+{
+    return ws->popupParent != None ? ws->popupAnchorX : ws->x;
+}
+
+static inline int popupAnchorOriginY(const WindowStruct *ws)
+{
+    return ws->popupParent != None ? ws->popupAnchorY : ws->y;
 }
 
 #include "window-internal.h"

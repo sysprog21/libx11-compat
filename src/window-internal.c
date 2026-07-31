@@ -156,6 +156,8 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->deferredTransientParent = None;
     windowStruct->deferredTransientApplied = False;
     windowStruct->popupParent = None;
+    windowStruct->popupAnchorX = x;
+    windowStruct->popupAnchorY = y;
 
     /* pixman_region32_init is the only safe zero state for a region; a
      * memset/bare zero would crash on the first fini. The valid flag stays
@@ -657,8 +659,25 @@ size_t collectMappedOverrideRedirectWindows(Window *out, size_t max)
  * the absolute-position top-level path. The offset is computed in the same X11
  * logical coordinates both windows were positioned in, so their difference
  * recovers exactly the offset the toolkit intended regardless of where the host
- * actually placed the parent.
+ * actually placed the parent. Stacking position of a window among the root's
+ * children, higher meaning closer to the top; -1 when it is not a direct root
+ * child. Root children run bottom-to-top, so the index is the stacking rank
+ * directly.
  */
+static ptrdiff_t rootStackIndex(Window window)
+{
+    if (SCREEN_WINDOW == None)
+        return -1;
+    WindowStruct *screenStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    if (!screenStruct)
+        return -1;
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    for (size_t i = 0; i < screenStruct->children.length; i++)
+        if (children[i] == window)
+            return (ptrdiff_t) i;
+    return -1;
+}
+
 Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY)
 {
     WindowStruct *pop = GET_WINDOW_STRUCT(popup);
@@ -668,6 +687,7 @@ Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY)
     long long anchorY = pop->y;
     Window best = None;
     long long bestArea = 0;
+    ptrdiff_t bestStack = -1;
     ensureMappingListLock();
     lockMappingList();
     for (WindowSdlIdMapper *m = mappingListStart; m; m = m->next) {
@@ -686,13 +706,14 @@ Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY)
          * bottom edge, so accept those edges as containing the anchor for
          * parent selection.
          */
-        long long left = ws->x;
-        long long top = ws->y;
-        long long right =
-            left +
+        long long left = popupAnchorOriginX(ws);
+        long long top = popupAnchorOriginY(ws);
+        long long extentW =
             (long long) ((double) ws->w / effectiveHiDpiScaleX(ws) + 0.5);
-        long long bottom =
-            top + (long long) ((double) ws->h / effectiveHiDpiScaleY(ws) + 0.5);
+        long long extentH =
+            (long long) ((double) ws->h / effectiveHiDpiScaleY(ws) + 0.5);
+        long long right = left + extentW;
+        long long bottom = top + extentH;
         if (anchorX < left || anchorY < top || anchorX > right ||
             anchorY > bottom)
             continue;
@@ -702,20 +723,51 @@ Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY)
          * win as the "smallest" containing rect and misanchor the popup onto an
          * invisible artifact.
          */
-        long long area = (right - left) * (bottom - top);
-        if (area <= 0)
+        if (extentW <= 0 || extentH <= 0)
             continue;
+
+        /* Clamp each extent to int range before multiplying so a hostile
+         * dimension cannot overflow the signed area (INT_MAX squared stays
+         * below LLONG_MAX), matching this file's overflow discipline. Real
+         * windows sit far below the cap, so selection ordering is unchanged.
+         */
+        if (extentW > INT_MAX)
+            extentW = INT_MAX;
+        if (extentH > INT_MAX)
+            extentH = INT_MAX;
+        long long area = extentW * extentH;
+
+        /* Smallest containing rect wins (the menu shell over the app shell, the
+         * parent popup over its toplevel). On an exact area tie between two
+         * overlapping toplevels, prefer the one higher in the root stacking:
+         * that is the window whose menu bar was just activated and raised, so
+         * the popup anchors to it instead of jumping to an equal-sized sibling
+         * behind it.
+         */
         if (best == None || area < bestArea) {
             best = m->window;
             bestArea = area;
+            bestStack = rootStackIndex(m->window);
+        } else if (area == bestArea) {
+            ptrdiff_t stack = rootStackIndex(m->window);
+            if (stack > bestStack) {
+                best = m->window;
+                bestStack = stack;
+            }
         }
     }
     if (best != None) {
         WindowStruct *pws = GET_WINDOW_STRUCT(best);
+
+        /* Same parent origin the containment test above and
+         * repositionAnchoredPopup use, so the create-time offset cannot drift
+         * from the later reposition. Clamp to int range like the rest of this
+         * file's geometry math so a hostile anchor cannot wrap the offset.
+         */
         if (offsetX)
-            *offsetX = anchorX - pws->x;
+            *offsetX = clampToIntRange(anchorX - popupAnchorOriginX(pws));
         if (offsetY)
-            *offsetY = anchorY - pws->y;
+            *offsetY = clampToIntRange(anchorY - popupAnchorOriginY(pws));
     }
     unlockMappingList();
     return best;
@@ -2228,6 +2280,8 @@ Bool configureWindow(Display *display,
              */
             windowStruct->x = x;
             windowStruct->y = y;
+            windowStruct->popupAnchorX = x;
+            windowStruct->popupAnchorY = y;
             if (x != oldX || y != oldY)
                 popupNeedsReposition = True;
         } else if (isMappedTopLevelWindow) {
