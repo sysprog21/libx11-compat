@@ -85,6 +85,7 @@ int XTestFakeMotionEvent(Display *display,
 {
     (void) screen_number;
     honorDelay(delay);
+
     /* Coherent snapshot of (id, root) so a retarget between reading the id and
      * the root cannot send this event to one window with another window's local
      * coordinates.
@@ -99,12 +100,14 @@ int XTestFakeMotionEvent(Display *display,
     ev.type = SDL_MOUSEMOTION;
     ev.motion.timestamp = XC_NOW_EVENT_TS();
     ev.motion.windowID = winId;
+
     /* Tag the event as synthetic so convertEvent's SDL_MOUSEMOTION handler
      * skips scaleSdlPointToPixels: localX/localY come from
      * replayTargetTranslateRoot and are already in X11 physical pixels, so
      * scaling again would double them on Retina. SDL_TOUCH_MOUSEID is the
      * documented "not a real mouse" sentinel and never collides with a
-     * device-driven which value (mirrors the wheel path). */
+     * device-driven which value (mirrors the wheel path).
+     */
     ev.motion.which = SDL_TOUCH_MOUSEID;
     ev.motion.x = localX;
     ev.motion.y = localY;
@@ -131,8 +134,10 @@ int XTestFakeRelativeMotionEvent(Display *display,
     ev.type = SDL_MOUSEMOTION;
     ev.motion.timestamp = XC_NOW_EVENT_TS();
     ev.motion.windowID = winId;
+
     /* Synthetic marker; see XTestFakeMotionEvent. newX/newY are accumulated in
-     * X11 physical pixels, so convertEvent must not scale them again. */
+     * X11 physical pixels, so convertEvent must not scale them again.
+     */
     ev.motion.which = SDL_TOUCH_MOUSEID;
     ev.motion.x = newX;
     ev.motion.y = newY;
@@ -177,6 +182,7 @@ int XTestFakeButtonEvent(Display *display,
         ev.wheel.windowID = winId;
         ev.wheel.y = (button == 4) ? 1 : -1;
         ev.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+
         /* Tag the event as synthetic so convertEvent's SDL_MOUSEWHEEL handler
          * knows to use the injected pointer position instead of
          * SDL_GetMouseState. SDL_TOUCH_MOUSEID is the documented sentinel for
@@ -203,29 +209,28 @@ int XTestFakeButtonEvent(Display *display,
     ev.button.button = (Uint8) sdlButton;
     XC_EVENT_SET_BUTTON_PRESSED(&ev, is_press);
     ev.button.clicks = 1;
+
     /* Synthetic marker; see XTestFakeMotionEvent. curX/curY come from
      * replayTargetReadPointer in X11 physical pixels, so convertEvent must not
-     * scale them again. */
+     * scale them again.
+     */
     ev.button.which = SDL_TOUCH_MOUSEID;
     ev.button.x = curX;
     ev.button.y = curY;
     return pushFakeEvent(display, &ev);
 }
 
-/* Map a modifier key's keycode (low byte of the SDL keycode) to its KMOD mask.
- * Returns 0 for non-modifier keys.
- */
-static Uint16 kmodForModifierKeycode(unsigned int keycode)
+static Uint16 kmodForModifierKeycode(Display *display, unsigned int keycode)
 {
-    switch (keycode & 0xFF) {
-    case 0xE0: /* SDLK_LCTRL */
-    case 0xE4: /* SDLK_RCTRL */
+    switch (XkbKeycodeToKeysym(display, (KeyCode) keycode, 0, 0)) {
+    case XK_Control_L:
+    case XK_Control_R:
         return KMOD_CTRL;
-    case 0xE1: /* SDLK_LSHIFT */
-    case 0xE5: /* SDLK_RSHIFT */
+    case XK_Shift_L:
+    case XK_Shift_R:
         return KMOD_SHIFT;
-    case 0xE2: /* SDLK_LALT */
-    case 0xE6: /* SDLK_RALT */
+    case XK_Alt_L:
+    case XK_Alt_R:
         return KMOD_ALT;
     default:
         return 0;
@@ -300,12 +305,13 @@ int XTestFakeKeyEvent(Display *display,
                       unsigned long delay)
 {
     honorDelay(delay);
+
     /* Compute the held-modifier set after this key without committing it yet.
      * The event itself carries the pre-press mask (a Shift-down event does not
      * report Shift; a Shift-up still does), matching how a real keyboard
      * reports modifier state.
      */
-    Uint16 modBit = kmodForModifierKeycode(keycode);
+    Uint16 modBit = kmodForModifierKeycode(display, keycode);
     Uint16 nextMods = fakeHeldMods;
     if (modBit) {
         if (is_press)
@@ -328,15 +334,10 @@ int XTestFakeKeyEvent(Display *display,
     ev.key.windowID = winId;
     XC_EVENT_SET_KEY_PRESSED(&ev, is_press);
     XC_EVENT_SET_KEYMOD(&ev, fakeHeldMods);
-    /* X keycodes are server-defined; SDL scancodes are SDL's own enum and the
-     * convertEvent path derives the X keycode back from keysym.sym (low byte).
-     * Pass the requested code through as the SDL_Keycode so the round-trip
-     * lands on the same X keycode the caller asked for, and let
-     * SDL_GetScancodeFromKey fill in the scancode for callers that consume it.
-     * Callers wanting a specific keysym should XStringToKeysym first.
-     */
-    XC_EVENT_SET_KEYSYM(&ev, (SDL_Keycode) keycode);
-    XC_EVENT_SET_SCANCODE(&ev, SDL_GetScancodeFromKey((SDL_Keycode) keycode));
+    int sdlKeycode = sdlKeycodeForKeycode((KeyCode) keycode);
+    XC_EVENT_SET_KEYSYM(&ev, (SDL_Keycode) sdlKeycode);
+    XC_EVENT_SET_SCANCODE(&ev,
+                          SDL_GetScancodeFromKey((SDL_Keycode) sdlKeycode));
     int rc = pushFakeEvent(display, &ev);
     if (rc) {
         fakeHeldMods = nextMods;
@@ -420,6 +421,7 @@ Bool XTestCompareCursorWithWindow(Display *display,
     (void) display;
     (void) window;
     (void) cursor;
+
     /* No cursor introspection; reporting "same" prevents test programs from
      * looping forever waiting for a cursor change libx11-compat cannot observe.
      */

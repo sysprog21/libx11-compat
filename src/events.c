@@ -2813,6 +2813,41 @@ static Bool shouldSuppressIMTextKeydown(Display *display,
     return ascii == '\0';
 }
 
+static Window resolveKeyboardFocusWindow(Display *display)
+{
+    Window eventWindow = getKeyboardFocus();
+    if (eventWindow == None && !isKeyboardFocusFromClient() &&
+        getKeyboardFocusKind() == FocusKindNone) {
+        /* SDL emits no FOCUS_GAINED transition for a window that is born with
+         * keyboard focus, so syncKeyboardFocusFromHost may never have run and
+         * keyboardFocus is still None. A single-window client like xwpe never
+         * calls XSetInputFocus itself, so every key would route to the root
+         * window and the app would look deaf to the keyboard. Adopt the window
+         * SDL currently reports as keyboard-focused. Guarded on client
+         * ownership so explicit None/PointerRoot focus is left untouched.
+         */
+        SDL_Window *sdlFocus = SDL_GetKeyboardFocus();
+        if (sdlFocus) {
+            Window hostFocus = getWindowFromId(SDL_GetWindowID(sdlFocus));
+            if (hostFocus != None) {
+                FocusKind oldKind = getKeyboardFocusKind();
+                Window oldFocus = getKeyboardFocus();
+                syncKeyboardFocusFromHost(hostFocus);
+                eventWindow = getKeyboardFocus();
+
+                /* Deliver the FocusIn the absent SDL FOCUS_GAINED never
+                 * produced, so a client selecting FocusChangeMask still learns
+                 * it holds focus. It trails this first key by one event instead
+                 * of preceding it, the cost of a born-focused window SDL never
+                 * announced.
+                 */
+                postFocusChange(display, oldKind, oldFocus,
+                                getKeyboardFocusKind(), eventWindow);
+            }
+        }
+    }
+    return eventWindow;
+}
 
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
@@ -2844,76 +2879,31 @@ int convertEvent(Display *display,
         xEvent->xkey.root = SCREEN_WINDOW;
         xEvent->xkey.state = convertModifierState(XC_EVENT_KEYMOD(sdlEvent));
 
-        /* X11 KeyCode is 8-bit, but SDL keycodes span ASCII (< 0x80) plus a
-         * separate 0x4000xxxx scancode range, so no collision-free mapping into
-         * 0..255 exists. Truncating to the low byte keeps every ASCII key on
-         * its natural keycode; the cost is that a scancode key whose low byte
-         * lands on a printable keycode aliases onto it (SDLK_EXECUTE 0x40000074
-         * -> 116 == 't', SDLK_KP_0 0x40000062 -> 98 == 'b'). XkbKeycodeToKeysym
-         * uses the same truncation so decoding round-trips for the common
-         * (ASCII) keys. XKeysymToKeycode guards the reverse direction (it
-         * refuses a keycode that does not round-trip) so Motif cannot bind a
-         * special key onto a letter; pressing one of the rare aliasing scancode
-         * keys still types the colliding character, which is accepted given the
-         * 8-bit limit.
-         */
-        xEvent->xkey.keycode = (unsigned int) XC_EVENT_KEYSYM(sdlEvent) & 0xFF;
+        xEvent->xkey.keycode = keycodeForSdlKeycode(XC_EVENT_KEYSYM(sdlEvent));
 
         /* Route priority for key events:
-         * 1. Active XGrabKeyboard (modal dialogs like Motif's Help popup)
+         * 1. Active XGrabKeyboard. With owner_events=True, real X first tries
+         *    ordinary focus delivery for this client; Motif menus depend on
+         *    that after moving focus into a posted pulldown.
          * 2. Passive XGrabKey match (Motif accelerators)
          * 3. The keyboard-focus window
-         * 4. The event's root window as a last resort. Items 1 and 2 are
-         * independent of focus; item 3 is the normal path.
+         * 4. The event's root window as a last resort.
          */
         Window keyboardGrabWindow = getGrabbedKeyboardWindow();
         Window passiveGrabWindow =
             findKeyGrabWindow((int) xEvent->xkey.keycode, xEvent->xkey.state);
         if (keyboardGrabWindow != None) {
-            eventWindow = keyboardGrabWindow;
+            if (getKeyboardGrabOwnerEvents())
+                eventWindow = resolveKeyboardFocusWindow(display);
+            if (eventWindow == None)
+                eventWindow = keyboardGrabWindow;
         } else if (passiveGrabWindow != None) {
             eventWindow = passiveGrabWindow;
         } else {
-            eventWindow = getKeyboardFocus();
-            if (eventWindow == None && !isKeyboardFocusFromClient() &&
-                getKeyboardFocusKind() == FocusKindNone) {
-                /* SDL emits no FOCUS_GAINED transition for a window that is
-                 * born with keyboard focus, so syncKeyboardFocusFromHost may
-                 * never have run and keyboardFocus is still None. A
-                 * single-window client like xwpe never calls XSetInputFocus
-                 * itself, so every key would route to the root window and the
-                 * app would look deaf to the keyboard. Adopt the window SDL
-                 * currently reports as keyboard-focused. Guarded on client
-                 * ownership so explicit None/PointerRoot focus is left
-                 * untouched.
-                 */
-                SDL_Window *sdlFocus = SDL_GetKeyboardFocus();
-                if (sdlFocus) {
-                    Window hostFocus =
-                        getWindowFromId(SDL_GetWindowID(sdlFocus));
-                    if (hostFocus != None) {
-                        FocusKind oldKind = getKeyboardFocusKind();
-                        Window oldFocus = getKeyboardFocus();
-                        syncKeyboardFocusFromHost(hostFocus);
-                        eventWindow = getKeyboardFocus();
-
-                        /* Deliver the FocusIn the absent SDL FOCUS_GAINED never
-                         * produced, so a client selecting FocusChangeMask still
-                         * learns it holds focus. It trails this first key by
-                         * one event instead of preceding it, the cost of a
-                         * born-focused window SDL never announced.
-                         */
-                        postFocusChange(display, oldKind, oldFocus,
-                                        getKeyboardFocusKind(), eventWindow);
-                    }
-                }
-            }
+            eventWindow = resolveKeyboardFocusWindow(display);
             eventWindow = eventWindow == None ? xEvent->xkey.root : eventWindow;
         }
 
-        xEvent->xkey.window = eventWindow;
-        xEvent->xkey.subwindow = None;
-        xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         int pointerX = 0, pointerY = 0;
 
         /* Injected/replay coordinates are already X11 physical pixels; only

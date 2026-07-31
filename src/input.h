@@ -18,6 +18,8 @@ Window getKeyboardFocus();
 FocusKind getKeyboardFocusKind(void);
 Bool isKeyboardFocusFromHost(void);
 Bool isKeyboardFocusFromClient(void);
+KeyCode keycodeForSdlKeycode(int keycode);
+int sdlKeycodeForKeycode(KeyCode keycode);
 void setKeyboardFocus(Window window);
 void syncKeyboardFocusFromHost(Window window);
 

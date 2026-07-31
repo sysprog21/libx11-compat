@@ -11,9 +11,11 @@
 #include "input-method.h"
 #include "timeline.h"
 #include "window-internal.h"
+#include <stdlib.h>
 
 Window keyboardFocus = None;
 int revertTo = RevertToParent;
+
 /* Distinguishes the two non-window focus targets (None vs PointerRoot) for
  * postFocusChange's root-detail code. keyboardFocus itself stays collapsed to
  * None for both, so event routing stays binary.
@@ -85,6 +87,67 @@ static const struct {
     {XK_Pointer_Button5, "Pointer_Button5"},
 };
 
+static KeySym physicalKeysymForOsfKeysym(KeySym keysym)
+{
+    switch (keysym) {
+    case osfXK_BackTab:
+        return XK_Tab;
+    case osfXK_BackSpace:
+        return XK_BackSpace;
+    case osfXK_Clear:
+        return XK_Clear;
+    case osfXK_Escape:
+    case osfXK_Cancel:
+        return XK_Escape;
+    case osfXK_PageLeft:
+    case osfXK_PageUp:
+        return XK_Prior;
+    case osfXK_PageDown:
+    case osfXK_PageRight:
+        return XK_Next;
+    case osfXK_Activate:
+        return XK_Return;
+    case osfXK_MenuBar:
+        return XK_F10;
+    case osfXK_Left:
+    case osfXK_PrevMenu:
+        return XK_Left;
+    case osfXK_Up:
+        return XK_Up;
+    case osfXK_Right:
+    case osfXK_NextMenu:
+        return XK_Right;
+    case osfXK_Down:
+        return XK_Down;
+    case osfXK_EndLine:
+    case osfXK_EndData:
+        return XK_End;
+    case osfXK_BeginLine:
+    case osfXK_BeginData:
+        return XK_Home;
+    case osfXK_PrevField:
+        /* XK_ISO_Left_Tab has no SDL key, so mapping there leaves osfPrevField
+         * unbound (keycode 0). Bind it to the physical Tab key like osfBackTab;
+         * the backward direction comes from the Shift modifier on the event.
+         */
+        return XK_Tab;
+    case osfXK_NextField:
+        return XK_Tab;
+    case osfXK_Select:
+        return XK_Select;
+    case osfXK_Insert:
+        return XK_Insert;
+    case osfXK_Menu:
+        return XK_Menu;
+    case osfXK_Help:
+        return XK_Help;
+    case osfXK_Delete:
+        return XK_Delete;
+    default:
+        return NoSymbol;
+    }
+}
+
 Window getKeyboardFocus()
 {
     LOG("GET keyboard focus is %lu\n", keyboardFocus);
@@ -120,6 +183,7 @@ void syncKeyboardFocusFromHost(Window window)
     keyboardFocusKind = window == None ? FocusKindNone : FocusKindWindow;
     keyboardFocusFromHost = True;
     keyboardFocusFromClient = False;
+
     /* Host-driven focus carries no client revert_to; reset it so a later
      * destroy of this window does not apply a stale policy left over from an
      * earlier XSetInputFocus.
@@ -180,6 +244,7 @@ int XSelectInput(Display *display, Window window, long event_mask)
         inputMethodNoteTextInputStopped();
         SDL_StopTextInput();
     }
+
     /* Previously this also called setKeyboardFocus(window) whenever
      * KeyPress/Release was selected. That made every widget that called
      * XSelectInput steal focus from whatever Motif had explicitly focused via
@@ -230,11 +295,12 @@ KeySym *XGetKeyboardMapping(Display *display,
         if (first_keycode <= kc && kc < firstAfterRange)
             mapping[kc - first_keycode] = XkbKeycodeToKeysym(display, kc, 0, 0);
     }
+
     /* Iterate in reverse so earlier table entries win for keycodes that map to
      * multiple keysyms.
      */
     for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
-        KeyCode kc = SDLKeycodeToKeySym[i].keycode & 0xFF;
+        KeyCode kc = keycodeForSdlKeycode(SDLKeycodeToKeySym[i].keycode);
         if (first_keycode <= kc && kc < firstAfterRange &&
             mapping[kc - first_keycode] == NoSymbol) {
             mapping[kc - first_keycode] = SDLKeycodeToKeySym[i].keysym;
@@ -244,6 +310,69 @@ KeySym *XGetKeyboardMapping(Display *display,
     if (keysyms_per_keycode)
         *keysyms_per_keycode = 1;
     return mapping;
+}
+
+#define SDL_SCANCODE_KEYCODE_BASE 128
+
+KeyCode keycodeForSdlKeycode(int keycode)
+{
+    if (keycode >= 0 && keycode < SDL_SCANCODE_KEYCODE_BASE)
+        return (KeyCode) keycode;
+
+    int scancodeIndex = 0;
+    for (size_t i = 0; i < SDL_KEYCODE_TO_KEYSYM_LENGTH; i++) {
+        int candidate = SDLKeycodeToKeySym[i].keycode;
+        if ((unsigned int) candidate >= SDLK_SCANCODE_MASK) {
+            if (candidate == keycode) {
+                int mapped = SDL_SCANCODE_KEYCODE_BASE + scancodeIndex;
+
+                /* KeyCode is an 8-bit CARD8. The scancode range starts at 128,
+                 * so the table may hold at most 255 - SDL_SCANCODE_KEYCODE_BASE
+                 * masked entries before a mapped keycode would wrap past 255
+                 * and collide with the ASCII keycodes below 128. Today the
+                 * table has far fewer, but fall back to the low byte and log
+                 * rather than silently misroute keys if it ever grows past that
+                 * bound.
+                 */
+                if (mapped > 0xFF) {
+                    LOG("%s: scancode index %d exceeds KeyCode range\n",
+                        __func__, scancodeIndex);
+                    return 0;
+                }
+                return (KeyCode) mapped;
+            }
+            scancodeIndex++;
+        }
+    }
+
+    /* Not a tabulated scancode key. Its low byte is the only candidate keycode,
+     * but the 128+ range is reserved for tabulated scancode indices: a low byte
+     * landing there (an untabulated scancode such as Volume Up, or a Latin-1
+     * key) would be read back by XkbKeycodeToKeysym as a table index and report
+     * an unrelated key (Volume Up as XK_Delete).
+     *
+     * Return 0 (unmapped) for those rather than collide; an ASCII-range low
+     * byte is a real keycode.
+     */
+    int lowByte = keycode & 0xFF;
+    return lowByte < SDL_SCANCODE_KEYCODE_BASE ? (KeyCode) lowByte : 0;
+}
+
+int sdlKeycodeForKeycode(KeyCode keycode)
+{
+    if (keycode < SDL_SCANCODE_KEYCODE_BASE)
+        return keycode;
+
+    int scancodeIndex = keycode - SDL_SCANCODE_KEYCODE_BASE;
+    for (size_t i = 0; i < SDL_KEYCODE_TO_KEYSYM_LENGTH; i++) {
+        if ((unsigned int) SDLKeycodeToKeySym[i].keycode >=
+            SDLK_SCANCODE_MASK) {
+            if (scancodeIndex == 0)
+                return SDLKeycodeToKeySym[i].keycode;
+            scancodeIndex--;
+        }
+    }
+    return keycode;
 }
 
 /* Single source of truth for the US-layout Shift pairs on the number /
@@ -295,6 +424,9 @@ static KeySym unshiftedPunctuation(KeySym keysym)
 KeyCode XKeysymToKeycode(Display *display, KeySym keysym)
 {
     // https://tronche.com/gui/x/xlib/utilities/keyboard/XKeysymToKeycode.html
+    KeySym physical = physicalKeysymForOsfKeysym(keysym);
+    if (physical != NoSymbol)
+        return XKeysymToKeycode(display, physical);
     if (keysym >= XK_0 && keysym <= XK_9)
         return SDLK_0 + (keysym - XK_0);
     if (keysym >= XK_a && keysym <= XK_z)
@@ -304,26 +436,35 @@ KeyCode XKeysymToKeycode(Display *display, KeySym keysym)
     KeySym base = unshiftedPunctuation(keysym);
     if (base != NoSymbol)
         return XKeysymToKeycode(display, base);
-    /* Reverse scan: when several SDL keys carry the same keysym (e.g.
-     * SDLK_RETURN and SDLK_RETURN2 both map to XK_Return) the highest-index
-     * entry wins, so the returned keycode is stable but not necessarily the
-     * primary key's. That is fine here because only round-tripping and
-     * collision-freedom matter, not which physical key the keycode names; do
-     * not "simplify" the iteration order without preserving that property.
+
+    /* Reverse scan for keysyms carried by several SDL keys (SDLK_RETURN and
+     * SDLK_RETURN2 both map to XK_Return; likewise Delete/Clear/Cancel/KP
+     * separators). Prefer the ASCII/physical key (SDL keycode < 0x80) in a
+     * first pass, then fall back to the scancode keys, mirroring the
+     * ASCII-first preference XkbKeycodeToKeysym uses in the forward direction.
+     * This matters because real events for these keys arrive as the low-byte
+     * keycode (Return is keycode 13 via keycodeForSdlKeycode(SDLK_RETURN)); if
+     * XKeysymToKeycode returned the secondary scancode keycode instead, a Motif
+     * grab or translation keyed by XKeysymToKeycode(XK_Return) would never
+     * match the physical key.
+     *
+     * Both passes gate on the round-trip: X keycodes are the low byte of the
+     * SDL keycode, so a 0x4000xxxx scancode key can alias onto an ASCII key
+     * (SDLK_EXECUTE 0x40000074 truncates to 116, exactly SDLK_t). Only accept a
+     * keycode that maps back to this keysym; otherwise it belongs to the ASCII
+     * key and returning it would misbind the special key onto it.
      */
-    for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
-        if (SDLKeycodeToKeySym[i].keysym != keysym)
-            continue;
-        KeyCode kc = SDLKeycodeToKeySym[i].keycode & 0xFF;
-        /* X keycodes are the low byte of the SDL keycode, so a 0x4000xxxx
-         * scancode key can alias onto an ASCII key: SDLK_EXECUTE (0x40000074)
-         * truncates to 116, exactly SDLK_t. Returning that keycode would make
-         * Motif bind the special key (e.g. osfActivate/Execute) onto the 't'
-         * key, so typing 't' fires a newline. Only accept a keycode that maps
-         * back to this keysym; otherwise it belongs to the ASCII key.
-         */
-        if (XkbKeycodeToKeysym(display, kc, 0, 0) == keysym)
-            return kc;
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = SDL_KEYCODE_TO_KEYSYM_LENGTH - 1; i >= 0; i--) {
+            if (SDLKeycodeToKeySym[i].keysym != keysym)
+                continue;
+            Bool ascii = SDLKeycodeToKeySym[i].keycode < 0x80;
+            if (pass == 0 && !ascii)
+                continue;
+            KeyCode kc = keycodeForSdlKeycode(SDLKeycodeToKeySym[i].keycode);
+            if (XkbKeycodeToKeysym(display, kc, 0, 0) == keysym)
+                return kc;
+        }
     }
     LOG("%s: Got unimplemented keysym %lu\n", __func__, keysym);
     return 0;
@@ -396,6 +537,18 @@ KeySym XkbKeycodeToKeysym(Display *display,
         return XK_0 + (keycode - SDLK_0);
     if (keycode >= SDLK_a && keycode <= SDLK_z)
         return XK_a + (keycode - SDLK_a);
+    if (keycode >= SDL_SCANCODE_KEYCODE_BASE) {
+        int scancodeIndex = keycode - SDL_SCANCODE_KEYCODE_BASE;
+        for (size_t i = 0; i < SDL_KEYCODE_TO_KEYSYM_LENGTH; i++) {
+            if ((unsigned int) SDLKeycodeToKeySym[i].keycode >=
+                SDLK_SCANCODE_MASK) {
+                if (scancodeIndex == 0)
+                    return SDLKeycodeToKeySym[i].keysym;
+                scancodeIndex--;
+            }
+        }
+    }
+
     /* Several SDL keycodes can share a low byte: an ASCII key (< 0x80, whose
      * keycode is its own low byte) and a 0x4000xxxx scancode key that truncates
      * onto it (e.g. SDLK_RETURN 0x0d and SDLK_AC_HOME 0x4000010d both hit
@@ -525,6 +678,7 @@ int XLookupString(XKeyEvent *event_struct,
     (void) status_in_out;
     if (!event_struct)
         return 0;
+
     /* An IM commit arrives as a synthetic KeyPress with keycode 0, carrying its
      * commit id in subwindow. Clients that read with the simple 8-bit
      * XLookupString (rather than XmbLookupString) would otherwise lose the
@@ -545,6 +699,7 @@ int XLookupString(XKeyEvent *event_struct,
                 textLen == 1 ? getKeySymForChar(pendingText[0]) : NoSymbol;
         if (!buffer_return || bytes_buffer <= 0)
             return 0;
+
         /* Only consume once the whole commit has been delivered. If the
          * caller's buffer cannot hold it, copy the prefix but leave the commit
          * pending so a retry with a larger buffer still recovers the rest
@@ -637,6 +792,7 @@ int XGetInputFocus(Display *display,
 {
     // https://tronche.com/gui/x/xlib/input/XGetInputFocus.html
     SET_X_SERVER_REQUEST(display, X_GetInputFocus);
+
     /* Xlib spec: report the actual current focus target. The previous
      * implementation collapsed None to PointerRoot in the return value, which
      * was non-conformant and indistinguishable from a real PointerRoot focus
@@ -667,6 +823,7 @@ int XSetInputFocus(Display *display, Window focus, int revert_to, Time time)
         newKind = FocusKindNone;
     else
         newKind = FocusKindWindow;
+
     /* Storage stays collapsed: PointerRoot and None both park keyboard focus at
      * None for event routing; the kind tracker preserves the distinction so
      * postFocusChange emits the correct root detail.
@@ -785,6 +942,7 @@ int XUngrabKey(Display *display,
                Window grab_window)
 {
     (void) display;
+
     /* AnyKey / AnyModifier match every grab for that window per the Xlib spec,
      * so loop without short-circuit and remove every match.
      */
