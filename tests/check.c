@@ -282,9 +282,8 @@ static int modifier_slot_has(XModifierKeymap *map,
                              KeyCode keycode)
 {
     for (int i = 0; i < map->max_keypermod; i++) {
-        if (map->modifiermap[modifier * map->max_keypermod + i] == keycode) {
+        if (map->modifiermap[modifier * map->max_keypermod + i] == keycode)
             return 1;
-        }
     }
     return 0;
 }
@@ -343,16 +342,14 @@ static int count_open_file_descriptors(void)
 #endif
 
     DIR *dir = opendir(fdDir);
-    if (dir == NULL) {
+    if (!dir)
         return -1;
-    }
 
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
             count++;
-        }
     }
     closedir(dir);
     return count;
@@ -2416,34 +2413,42 @@ static int test_drawables_and_gcs(Display *display)
     CHECK(XSetClipMask(display, gc, None), "clear polygon clip failed");
 
     XArc fillArcs[] = {
-        {.x = 18,
-         .y = 18,
-         .width = 8,
-         .height = 8,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
-        {.x = 24,
-         .y = 2,
-         .width = 6,
-         .height = 6,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
+        {
+            .x = 18,
+            .y = 18,
+            .width = 8,
+            .height = 8,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
+        {
+            .x = 24,
+            .y = 2,
+            .width = 6,
+            .height = 6,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
     };
     CHECK(XSetForeground(display, gc, 0xFFFF00FF), "set magenta failed");
     CHECK(XFillArcs(display, pixmap, gc, fillArcs, 2), "XFillArcs failed");
     XArc drawArcs[] = {
-        {.x = 2,
-         .y = 22,
-         .width = 8,
-         .height = 8,
-         .angle1 = 0,
-         .angle2 = 90 * 64},
-        {.x = 16,
-         .y = 2,
-         .width = 8,
-         .height = 8,
-         .angle1 = 0,
-         .angle2 = 90 * 64},
+        {
+            .x = 2,
+            .y = 22,
+            .width = 8,
+            .height = 8,
+            .angle1 = 0,
+            .angle2 = 90 * 64,
+        },
+        {
+            .x = 16,
+            .y = 2,
+            .width = 8,
+            .height = 8,
+            .angle1 = 0,
+            .angle2 = 90 * 64,
+        },
     };
     CHECK(XSetForeground(display, gc, 0xFFFFFFFF), "set white failed");
     CHECK(XDrawArcs(display, pixmap, gc, drawArcs, 2), "XDrawArcs failed");
@@ -2684,18 +2689,22 @@ static int test_drawables_and_gcs(Display *display)
     CHECK(XDrawArc(display, pathArcPixmap, pathArcGc, 2, 2, 24, 24, 0, 90 * 64),
           "large path XDrawArc failed");
     XArc overlappingArcs[] = {
-        {.x = 4,
-         .y = 16,
-         .width = 20,
-         .height = 20,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
-        {.x = 14,
-         .y = 16,
-         .width = 20,
-         .height = 20,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
+        {
+            .x = 4,
+            .y = 16,
+            .width = 20,
+            .height = 20,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
+        {
+            .x = 14,
+            .y = 16,
+            .width = 20,
+            .height = 20,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
     };
     CHECK(XSetForeground(display, pathArcGc, 0xFFFFAA00),
           "path arc orange failed");
@@ -6632,7 +6641,11 @@ static int test_ewmh_active_window_clientmessage(Display *display)
                         .window = window,
                         .message_type = activeWindow,
                         .format = 32,
-                        .data.l = {1 /* source: application */, CurrentTime},
+                        .data.l =
+                            {
+                                1 /* source: application */,
+                                CurrentTime,
+                            },
                     }};
 
     CHECK(XSendEvent(display, root, False,
@@ -8140,9 +8153,13 @@ static int test_fonts(Display *display)
     CHECK(exercise_fixed_font_program(display),
           "fixed-font program compatibility failed");
 
-    const char *fontDirs[] = {"fonts", "/System/Library/Fonts",
-                              "/Library/Fonts", "/usr/share/fonts",
-                              "/usr/local/share/fonts"};
+    const char *fontDirs[] = {
+        "fonts",
+        "/System/Library/Fonts",
+        "/Library/Fonts",
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+    };
     for (size_t i = 0; i < sizeof(fontDirs) / sizeof(fontDirs[0]); i++) {
         char *path = (char *) fontDirs[i];
         int fdCountBefore = count_open_file_descriptors();
@@ -9807,8 +9824,11 @@ static int test_selection(Display *display)
     notify3.xselection.time = CurrentTime;
     XSendEvent(display, requestor3, False, 0, &notify3);
 
-    const char *chunks[] = {"Hello, ", "this is an ",
-                            "INCR clipboard payload."};
+    const char *chunks[] = {
+        "Hello, ",
+        "this is an ",
+        "INCR clipboard payload.",
+    };
     const char *incrFull = "Hello, this is an INCR clipboard payload.";
     int nchunks = 3;
     int chunkIdx = 0;
@@ -12000,22 +12020,28 @@ static int test_text_property_list(Display *display)
         const char *expect0;
         const char *expect1;
     } cases[] = {
-        {.bytes = "spectrum.agr",
-         .nitems = 12,
-         .encoding = XA_STRING,
-         .expect_count = 1,
-         .expect0 = "spectrum.agr"},
-        {.bytes = "spectrum.agr",
-         .nitems = 12,
-         .encoding = 0 /* filled below */,
-         .expect_count = 1,
-         .expect0 = "spectrum.agr"},
-        {.bytes = "a.agr\0b.agr",
-         .nitems = 11,
-         .encoding = XA_STRING,
-         .expect_count = 2,
-         .expect0 = "a.agr",
-         .expect1 = "b.agr"},
+        {
+            .bytes = "spectrum.agr",
+            .nitems = 12,
+            .encoding = XA_STRING,
+            .expect_count = 1,
+            .expect0 = "spectrum.agr",
+        },
+        {
+            .bytes = "spectrum.agr",
+            .nitems = 12,
+            .encoding = 0 /* filled below */,
+            .expect_count = 1,
+            .expect0 = "spectrum.agr",
+        },
+        {
+            .bytes = "a.agr\0b.agr",
+            .nitems = 11,
+            .encoding = XA_STRING,
+            .expect_count = 2,
+            .expect0 = "a.agr",
+            .expect1 = "b.agr",
+        },
     };
     cases[1].encoding = utf8;
 
