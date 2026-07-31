@@ -1,0 +1,56 @@
+# Motif menu keyboard-navigation differential for PR-73 ("you can't navigate
+# with arrows reliably ... down just causes the menu to close"). Drives the
+# self-contained menu-nav-test.c app: post the File pulldown, then press Down
+# and require the menu to stay posted. Under the old low-byte keycode mapping
+# Down (SDLK_DOWN 0x40000051) truncated to keycode 0x51 and aliased onto Q, so
+# Motif never saw osfDown and the traversal action collapsed the menu.
+#
+# xdotool backend ONLY: the Down/Escape codes below map to xdotool keysym names
+# in scripts/run-ui-replay.py (replay_keysym), not to the internal replay engine
+# which reads the arg as an X keycode. Run each side on node11 (needs Xvfb,
+# xdotool, ImageMagick import, and Motif); the system-libX11 build is the ground
+# truth and the libx11-compat build must reach the same PASS:
+#
+#   cc ... menu-nav-test.c <system-or-compat libXm/libXt/libX11> -o menu-nav
+#   python3 scripts/run-ui-replay.py --app ./menu-nav \
+#       --replay tests/ui/replays/motif-menu-nav.replay \
+#       --input-backend xdotool --xvfb --display 121 --geometry 1000x700 \
+#       --screenshot-command import --out-root /tmp/menunav-<side>
+#
+# CALIBRATION: motif-menu-nav-posted.json compares the whole frame, so it is
+# position independent, but its min_changed_ratio is a first estimate. On the
+# first node11 run read screens/posted.png vs screens/after-down.png and set the
+# threshold to sit between "pulldown present" and "pulldown gone".
+delay 2000
+wait-window "MenuNav" 8000
+# Fixed settle rather than wait-converge: that primitive drives the
+# libx11-compat event loop and has no meaning on the system-libX11 ground-truth
+# side, so a cross-runtime differential must not use it.
+delay 2500
+screenshot initial
+
+# Post the File pulldown. target-motion is window-relative, so it does not
+# depend on where SDL or the server placed the top-level. File sits at the left
+# of the menu bar.
+target-motion 20 14
+delay 50
+button 1 press
+delay 300
+screenshot posted
+
+# The reported failure: the first Down collapses the menu instead of moving into
+# it. Traverse twice with the button still held, matching the reporter who
+# navigated with the button down. 1073741905 is SDLK_DOWN; replay_keysym in
+# run-ui-replay.py maps it to the xdotool "Down" keysym.
+key 1073741905
+delay 150
+key 1073741905
+delay 200
+screenshot after-down
+assert-image after-down motif-menu-nav-posted.json
+
+# Negative control plus cleanup: Escape (27 == SDLK_ESCAPE) dismisses the menu,
+# then release the button.
+key 27
+delay 150
+button 1 release

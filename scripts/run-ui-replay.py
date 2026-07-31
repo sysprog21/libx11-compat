@@ -124,7 +124,25 @@ def replay_keysym(code):
     low byte of SDLK_LSHIFT). xdotool wants keysym names, so translate the
     common cases the differential needs and reject anything unmapped rather
     than silently passing a bogus argument to xdotool.
+
+    The named keys below are the full SDL keycodes for the navigation set a
+    Motif menu differential drives (arrows, Escape, Return, the menu-bar F10).
+    They sit outside the printable range, so a replay using them is meant for
+    this xdotool backend, not the internal engine which reads the arg as an X
+    keycode.
     """
+    named = {
+        27: "Escape",  # SDLK_ESCAPE
+        13: "Return",  # SDLK_RETURN
+        9: "Tab",  # SDLK_TAB
+        0x40000043: "F10",  # SDLK_F10 (scancode 67)
+        0x4000004F: "Right",  # SDLK_RIGHT (scancode 79)
+        0x40000050: "Left",  # SDLK_LEFT (scancode 80)
+        0x40000051: "Down",  # SDLK_DOWN (scancode 81)
+        0x40000052: "Up",  # SDLK_UP (scancode 82)
+    }
+    if code in named:
+        return named[code]
     if code == 225:
         return "shift"
     if 0x20 <= code <= 0x7E:

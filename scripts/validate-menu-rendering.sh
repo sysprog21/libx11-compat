@@ -16,6 +16,8 @@
 #               the compositor's actual popup offset, so pointer translation
 #               tracks a compositor slide/flip (constraining compositor) and the
 #               un-slid case (weston) alike.
+#   2d.nested   a cascade submenu still anchors to its parent popup after that
+#               parent has been compositor-adjusted.
 #   3. menu     a real Motif XmPulldownMenu, posted by an injected click, maps
 #               its XmMenuShell as an xdg_popup anchored to the main window
 #               (the exact "drop-down menus as free-standing windows" report).
@@ -265,6 +267,57 @@ check_popup_slide() {
     fi
 }
 
+# 2d. nested popup anchoring --------------------------------------------------
+check_popup_nested() {
+    require_wayland nested || return
+    cc $INC "$TDIR/popup-nested.c" "$BUILD/libX11-compat.so" \
+        -Wl,-rpath,"$BUILD" -o "$WORK/nested" 2>"$WORK/nested.build" || {
+        record FAIL nested "compile failed (see $WORK/nested.build)"
+        return
+    }
+    if ! run_client "$WORK/nested" "$WORK/nested.log" POPUP_NESTED_DONE; then
+        record FAIL nested "cascade submenu did not complete (see $WORK/nested.log)"
+        return
+    fi
+    if ! grep -q NESTED_CHILD_UNMAPPED "$WORK/nested.log"; then
+        record FAIL nested "cascade submenu did not follow parent teardown; see $WORK/nested.log"
+        return
+    fi
+    local first_surface second_parent
+    first_surface=$(grep 'get_popup' "$WORK/nested.log" | sed -n '1s/.*xdg_surface@\([0-9]*\)\.get_popup.*/\1/p')
+    second_parent=$(grep 'get_popup' "$WORK/nested.log" | sed -n '2s/.*xdg_surface@\([0-9]*\), xdg_positioner.*/\1/p')
+
+    # The child submenu's configure position is relative to its parent popup
+    # surface, so on a non-constraining compositor (weston) it equals the offset
+    # the client requested (CHILD_REL). A create-time offset measured from a
+    # slid parent origin lands here as a mismatch. The parent is not slid under
+    # weston, so this pins the offset math; the slide-specific case needs a
+    # constraining compositor (wilco) to diverge.
+    local rel child_popup child_cfg
+    rel=$(sed -n 's/.*CHILD_REL=(\([0-9-]*\),\([0-9-]*\)).*/\1 \2/p' "$WORK/nested.log" | head -1)
+    child_popup=$(sed -n 's/.*get_popup(new id xdg_popup@\([0-9]*\).*/\1/p' "$WORK/nested.log" | sed -n '2p')
+    child_cfg=$(sed -n "s/.*xdg_popup@$child_popup\.configure(\([0-9-]*\), \([0-9-]*\).*/\1 \2/p" "$WORK/nested.log" | tail -1)
+    if [ -n "$first_surface" ] && [ "$second_parent" = "$first_surface" ]; then
+
+        # The child is a confirmed xdg_popup anchored to the parent, so a
+        # conformant compositor must have configured it and the C test always
+        # prints CHILD_REL. If either is missing the offset went unverified;
+        # fail rather than pass blind so a parse regression cannot hide the
+        # create-time offset check.
+        if [ -z "$rel" ] || [ -z "$child_cfg" ]; then
+            record FAIL nested "child popup anchored but offset unverifiable (rel='$rel' cfg='$child_cfg'; see $WORK/nested.log)"
+        elif [ "$child_cfg" != "$rel" ]; then
+            record FAIL nested "cascade submenu offset ($child_cfg) != requested ($rel); create-time offset misplaced (see $WORK/nested.log)"
+        else
+            record PASS nested "cascade submenu anchored to parent popup xdg_surface@$first_surface offset ($child_cfg)"
+        fi
+    elif [ "$(grep -c get_popup "$WORK/nested.log")" -lt 2 ] || [ "$(grep -c get_toplevel "$WORK/nested.log")" -gt 1 ]; then
+        record FAIL nested "cascade submenu fell back to toplevel (popups=$(grep -c get_popup "$WORK/nested.log") toplevels=$(grep -c get_toplevel "$WORK/nested.log"); see $WORK/nested.log)"
+    else
+        record FAIL nested "cascade submenu popup parent xdg_surface@${second_parent:-none} != parent popup xdg_surface@${first_surface:-none}; see $WORK/nested.log"
+    fi
+}
+
 # 3. real Motif pulldown menu -------------------------------------------------
 check_menu() {
     require_wayland menu || return
@@ -362,6 +415,7 @@ check_font
 check_popup
 check_popup_resize
 check_popup_slide
+check_popup_nested
 check_menu
 check_destroy
 

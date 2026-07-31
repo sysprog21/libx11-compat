@@ -1,0 +1,10 @@
+{
+  "_comment": "PR-73 menu keyboard nav. After Down the File pulldown must still be posted, so the after-down frame still differs from the empty initial frame. If Down collapsed the menu (the reported bug) after-down reverts toward initial and the whole-frame changed ratio drops below the floor. No rect, so the check is independent of where each side placed the window. min_changed_ratio is a node11 calibration knob: measure initial-vs-after-down on a passing system-libX11 run and set it below that value but above the collapsed-menu value.",
+  "assertions": [
+    {
+      "type": "changed_region",
+      "baseline": "initial",
+      "min_changed_ratio": 0.012
+    }
+  ]
+}

@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <X11/XKBlib.h>
 #include "sdl-compat.h"
 #include "util.h"
 
@@ -196,35 +197,53 @@ void timelineTapXEvent(const XEvent *xEvent)
         kind = TIMELINE_KIND_BUTTON_PRESS;
         window = xEvent->xbutton.window;
         snprintf(payload, sizeof(payload),
-                 ",\"button\":%u,\"x\":%d,\"y\":%d,\"state\":%u",
+                 ",\"subwindow\":%lu,\"button\":%u,\"x\":%d,\"y\":%d,\"x_"
+                 "root\":%d,\"y_root\":%d,\"state\":%u",
+                 (unsigned long) xEvent->xbutton.subwindow,
                  xEvent->xbutton.button, xEvent->xbutton.x, xEvent->xbutton.y,
+                 xEvent->xbutton.x_root, xEvent->xbutton.y_root,
                  xEvent->xbutton.state);
         break;
     case ButtonRelease:
         kind = TIMELINE_KIND_BUTTON_RELEASE;
         window = xEvent->xbutton.window;
         snprintf(payload, sizeof(payload),
-                 ",\"button\":%u,\"x\":%d,\"y\":%d,\"state\":%u",
+                 ",\"subwindow\":%lu,\"button\":%u,\"x\":%d,\"y\":%d,\"x_"
+                 "root\":%d,\"y_root\":%d,\"state\":%u",
+                 (unsigned long) xEvent->xbutton.subwindow,
                  xEvent->xbutton.button, xEvent->xbutton.x, xEvent->xbutton.y,
+                 xEvent->xbutton.x_root, xEvent->xbutton.y_root,
                  xEvent->xbutton.state);
         break;
     case KeyPress:
         kind = TIMELINE_KIND_KEY_PRESS;
         window = xEvent->xkey.window;
-        snprintf(payload, sizeof(payload), ",\"keycode\":%u,\"state\":%u",
-                 xEvent->xkey.keycode, xEvent->xkey.state);
+        snprintf(
+            payload, sizeof(payload),
+            ",\"keycode\":%u,\"keysym\":%lu,\"state\":%u", xEvent->xkey.keycode,
+            (unsigned long) XkbKeycodeToKeysym(
+                xEvent->xkey.display, (KeyCode) xEvent->xkey.keycode, 0, 0),
+            xEvent->xkey.state);
         break;
     case KeyRelease:
         kind = TIMELINE_KIND_KEY_RELEASE;
         window = xEvent->xkey.window;
-        snprintf(payload, sizeof(payload), ",\"keycode\":%u,\"state\":%u",
-                 xEvent->xkey.keycode, xEvent->xkey.state);
+        snprintf(
+            payload, sizeof(payload),
+            ",\"keycode\":%u,\"keysym\":%lu,\"state\":%u", xEvent->xkey.keycode,
+            (unsigned long) XkbKeycodeToKeysym(
+                xEvent->xkey.display, (KeyCode) xEvent->xkey.keycode, 0, 0),
+            xEvent->xkey.state);
         break;
     case MotionNotify:
         kind = TIMELINE_KIND_MOTION_NOTIFY;
         window = xEvent->xmotion.window;
-        snprintf(payload, sizeof(payload), ",\"x\":%d,\"y\":%d",
-                 xEvent->xmotion.x, xEvent->xmotion.y);
+        snprintf(payload, sizeof(payload),
+                 ",\"subwindow\":%lu,\"x\":%d,\"y\":%d,\"x_root\":%d,\"y_"
+                 "root\":%d,\"state\":%u",
+                 (unsigned long) xEvent->xmotion.subwindow, xEvent->xmotion.x,
+                 xEvent->xmotion.y, xEvent->xmotion.x_root,
+                 xEvent->xmotion.y_root, xEvent->xmotion.state);
         break;
     case EnterNotify:
         kind = TIMELINE_KIND_ENTER_NOTIFY;
@@ -378,6 +397,7 @@ int timelineWaitConverge(uint64_t anchorMs,
     uint64_t deadline = anchorMs + timeoutMs;
     int quiet = 0;
     int active = 0;
+
     /* Split bucketMs into tv_sec + tv_nsec so a bucket of >= 1000 ms does not
      * pass an out-of-range tv_nsec to nanosleep (POSIX requires < 1e9), which
      * would otherwise return EINVAL and convert the bucket loop into an
