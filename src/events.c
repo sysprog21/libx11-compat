@@ -1625,16 +1625,35 @@ static Window directChildFromDeepest(Window window, Window deepest)
 static PointerHit resolvePointerHit(Window root,
                                     Window clickTopLevel,
                                     int rootX,
-                                    int rootY)
+                                    int rootY,
+                                    Bool captureHeld)
 {
-    PointerHit hit = {None, None};
+    PointerHit hit = {.deepest = None, .hoverDeepest = None};
     Window rootChild = getDirectChildContainingPoint(root, rootX, rootY);
     Window base = None;
 
-    if (rootChild != None && rootChild != clickTopLevel &&
-        IS_TYPE(rootChild, WINDOW) &&
-        GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
-        pointerHoverIsWithin(rootChild) && getGrabbedPointerWindow() != None) {
+    /* Descend into an override-redirect popup the pointer is over during an
+     * active grab. Normally this waits for an SDL crossing to set the hover
+     * window, but while a button is held the compositor captures the pointer to
+     * the grab window and delivers no ENTER for the popup surface, so geometry
+     * is the only signal. Without this a Motif drag-through leaves the cascade
+     * item without an EnterNotify and the submenu stays unposted until release.
+     * The geometry-only path is limited to anchored popups (popupParent set) so
+     * a held button over some unrelated override-redirect toplevel during an
+     * active grab cannot synthesize a stray crossing into it, and to
+     * owner-events grabs: a non-owner-events grab confines every event to the
+     * grab window, so descending into a popup child would leak a crossing
+     * outside it. Motif menu grabs are owner-events, so the menu path keeps it.
+     */
+    Bool overridePopup = rootChild != None && rootChild != clickTopLevel &&
+                         IS_TYPE(rootChild, WINDOW) &&
+                         GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
+                         getGrabbedPointerWindow() != None;
+    Bool anchoredPopup = overridePopup &&
+                         GET_WINDOW_STRUCT(rootChild)->popupParent != None &&
+                         getPointerGrabOwnerEvents();
+    if (overridePopup &&
+        (pointerHoverIsWithin(rootChild) || (captureHeld && anchoredPopup))) {
         base = rootChild;
     } else if (clickTopLevel != None && clickTopLevel != SCREEN_WINDOW &&
                IS_TYPE(clickTopLevel, WINDOW) &&
@@ -1757,6 +1776,16 @@ static Bool routePointerGrabEvent(Display *display,
     return True;
 }
 
+/* Set by the pointer grab code (pointer.c) when a sync grab freezes the
+ * pointer; only a frozen press is replayable, so it gates the replay cache.
+ */
+extern Bool mouseFrozen;
+
+static Window pointerHoverWindow = None;
+static int pointerHoverRootX = 0, pointerHoverRootY = 0;
+static Bool replayPointerPressValid = False;
+static XEvent replayPointerPress;
+
 Bool postCrossingEvent(Display *display,
                        Window window,
                        int type,
@@ -1765,6 +1794,24 @@ Bool postCrossingEvent(Display *display,
                        unsigned int state)
 {
     long mask = type == EnterNotify ? EnterWindowMask : LeaveWindowMask;
+    if (mode == NotifyGrab || mode == NotifyUngrab) {
+        lockActivePointerWindow();
+
+        /* Only the hover window identity changes here, not pointerHoverRootX/Y:
+         * those track the pointer's root position from the last motion, which
+         * is what pointerHoverRootOutsideWindow reports and stays valid across
+         * a grab crossing (the pointer does not move because a grab activated).
+         * Re-deriving coordinates is neither possible (this path carries none)
+         * nor needed.
+         */
+        if (type == EnterNotify)
+            pointerHoverWindow = window;
+        else if (pointerHoverWindow == window ||
+                 (IS_TYPE(pointerHoverWindow, WINDOW) &&
+                  isParent(window, pointerHoverWindow)))
+            pointerHoverWindow = None;
+        unlockActivePointerWindow();
+    }
     if (!HAS_EVENT_MASK(window, mask))
         return True;
     XCrossingEvent *event = malloc(sizeof(XCrossingEvent));
@@ -2311,8 +2358,6 @@ static unsigned int pointerButtonStateSnapshot(void)
     return s;
 }
 static Window activePointerWindow = None;
-static Window pointerHoverWindow = None;
-static int pointerHoverRootX = 0, pointerHoverRootY = 0;
 
 static Bool pointerHoverIsWithin(Window window)
 {
@@ -2323,6 +2368,84 @@ static Bool pointerHoverIsWithin(Window window)
                                          isParent(window, pointerHoverWindow));
     unlockActivePointerWindow();
     return inside;
+}
+
+static Bool pointerHoverRootOutsideWindow(Window window, int *rootX, int *rootY)
+{
+    Bool hasHover = False;
+    lockActivePointerWindow();
+    if (pointerHoverWindow != None && pointerHoverWindow != window &&
+        !(IS_TYPE(pointerHoverWindow, WINDOW) &&
+          isParent(window, pointerHoverWindow))) {
+        *rootX = pointerHoverRootX;
+        *rootY = pointerHoverRootY;
+        hasHover = True;
+    }
+    unlockActivePointerWindow();
+    return hasHover;
+}
+
+static void rememberReplayPointerPress(const XEvent *event)
+{
+    lockActivePointerWindow();
+    memcpy(&replayPointerPress, event, sizeof(replayPointerPress));
+    replayPointerPressValid = True;
+    unlockActivePointerWindow();
+}
+
+void clearReplayPointerPress(void)
+{
+    lockActivePointerWindow();
+    replayPointerPressValid = False;
+    unlockActivePointerWindow();
+}
+
+Bool replayPointerGrabPress(Display *display)
+{
+    XEvent event;
+    lockActivePointerWindow();
+    if (!replayPointerPressValid) {
+        unlockActivePointerWindow();
+        return False;
+    }
+    memcpy(&event, &replayPointerPress, sizeof(event));
+    replayPointerPressValid = False;
+    unlockActivePointerWindow();
+
+    /* ReplayPointer always releases the grab and reprocesses the cached press,
+     * so consume the cache and drop the grab up front. A later resolve failure
+     * then leaves no stale cached press behind that a subsequent ReplayPointer
+     * could deliver a second time; the replay is simply discarded, matching a
+     * real server that reprocesses the event into nothing.
+     */
+    releasePointerGrab(display);
+
+    PointerHit hit =
+        resolvePointerHit(event.xbutton.root, None, event.xbutton.x_root,
+                          event.xbutton.y_root, False);
+    long mask = ButtonPressMask;
+    Window subwindow = None;
+    int eventX = 0, eventY = 0;
+    Window eventWindow = selectPointerEventWindow(
+        display, event.xbutton.root, event.xbutton.x_root, event.xbutton.y_root,
+        hit.deepest, mask, &subwindow, &eventX, &eventY);
+    if (eventWindow == None)
+        return False;
+
+    event.xbutton.window = eventWindow;
+    event.xbutton.subwindow = subwindow;
+    event.xbutton.x = eventX;
+    event.xbutton.y = eventY;
+    lockActivePointerWindow();
+    activePointerWindow = eventWindow;
+    unlockActivePointerWindow();
+    if (!appendPutBackEvent(display, &event)) {
+        lockActivePointerWindow();
+        activePointerWindow = None;
+        unlockActivePointerWindow();
+        return False;
+    }
+    return True;
 }
 
 static int buildWindowPathToRoot(Window window, Window *path, int capacity)
@@ -2805,9 +2928,19 @@ int convertEvent(Display *display,
         }
         translateSdlPointToRoot(display, sdlKeyWindow, pointerX, pointerY,
                                 &xEvent->xkey.x_root, &xEvent->xkey.y_root);
+        PointerHit keyHit =
+            resolvePointerHit(xEvent->xkey.root, sdlKeyWindow,
+                              xEvent->xkey.x_root, xEvent->xkey.y_root, False);
+        xEvent->xkey.window = eventWindow;
+        xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         translateRootPointToWindow(display, SCREEN_WINDOW, eventWindow,
                                    xEvent->xkey.x_root, xEvent->xkey.y_root,
                                    &xEvent->xkey.x, &xEvent->xkey.y);
+        xEvent->xkey.subwindow =
+            directChildFromDeepest(eventWindow, keyHit.deepest);
+        if (xEvent->xkey.subwindow == None)
+            xEvent->xkey.subwindow = getDirectChildContainingPoint(
+                eventWindow, xEvent->xkey.x, xEvent->xkey.y);
         // xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.scancode;
         xEvent->xkey.same_screen = True;
         break;
@@ -2839,12 +2972,30 @@ int convertEvent(Display *display,
          * would double them on Retina. Real hardware events carry SDL points
          * and still need the scale (mirrors the motion/wheel handling).
          */
-        if (sdlEvent->button.which != SDL_TOUCH_MOUSEID)
+        Bool usedHoverRoot = False;
+        Window grabbedPointerWindow = getGrabbedPointerWindow();
+
+        /* Use the hovered-window root coordinates only when the grab that
+         * redirected this button is the top-level SDL window the event arrived
+         * on, or a descendant widget of it (a Motif menu grabs the shell, but
+         * the grab window can also be a child). A grab elsewhere, or no grab,
+         * takes the ordinary scale/translate path.
+         */
+        if (sdlEvent->button.which != SDL_TOUCH_MOUSEID &&
+            grabbedPointerWindow != None &&
+            (grabbedPointerWindow == sdlButtonWindow ||
+             (IS_TYPE(grabbedPointerWindow, WINDOW) &&
+              isParent(sdlButtonWindow, grabbedPointerWindow))))
+            usedHoverRoot = pointerHoverRootOutsideWindow(
+                sdlButtonWindow, &xEvent->xbutton.x_root,
+                &xEvent->xbutton.y_root);
+        if (!usedHoverRoot && sdlEvent->button.which != SDL_TOUCH_MOUSEID)
             scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
                                   &sdlButtonX, &sdlButtonY);
-        translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
-                                sdlButtonY, &xEvent->xbutton.x_root,
-                                &xEvent->xbutton.y_root);
+        if (!usedHoverRoot)
+            translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
+                                    sdlButtonY, &xEvent->xbutton.x_root,
+                                    &xEvent->xbutton.y_root);
         xEvent->xbutton.button = convertSdlMouseButton(sdlEvent->button.button);
         unsigned int buttonState = buttonMaskForXButton(xEvent->xbutton.button);
 
@@ -2869,9 +3020,10 @@ int convertEvent(Display *display,
                 xEvent->xbutton.y_root, xEvent->xbutton.button,
                 xEvent->xbutton.state);
         }
-        PointerHit buttonHit =
-            resolvePointerHit(xEvent->xbutton.root, sdlButtonWindow,
-                              xEvent->xbutton.x_root, xEvent->xbutton.y_root);
+        PointerHit buttonHit = resolvePointerHit(
+            xEvent->xbutton.root, sdlButtonWindow, xEvent->xbutton.x_root,
+            xEvent->xbutton.y_root,
+            type == ButtonPress && getGrabbedPointerWindow() != None);
 
         /* Explicit XGrabPointer routing owns the event when
          * routePointerGrabEvent returns True; otherwise fall back to the normal
@@ -2927,6 +3079,19 @@ int convertEvent(Display *display,
             return -1;
         xEvent->xbutton.window = eventWindow;
         xEvent->xbutton.same_screen = True;
+
+        /* Cache only a press frozen by a sync grab: that is the only press
+         * ReplayPointer can replay. An async grab already delivered the press,
+         * so caching it would let a later ReplayPointer replay a stale one.
+         * Both a passive GrabButton activation and an explicit XGrabPointer
+         * sync grab freeze a delivered press this way, and this layer
+         * intentionally lets ReplayPointer replay either (see the active-grab
+         * replay test in tests/check.c), so the gate is the frozen active grab,
+         * not passive only.
+         */
+        if (freeInternalEvents && type == ButtonPress && mouseFrozen &&
+            getGrabbedPointerWindow() != None)
+            rememberReplayPointerPress(xEvent);
         if (freeInternalEvents && type == ButtonRelease &&
             drainedActivePointer && pointerGrabIsPassive()) {
             releasePassivePointerGrab(display);
@@ -2952,10 +3117,11 @@ int convertEvent(Display *display,
         translateSdlPointToRoot(display, sdlMotionWindow, sdlMotionX,
                                 sdlMotionY, &xEvent->xmotion.x_root,
                                 &xEvent->xmotion.y_root);
-        PointerHit motionHit =
-            resolvePointerHit(xEvent->xmotion.root, sdlMotionWindow,
-                              xEvent->xmotion.x_root, xEvent->xmotion.y_root);
         unsigned int motionButtonState = pointerButtonStateSnapshot();
+        PointerHit motionHit = resolvePointerHit(
+            xEvent->xmotion.root, sdlMotionWindow, xEvent->xmotion.x_root,
+            xEvent->xmotion.y_root,
+            motionButtonState != 0 || getGrabbedPointerWindow() != None);
         unsigned int motionState =
             convertModifierState(SDL_GetModState()) | motionButtonState;
         Bool crossingQueued = postPointerCrossingEvents(
@@ -3762,7 +3928,7 @@ int convertEvent(Display *display,
                                     &xEvent->xbutton.y_root);
             PointerHit wheelHit = resolvePointerHit(
                 xEvent->xbutton.root, sdlWheelWindow, xEvent->xbutton.x_root,
-                xEvent->xbutton.y_root);
+                xEvent->xbutton.y_root, False);
             if (!routePointerGrabEvent(
                     display, xEvent->xbutton.root, xEvent->xbutton.x_root,
                     xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,

@@ -41,6 +41,7 @@ Bool activatePassiveButtonGrab(Display *display,
                                unsigned int state);
 Bool pointerGrabIsPassive(void);
 void releasePassivePointerGrab(Display *display);
+void releasePointerGrab(Display *display);
 
 /* Active keyboard grab installed via XGrabKeyboard.
  *
