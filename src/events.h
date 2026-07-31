@@ -110,6 +110,8 @@ void postSyntheticWindowResize(Display *display,
 void clearActivePointerWindow(void);
 void clearPointerStateForWindow(Window window);
 void releaseButtonGrabsForWindow(Window window);
+void clearReplayPointerPress(void);
+Bool replayPointerGrabPress(Display *display);
 void resetPointerResolveDescentCount(void);
 unsigned long pointerResolveDescentCount(void);
 

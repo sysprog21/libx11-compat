@@ -584,9 +584,11 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
          * physical pixel geometry with no RESIZED, and the handler there
          * re-promotes the window and reflows the client. Let those through, and
          * only when they map to a known top-level; keep dropping everything
-         * else (MOVED included - a bare move needs no client reflow and,
+         * else. A bare MOVED is dropped too (it needs no client reflow and,
          * arriving asynchronously here, would inject spurious
-         * ConfigureNotifies).
+         * ConfigureNotifies) with one exception handled just below: an anchored
+         * popup's MOVED carries a compositor slide/flip that ws->x/y must
+         * track.
          */
         Uint32 sub = XC_WINDOW_SUBEVENT(event);
         Bool resizeSubevent = sub == SDL_WINDOWEVENT_RESIZED ||
@@ -595,8 +597,49 @@ static XC_EVENTFILTER_RET onSdlEvent(void *userdata, SDL_Event *event)
 #if SDL_VERSION_ATLEAST(2, 0, 18)
         displayChangedSubevent = sub == SDL_WINDOWEVENT_DISPLAY_CHANGED;
 #endif
+
+        /* A bare MOVED is normally dropped (see above), but an anchored
+         * xdg_popup that the compositor slid or flipped to keep on screen
+         * reports its new parent-relative position only through MOVED. That
+         * must reach convertEvent so ws->x/y tracks where the popup actually
+         * landed; otherwise pointer-to-root translation for a grabbed submenu
+         * stays offset by the slide. Let a popup MOVED through; convertEvent
+         * updates ws->x/y and emits no client event for it.
+         */
+        Bool popupMoveSubevent = False;
+        if (sub == SDL_WINDOWEVENT_MOVED) {
+            Window movedWindow = getWindowFromId(event->window.windowID);
+            if (movedWindow != None && IS_TYPE(movedWindow, WINDOW)) {
+                WindowStruct *mws = GET_WINDOW_STRUCT(movedWindow);
+                if (mws && mws->popupParent != None)
+                    popupMoveSubevent = True;
+#ifndef LIBX11_COMPAT_SDL3
+                /* SDL2/X11: a window-manager move (opaque drag) uncovers the
+                 * top-levels below the window's old position, but Xvnc does not
+                 * deliver their Expose, so their old pixels linger as a drag
+                 * trail. Let the MOVED through so convertEvent can repaint
+                 * them. A client XMoveWindow's own SDL echo is different:
+                 * configureWindow recorded the host origin it wrote and posts
+                 * the one ConfigureNotify itself (repainting the vacated region
+                 * through its move snapshot), so drop the echo whose origin
+                 * matches and clear the token, or the move would deliver two
+                 * ConfigureNotifies. A genuine WM drag reports a different
+                 * origin and is kept.
+                 */
+                else if (mws && IS_MAPPED_TOP_LEVEL_WINDOW(movedWindow)) {
+                    if (SDL_AtomicGet(&mws->moveEchoValid) &&
+                        event->window.data1 == mws->moveEchoHostX &&
+                        event->window.data2 == mws->moveEchoHostY) {
+                        SDL_AtomicSet(&mws->moveEchoValid, 0);
+                        return 0;
+                    }
+                    popupMoveSubevent = True;
+                }
+#endif
+            }
+        }
         if (sub != SDL_WINDOWEVENT_CLOSE && !resizeSubevent &&
-            !displayChangedSubevent)
+            !displayChangedSubevent && !popupMoveSubevent)
             return 0;
         if (displayChangedSubevent &&
             getWindowFromId(event->window.windowID) == None)
@@ -1469,6 +1512,33 @@ static void translateSdlPointToRoot(Display *display,
     }
 }
 
+/* Map a top-level's SDL-reported host origin to the absolute X11 logical origin
+ * kept in ws->x/y. SDL reports an anchored xdg_popup's position relative to its
+ * parent surface, so recover the absolute origin by adding the parent's own
+ * absolute origin (both windows live in the same X11 logical space). Without
+ * this a compositor slide/flip would store the small parent-relative offset as
+ * the popup's absolute origin and every pointer event routed through it would
+ * land off by the parent offset. Absolute top-levels take the ordinary
+ * host-to-logical mapping.
+ */
+static void sdlTopLevelOriginToX11(Window window,
+                                   int sdlX,
+                                   int sdlY,
+                                   int *outX,
+                                   int *outY)
+{
+    WindowStruct *ws = GET_WINDOW_STRUCT(window);
+    if (ws && ws->popupParent != None) {
+        WindowStruct *parent = GET_WINDOW_STRUCT(ws->popupParent);
+        if (parent) {
+            *outX = parent->x + sdlX;
+            *outY = parent->y + sdlY;
+            return;
+        }
+    }
+    topLevelWindowLogicalPosition(window, sdlX, sdlY, outX, outY);
+}
+
 /* Shared HiDPI point scaler; see the declaration in events.h for the rationale.
  * Kept here (the event delivery hot path) and reused by pointer.c so both agree
  * on rounding and scale selection.
@@ -1555,16 +1625,35 @@ static Window directChildFromDeepest(Window window, Window deepest)
 static PointerHit resolvePointerHit(Window root,
                                     Window clickTopLevel,
                                     int rootX,
-                                    int rootY)
+                                    int rootY,
+                                    Bool captureHeld)
 {
-    PointerHit hit = {None, None};
+    PointerHit hit = {.deepest = None, .hoverDeepest = None};
     Window rootChild = getDirectChildContainingPoint(root, rootX, rootY);
     Window base = None;
 
-    if (rootChild != None && rootChild != clickTopLevel &&
-        IS_TYPE(rootChild, WINDOW) &&
-        GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
-        pointerHoverIsWithin(rootChild) && getGrabbedPointerWindow() != None) {
+    /* Descend into an override-redirect popup the pointer is over during an
+     * active grab. Normally this waits for an SDL crossing to set the hover
+     * window, but while a button is held the compositor captures the pointer to
+     * the grab window and delivers no ENTER for the popup surface, so geometry
+     * is the only signal. Without this a Motif drag-through leaves the cascade
+     * item without an EnterNotify and the submenu stays unposted until release.
+     * The geometry-only path is limited to anchored popups (popupParent set) so
+     * a held button over some unrelated override-redirect toplevel during an
+     * active grab cannot synthesize a stray crossing into it, and to
+     * owner-events grabs: a non-owner-events grab confines every event to the
+     * grab window, so descending into a popup child would leak a crossing
+     * outside it. Motif menu grabs are owner-events, so the menu path keeps it.
+     */
+    Bool overridePopup = rootChild != None && rootChild != clickTopLevel &&
+                         IS_TYPE(rootChild, WINDOW) &&
+                         GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
+                         getGrabbedPointerWindow() != None;
+    Bool anchoredPopup = overridePopup &&
+                         GET_WINDOW_STRUCT(rootChild)->popupParent != None &&
+                         getPointerGrabOwnerEvents();
+    if (overridePopup &&
+        (pointerHoverIsWithin(rootChild) || (captureHeld && anchoredPopup))) {
         base = rootChild;
     } else if (clickTopLevel != None && clickTopLevel != SCREEN_WINDOW &&
                IS_TYPE(clickTopLevel, WINDOW) &&
@@ -1687,6 +1776,16 @@ static Bool routePointerGrabEvent(Display *display,
     return True;
 }
 
+/* Set by the pointer grab code (pointer.c) when a sync grab freezes the
+ * pointer; only a frozen press is replayable, so it gates the replay cache.
+ */
+extern Bool mouseFrozen;
+
+static Window pointerHoverWindow = None;
+static int pointerHoverRootX = 0, pointerHoverRootY = 0;
+static Bool replayPointerPressValid = False;
+static XEvent replayPointerPress;
+
 Bool postCrossingEvent(Display *display,
                        Window window,
                        int type,
@@ -1695,6 +1794,24 @@ Bool postCrossingEvent(Display *display,
                        unsigned int state)
 {
     long mask = type == EnterNotify ? EnterWindowMask : LeaveWindowMask;
+    if (mode == NotifyGrab || mode == NotifyUngrab) {
+        lockActivePointerWindow();
+
+        /* Only the hover window identity changes here, not pointerHoverRootX/Y:
+         * those track the pointer's root position from the last motion, which
+         * is what pointerHoverRootOutsideWindow reports and stays valid across
+         * a grab crossing (the pointer does not move because a grab activated).
+         * Re-deriving coordinates is neither possible (this path carries none)
+         * nor needed.
+         */
+        if (type == EnterNotify)
+            pointerHoverWindow = window;
+        else if (pointerHoverWindow == window ||
+                 (IS_TYPE(pointerHoverWindow, WINDOW) &&
+                  isParent(window, pointerHoverWindow)))
+            pointerHoverWindow = None;
+        unlockActivePointerWindow();
+    }
     if (!HAS_EVENT_MASK(window, mask))
         return True;
     XCrossingEvent *event = malloc(sizeof(XCrossingEvent));
@@ -2241,8 +2358,6 @@ static unsigned int pointerButtonStateSnapshot(void)
     return s;
 }
 static Window activePointerWindow = None;
-static Window pointerHoverWindow = None;
-static int pointerHoverRootX = 0, pointerHoverRootY = 0;
 
 static Bool pointerHoverIsWithin(Window window)
 {
@@ -2253,6 +2368,84 @@ static Bool pointerHoverIsWithin(Window window)
                                          isParent(window, pointerHoverWindow));
     unlockActivePointerWindow();
     return inside;
+}
+
+static Bool pointerHoverRootOutsideWindow(Window window, int *rootX, int *rootY)
+{
+    Bool hasHover = False;
+    lockActivePointerWindow();
+    if (pointerHoverWindow != None && pointerHoverWindow != window &&
+        !(IS_TYPE(pointerHoverWindow, WINDOW) &&
+          isParent(window, pointerHoverWindow))) {
+        *rootX = pointerHoverRootX;
+        *rootY = pointerHoverRootY;
+        hasHover = True;
+    }
+    unlockActivePointerWindow();
+    return hasHover;
+}
+
+static void rememberReplayPointerPress(const XEvent *event)
+{
+    lockActivePointerWindow();
+    memcpy(&replayPointerPress, event, sizeof(replayPointerPress));
+    replayPointerPressValid = True;
+    unlockActivePointerWindow();
+}
+
+void clearReplayPointerPress(void)
+{
+    lockActivePointerWindow();
+    replayPointerPressValid = False;
+    unlockActivePointerWindow();
+}
+
+Bool replayPointerGrabPress(Display *display)
+{
+    XEvent event;
+    lockActivePointerWindow();
+    if (!replayPointerPressValid) {
+        unlockActivePointerWindow();
+        return False;
+    }
+    memcpy(&event, &replayPointerPress, sizeof(event));
+    replayPointerPressValid = False;
+    unlockActivePointerWindow();
+
+    /* ReplayPointer always releases the grab and reprocesses the cached press,
+     * so consume the cache and drop the grab up front. A later resolve failure
+     * then leaves no stale cached press behind that a subsequent ReplayPointer
+     * could deliver a second time; the replay is simply discarded, matching a
+     * real server that reprocesses the event into nothing.
+     */
+    releasePointerGrab(display);
+
+    PointerHit hit =
+        resolvePointerHit(event.xbutton.root, None, event.xbutton.x_root,
+                          event.xbutton.y_root, False);
+    long mask = ButtonPressMask;
+    Window subwindow = None;
+    int eventX = 0, eventY = 0;
+    Window eventWindow = selectPointerEventWindow(
+        display, event.xbutton.root, event.xbutton.x_root, event.xbutton.y_root,
+        hit.deepest, mask, &subwindow, &eventX, &eventY);
+    if (eventWindow == None)
+        return False;
+
+    event.xbutton.window = eventWindow;
+    event.xbutton.subwindow = subwindow;
+    event.xbutton.x = eventX;
+    event.xbutton.y = eventY;
+    lockActivePointerWindow();
+    activePointerWindow = eventWindow;
+    unlockActivePointerWindow();
+    if (!appendPutBackEvent(display, &event)) {
+        lockActivePointerWindow();
+        activePointerWindow = None;
+        unlockActivePointerWindow();
+        return False;
+    }
+    return True;
 }
 
 static int buildWindowPathToRoot(Window window, Window *path, int capacity)
@@ -2620,6 +2813,41 @@ static Bool shouldSuppressIMTextKeydown(Display *display,
     return ascii == '\0';
 }
 
+static Window resolveKeyboardFocusWindow(Display *display)
+{
+    Window eventWindow = getKeyboardFocus();
+    if (eventWindow == None && !isKeyboardFocusFromClient() &&
+        getKeyboardFocusKind() == FocusKindNone) {
+        /* SDL emits no FOCUS_GAINED transition for a window that is born with
+         * keyboard focus, so syncKeyboardFocusFromHost may never have run and
+         * keyboardFocus is still None. A single-window client like xwpe never
+         * calls XSetInputFocus itself, so every key would route to the root
+         * window and the app would look deaf to the keyboard. Adopt the window
+         * SDL currently reports as keyboard-focused. Guarded on client
+         * ownership so explicit None/PointerRoot focus is left untouched.
+         */
+        SDL_Window *sdlFocus = SDL_GetKeyboardFocus();
+        if (sdlFocus) {
+            Window hostFocus = getWindowFromId(SDL_GetWindowID(sdlFocus));
+            if (hostFocus != None) {
+                FocusKind oldKind = getKeyboardFocusKind();
+                Window oldFocus = getKeyboardFocus();
+                syncKeyboardFocusFromHost(hostFocus);
+                eventWindow = getKeyboardFocus();
+
+                /* Deliver the FocusIn the absent SDL FOCUS_GAINED never
+                 * produced, so a client selecting FocusChangeMask still learns
+                 * it holds focus. It trails this first key by one event instead
+                 * of preceding it, the cost of a born-focused window SDL never
+                 * announced.
+                 */
+                postFocusChange(display, oldKind, oldFocus,
+                                getKeyboardFocusKind(), eventWindow);
+            }
+        }
+    }
+    return eventWindow;
+}
 
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
@@ -2651,76 +2879,31 @@ int convertEvent(Display *display,
         xEvent->xkey.root = SCREEN_WINDOW;
         xEvent->xkey.state = convertModifierState(XC_EVENT_KEYMOD(sdlEvent));
 
-        /* X11 KeyCode is 8-bit, but SDL keycodes span ASCII (< 0x80) plus a
-         * separate 0x4000xxxx scancode range, so no collision-free mapping into
-         * 0..255 exists. Truncating to the low byte keeps every ASCII key on
-         * its natural keycode; the cost is that a scancode key whose low byte
-         * lands on a printable keycode aliases onto it (SDLK_EXECUTE 0x40000074
-         * -> 116 == 't', SDLK_KP_0 0x40000062 -> 98 == 'b'). XkbKeycodeToKeysym
-         * uses the same truncation so decoding round-trips for the common
-         * (ASCII) keys. XKeysymToKeycode guards the reverse direction (it
-         * refuses a keycode that does not round-trip) so Motif cannot bind a
-         * special key onto a letter; pressing one of the rare aliasing scancode
-         * keys still types the colliding character, which is accepted given the
-         * 8-bit limit.
-         */
-        xEvent->xkey.keycode = (unsigned int) XC_EVENT_KEYSYM(sdlEvent) & 0xFF;
+        xEvent->xkey.keycode = keycodeForSdlKeycode(XC_EVENT_KEYSYM(sdlEvent));
 
         /* Route priority for key events:
-         * 1. Active XGrabKeyboard (modal dialogs like Motif's Help popup)
+         * 1. Active XGrabKeyboard. With owner_events=True, real X first tries
+         *    ordinary focus delivery for this client; Motif menus depend on
+         *    that after moving focus into a posted pulldown.
          * 2. Passive XGrabKey match (Motif accelerators)
          * 3. The keyboard-focus window
-         * 4. The event's root window as a last resort. Items 1 and 2 are
-         * independent of focus; item 3 is the normal path.
+         * 4. The event's root window as a last resort.
          */
         Window keyboardGrabWindow = getGrabbedKeyboardWindow();
         Window passiveGrabWindow =
             findKeyGrabWindow((int) xEvent->xkey.keycode, xEvent->xkey.state);
         if (keyboardGrabWindow != None) {
-            eventWindow = keyboardGrabWindow;
+            if (getKeyboardGrabOwnerEvents())
+                eventWindow = resolveKeyboardFocusWindow(display);
+            if (eventWindow == None)
+                eventWindow = keyboardGrabWindow;
         } else if (passiveGrabWindow != None) {
             eventWindow = passiveGrabWindow;
         } else {
-            eventWindow = getKeyboardFocus();
-            if (eventWindow == None && !isKeyboardFocusFromClient() &&
-                getKeyboardFocusKind() == FocusKindNone) {
-                /* SDL emits no FOCUS_GAINED transition for a window that is
-                 * born with keyboard focus, so syncKeyboardFocusFromHost may
-                 * never have run and keyboardFocus is still None. A
-                 * single-window client like xwpe never calls XSetInputFocus
-                 * itself, so every key would route to the root window and the
-                 * app would look deaf to the keyboard. Adopt the window SDL
-                 * currently reports as keyboard-focused. Guarded on client
-                 * ownership so explicit None/PointerRoot focus is left
-                 * untouched.
-                 */
-                SDL_Window *sdlFocus = SDL_GetKeyboardFocus();
-                if (sdlFocus) {
-                    Window hostFocus =
-                        getWindowFromId(SDL_GetWindowID(sdlFocus));
-                    if (hostFocus != None) {
-                        FocusKind oldKind = getKeyboardFocusKind();
-                        Window oldFocus = getKeyboardFocus();
-                        syncKeyboardFocusFromHost(hostFocus);
-                        eventWindow = getKeyboardFocus();
-
-                        /* Deliver the FocusIn the absent SDL FOCUS_GAINED never
-                         * produced, so a client selecting FocusChangeMask still
-                         * learns it holds focus. It trails this first key by
-                         * one event instead of preceding it, the cost of a
-                         * born-focused window SDL never announced.
-                         */
-                        postFocusChange(display, oldKind, oldFocus,
-                                        getKeyboardFocusKind(), eventWindow);
-                    }
-                }
-            }
+            eventWindow = resolveKeyboardFocusWindow(display);
             eventWindow = eventWindow == None ? xEvent->xkey.root : eventWindow;
         }
 
-        xEvent->xkey.window = eventWindow;
-        xEvent->xkey.subwindow = None;
-        xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         int pointerX = 0, pointerY = 0;
 
         /* Injected/replay coordinates are already X11 physical pixels; only
@@ -2735,9 +2918,19 @@ int convertEvent(Display *display,
         }
         translateSdlPointToRoot(display, sdlKeyWindow, pointerX, pointerY,
                                 &xEvent->xkey.x_root, &xEvent->xkey.y_root);
+        PointerHit keyHit =
+            resolvePointerHit(xEvent->xkey.root, sdlKeyWindow,
+                              xEvent->xkey.x_root, xEvent->xkey.y_root, False);
+        xEvent->xkey.window = eventWindow;
+        xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->key.timestamp);
         translateRootPointToWindow(display, SCREEN_WINDOW, eventWindow,
                                    xEvent->xkey.x_root, xEvent->xkey.y_root,
                                    &xEvent->xkey.x, &xEvent->xkey.y);
+        xEvent->xkey.subwindow =
+            directChildFromDeepest(eventWindow, keyHit.deepest);
+        if (xEvent->xkey.subwindow == None)
+            xEvent->xkey.subwindow = getDirectChildContainingPoint(
+                eventWindow, xEvent->xkey.x, xEvent->xkey.y);
         // xEvent->xkey.keycode = (unsigned int) sdlEvent->key.keysym.scancode;
         xEvent->xkey.same_screen = True;
         break;
@@ -2769,12 +2962,30 @@ int convertEvent(Display *display,
          * would double them on Retina. Real hardware events carry SDL points
          * and still need the scale (mirrors the motion/wheel handling).
          */
-        if (sdlEvent->button.which != SDL_TOUCH_MOUSEID)
+        Bool usedHoverRoot = False;
+        Window grabbedPointerWindow = getGrabbedPointerWindow();
+
+        /* Use the hovered-window root coordinates only when the grab that
+         * redirected this button is the top-level SDL window the event arrived
+         * on, or a descendant widget of it (a Motif menu grabs the shell, but
+         * the grab window can also be a child). A grab elsewhere, or no grab,
+         * takes the ordinary scale/translate path.
+         */
+        if (sdlEvent->button.which != SDL_TOUCH_MOUSEID &&
+            grabbedPointerWindow != None &&
+            (grabbedPointerWindow == sdlButtonWindow ||
+             (IS_TYPE(grabbedPointerWindow, WINDOW) &&
+              isParent(sdlButtonWindow, grabbedPointerWindow))))
+            usedHoverRoot = pointerHoverRootOutsideWindow(
+                sdlButtonWindow, &xEvent->xbutton.x_root,
+                &xEvent->xbutton.y_root);
+        if (!usedHoverRoot && sdlEvent->button.which != SDL_TOUCH_MOUSEID)
             scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
                                   &sdlButtonX, &sdlButtonY);
-        translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
-                                sdlButtonY, &xEvent->xbutton.x_root,
-                                &xEvent->xbutton.y_root);
+        if (!usedHoverRoot)
+            translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
+                                    sdlButtonY, &xEvent->xbutton.x_root,
+                                    &xEvent->xbutton.y_root);
         xEvent->xbutton.button = convertSdlMouseButton(sdlEvent->button.button);
         unsigned int buttonState = buttonMaskForXButton(xEvent->xbutton.button);
 
@@ -2799,9 +3010,10 @@ int convertEvent(Display *display,
                 xEvent->xbutton.y_root, xEvent->xbutton.button,
                 xEvent->xbutton.state);
         }
-        PointerHit buttonHit =
-            resolvePointerHit(xEvent->xbutton.root, sdlButtonWindow,
-                              xEvent->xbutton.x_root, xEvent->xbutton.y_root);
+        PointerHit buttonHit = resolvePointerHit(
+            xEvent->xbutton.root, sdlButtonWindow, xEvent->xbutton.x_root,
+            xEvent->xbutton.y_root,
+            type == ButtonPress && getGrabbedPointerWindow() != None);
 
         /* Explicit XGrabPointer routing owns the event when
          * routePointerGrabEvent returns True; otherwise fall back to the normal
@@ -2857,6 +3069,19 @@ int convertEvent(Display *display,
             return -1;
         xEvent->xbutton.window = eventWindow;
         xEvent->xbutton.same_screen = True;
+
+        /* Cache only a press frozen by a sync grab: that is the only press
+         * ReplayPointer can replay. An async grab already delivered the press,
+         * so caching it would let a later ReplayPointer replay a stale one.
+         * Both a passive GrabButton activation and an explicit XGrabPointer
+         * sync grab freeze a delivered press this way, and this layer
+         * intentionally lets ReplayPointer replay either (see the active-grab
+         * replay test in tests/check.c), so the gate is the frozen active grab,
+         * not passive only.
+         */
+        if (freeInternalEvents && type == ButtonPress && mouseFrozen &&
+            getGrabbedPointerWindow() != None)
+            rememberReplayPointerPress(xEvent);
         if (freeInternalEvents && type == ButtonRelease &&
             drainedActivePointer && pointerGrabIsPassive()) {
             releasePassivePointerGrab(display);
@@ -2882,10 +3107,11 @@ int convertEvent(Display *display,
         translateSdlPointToRoot(display, sdlMotionWindow, sdlMotionX,
                                 sdlMotionY, &xEvent->xmotion.x_root,
                                 &xEvent->xmotion.y_root);
-        PointerHit motionHit =
-            resolvePointerHit(xEvent->xmotion.root, sdlMotionWindow,
-                              xEvent->xmotion.x_root, xEvent->xmotion.y_root);
         unsigned int motionButtonState = pointerButtonStateSnapshot();
+        PointerHit motionHit = resolvePointerHit(
+            xEvent->xmotion.root, sdlMotionWindow, xEvent->xmotion.x_root,
+            xEvent->xmotion.y_root,
+            motionButtonState != 0 || getGrabbedPointerWindow() != None);
         unsigned int motionState =
             convertModifierState(SDL_GetModState()) | motionButtonState;
         Bool crossingQueued = postPointerCrossingEvents(
@@ -2987,12 +3213,42 @@ int convertEvent(Display *display,
             LOG("Window %d moved to %d,%d\n", sdlEvent->window.windowID,
                 sdlEvent->window.data1, sdlEvent->window.data2);
             if (eventWindow != None) {
-                int logicalX = sdlEvent->window.data1;
-                int logicalY = sdlEvent->window.data2;
-                topLevelWindowLogicalPosition(eventWindow, logicalX, logicalY,
-                                              &logicalX, &logicalY);
-                GET_WINDOW_STRUCT(eventWindow)->x = logicalX;
-                GET_WINDOW_STRUCT(eventWindow)->y = logicalY;
+                WindowStruct *movedStruct = GET_WINDOW_STRUCT(eventWindow);
+#ifndef LIBX11_COMPAT_SDL3
+                /* Old on-screen rect (before ws->x/y is updated below) is the
+                 * region a window-manager move vacates on the top-levels under
+                 * it. Captured for the SDL2 repaint further down.
+                 */
+                SDL_Rect vacated = {movedStruct->x, movedStruct->y,
+                                    clampToIntRange((int64_t) movedStruct->w),
+                                    clampToIntRange((int64_t) movedStruct->h)};
+#endif
+                int logicalX, logicalY;
+                sdlTopLevelOriginToX11(eventWindow, sdlEvent->window.data1,
+                                       sdlEvent->window.data2, &logicalX,
+                                       &logicalY);
+                movedStruct->x = logicalX;
+                movedStruct->y = logicalY;
+
+                /* An anchored popup's MOVED arrives because the compositor slid
+                 * or flipped it, not because the client asked. Update ws->x/y
+                 * so pointer translation tracks the real position, but emit no
+                 * ConfigureNotify: the toolkit still believes it placed the
+                 * menu where it requested, and a configure it never asked for
+                 * would fight its own menu tracking.
+                 */
+                if (movedStruct->popupParent != None)
+                    return -1;
+#ifndef LIBX11_COMPAT_SDL3
+                /* SDL2/X11 window-manager move: repaint the top-levels this
+                 * window uncovered at its old position, since Xvnc delivers
+                 * them no Expose, so the drag trail clears. Then fall through
+                 * to the ConfigureNotify below: a move-only configure carries
+                 * no size change, so the client just learns its new position
+                 * with no reflow.
+                 */
+                repaintTopLevelsOverlappingRect(eventWindow, vacated);
+#endif
             }
 
             /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
@@ -3019,7 +3275,7 @@ int convertEvent(Display *display,
                 xEvent->xconfigure.x = sdlEvent->window.data1;
                 xEvent->xconfigure.y = sdlEvent->window.data2;
                 if (eventWindow != None) {
-                    topLevelWindowLogicalPosition(
+                    sdlTopLevelOriginToX11(
                         eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
                 }
@@ -3028,7 +3284,7 @@ int convertEvent(Display *display,
                     SDL_GetWindowFromID(sdlEvent->window.windowID),
                     &xEvent->xconfigure.x, &xEvent->xconfigure.y);
                 if (eventWindow != None) {
-                    topLevelWindowLogicalPosition(
+                    sdlTopLevelOriginToX11(
                         eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
                         &xEvent->xconfigure.x, &xEvent->xconfigure.y);
 
@@ -3662,7 +3918,7 @@ int convertEvent(Display *display,
                                     &xEvent->xbutton.y_root);
             PointerHit wheelHit = resolvePointerHit(
                 xEvent->xbutton.root, sdlWheelWindow, xEvent->xbutton.x_root,
-                xEvent->xbutton.y_root);
+                xEvent->xbutton.y_root, False);
             if (!routePointerGrabEvent(
                     display, xEvent->xbutton.root, xEvent->xbutton.x_root,
                     xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,

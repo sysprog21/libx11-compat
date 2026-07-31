@@ -4,12 +4,16 @@ MAKEFLAGS += --no-builtin-rules --no-builtin-variables
 
 UNAME_S := $(shell uname -s)
 
-# GNU make predefines CC=cc. Prefer clang for local builds while preserving
-# explicit command-line and environment overrides.
+# GNU make predefines CC=cc. Prefer clang when it is on PATH (the tree's
+# primary toolchain and macOS's system compiler), but fall back to the system
+# cc (gcc on a typical Linux host) when there is no clang, so a box without
+# clang still builds without the caller having to pass CC=. Explicit
+# command-line and environment overrides always win.
+CC_DEFAULT := $(shell command -v clang >/dev/null 2>&1 && printf clang || printf cc)
 ifeq ($(origin CC),default)
-  CC := clang
+  CC := $(CC_DEFAULT)
 else
-  CC ?= clang
+  CC ?= $(CC_DEFAULT)
 endif
 
 PKG_CONFIG ?= pkg-config

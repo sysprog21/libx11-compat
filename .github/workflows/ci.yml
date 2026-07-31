@@ -5,11 +5,14 @@
 # (which ships clang-format-18 by default).
 #
 # Top-level jobs (lint, build, debug-build, sanitize, motif, osiris,
-# xfig, xwpe, xephem, gimp, gtk1, cinepaint, xmms, grace, sdl3) run in
-# parallel. The sdl3 job builds the
+# xfig, xwpe, xephem, gimp, gtk1, cinepaint, xmms, grace, sdl3,
+# wayland) run in parallel. The sdl3 job builds the
 # compat stack against the native SDL3 backend (SDL_BACKEND=sdl3); every
 # other job uses the default SDL2 backend, so the SDL3 translation shim in
-# src/sdl-compat.h is only exercised there. Osiris and Xfig each have no Motif
+# src/sdl-compat.h is only exercised there and in the wayland job. The
+# wayland job additionally builds a Wayland-enabled SDL3 and runs the compat
+# stack against weston headless, the only job that exercises compositor-
+# dependent behaviour such as the override-redirect xdg_popup path. Osiris and Xfig each have no Motif
 # dependency, so they live in their own jobs rather than queueing behind
 # the Motif + ViolaWWW + Mosaic chain. GIMP 0.54 is a Motif client but
 # gets its own job too: its plug-in build pulls in libpng/jpeg/tiff that
@@ -44,7 +47,7 @@ concurrency:
 
 env:
   COMMON_BUILD_PKGS: "clang ccache make pkg-config python3 libsdl2-dev libsdl2-ttf-dev libpixman-1-dev"
-  MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4"
+  MOTIF_BUILD_PKGS: "autoconf automake libtool bison flex gawk m4 libfontconfig1-dev libxft-dev"
   # Osiris (Qt 2.3.2 fork) configures with Meson and builds with Ninja,
   # and Osiris itself hard-depends on libjpeg, libpng, and freetype for
   # image loading + font rendering (the xft/opengl/sm probes are gated
@@ -2135,6 +2138,142 @@ jobs:
 
       - name: Build bundled examples (SDL_BACKEND=sdl3)
         run: make SDL_BACKEND=sdl3 examples -j"$(nproc)"
+
+      - name: ccache stats
+        if: ${{ !cancelled() }}
+        run: ccache --show-stats
+
+  # ---- Wayland backend regression ----
+  # The only job that exercises the SDL3 backend against a real Wayland
+  # compositor. Some behaviour is observable only there: an override-redirect
+  # popup must map as a Wayland xdg_popup anchored to its parent rather than a
+  # free-standing xdg_toplevel, and that is compositor-dependent, so neither the
+  # SDL2 jobs nor the sdl3 job (console-only SDL3, dummy driver) can see it. This
+  # job builds a Wayland-enabled SDL3 (the sdl3 job's SDL3 is built
+  # -DSDL_UNIX_CONSOLE_BUILD=ON with no windowing backend, so its cached prefix
+  # cannot be reused here), runs weston headless, and drives the Wayland-backend
+  # regression checks; the menu-rendering harness is the current content, and new
+  # compositor-dependent checks belong here too. weston headless needs only
+  # XDG_RUNTIME_DIR, no GPU or logind seat.
+  wayland:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      SDL3_PREFIX: ${{ github.workspace }}/.sdl3-wayland-prefix
+      # Same bison yacc-compat shim the motif job uses for the Mrm parser
+      # (ubuntu ships bison but no /usr/bin/yacc).
+      MOTIF_YACC: "bison -y"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        # SDL3-from-source deps (cmake/ninja, freetype/harfbuzz for SDL3_ttf) as
+        # in the sdl3 job, plus the Wayland dev set so SDL3 builds its Wayland
+        # video driver and weston can run headless, plus the Motif autoreconf
+        # chain for the --with-xft libXm the font and menu checks link. libx11-dev
+        # supplies the few system X11 private headers the staged libXt/libX11
+        # sources fall through to (this job has no libsdl2-dev to pull them in).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang ccache make pkg-config python3 libpixman-1-dev \
+            cmake ninja-build git libfreetype-dev libharfbuzz-dev libx11-dev \
+            weston libwayland-dev wayland-protocols libxkbcommon-dev libdecor-0-dev \
+            libegl-dev libgles-dev \
+            ${{ env.MOTIF_BUILD_PKGS }}
+
+      - name: Cache Wayland SDL3 + SDL3_ttf prefix
+        id: sdl3-cache
+        # Exact-match key bound to the build script (versions + SHA-256 + flags
+        # all live there), so bumping SDL3 or its build options invalidates the
+        # cache without a hand-maintained version string, and no restore-keys
+        # fallback can resurrect a prefix built with different flags.
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.SDL3_PREFIX }}
+          key: sdl3-wayland-prefix-v1-${{ runner.os }}-${{ hashFiles('scripts/build-sdl3.sh') }}
+
+      - name: Build Wayland-enabled SDL3 + SDL3_ttf
+        if: steps.sdl3-cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-sdl3.sh
+
+      - name: Assert SDL3 built with the Wayland driver
+        # SDL's CMake disables a backend with missing deps instead of failing, so
+        # verify the Wayland driver is present up front; otherwise every popup
+        # check would fail later for a mysterious reason. SDL loads libwayland
+        # via dlopen, so it does not appear in ldd; grep the compiled-in driver
+        # description string instead (absent from a console-only SDL3 build).
+        run: |
+          strings "$SDL3_PREFIX"/lib*/libSDL3.so | grep -q "SDL Wayland video driver" \
+            || { echo "SDL3 was built without the Wayland video driver"; exit 1; }
+
+      - name: Cache upstream tarballs and extracted source/headers
+        # Shared with the other compile jobs (content-hashed, CFLAGS-insensitive),
+        # with the Motif subtree excluded so this job neither poisons nor reuses
+        # the app-source caches.
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/upstream
+            !build/upstream/**/*.o
+            !build/upstream/**/*.d
+            !build/upstream/motif
+            !build/upstream/mosaic
+            !build/upstream/osiris
+            !build/upstream/xfig-*
+            !build/upstream/.cache/xfig-*
+            !build/upstream/gimp-*
+            !build/upstream/.cache/gimp-*
+          key: upstream-src-v2-${{ runner.os }}-${{ hashFiles('scripts/sync-upstream-headers.py') }}
+          restore-keys: |
+            upstream-src-v2-${{ runner.os }}-
+
+      - name: Cache Motif source clone and autoreconf output
+        uses: actions/cache@v6
+        with:
+          path: build/upstream/motif
+          key: motif-src-${{ runner.os }}-${{ hashFiles('mk/motif.mk', 'compat/motif-patches/**') }}
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-wayland-v1-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-wayland-v1-${{ runner.os }}-
+
+      - name: Configure ccache and SDL3 environment
+        run: |
+          ccache --max-size=600M
+          ccache --zero-stats
+          {
+            echo "CC=ccache clang"
+            echo "PKG_CONFIG_PATH=$SDL3_PREFIX/lib/pkgconfig:$SDL3_PREFIX/lib64/pkgconfig"
+            echo "LD_LIBRARY_PATH=$SDL3_PREFIX/lib:$SDL3_PREFIX/lib64"
+          } >>"$GITHUB_ENV"
+
+      - name: Build compat stack (SDL_BACKEND=sdl3) and Motif --with-xft
+        run: |
+          make SDL_BACKEND=sdl3 -j"$(nproc)"
+          make SDL_BACKEND=sdl3 motif -j"$(nproc)"
+
+      - name: Run Wayland backend regression (weston headless)
+        # CI_REQUIRE=1 turns any SKIP into a failure so a missing weston / SDL3
+        # cannot let this required gate pass green without exercising anything.
+        run: |
+          export XDG_RUNTIME_DIR="$(mktemp -d)"; chmod 700 "$XDG_RUNTIME_DIR"
+          CI_REQUIRE=1 MENUVAL_WORK="$GITHUB_WORKSPACE/build/wayland-logs" \
+            bash scripts/validate-menu-rendering.sh
+
+      - name: Upload weston + WAYLAND_DEBUG logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wayland-logs
+          path: build/wayland-logs
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: ccache stats
         if: ${{ !cancelled() }}

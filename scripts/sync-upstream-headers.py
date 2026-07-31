@@ -427,6 +427,22 @@ SRC_PATCHES: dict[str, tuple[tuple[str, str], ...]] = {
             "    return (callbacks);\n",
         ),
     ),
+    # libx11-compat's ConnectionNumber is a wake pipe, so poll() can return
+    # readable after the SDL pump drains a timer byte but produces no X event.
+    # Upstream Xt treats that as impossible and restarts the wait without
+    # refreshing wt.cur_time, which can starve Xt timers forever under a steady
+    # pump-wake cadence. Refresh the clock before the spurious-ready retry.
+    "NextEvent.c": (
+        (
+            "    if (block)\n" "        goto WaitLoop;\n" "    else {\n",
+            "    if (block) {\n"
+            "        X_GETTIMEOFDAY(&wt.cur_time);\n"
+            "        FIXUP_TIMEVAL(wt.cur_time);\n"
+            "        goto WaitLoop;\n"
+            "    }\n"
+            "    else {\n",
+        ),
+    ),
 }
 
 # Guard against typos when bumping versions: every URL must contain its tag.

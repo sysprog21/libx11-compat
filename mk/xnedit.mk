@@ -16,7 +16,15 @@ XNEDIT_SYSROOT_STAMP := $(XNEDIT_SYSROOT)/.stamp
 
 XNEDIT_RPATH_FLAGS :=
 ifeq ($(UNAME_S),Linux)
-  XNEDIT_RPATH_FLAGS += -Wl,-rpath,$(abspath $(OUT)) \
+  # --disable-new-dtags emits DT_RPATH rather than DT_RUNPATH. DT_RUNPATH is not
+  # consulted when the loader resolves a dependency's own NEEDED entries, so with
+  # the default new dtags the binary finds libXm/libXt/libX11 but not their
+  # transitive deps (libXft-compat.so is NEEDED by libXm, not by xnedit), and the
+  # bare binary fails to start without LD_LIBRARY_PATH. DT_RPATH is searched for
+  # the whole dependency tree, so it resolves the transitive compat libs the way
+  # macOS @rpath already does, letting ./xnedit run with no LD_LIBRARY_PATH.
+  XNEDIT_RPATH_FLAGS += -Wl,--disable-new-dtags \
+      -Wl,-rpath,$(abspath $(OUT)) \
       -Wl,-rpath,$(abspath $(XNEDIT_LIB_ALIASES)) \
       -Wl,-rpath-link,$(abspath $(OUT))
 endif
@@ -82,7 +90,8 @@ $(XNEDIT_LIB_ALIASES_STAMP): $(TARGET) $(LIBXT_TARGET) $(XEXT_COMPAT_TARGET) \
     $(XFT_COMPAT_TARGET) $(MOTIF_STAGE_STAMP) mk/xnedit.mk
 	@mkdir -p $(XNEDIT_LIB_ALIASES)
 	$(Q)rm -f $(XNEDIT_LIB_ALIASES)/libX*.so $(XNEDIT_LIB_ALIASES)/libX*.dylib \
-	    $(XNEDIT_LIB_ALIASES)/libXm.so $(XNEDIT_LIB_ALIASES)/libXm.dylib
+	    $(XNEDIT_LIB_ALIASES)/libXm.so $(XNEDIT_LIB_ALIASES)/libXm.dylib \
+	    $(XNEDIT_LIB_ALIASES)/libSDL2*.so
 	$(Q)set -e; for pair in \
 	    libX11.so:libX11-compat.so \
 	    libXt.so:libXt-compat.so \
@@ -92,6 +101,17 @@ $(XNEDIT_LIB_ALIASES_STAMP): $(TARGET) $(LIBXT_TARGET) $(XEXT_COMPAT_TARGET) \
 	    libXm.so:libXm.so; do \
 	    alias="$${pair%%:*}"; target="$${pair##*:}"; \
 	    ln -sf "$(abspath $(OUT))/$$target" "$(XNEDIT_LIB_ALIASES)/$$alias"; \
+	done
+	# The SDL2 shims are NEEDED by libX11-compat.so, which is loaded through the
+	# libX11.so alias symlink above, so its RUNPATH=$$ORIGIN resolves to this
+	# lib-aliases dir rather than $(OUT). Mirror the shims here too so DT_RPATH
+	# handoff to the shim resolves without LD_LIBRARY_PATH. Guarded on existence:
+	# the SDL3 backend links libSDL3 directly and ships no shim (also true on
+	# macOS), so there is nothing to alias there.
+	$(Q)set -e; for shim in libSDL2-x11compat.so libSDL2_ttf-x11compat.so; do \
+	    if [ -e "$(abspath $(OUT))/$$shim" ]; then \
+	        ln -sf "$(abspath $(OUT))/$$shim" "$(XNEDIT_LIB_ALIASES)/$$shim"; \
+	    fi; \
 	done
 ifeq ($(UNAME_S),Darwin)
 	$(Q)set -e; for pair in \

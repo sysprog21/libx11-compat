@@ -490,6 +490,7 @@ static int textPropertyToTextList(
     *count_ret = 0;
     if (text_prop->format != 8)
         return XConverterNotFound;
+
     /* Reject obviously bogus nitems before any arithmetic. The +1 NUL
      * terminator on the duplicated payload must not wrap, and count_ret is a
      * signed int. Cap at INT_MAX so the eventual memcpy length is always
@@ -497,6 +498,7 @@ static int textPropertyToTextList(
      */
     if (text_prop->nitems > (unsigned long) INT_MAX)
         return XNoMemory;
+
     /* Only accept encodings whose 8-bit payload is already UTF-8 (the
      * UTF8_STRING atom) or Latin-1 (XA_STRING, the ICCCM "8-bit string"
      * representation). COMPOUND_TEXT requires real iconv work and is refused
@@ -1219,6 +1221,7 @@ void triggerIOError(Display *display)
          */
         (void) ioErrorHandler(display);
     }
+
     /* No handler, or handler returned: emulate the X server tearing down the
      * connection. Real Xlib's default behavior here is _exit(1).
      */
@@ -1403,6 +1406,7 @@ int XQueryTextExtents(register Display *dpy,
     freeQueriedFontStruct(fs);
     if (temporaryFont != None)
         XUnloadFont(dpy, temporaryFont);
+
     /* Spec: Status nonzero on success. Returning 0 here made Motif and Xt
      * widget measurement paths treat the filled metrics as invalid and fall
      * back to zero-width text.
@@ -1864,10 +1868,12 @@ int XAllowEvents(register Display *dpy, int mode, Time time)
     switch (mode) {
     case AsyncPointer:
         mouseFrozen = False;
+        clearReplayPointerPress();
         break;
     case ReplayPointer:
         mouseFrozen = False;
-        releasePassivePointerGrab(dpy);
+        if (!replayPointerGrabPress(dpy))
+            releasePassivePointerGrab(dpy);
         break;
     case AsyncKeyboard:
     case ReplayKeyboard:
@@ -1876,9 +1882,11 @@ int XAllowEvents(register Display *dpy, int mode, Time time)
     case AsyncBoth:
         mouseFrozen = False;
         keyboardFrozen = False;
+        clearReplayPointerPress();
         break;
     case SyncPointer:
         mouseFrozen = False;
+        clearReplayPointerPress();
         break;
     case SyncKeyboard:
         keyboardFrozen = False;
@@ -1886,6 +1894,7 @@ int XAllowEvents(register Display *dpy, int mode, Time time)
     case SyncBoth:
         mouseFrozen = False;
         keyboardFrozen = False;
+        clearReplayPointerPress();
         break;
     default:
         return 0;
@@ -2383,6 +2392,7 @@ int XwcTextPropertyToTextList(Display *dpy,
         return XNoMemory;
     Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
     Atom compoundText = dpy ? XInternAtom(dpy, "COMPOUND_TEXT", False) : None;
+
     /* XmbTextListToTextProperty stamps XTextStyle payloads with the "TEXT"
      * atom; per ICCCM that means "whatever locale-encoded text the server
      * wants", which on this shim is the caller's UTF-8 / Latin-1 bytes
@@ -2418,6 +2428,7 @@ int XwcTextPropertyToTextList(Display *dpy,
     wchar_t **list = calloc((size_t) count + 1, sizeof(*list));
     if (!list)
         return XNoMemory;
+
     /* nitems + count fits in size_t (both already INT_MAX-capped) and bounds
      * the wide buffer: each source byte decodes to at most one wchar, and each
      * segment gets one trailing NUL.
@@ -2500,6 +2511,7 @@ int XwcTextListToTextProperty(Display *dpy,
             return XNoMemory;
         return Success;
     }
+
     /* Worst case per wchar_t: 4 UTF-8 bytes. Add one NUL separator between
      * strings plus a trailing NUL terminator.
      */
@@ -2543,6 +2555,7 @@ int XwcTextListToTextProperty(Display *dpy,
                 }
             }
         }
+
         /* NUL-separate strings; final NUL is the C-string terminator that
          * XtFree / strlen-based callers expect.
          */
@@ -2988,6 +3001,7 @@ void XwcFreeStringList(wchar_t **list)
 {
     if (!list)
         return;
+
     /* XwcTextPropertyToTextList allocates a single contiguous wchar_t buffer
      * for list[0] (the first and only element on this shim's path) and a
      * NULL-terminated list array. Free both so the caller does not have to
@@ -3080,6 +3094,7 @@ int XWriteBitmapFile(Display *display,
     (void) display;
     if (!filename || width == 0 || height == 0)
         return BitmapOpenFailed;
+
     /* Overflow-safe scanline math: (width + 7) wraps before the divide if width
      * is close to UINT_MAX, so guard the add and the multiply separately.
      */
@@ -3110,6 +3125,7 @@ int XWriteBitmapFile(Display *display,
         free(bits);
         return BitmapOpenFailed;
     }
+
     /* X11 convention names the symbols based on the file's basename; the writer
      * pins a fixed "image" prefix to stay deterministic.
      */
@@ -3189,6 +3205,7 @@ int XReadBitmapFile(Display *display,
     int xh = -1, yh = -1;
     char line[512];
     long bitsOffset = -1;
+
     /* Tolerate both prefixed identifiers (foo_width) and bare identifiers
      * (width); match the trailing keyword instead of assuming an underscore is
      * present.
@@ -4141,6 +4158,7 @@ Status XmbTextPerCharExtents(XFontSet font_set,
                              XRectangle *max_logical_extents)
 {
     CompatFontSet *set = GET_FONT_SET(font_set);
+
     /* Clamp both sides at zero: a negative buffer_size would otherwise
      * propagate into count and report a negative num_chars.
      */

@@ -130,6 +130,8 @@ FcBool FcPatternRemove(FcPattern *pattern, const char *object, int n);
 int FcUcs4ToUtf8(FcChar32 ucs4, FcChar8 dest[FC_UTF8_MAX_LEN]);
 int FcUtf8ToUcs4(const FcChar8 *src, FcChar32 *dst, int len);
 FcPattern *FcNameParse(const FcChar8 *name);
+FcBool FcInit(void);
+void FcFini(void);
 FcBool FcConfigSubstitute(FcConfig *config, FcPattern *pattern, int kind);
 void FcDefaultSubstitute(FcPattern *pattern);
 FcPattern *FcFontMatch(FcConfig *config, FcPattern *pattern, FcResult *result);

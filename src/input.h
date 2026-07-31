@@ -18,6 +18,8 @@ Window getKeyboardFocus();
 FocusKind getKeyboardFocusKind(void);
 Bool isKeyboardFocusFromHost(void);
 Bool isKeyboardFocusFromClient(void);
+KeyCode keycodeForSdlKeycode(int keycode);
+int sdlKeycodeForKeycode(KeyCode keycode);
 void setKeyboardFocus(Window window);
 void syncKeyboardFocusFromHost(Window window);
 
@@ -41,6 +43,7 @@ Bool activatePassiveButtonGrab(Display *display,
                                unsigned int state);
 Bool pointerGrabIsPassive(void);
 void releasePassivePointerGrab(Display *display);
+void releasePointerGrab(Display *display);
 
 /* Active keyboard grab installed via XGrabKeyboard.
  *

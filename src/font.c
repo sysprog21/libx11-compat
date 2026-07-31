@@ -501,12 +501,19 @@ static const char *SANS_PROBE_PATHS[] = {
     "/System/Library/Fonts/LucidaGrande.ttc",
     "/System/Library/Fonts/Supplemental/Arial.ttf",
 #else
+
+    /* Regular width first: a plain Helvetica/sans request must map to a
+     * regular-width face. The Narrow (condensed) URW/Liberation variants were
+     * ordered first here, so Linux menus rendered in a squished font that did
+     * not match the macOS Helvetica. Keep Narrow only as a last resort for
+     * hosts that ship nothing else.
+     */
+    "/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
     "/usr/share/fonts/opentype/urw-base35/NimbusSansNarrow-Regular.otf",
     "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf",
-    "/usr/share/fonts/opentype/urw-base35/NimbusSans-Regular.otf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
 #endif
 };
 
@@ -516,11 +523,15 @@ static const char *SANS_BOLD_PROBE_PATHS[] = {
     "/System/Library/Fonts/LucidaGrande.ttc",
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
 #else
-    "/usr/share/fonts/opentype/urw-base35/NimbusSansNarrow-Bold.otf",
-    "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
+
+    /* Regular width first, matching SANS_PROBE_PATHS: the Narrow bold faces
+     * belong last so a bold sans request does not render condensed.
+     */
     "/usr/share/fonts/opentype/urw-base35/NimbusSans-Bold.otf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/opentype/urw-base35/NimbusSansNarrow-Bold.otf",
+    "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Bold.ttf",
 #endif
 };
 

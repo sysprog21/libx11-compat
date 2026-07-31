@@ -1,0 +1,10 @@
+# Consumed by the LIBX11_COMPAT_REPLAY engine (see src/replay.c). Wait for the
+# main window to map, move the pointer over the File cascade button at the left
+# of the menu bar, and press Button1 to post the pulldown. Motif's menu-bar grab
+# then maps the XmMenuShell, which the SDL3 backend must place as an xdg_popup
+# anchored to the main window rather than a free-standing top-level.
+delay 2500
+target-motion 20 14
+delay 100
+button 1 press
+delay 500

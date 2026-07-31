@@ -45,7 +45,7 @@ if command -v apt-get >/dev/null 2>&1; then
         autoconf automake bison build-essential ca-certificates git \\
         imagemagick libtool make pkg-config python3-pil rsync xauth xvfb \\
         xdotool libice-dev libsm-dev libx11-dev libxext-dev libxmu-dev libxpm-dev \\
-        libxrender-dev libxt-dev
+        libfontconfig1-dev libxft-dev libxrender-dev libxt-dev
 fi
 """
 
@@ -228,7 +228,7 @@ compat_pid=$!
             --prefix="$system_out/motif-install" \\
             --disable-glw \\
             --disable-tests \\
-            --without-xft \\
+            --with-xft \\
             --with-jpeg=no \\
             --with-png=no \\
             --with-xrandr=no \\

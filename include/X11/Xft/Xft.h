@@ -7,6 +7,7 @@
 #include <fontconfig/fontconfig.h>
 
 typedef unsigned int FT_UInt;
+
 /* FcEndian is a fontconfig type. When the host fontconfig header is picked up
  * alongside this shim (Xfig pkg-configs the host fontconfig even when our
  * libXft-compat resolves the Fc* / Xft* surface) the upstream definition wins.
@@ -141,6 +142,7 @@ XftDraw *XftDrawCreate(Display *dpy,
                        Drawable drawable,
                        Visual *visual,
                        Colormap colormap);
+XftDraw *XftDrawCreateBitmap(Display *dpy, Pixmap bitmap);
 void XftDrawDestroy(XftDraw *draw);
 void XftDrawChange(XftDraw *draw, Drawable drawable);
 Bool XftDrawSetClipRectangles(XftDraw *draw,

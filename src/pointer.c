@@ -173,6 +173,13 @@ static void clearPointerGrab(Display *display)
     mouseFrozen = False;
     keyboardFrozen = False;
     clearActivePointerWindow();
+
+    /* Any press cached for ReplayPointer belonged to the grab just torn down;
+     * drop it so a regrab or replace cannot later replay a stale press. The
+     * replay path (replayPointerGrabPress) consumes the cache before it calls
+     * releasePointerGrab, so this clear is a no-op there.
+     */
+    clearReplayPointerPress();
 }
 
 static void replacePointerGrab(Display *display,
@@ -236,6 +243,20 @@ void releasePassivePointerGrab(Display *display)
         clearPointerGrab(display);
 }
 
+void releasePointerGrab(Display *display)
+{
+    if (!pointerGrab.active)
+        return;
+    clearPointerGrab(display);
+
+    /* Record the ungrab the same way XUngrabPointer does so the replay path
+     * (the only caller) keeps the grab-transition timeline balanced; without it
+     * a ReplayPointer that tears down the grab leaves an unmatched grab in the
+     * trace.
+     */
+    timelineTapGrabPointer(None, False);
+}
+
 static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
 {
     SDL_Window *focus = SDL_GetMouseFocus();
@@ -244,6 +265,7 @@ static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
         if (focusWindow != None && IS_TYPE(focusWindow, WINDOW)) {
             int local_x = 0, local_y = 0;
             SDL_GetMouseState(&local_x, &local_y);
+
             /* Option 1b: SDL_GetMouseState is in logical points but the focus
              * window's X11 geometry is physical pixels. Scale into pixel space
              * before translating so the reported root position is consistent
@@ -266,18 +288,6 @@ static void queryPointerRootPosition(Display *display, int *root_x, int *root_y)
 #else
     SDL_GetMouseState(root_x, root_y);
 #endif
-}
-
-/* Clamp an int64 coordinate to the int range SDL and the X protocol use, so a
- * hostile client-supplied offset cannot wrap on the way to SDL_WarpMouseGlobal.
- */
-static int clampToIntRange(int64_t v)
-{
-    if (v > INT_MAX)
-        return INT_MAX;
-    if (v < INT_MIN)
-        return INT_MIN;
-    return (int) v;
 }
 
 /* Walk from `window` up to its top-level (the window whose parent is the root),
@@ -597,6 +607,7 @@ int XGrabPointer(Display *display,
     if (confine_to != None && (!IS_TYPE(confine_to, WINDOW) ||
                                !isWindowEffectivelyViewable(confine_to)))
         return GrabNotViewable;
+
     /* AlreadyGrabbed applies when another client owns the active grab. This
      * SDL-backed implementation has a single in-process client, so a second
      * explicit grab is a same-client regrab and must update the active grab.
@@ -605,6 +616,7 @@ int XGrabPointer(Display *display,
     if (pointerGrab.active && !pointerGrab.passive) {
         replacePointerGrab(display, grab_window, owner_events, event_mask,
                            pointer_mode, keyboard_mode, confine_to, cursor);
+
         /* Motif menubar regrabs (the documented use case for this branch) are
          * real grab transitions; the timeline tap must fire here too so
          * wait-converge and the leak-assertion both see them.

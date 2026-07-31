@@ -282,9 +282,8 @@ static int modifier_slot_has(XModifierKeymap *map,
                              KeyCode keycode)
 {
     for (int i = 0; i < map->max_keypermod; i++) {
-        if (map->modifiermap[modifier * map->max_keypermod + i] == keycode) {
+        if (map->modifiermap[modifier * map->max_keypermod + i] == keycode)
             return 1;
-        }
     }
     return 0;
 }
@@ -343,16 +342,14 @@ static int count_open_file_descriptors(void)
 #endif
 
     DIR *dir = opendir(fdDir);
-    if (dir == NULL) {
+    if (!dir)
         return -1;
-    }
 
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
             count++;
-        }
     }
     closedir(dir);
     return count;
@@ -541,6 +538,34 @@ static int test_keyboard(Display *display)
      */
     CHECK(XkbKeycodeToKeysym(display, (KeyCode) 13, 0, 0) == XK_Return,
           "keycode 13 did not resolve to XK_Return (shadowed by XK_Home)");
+    CHECK(XKeysymToKeycode(display, XK_Down) != XKeysymToKeycode(display, XK_Q),
+          "XKeysymToKeycode(XK_Down) aliases onto Q");
+    CHECK(XkbKeycodeToKeysym(display, XKeysymToKeycode(display, XK_Down), 0,
+                             0) == XK_Down,
+          "XK_Down keycode did not round-trip");
+    CHECK(XkbKeycodeToKeysym(display, XKeysymToKeycode(display, XK_F10), 0,
+                             0) == XK_F10,
+          "XK_F10 keycode did not round-trip");
+    CHECK(XKeysymToKeycode(display, XStringToKeysym("osfDown")) ==
+              XKeysymToKeycode(display, XK_Down),
+          "osfDown did not resolve to the Down keycode");
+    CHECK(XKeysymToKeycode(display, XStringToKeysym("osfMenuBar")) ==
+              XKeysymToKeycode(display, XK_F10),
+          "osfMenuBar did not resolve to the F10 keycode");
+    CHECK(XKeysymToKeycode(display, XStringToKeysym("osfActivate")) ==
+              XKeysymToKeycode(display, XK_Return),
+          "osfActivate did not resolve to the Return keycode");
+
+    /* XK_Return is carried by both SDLK_RETURN (physical, keycode 13) and
+     * SDLK_RETURN2 (a scancode key, keycode 128+). Real Return events arrive as
+     * keycode 13, so XKeysymToKeycode must return the physical key or a Motif
+     * grab/translation keyed by XK_Return would never match it. The consistency
+     * checks above pass even when both sides pick the wrong duplicate, so pin
+     * the absolute value.
+     */
+    CHECK(XKeysymToKeycode(display, XK_Return) == 13,
+          "XKeysymToKeycode(XK_Return) did not resolve to the physical Return "
+          "keycode 13");
     CHECK(XkbKeysymToModifiers(display, XK_A) == ShiftMask,
           "XkbKeysymToModifiers did not report ShiftMask for XK_A");
     CHECK(XkbKeysymToModifiers(display, XK_Control_L) == ControlMask,
@@ -2388,34 +2413,42 @@ static int test_drawables_and_gcs(Display *display)
     CHECK(XSetClipMask(display, gc, None), "clear polygon clip failed");
 
     XArc fillArcs[] = {
-        {.x = 18,
-         .y = 18,
-         .width = 8,
-         .height = 8,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
-        {.x = 24,
-         .y = 2,
-         .width = 6,
-         .height = 6,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
+        {
+            .x = 18,
+            .y = 18,
+            .width = 8,
+            .height = 8,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
+        {
+            .x = 24,
+            .y = 2,
+            .width = 6,
+            .height = 6,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
     };
     CHECK(XSetForeground(display, gc, 0xFFFF00FF), "set magenta failed");
     CHECK(XFillArcs(display, pixmap, gc, fillArcs, 2), "XFillArcs failed");
     XArc drawArcs[] = {
-        {.x = 2,
-         .y = 22,
-         .width = 8,
-         .height = 8,
-         .angle1 = 0,
-         .angle2 = 90 * 64},
-        {.x = 16,
-         .y = 2,
-         .width = 8,
-         .height = 8,
-         .angle1 = 0,
-         .angle2 = 90 * 64},
+        {
+            .x = 2,
+            .y = 22,
+            .width = 8,
+            .height = 8,
+            .angle1 = 0,
+            .angle2 = 90 * 64,
+        },
+        {
+            .x = 16,
+            .y = 2,
+            .width = 8,
+            .height = 8,
+            .angle1 = 0,
+            .angle2 = 90 * 64,
+        },
     };
     CHECK(XSetForeground(display, gc, 0xFFFFFFFF), "set white failed");
     CHECK(XDrawArcs(display, pixmap, gc, drawArcs, 2), "XDrawArcs failed");
@@ -2656,18 +2689,22 @@ static int test_drawables_and_gcs(Display *display)
     CHECK(XDrawArc(display, pathArcPixmap, pathArcGc, 2, 2, 24, 24, 0, 90 * 64),
           "large path XDrawArc failed");
     XArc overlappingArcs[] = {
-        {.x = 4,
-         .y = 16,
-         .width = 20,
-         .height = 20,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
-        {.x = 14,
-         .y = 16,
-         .width = 20,
-         .height = 20,
-         .angle1 = 0,
-         .angle2 = 360 * 64},
+        {
+            .x = 4,
+            .y = 16,
+            .width = 20,
+            .height = 20,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
+        {
+            .x = 14,
+            .y = 16,
+            .width = 20,
+            .height = 20,
+            .angle1 = 0,
+            .angle2 = 360 * 64,
+        },
     };
     CHECK(XSetForeground(display, pathArcGc, 0xFFFFAA00),
           "path arc orange failed");
@@ -4881,6 +4918,149 @@ static int test_events(Display *display)
     CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
           "offset SDL button release did not convert");
 
+    XSelectInput(display, offsetPointerParent, KeyPressMask);
+    XSetInputFocus(display, offsetPointerParent, RevertToParent, CurrentTime);
+    SDL_Event keyEvent;
+    SDL_zero(keyEvent);
+    keyEvent.type = SDL_KEYDOWN;
+    keyEvent.key.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_DOWN);
+    XC_EVENT_SET_KEYMOD(&keyEvent, 0);
+    XC_EVENT_SET_KEY_PRESSED(&keyEvent, True);
+    replayTargetRememberPointer(14, 17);
+    CHECK(convertEvent(display, &keyEvent, &out, True) == 0,
+          "offset SDL key did not convert");
+    CHECK(out.type == KeyPress && out.xkey.window == offsetPointerParent,
+          "offset SDL key did not target focused parent");
+    CHECK(out.xkey.subwindow == offsetPointerChild,
+          "offset SDL key did not report child under pointer as subwindow");
+    XSelectInput(display, offsetPointerParent, NoEventMask);
+
+    XSelectInput(display, offsetPointerChild, KeyPressMask);
+    XSetInputFocus(display, offsetPointerChild, RevertToParent, CurrentTime);
+    CHECK(XGrabKeyboard(display, offsetPointerParent, True, GrabModeAsync,
+                        GrabModeAsync, CurrentTime) == GrabSuccess,
+          "owner-events keyboard grab failed");
+    CHECK(convertEvent(display, &keyEvent, &out, True) == 0,
+          "owner-events keyboard grab key did not convert");
+    CHECK(out.type == KeyPress && out.xkey.window == offsetPointerChild,
+          "owner-events keyboard grab did not route through keyboard focus");
+    CHECK(XUngrabKeyboard(display, CurrentTime),
+          "owner-events keyboard ungrab failed");
+
+    XSetInputFocus(display, offsetPointerChild, RevertToParent, CurrentTime);
+    CHECK(XGrabKeyboard(display, offsetPointerParent, False, GrabModeAsync,
+                        GrabModeAsync, CurrentTime) == GrabSuccess,
+          "non-owner-events keyboard grab failed");
+    CHECK(convertEvent(display, &keyEvent, &out, True) == 0,
+          "non-owner-events keyboard grab key did not convert");
+    CHECK(out.type == KeyPress && out.xkey.window == offsetPointerParent,
+          "non-owner-events keyboard grab did not route to grab window");
+    CHECK(XUngrabKeyboard(display, CurrentTime),
+          "non-owner-events keyboard ungrab failed");
+    XSelectInput(display, offsetPointerChild,
+                 ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+
+    Window outsideTop =
+        XCreateSimpleWindow(display, root, 220, 70, 80, 80, 0, 0, 0);
+    CHECK(outsideTop != None, "outside top-level creation failed");
+    CHECK(XMapWindow(display, outsideTop), "outside top-level map failed");
+    CHECK(XGrabPointer(display, offsetPointerParent, True,
+                       ButtonPressMask | ButtonReleaseMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "outside active pointer grab failed");
+    SDL_Event outsideMotion;
+    SDL_zero(outsideMotion);
+    outsideMotion.type = SDL_MOUSEMOTION;
+    outsideMotion.motion.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(outsideTop)->sdlWindow);
+    outsideMotion.motion.x = 5;
+    outsideMotion.motion.y = 7;
+    CHECK(convertEvent(display, &outsideMotion, &out, True) < 0,
+          "outside hover motion unexpectedly delivered an event");
+    SDL_zero(buttonEvent);
+    buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow);
+    buttonEvent.button.x = 79;
+    buttonEvent.button.y = 40;
+    buttonEvent.button.button = SDL_BUTTON_LEFT;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "outside grabbed button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerParent,
+          "outside grabbed button did not route to grab window");
+    CHECK(out.xbutton.x_root == 225 && out.xbutton.y_root == 77,
+          "outside grabbed button did not preserve hover root coordinates");
+    CHECK(out.xbutton.x == 135 && out.xbutton.y == 7,
+          "outside grabbed button did not report outside grab-window coords");
+    buttonEvent.type = SDL_MOUSEBUTTONUP;
+    CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
+          "outside grabbed button release did not convert");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "outside active pointer ungrab failed");
+    XDestroyWindow(display, outsideTop);
+
+    Window replayTop =
+        XCreateSimpleWindow(display, root, 220, 70, 80, 80, 0, 0, 0);
+    CHECK(replayTop != None, "replay target top-level creation failed");
+    XSelectInput(display, replayTop, ButtonPressMask | ButtonReleaseMask);
+    CHECK(XMapWindow(display, replayTop), "replay target top-level map failed");
+    CHECK(XGrabPointer(display, offsetPointerParent, True,
+                       ButtonPressMask | ButtonReleaseMask, GrabModeSync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "replay active pointer grab failed");
+    SDL_Event replayMotion = {
+        .motion =
+            {
+                .windowID =
+                    SDL_GetWindowID(GET_WINDOW_STRUCT(replayTop)->sdlWindow),
+                .type = SDL_MOUSEMOTION,
+                .x = 5,
+                .y = 7,
+            },
+    };
+    CHECK(convertEvent(display, &replayMotion, &out, True) < 0,
+          "replay hover motion unexpectedly delivered an event");
+    SDL_Event replayPress = {
+        .button =
+            {
+                .windowID = SDL_GetWindowID(
+                    GET_WINDOW_STRUCT(offsetPointerParent)->sdlWindow),
+                .type = SDL_MOUSEBUTTONDOWN,
+                .x = 79,
+                .y = 40,
+                .button = SDL_BUTTON_LEFT,
+            },
+    };
+    CHECK(convertEvent(display, &replayPress, &out, True) == 0,
+          "replay grabbed button did not convert");
+    CHECK(out.type == ButtonPress && out.xbutton.window == replayTop,
+          "owner-events grab did not deliver initial press to replay target");
+    CHECK(XAllowEvents(display, ReplayPointer, CurrentTime),
+          "ReplayPointer with cached press failed");
+    CHECK(!mouseFrozen, "ReplayPointer with cached press did not thaw pointer");
+    CHECK(getGrabbedPointerWindow() == None,
+          "ReplayPointer with cached press did not release active grab");
+    CHECK(XCheckTypedWindowEvent(display, replayTop, ButtonPress, &out),
+          "ReplayPointer did not queue replayed active-grab press");
+    CHECK(out.xbutton.x_root == 225 && out.xbutton.y_root == 77,
+          "ReplayPointer replay used stale grabbed-window root coordinates");
+    SDL_Event replayRelease = {
+        .button =
+            {
+                .windowID =
+                    SDL_GetWindowID(GET_WINDOW_STRUCT(replayTop)->sdlWindow),
+                .type = SDL_MOUSEBUTTONUP,
+                .x = 5,
+                .y = 7,
+                .button = SDL_BUTTON_LEFT,
+            },
+    };
+    CHECK(convertEvent(display, &replayRelease, &out, True) == 0,
+          "replay grabbed button release did not convert");
+    XDestroyWindow(display, replayTop);
+
     Window unmappedCover = XCreateSimpleWindow(display, offsetPointerParent, 0,
                                                0, 80, 80, 0, 0, 0);
     CHECK(unmappedCover != None, "unmapped cover creation failed");
@@ -4888,6 +5068,8 @@ static int test_events(Display *display)
     XSelectInput(display, offsetPointerChild,
                  ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
     buttonEvent.type = SDL_MOUSEBUTTONDOWN;
+    buttonEvent.button.x = 14;
+    buttonEvent.button.y = 17;
     CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
           "covered SDL button did not convert");
     CHECK(out.type == ButtonPress && out.xbutton.window == offsetPointerChild,
@@ -4960,6 +5142,9 @@ static int test_events(Display *display)
     CHECK(XAllowEvents(display, ReplayPointer, CurrentTime),
           "ReplayPointer failed for passive button grab");
     CHECK(!mouseFrozen, "ReplayPointer did not thaw pointer");
+    CHECK(
+        XCheckTypedWindowEvent(display, offsetPointerChild, ButtonPress, &out),
+        "ReplayPointer did not replay passive grabbed press");
     buttonEvent.type = SDL_MOUSEBUTTONUP;
     CHECK(convertEvent(display, &buttonEvent, &out, True) == 0,
           "post-ReplayPointer button release did not convert");
@@ -5210,6 +5395,30 @@ static int test_events(Display *display)
     CHECK(out.xcrossing.mode == NotifyUngrab,
           "XUngrabPointer LeaveNotify used wrong mode");
 
+    CHECK(XGrabPointer(display, window, False, ButtonPressMask, GrabModeSync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "ReplayPointer active grab setup failed");
+    CHECK(mouseFrozen,
+          "ReplayPointer active grab setup did not freeze pointer");
+    CHECK(XAllowEvents(display, ReplayPointer, CurrentTime),
+          "ReplayPointer active grab failed");
+    CHECK(!mouseFrozen, "ReplayPointer active grab did not thaw pointer");
+    CHECK(getGrabbedPointerWindow() == window,
+          "ReplayPointer released active grab without a cached press");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "ReplayPointer active grab cleanup failed");
+
+    CHECK(XGrabPointer(display, window, False, ButtonPressMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "ReplayPointer async active grab setup failed");
+    CHECK(!mouseFrozen, "ReplayPointer async active grab setup froze pointer");
+    CHECK(XAllowEvents(display, ReplayPointer, CurrentTime),
+          "ReplayPointer async active grab failed");
+    CHECK(getGrabbedPointerWindow() == window,
+          "ReplayPointer released async active pointer grab");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "ReplayPointer async active grab cleanup failed");
+
     Window viewableRequestedChild =
         XCreateSimpleWindow(display, window, 3, 4, 16, 16, 0, 0, 0);
     CHECK(viewableRequestedChild != None,
@@ -5229,6 +5438,25 @@ static int test_events(Display *display)
           "XGrabPointer rejected effectively viewable child");
     CHECK(XUngrabPointer(display, CurrentTime),
           "effectively viewable child pointer ungrab failed");
+
+    XSelectInput(display, window, LeaveWindowMask);
+    while (XCheckTypedWindowEvent(display, window, LeaveNotify, &out)) {
+    }
+    CHECK(XGrabPointer(display, window, False, LeaveWindowMask, GrabModeAsync,
+                       GrabModeAsync, None, None, CurrentTime) == GrabSuccess,
+          "regrab old-window pointer grab failed");
+    while (XCheckTypedWindowEvent(display, window, EnterNotify, &out)) {
+    }
+    CHECK(XGrabPointer(display, viewableRequestedChild, False, ButtonPressMask,
+                       GrabModeAsync, GrabModeAsync, None, None,
+                       CurrentTime) == GrabSuccess,
+          "regrab new-window pointer grab failed");
+    CHECK(XCheckTypedWindowEvent(display, window, LeaveNotify, &out),
+          "regrab did not notify old grab window");
+    CHECK(out.xcrossing.mode == NotifyUngrab,
+          "regrab old-window leave used wrong mode");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "regrab cleanup pointer ungrab failed");
 
     CHECK(XGrabPointer(display, pointerChild, False,
                        ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
@@ -6413,7 +6641,11 @@ static int test_ewmh_active_window_clientmessage(Display *display)
                         .window = window,
                         .message_type = activeWindow,
                         .format = 32,
-                        .data.l = {1 /* source: application */, CurrentTime},
+                        .data.l =
+                            {
+                                1 /* source: application */,
+                                CurrentTime,
+                            },
                     }};
 
     CHECK(XSendEvent(display, root, False,
@@ -7921,9 +8153,13 @@ static int test_fonts(Display *display)
     CHECK(exercise_fixed_font_program(display),
           "fixed-font program compatibility failed");
 
-    const char *fontDirs[] = {"fonts", "/System/Library/Fonts",
-                              "/Library/Fonts", "/usr/share/fonts",
-                              "/usr/local/share/fonts"};
+    const char *fontDirs[] = {
+        "fonts",
+        "/System/Library/Fonts",
+        "/Library/Fonts",
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+    };
     for (size_t i = 0; i < sizeof(fontDirs) / sizeof(fontDirs[0]); i++) {
         char *path = (char *) fontDirs[i];
         int fdCountBefore = count_open_file_descriptors();
@@ -9588,8 +9824,11 @@ static int test_selection(Display *display)
     notify3.xselection.time = CurrentTime;
     XSendEvent(display, requestor3, False, 0, &notify3);
 
-    const char *chunks[] = {"Hello, ", "this is an ",
-                            "INCR clipboard payload."};
+    const char *chunks[] = {
+        "Hello, ",
+        "this is an ",
+        "INCR clipboard payload.",
+    };
     const char *incrFull = "Hello, this is an INCR clipboard payload.";
     int nchunks = 3;
     int chunkIdx = 0;
@@ -11781,22 +12020,28 @@ static int test_text_property_list(Display *display)
         const char *expect0;
         const char *expect1;
     } cases[] = {
-        {.bytes = "spectrum.agr",
-         .nitems = 12,
-         .encoding = XA_STRING,
-         .expect_count = 1,
-         .expect0 = "spectrum.agr"},
-        {.bytes = "spectrum.agr",
-         .nitems = 12,
-         .encoding = 0 /* filled below */,
-         .expect_count = 1,
-         .expect0 = "spectrum.agr"},
-        {.bytes = "a.agr\0b.agr",
-         .nitems = 11,
-         .encoding = XA_STRING,
-         .expect_count = 2,
-         .expect0 = "a.agr",
-         .expect1 = "b.agr"},
+        {
+            .bytes = "spectrum.agr",
+            .nitems = 12,
+            .encoding = XA_STRING,
+            .expect_count = 1,
+            .expect0 = "spectrum.agr",
+        },
+        {
+            .bytes = "spectrum.agr",
+            .nitems = 12,
+            .encoding = 0 /* filled below */,
+            .expect_count = 1,
+            .expect0 = "spectrum.agr",
+        },
+        {
+            .bytes = "a.agr\0b.agr",
+            .nitems = 11,
+            .encoding = XA_STRING,
+            .expect_count = 2,
+            .expect0 = "a.agr",
+            .expect1 = "b.agr",
+        },
     };
     cases[1].encoding = utf8;
 
@@ -12704,8 +12949,74 @@ static int test_overlap_pointer_routing(Display *display)
         "overlap owner-events passive grab release produced no ButtonRelease");
     CHECK(XUngrabButton(display, Button1, AnyModifier, upper) == Success,
           "overlap passive button ungrab failed");
-
     XDestroyWindow(display, upper);
+    while (XPending(display))
+        XNextEvent(display, &out);
+
+    Window popup = XCreateSimpleWindow(display, root, 8, 8, 40, 40, 0, 0, 0);
+    Window popupChild =
+        XCreateSimpleWindow(display, popup, 5, 5, 20, 20, 0, 0, 0);
+    CHECK(popup != None && popupChild != None,
+          "anchored popup routing setup failed");
+    XSetWindowAttributes popupAttrs;
+    memset(&popupAttrs, 0, sizeof(popupAttrs));
+    popupAttrs.override_redirect = True;
+    CHECK(XChangeWindowAttributes(display, popup, CWOverrideRedirect,
+                                  &popupAttrs),
+          "anchored popup override_redirect setup failed");
+    XSelectInput(display, popupChild,
+                 EnterWindowMask | LeaveWindowMask | ButtonPressMask |
+                     Button1MotionMask);
+    CHECK(XMapWindow(display, popupChild), "anchored popup child map failed");
+    CHECK(XMapWindow(display, popup), "anchored popup map failed");
+    XSync(display, False);
+    GET_WINDOW_STRUCT(popup)->popupParent = lower;
+    GET_WINDOW_STRUCT(popup)->popupAnchorX = GET_WINDOW_STRUCT(popup)->x;
+    GET_WINDOW_STRUCT(popup)->popupAnchorY = GET_WINDOW_STRUCT(popup)->y;
+    while (XPending(display))
+        XNextEvent(display, &out);
+
+    CHECK(XGrabPointer(display, lower, True,
+                       ButtonPressMask | ButtonReleaseMask | Button1MotionMask,
+                       GrabModeAsync, GrabModeAsync, None, None,
+                       CurrentTime) == GrabSuccess,
+          "anchored popup owner-events grab failed");
+    ev.type = SDL_MOUSEBUTTONDOWN;
+    ev.button.windowID = SDL_GetWindowID(lowerSdl);
+    ev.button.button = SDL_BUTTON_LEFT;
+    ev.button.x = 15;
+    ev.button.y = 15;
+    SDL_PushEvent(&ev);
+    CHECK(XCheckTypedEvent(display, ButtonPress, &out),
+          "anchored popup held press produced no ButtonPress");
+    CHECK(out.xbutton.window == popupChild,
+          "active grab press over anchored popup child was misrouted");
+
+    SDL_Event drag;
+    SDL_zero(drag);
+    drag.type = SDL_MOUSEMOTION;
+    drag.motion.windowID = SDL_GetWindowID(lowerSdl);
+    drag.motion.x = 15;
+    drag.motion.y = 15;
+    SDL_PushEvent(&drag);
+    CHECK(XCheckTypedEvent(display, EnterNotify, &out),
+          "held drag over anchored popup child produced no EnterNotify");
+    CHECK(out.xcrossing.window == popupChild,
+          "held drag entered the wrong anchored popup window");
+    CHECK(XCheckTypedEvent(display, MotionNotify, &out),
+          "held drag over anchored popup child produced no MotionNotify");
+    CHECK(out.xmotion.window == popupChild,
+          "held drag motion did not route to anchored popup child");
+    ev.type = SDL_MOUSEBUTTONUP;
+    ev.button.x = 15;
+    ev.button.y = 15;
+    SDL_PushEvent(&ev);
+    CHECK(XCheckTypedEvent(display, ButtonRelease, &out),
+          "anchored popup held release produced no ButtonRelease");
+    CHECK(XUngrabPointer(display, CurrentTime),
+          "anchored popup owner-events ungrab failed");
+
+    XDestroyWindow(display, popup);
     XDestroyWindow(display, lower);
     return 1;
 }

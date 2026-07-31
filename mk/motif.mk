@@ -1,4 +1,4 @@
-MOTIF_COMMIT := 1f62cee9d8b8bae6a55c8e1dec1c4e8f1ace1d2f
+MOTIF_COMMIT := df9f87bbb9f0f54ab54e97481b9b01232311543c
 MOTIF_URL := https://github.com/thentenaar/motif
 MOTIF_SRC_DIR := $(OUT)/upstream/motif
 MOTIF_SRC_STAMP := $(MOTIF_SRC_DIR)/.source-stamp
@@ -136,7 +136,8 @@ MOTIF_COMMON_CONFIGURE_FLAGS := \
     --prefix=$(abspath $(OUT)/motif-install) \
     $(MOTIF_GLW_FLAG) \
     --disable-tests \
-    --without-xft \
+    --disable-dependency-tracking \
+    --with-xft \
     --with-jpeg=no \
     --with-png=no \
     --with-xrandr=no \
@@ -193,7 +194,7 @@ $(MOTIF_DEMOS_BUILD_DIR):
 	@mkdir -p $@
 
 $(MOTIF_CONFIG_STAMP): $(MOTIF_AUTOGEN_STAMP) $(PKGCONFIG_FILES) \
-    $(MOTIF_GL_PKGCONFIG)     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) | $(MOTIF_BUILD_DIR)
+    $(MOTIF_GL_PKGCONFIG)     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) $(XFT_COMPAT_TARGET) | $(MOTIF_BUILD_DIR)
 	@echo "  CONFIG  motif"
 	$(Q)cd $(MOTIF_BUILD_DIR) && \
 	    $(motif_runtime_env) \
@@ -221,7 +222,7 @@ $(MOTIF_BUILD_STAMP): $(MOTIF_CONFIG_STAMP)
 	$(Q)touch $@
 
 $(MOTIF_DEMOS_CONFIG_STAMP): $(MOTIF_AUTOGEN_STAMP) $(PKGCONFIG_FILES) \
-    $(MOTIF_GL_PKGCONFIG)     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) | $(MOTIF_DEMOS_BUILD_DIR)
+    $(MOTIF_GL_PKGCONFIG)     $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) $(XEXT_COMPAT_TARGET) $(XMU_COMPAT_TARGET) $(XINERAMA_COMPAT_TARGET) $(XFT_COMPAT_TARGET) | $(MOTIF_DEMOS_BUILD_DIR)
 	@echo "  CONFIG  motif demos"
 	$(Q)cd $(MOTIF_DEMOS_BUILD_DIR) && \
 	    $(motif_runtime_env) \
@@ -335,24 +336,29 @@ MOTIF_DIFF_JOBS ?= 1
 MOTIF_DIFF_FILTER ?=
 MOTIF_DIFF_INSTALL_DEPS ?= 0
 MOTIF_DIFF_LOCAL ?= 0
+
 # Thresholds calibrated to the GitHub Actions ubuntu-24.04 runner with
-# xfonts-base / 100dpi / 75dpi / scalable installed. The system-side
-# Motif Xm widget defaults differ from the libx11-compat-built Xm in a
-# handful of representative demos, all real library behavior gaps to
-# chase in follow-up PRs rather than CI-side regressions.
+# xfonts-base / 100dpi / 75dpi / scalable installed. Both sides now build
+# Motif --with-xft: the reference side renders through the system libXft /
+# freetype / fontconfig, the compat side through the in-tree Xft over
+# SDL_ttf. The remaining gap is a real library-behavior difference to chase
+# in follow-up PRs, not a CI-side regression.
 #
 # MAE is 0.11, which the bulk of the representative set clears with margin.
-# The two captures that cannot clear it are ColorSel and Ext18List: their
-# native side renders helvetica from the adobe-helvetica BITMAP X font,
-# which the compat SDL_ttf substitute cannot match at any width (measured
-# ~0.133 / ~0.11 on CI, verified independent of SDL/freetype version, DPI,
-# and probe-font choice). They are listed in MOTIF_DIFF_ALLOW_DIFF so the
-# compare reports them as expected-diff instead of failing the gate; drop
-# them from that list once the compat side can render bitmap helvetica.
-# changed_ratio stays a coarse backstop because glyph antialiasing alone
-# puts correct output at 0.15 to 0.20.
+# The two captures that cannot clear it are ColorSel and Ext18List, both
+# text-dense list widgets: SDL_ttf glyph rasterization and the in-tree
+# fontconfig matcher do not land byte-identical to system freetype/Xft, so
+# a screen full of small antialiased text accumulates a residual MAE
+# (measured with both sides --with-xft: ColorSel 0.1375 / 0.307 changed,
+# Ext18List 0.1211 / 0.283; the other representatives clear 0.11 with
+# margin). They are listed in MOTIF_DIFF_ALLOW_DIFF so the compare reports
+# them as expected-diff instead of failing the gate; tighten once the Xft
+# text path matches system freetype more closely. changed_ratio stays a
+# coarse backstop because glyph antialiasing alone puts correct output at
+# 0.15 to 0.20.
 MOTIF_DIFF_MAE_THRESHOLD ?= 0.11
 MOTIF_DIFF_ALLOW_DIFF ?= ColorSel,Ext18List
+
 # The allow-list exemption is bounded: an allow-listed capture that clears
 # these ceilings is still failed, so a crash frame, a missing widget, or an
 # unrelated break in ColorSel/Ext18List cannot hide behind expected-diff.
@@ -394,6 +400,7 @@ motif_ui_replay_env = \
     --env LD_LIBRARY_PATH=$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Xm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/lib/Mrm/.libs:$(abspath $(MOTIF_DEMOS_BUILD_DIR))/clients/uil/.libs:$(abspath $(OUT))$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}
 
 .PHONY: check-differential-motif check-differential-motif-full check-demos-motif motif-demos-screenshots check-paperplane-macos check-paperplane-linux check-smoke-motif profile-ui FORCE
+
 ## Compare representative Motif demo screenshots for system libX11 vs
 ## libx11-compat. Set MOTIF_DIFF_LOCAL=1 to run on the current host (used
 ## by the GitHub Actions differential workflow); otherwise the script
