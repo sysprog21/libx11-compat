@@ -21,6 +21,14 @@ UPSTREAM_SRC_BASES := \
     locking.c \
     reallocarray.c
 UPSTREAM_SRCS := $(addprefix $(OUT)/upstream/src/,$(UPSTREAM_SRC_BASES))
-UPSTREAM_OBJS := $(UPSTREAM_SRCS:.c=.o)
 
-OBJS := $(patsubst %.c,$(OUT)/%.o,$(SRCS)) $(UPSTREAM_OBJS)
+# Core objects go under OBJROOT, which is $(OUT) natively but $(OUT)/wasm under
+# WASM=1, so alternating native and wasm builds do not clobber each other's core
+# objects in one tree (matching the build/<lib>-wasm dirs the toolkit fragments
+# already use). Native is byte-identical: OBJROOT collapses to $(OUT). Only the
+# compiled objects diverge; the staged upstream sources and generated headers
+# stay shared under $(OUT).
+OBJROOT := $(OUT)$(if $(filter 1,$(WASM)),/wasm)
+UPSTREAM_OBJS := $(patsubst $(OUT)/upstream/src/%.c,$(OBJROOT)/upstream/src/%.o,$(UPSTREAM_SRCS))
+
+OBJS := $(patsubst %.c,$(OBJROOT)/%.o,$(SRCS)) $(UPSTREAM_OBJS)

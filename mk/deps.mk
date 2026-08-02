@@ -5,14 +5,19 @@
 # trying to "build" a .d when its .c was removed.
 ALL_DEPS := $(OBJS:.o=.d)
 
-# The wasm leg builds only the core library, so it must not pull in the
-# toolkit dep files. Beyond being irrelevant, a stale libXt .d from a prior
-# native build lists the generated StringDefs.h as a prerequisite (DEPFLAGS
-# names the .d itself as a target), so `-include`ing it makes GNU Make rebuild
-# StringDefs.h to refresh the included makefile. That regeneration runs the
-# makestrs host tool, which under WASM would be built with emcc and cannot run.
-# Gating the toolkit deps out keeps them from ever entering a wasm build.
-ifneq ($(WASM),1)
+ifeq ($(WASM),1)
+# The wasm toolkit objects live in separate build/<lib>-wasm dirs, so their
+# depfiles are distinct from the native ones and only exist once a wasm toolkit
+# lib is built. Including them gives incremental header tracking for the ported
+# libraries; a core-only wasm build simply finds none of them and skips. This is
+# safe now that HOST_CC is native (the libXt StringDefs generator runs on the
+# build machine even while CC is emcc), so a wasm toolkit .d that lists
+# StringDefs.h no longer drags emcc into a host-tool build. The native-only
+# compat libs (Xext/Xft/Xinerama/ICE/SM) are not built here, so their depfiles
+# are omitted.
+ALL_DEPS += $(LIBXT_OBJS:.o=.d) $(LIBXPM_OBJS:.o=.d) $(LIBXAW_OBJS:.o=.d) \
+            $(XMU_UPSTREAM_OBJS:.o=.d) $(XMU_COMPAT_OBJ:.o=.d)
+else
 ALL_DEPS += $(OUT)/xext-compat.d \
             $(OUT)/xmu-compat.d \
             $(OUT)/xinerama-compat.d \

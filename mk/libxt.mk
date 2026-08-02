@@ -15,9 +15,22 @@ LIBXT_SRC_DIR     := $(OUT)/upstream/src-libXt
 LIBXT_TOPDIR      := $(OUT)/upstream/topdir-libXt
 LIBXT_UTIL_DIR    := $(LIBXT_TOPDIR)/util
 LIBXT_GEN_DIR     := $(OUT)/libxt-gen
+# Keep wasm objects in a separate dir so alternating native and wasm builds do
+# not overwrite each other's objects in one $(OUT). The generated StringDefs
+# source stays shared (it is architecture-independent); only the compiled
+# objects diverge.
+ifeq ($(WASM),1)
+LIBXT_OBJ_DIR     := $(OUT)/libxt-wasm
+else
 LIBXT_OBJ_DIR     := $(OUT)/libxt
+endif
 LIBXT_HOST_DIR    := $(OUT)/host
+# The browser links a static archive; native builds the shared object.
+ifeq ($(WASM),1)
+LIBXT_TARGET      := $(OUT)/libXt-compat.a
+else
 LIBXT_TARGET      := $(OUT)/libXt-compat.so
+endif
 LIBXT_PATCHES     := $(sort $(wildcard compat/libxt-patches/*.patch))
 LIBXT_PATCH_LIST_FILE := $(OUT)/upstream/.libxt-patch-list
 $(shell mkdir -p $(dir $(LIBXT_PATCH_LIST_FILE)); \
@@ -99,7 +112,9 @@ LIBXT_CFLAGS := -std=c99 -Wall -fPIC \
     -Wno-incompatible-pointer-types-discards-qualifiers \
     -Wno-incompatible-pointer-types
 
-# Host compiler for makestrs. We do not cross-compile today, so reuse CC.
+# Host compiler for makestrs. Native builds reuse CC; the wasm leg sets HOST_CC
+# to a native compiler in mk/wasm.mk, since makestrs must run on the build
+# machine even while CC is emcc.
 HOST_CC ?= $(CC)
 
 $(LIBXT_HOST_DIR) $(LIBXT_GEN_DIR) $(LIBXT_OBJ_DIR):
@@ -193,16 +208,29 @@ $(LIBXT_OBJ_DIR)/StringDefs.o: $(LIBXT_GEN_C) $(LIBXT_GEN_HEADERS) \
 # with the same in-tree resolution behavior.
 LIBXT_LDFLAGS := $(call shared_lib_rpath_ldflags,$(notdir $(LIBXT_TARGET)))
 
+ifeq ($(WASM),1)
+# Static archive: unresolved Xlib symbols are satisfied at app link time
+# against libX11-compat.a, so nothing is linked in here.
+$(LIBXT_TARGET): $(LIBXT_OBJS) | $(OUT)
+	@echo "  AR      $@"
+	$(Q)rm -f $@
+	$(Q)$(AR) rcs $@ $(LIBXT_OBJS)
+else
 $(LIBXT_TARGET): $(LIBXT_OBJS) $(TARGET) | $(OUT)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) $(LIBXT_LDFLAGS) -shared -o $@ $(LIBXT_OBJS) \
 	    -L$(OUT) -lX11-compat -lm -pthread
+endif
 
 .PHONY: libxt
-## Build the libXt compatibility shared library
+## Build the libXt compatibility library (shared native, static wasm)
 libxt: $(LIBXT_TARGET)
 
+# The wasm leg builds libXt only on demand (as an app prerequisite or via the
+# libxt target), not through the aggregate all.
+ifneq ($(WASM),1)
 all: $(LIBXT_TARGET)
+endif
 
 # Header-dependency files are -included by mk/deps.mk via $(ALL_DEPS),
 # which picks up $(LIBXT_OBJS:.o=.d). The generator (-MMD -MP) above is

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>libX11-compat</title>
+<style>
+  :root {
+    --bg: #0e0f12;
+    --panel: #16181d;
+    --frame: #23262e;
+    --text: #e6e7ea;
+    --muted: #8b909a;
+    --accent: #5cc8ff;
+    --shadow: rgba(0, 0, 0, 0.5);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --frame: #d9dce2;
+      --text: #1b1d21;
+      --muted: #5b616b;
+      --accent: #1f7fbf;
+      --shadow: rgba(0, 0, 0, 0.12);
+    }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 24px;
+  }
+  header { text-align: center; }
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  header h1 .app { color: var(--accent); }
+  header p {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 4px;
+  }
+  /* The frame shrinks to the canvas, so SDL's own width/height win and there is
+     no stretched letterbox around the drawing. */
+  .frame {
+    position: relative;
+    width: fit-content;
+    background: var(--panel);
+    border: 1px solid var(--frame);
+    border-radius: 10px;
+    padding: 12px;
+    box-shadow: 0 10px 30px var(--shadow);
+  }
+  /* No border or padding on the canvas itself or pointer coordinates skew. */
+  canvas {
+    display: block;
+    border: 0;
+    border-radius: 4px;
+    background: #000;
+    image-rendering: pixelated;
+  }
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: var(--panel);
+    border-radius: 10px;
+    color: var(--muted);
+    font-size: 12px;
+    transition: opacity 0.3s ease;
+  }
+  .overlay.hidden { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 22px;
+    height: 22px;
+    border: 3px solid var(--frame);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  footer {
+    color: var(--muted);
+    font-size: 11px;
+    text-align: center;
+  }
+  footer code {
+    color: var(--text);
+    background: var(--frame);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="app">libX11-compat</span></h1>
+  <p>unmodified X11 client on SDL, compiled to WebAssembly, no X server</p>
+</header>
+
+<div class="frame">
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <div class="overlay" id="overlay">
+    <div class="spinner"></div>
+    <div id="status">Loading...</div>
+  </div>
+</div>
+
+<footer>Keyboard and mouse go to the canvas. Press <code>q</code> or <code>Esc</code> in apps that support it.</footer>
+
+<script>
+  // Name the page after the artifact so clock.html, moire.html, ... are
+  // distinguishable without a per-example shell.
+  var appName = (location.pathname.split('/').pop() || '').replace(/\.html$/, '') || 'demo';
+  document.title = appName + ' - libX11-compat';
+  document.querySelector('header h1 .app').textContent = appName;
+
+  var overlay = document.getElementById('overlay');
+  var statusEl = document.getElementById('status');
+  var canvas = document.getElementById('canvas');
+  canvas.addEventListener('webglcontextlost', function (e) {
+    setStatus('WebGL context lost, reload to restart');
+    e.preventDefault();
+  }, false);
+
+  function setStatus(text) {
+    if (statusEl) statusEl.textContent = text || '';
+  }
+  function hideOverlay() { overlay.classList.add('hidden'); }
+
+  var Module = {
+    canvas: canvas,
+    setStatus: setStatus,
+    totalDependencies: 0,
+    monitorRunDependencies: function (left) {
+      this.totalDependencies = Math.max(this.totalDependencies, left);
+      setStatus(left
+        ? 'Loading... (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')'
+        : 'Starting...');
+    },
+    onRuntimeInitialized: hideOverlay
+  };
+  setStatus('Loading...');
+  window.onerror = function () { setStatus('Error, see the JavaScript console'); };
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
