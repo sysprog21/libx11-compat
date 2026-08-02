@@ -53,6 +53,7 @@ include mk/mesa-demos.mk
 include mk/tests.mk
 include mk/examples.mk
 include mk/wasm-deps.mk
+include mk/wasm-motif.mk
 include mk/upstream-headers.mk
 include mk/format.mk
 include mk/help.mk
