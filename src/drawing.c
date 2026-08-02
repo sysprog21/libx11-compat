@@ -141,6 +141,97 @@ static Bool presentUsesIntegerScale(double sx,
            backingSpansWindow && !libx11CompatInLiveResizePresent();
 }
 
+#ifdef __EMSCRIPTEN__
+static Window wasmCanvasHostWindow(void)
+{
+    WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    for (size_t i = 0; i < screen->children.length; i++) {
+        Window w = children[i];
+        if (!IS_TYPE(w, WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(w);
+        if (ws && ws->sdlWindow && ws->mapState == Mapped &&
+            !ws->overrideRedirect)
+            return w;
+    }
+    return None;
+}
+
+static Bool presentWasmOverlayToHost(Window overlay,
+                                     WindowStruct *child,
+                                     Window host,
+                                     SDL_Renderer *screen)
+{
+    if (overlay == host || host == None)
+        return False;
+    WindowStruct *hostStruct = GET_WINDOW_STRUCT(host);
+    if (!hostStruct || !hostStruct->sdlWindow)
+        return False;
+    if (!child->sdlTexture) {
+        (void) getWindowRenderer(overlay);
+        if (!child->sdlTexture)
+            return False;
+    }
+
+    SDL_Surface *hostSurface = SDL_GetWindowSurface(hostStruct->sdlWindow);
+    if (!hostSurface)
+        return False;
+
+    int texW = 0, texH = 0;
+    SDL_QueryTexture(child->sdlTexture, NULL, NULL, &texW, &texH);
+    int srcW = (int) child->w;
+    int srcH = (int) child->h;
+    if (texW < srcW)
+        srcW = texW;
+    if (texH < srcH)
+        srcH = texH;
+    if (srcW <= 0 || srcH <= 0)
+        return False;
+
+    SDL_Rect src = {0, 0, srcW, srcH};
+    SDL_Surface *staging =
+        SDL_CreateRGBSurfaceWithFormat(0, srcW, srcH, 32,
+                                       SDL_PIXELFORMAT_RGBA8888);
+    if (!staging)
+        return False;
+    if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0 ||
+        SDL_RenderReadPixels(screen, &src, SDL_PIXELFORMAT_RGBA8888,
+                             staging->pixels, staging->pitch) != 0) {
+        SDL_FreeSurface(staging);
+        return False;
+    }
+
+    double sx = hostStruct->w > 0 ? (double) hostSurface->w / hostStruct->w
+                                  : 1.0;
+    double sy = hostStruct->h > 0 ? (double) hostSurface->h / hostStruct->h
+                                  : 1.0;
+    SDL_Rect dst = {
+        .x = (int) lround((double) (child->x - hostStruct->x) * sx),
+        .y = (int) lround((double) (child->y - hostStruct->y) * sy),
+        .w = (int) lround((double) srcW * sx),
+        .h = (int) lround((double) srcH * sy),
+    };
+
+#if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
+    xc_BlitScaledMode(staging, NULL, hostSurface, &dst,
+                      presentScaleIsIntegral(sx) && presentScaleIsIntegral(sy)
+                          ? XC_SCALEMODE_NEAREST
+                          : XC_SCALEMODE_LINEAR);
+#else
+    SDL_BlitScaled(staging, NULL, hostSurface, &dst);
+#endif
+    SDL_UpdateWindowSurfaceRects(hostStruct->sdlWindow, &dst, 1);
+    SDL_FreeSurface(staging);
+    child->needsPresent = False;
+    child->hasPresentRect = False;
+    pixman_region32_clear(&child->dirty);
+    child->fullyDirty = False;
+    child->hasPresented = True;
+    return True;
+}
+#endif
+
 static double nsToMs(uint64_t ns)
 {
     return (double) ns / 1000000.0;
@@ -947,6 +1038,9 @@ void drawWindowDataToScreen()
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
     SDL_Texture *prevTarget = SDL_GetRenderTarget(screen);
     Bool screenTargetMutated = False;
+#ifdef __EMSCRIPTEN__
+    Window wasmHost = wasmCanvasHostWindow();
+#endif
     size_t i;
     for (i = 0; i < GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length; i++) {
         /* A child destroyed mid-teardown lingers in the array typed
@@ -993,6 +1087,16 @@ void drawWindowDataToScreen()
         }
         if (!child->needsPresent)
             continue;
+
+#ifdef __EMSCRIPTEN__
+        if (wasmHost != None && children[i] != wasmHost &&
+            presentWasmOverlayToHost(children[i], child, wasmHost, screen)) {
+            screenTargetMutated = True;
+            presentedWindows++;
+            presentedPixels += (uint64_t) child->w * (uint64_t) child->h;
+            continue;
+        }
+#endif
 
         /* Accelerated windows never touch SDL_GetWindowSurface (mutually
          * exclusive with the per-window renderer). The helper mutates the

@@ -1613,6 +1613,13 @@ static int exercise_fixed_font_program(Display *display)
 {
     XFontStruct *fixed = XLoadQueryFont(display, "fixed");
     CHECK(fixed != NULL && fixed->fid != None, "fixed alias did not load");
+    unsigned long fontNameAtom = None;
+    CHECK(
+        XGetFontProperty(fixed, XA_FONT, &fontNameAtom) && fontNameAtom != None,
+        "fixed alias XA_FONT property did not resolve");
+    char *fontName = XGetAtomName(display, (Atom) fontNameAtom);
+    CHECK(fontName && *fontName, "fixed alias XA_FONT atom has no name");
+    XFree(fontName);
     CHECK(fixed->ascent == 11 && fixed->descent == 2,
           "fixed alias did not use core 6x13 ascent/descent");
     CHECK(fixed->min_bounds.width == 6 && fixed->max_bounds.width == 6,
@@ -10565,6 +10572,23 @@ static int test_input_methods(Display *display)
                 repeatedBuf[0] == 'a' && repeatedKeysym == XK_a &&
                 repeatedStatus == XLookupBoth,
             "repeated ASCII SDL_TEXTINPUT did not commit text");
+
+        set_text_input_event(&duplicateText, "b");
+        CHECK(convertEvent(display, &duplicateText, &ignored, True) == 0 &&
+                  ignored.type == KeyPress && ignored.xkey.keycode == 0,
+              "leading ASCII SDL_TEXTINPUT did not commit text");
+        char leadingBuf[4] = {0};
+        KeySym leadingKeysym = NoSymbol;
+        Status leadingStatus = XLookupNone;
+        CHECK(XmbLookupString(ic, &ignored.xkey, leadingBuf, sizeof(leadingBuf),
+                              &leadingKeysym, &leadingStatus) == 1 &&
+                  leadingBuf[0] == 'b' && leadingKeysym == XK_b &&
+                  leadingStatus == XLookupBoth,
+              "leading ASCII SDL_TEXTINPUT was not readable");
+        XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_b);
+        XC_EVENT_SET_KEYMOD(&keyEvent, 0);
+        CHECK(convertEvent(display, &keyEvent, &ignored, True) == -1,
+              "matching keydown after ASCII SDL_TEXTINPUT was not suppressed");
 
         XC_EVENT_SET_KEYSYM(&keyEvent, SDLK_1);
         XC_EVENT_SET_KEYMOD(&keyEvent, KMOD_SHIFT);

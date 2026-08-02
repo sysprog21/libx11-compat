@@ -1,0 +1,75 @@
+diff --git a/libXmx/Makefile b/libXmx/Makefile
+index 8eb94de..f571683 100644
+--- a/libXmx/Makefile
++++ b/libXmx/Makefile
+@@ -1,3 +1,4 @@
+ LIBTARGET = libXmx.a
++AR ?= ar
+ 
+ all: $(LIBTARGET)
+@@ -10,7 +11,7 @@ Xmx.o: Xmx.h XmxP.h
+ 
+ $(LIBTARGET): $(OBJS)
+ 	-rm -f $(LIBTARGET)
+-	ar rv $(LIBTARGET) $(OBJS)
++	$(AR) rv $(LIBTARGET) $(OBJS)
+ 	$(RANLIB) $(LIBTARGET)
+ 
+ tags:
+diff --git a/libhtmlw/Makefile b/libhtmlw/Makefile
+index 316cd18..826cf5f 100644
+--- a/libhtmlw/Makefile
++++ b/libhtmlw/Makefile
+@@ -1,3 +1,4 @@
+ LIBTARGET = libhtmlw.a
++AR ?= ar
+ 
+ all: $(LIBTARGET)
+@@ -10,7 +11,7 @@ HTML.o: HTMLP.h HTML.h HTMLPutil.h
+ 
+ $(LIBTARGET): $(OBJS)
+ 	-rm -f $(LIBTARGET)
+-	ar rv $(LIBTARGET) $(OBJS)
++	$(AR) rv $(LIBTARGET) $(OBJS)
+ 	$(RANLIB) $(LIBTARGET)
+ 
+ clean:
+diff --git a/libnut/Makefile b/libnut/Makefile
+index 7afcb7c..6a4c03c 100644
+--- a/libnut/Makefile
++++ b/libnut/Makefile
+@@ -3,6 +3,7 @@
+ 
+ CC=gcc
+ CFLAGS=-g -O
++AR ?= ar
+ ODIR=./objs
+ OBJDIR=objs
+ LIB=libnut.a
+@@ -16,7 +17,7 @@ all: objs $(LIB)
+ 
+ $(LIB): $(OBJ)
+ 	-rm -f $(LIB)
+-	ar rv $(LIB) $(OBJ)
++	$(AR) rv $(LIB) $(OBJ)
+ 	$(RANLIB) $(LIB)
+ 
+ $(ODIR)/mm.o: mm.c mm.h
+diff --git a/libwww2/Makefile b/libwww2/Makefile
+index a21cdef..e3d7567 100644
+--- a/libwww2/Makefile
++++ b/libwww2/Makefile
+@@ -1,3 +1,4 @@
+ LIBTARGET = libwww.a
++AR ?= ar
+ 
+ all: $(LIBTARGET)
+@@ -13,7 +14,7 @@ $(OBJS): HTUtils.h tcp.h
+ 
+ $(LIBTARGET): $(OBJS)
+ 	-rm -f $(LIBTARGET)
+-	ar rv $(LIBTARGET) $(OBJS)
++	$(AR) rv $(LIBTARGET) $(OBJS)
+ 	$(RANLIB) $(LIBTARGET)
+ 
+ clean:

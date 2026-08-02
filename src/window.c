@@ -234,7 +234,7 @@ static void offerReplayTargetForWindow(Window window)
     for (Window current = window; current != None;
          current = GET_PARENT(current)) {
         WindowStruct *ws = GET_WINDOW_STRUCT(current);
-        if (!ws || !ws->sdlWindow)
+        if (!ws || !ws->sdlWindow || ws->borrowedSdlWindow)
             continue;
         int wid = 0, hgt = 0;
         SDL_GetWindowSize(ws->sdlWindow, &wid, &hgt);
@@ -259,6 +259,10 @@ static void showTopLevelWindow(Display *display, Window window, Bool raise)
      */
     endCoalesceClientRepaint();
     drawWindowDataToScreen();
+    if (windowStruct->borrowedSdlWindow) {
+        replayDeferredWmProperties(display, window);
+        return;
+    }
 #if defined(__APPLE__)
     if (raise)
         activateHostApplication();
@@ -399,6 +403,32 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     int createH = (int) windowStruct->h;
     SDL_Window *sdlWindow = NULL;
 
+#ifdef __EMSCRIPTEN__
+    if (SCREEN_WINDOW != None) {
+        WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+        Window *children = GET_CHILDREN(SCREEN_WINDOW);
+        for (size_t i = 0; i < screen->children.length; i++) {
+            Window sibling = children[i];
+            if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                continue;
+            WindowStruct *sws = GET_WINDOW_STRUCT(sibling);
+            if (sws && sws->sdlWindow && !sws->borrowedSdlWindow &&
+                sws->mapState == Mapped && !sws->overrideRedirect) {
+                windowStruct->sdlWindow = sws->sdlWindow;
+                windowStruct->borrowedSdlWindow = True;
+                windowStruct->hiDpiScaleX = sws->hiDpiScaleX;
+                windowStruct->hiDpiScaleY = sws->hiDpiScaleY;
+                windowStruct->hiDpiPromoted = False;
+                windowStruct->presentUsesSoftware = True;
+                windowStruct->needsPresent = True;
+                windowStruct->hasPresented = False;
+                (void) getWindowRenderer(window);
+                return True;
+            }
+        }
+    }
+#endif
+
 #ifdef LIBX11_COMPAT_SDL3
     /* A Wayland client cannot self-position a top-level, so an
      * override-redirect popup created as an ordinary window floats wherever the
@@ -449,6 +479,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
 
     registerWindowMapping(window, SDL_GetWindowID(sdlWindow));
     windowStruct->sdlWindow = sdlWindow;
+    windowStruct->borrowedSdlWindow = False;
     windowStruct->hiDpiPromoted = promoteHiDpi;
 
     /* Decide the present path for this window's lifetime, before anything calls
@@ -719,6 +750,18 @@ void unrealizeTopLevelWindow(Display *display, Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (!windowStruct->sdlWindow)
         return;
+
+    if (windowStruct->borrowedSdlWindow) {
+        windowStruct->popupParent = None;
+        windowStruct->popupAnchorX = windowStruct->x;
+        windowStruct->popupAnchorY = windowStruct->y;
+        drainAnchoredPopups(display, window);
+        windowStruct->sdlWindow = NULL;
+        windowStruct->borrowedSdlWindow = False;
+        windowStruct->needsPresent = False;
+        windowStruct->hasPresented = False;
+        return;
+    }
 
     /* Clear this window's own anchor before draining its popup children. The
      * anchor is recomputed at each realize, so a window remapped later must not

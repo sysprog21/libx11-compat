@@ -86,8 +86,13 @@ LIBXT_OBJS := $(patsubst $(LIBXT_SRC_DIR)/%.c,$(LIBXT_OBJ_DIR)/%.o,$(LIBXT_SRCS)
 #                          covered by the global -iquote setup in
 #                          mk/config.mk, repeated here for clarity)
 #   include              - tracked headers (X11/Xmu/Editres.h stub)
+LIBXT_PROTO_CPPFLAGS :=
+ifeq ($(WASM),1)
+LIBXT_PROTO_CPPFLAGS += -DNARROWPROTO
+endif
+
 LIBXT_CPPFLAGS := \
-    -DHAVE_CONFIG_H -DLIBXT_COMPILATION \
+    -DHAVE_CONFIG_H -DLIBXT_COMPILATION $(LIBXT_PROTO_CPPFLAGS) \
     -DXFILESEARCHPATHDEFAULT='"/usr/share/X11/app-defaults/%N%C"' \
     -DERRORDB='"/usr/share/X11/XtErrorDB"' \
     -Iinclude/libxt-build \

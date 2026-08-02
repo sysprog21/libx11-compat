@@ -1,0 +1,18 @@
+diff --git a/source/text.c b/source/text.c
+index 3fd61b6..6d63577 100644
+--- a/source/text.c
++++ b/source/text.c
+@@ -85 +85,2 @@
+-static void initialize(TextWidget request, TextWidget new);
++static void initialize(TextWidget request, TextWidget new, ArgList args,
++        Cardinal *num_args);
+@@ -98 +99 @@ static Boolean setValues(TextWidget current, TextWidget request,
+-	TextWidget new);
++	TextWidget new, ArgList args, Cardinal *num_args);
+@@ -879 +880,2 @@ void TextWidgetClassInit(Display *dp, const char *fontname)
+-static void initialize(TextWidget request, TextWidget new)
++static void initialize(TextWidget request, TextWidget new, ArgList args,
++        Cardinal *num_args)
+@@ -1265 +1267 @@ static Boolean setValues(TextWidget current, TextWidget request,
+-	TextWidget new)
++	TextWidget new, ArgList args, Cardinal *num_args)

@@ -3,8 +3,12 @@
 #include <locale.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #include "X11/keysym.h"
 #include "X11/XKBlib.h"
 #include "display.h"
@@ -386,6 +390,14 @@ static void applyTextInputRectForIC(_XIC *ic)
         rect.h = 18;
     translateWindowPoint(source, top, rect.x, rect.y, &rect.x, &rect.y);
     SDL_SetTextInputRect(&rect);
+#ifdef __EMSCRIPTEN__
+    char script[160];
+    snprintf(script, sizeof(script),
+             "if(window.__libx11CompatSetImeRect)"
+             "window.__libx11CompatSetImeRect(%d,%d,%d,%d)",
+             rect.x, rect.y, rect.w, rect.h);
+    emscripten_run_script(script);
+#endif
 }
 
 static void handlePreeditImpl(const char *text, int caret)

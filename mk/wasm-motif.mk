@@ -36,7 +36,7 @@ MOTIF_WASM_ARCHIVES_IN := $(TARGET) $(LIBXT_TARGET) $(LIBXPM_TARGET) \
 
 MOTIF_WASM_CFLAGS := $(OPTFLAGS)
 MOTIF_WASM_WL := $(abspath $(MOTIF_WASM_LIBDIR))
-MOTIF_WASM_INC := -I$(abspath include) -I$(abspath $(OUT))/upstream/include
+MOTIF_WASM_INC := -DNARROWPROTO -I$(abspath include) -I$(abspath $(OUT))/upstream/include
 MOTIF_WASM_BACKING := $(SDL_PORT_FLAGS) $(PIXMAN_LIBS) -lm
 
 # Emit one wasm .pc: $(1) name, $(2) version, $(3) Requires, $(4) extra Cflags,

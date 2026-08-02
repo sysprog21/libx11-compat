@@ -291,7 +291,8 @@ examples-wasm: $(WASM_EXAMPLE_HTML)
 # driver, so a functional run needs a browser canvas (covered per app later).
 # The test compiles with the same libxt-build config.h as the libXt units.
 WASM_LIBXT_TEST := $(OUT)/tests/test-libxt-link.js
-WASM_LIBXT_TEST_CPPFLAGS := -DHAVE_CONFIG_H -D_GNU_SOURCE -Iinclude/libxt-build \
+WASM_LIBXT_TEST_CPPFLAGS := -DHAVE_CONFIG_H -D_GNU_SOURCE -DNARROWPROTO \
+    -Iinclude/libxt-build \
     -I$(LIBXT_GEN_DIR) -I$(OUT)/upstream/include -Iinclude \
     -iquote $(OUT)/upstream/include/X11 -iquote include/X11
 
@@ -349,6 +350,18 @@ $(WASM_YIELD_TEST): tests/test-wasm-yield.c $(TARGET) $(WASM_IDLE_YIELD_OBJ) \
 
 .PHONY: wasm-yield-test
 wasm-yield-test: $(WASM_YIELD_TEST)
+
+WASM_FIXED_FONT_PROPERTY_TEST := $(OUT)/tests/test-wasm-fixed-font-property.js
+$(WASM_FIXED_FONT_PROPERTY_TEST): tests/test-wasm-fixed-font-property.c \
+    $(TARGET) mk/wasm-deps.mk
+	@mkdir -p $(dir $@)
+	@echo "  LD      $@"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) \
+	    tests/test-wasm-fixed-font-property.c $(TARGET) $(LDLIBS) \
+	    -sENVIRONMENT=node -o $@
+
+.PHONY: wasm-fixed-font-property-test
+wasm-fixed-font-property-test: $(WASM_FIXED_FONT_PROPERTY_TEST)
 
 # The wasm leg gets its own default goal instead of `all`. GNU Make accumulates
 # prerequisites across every `all:` rule, and the toolkit fragments (libXt,
@@ -451,11 +464,23 @@ check-wasm-yield:
 	esac; \
 	echo "  OK      check-wasm-yield (idle-yield override links with ASYNCIFY)"
 
+.PHONY: check-wasm-fixed-font-property
+## Runtime-smoke the freetype-free fixed bitmap XA_FONT property in node
+check-wasm-fixed-font-property:
+	$(Q)if ! command -v emcc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then \
+	    echo "  SKIP    check-wasm-fixed-font-property (emcc or node not found)"; \
+	    exit 0; \
+	fi; \
+	$(MAKE) WASM=1 wasm-fixed-font-property-test || exit 1; \
+	node $(WASM_FIXED_FONT_PROPERTY_TEST); \
+	echo "  OK      check-wasm-fixed-font-property (fixed bitmap XA_FONT resolves)"
+
 # Structural runtime smoke: fully compile each example module in node (parses
 # every section and function body, a real step up from the 4-byte magic check
 # the link smokes use). It does not instantiate or run main, so it stays
-# headless and works with the -sENVIRONMENT=web artifacts; a canvas paint check
-# is still manual in Safari. Skips without emcc or node.
+# headless and works with the -sENVIRONMENT=web artifacts; the canvas paint
+# check that actually renders each app lives in check-wasm-paint. Skips without
+# emcc or node.
 .PHONY: check-wasm-node
 ## Compile-validate the wasm example modules in node (skips without emcc/node)
 check-wasm-node:
@@ -466,6 +491,30 @@ check-wasm-node:
 	$(MAKE) WASM=1 examples-wasm || exit 1; \
 	node scripts/wasm-node-smoke.mjs \
 	    $(addprefix $(OUT)/,$(addsuffix .wasm,$(WASM_EXAMPLES)))
+
+# Runtime paint check: drive each app in a real WebKit browser over W3C
+# WebDriver and assert its canvas reaches a nonzero size and paints non-blank
+# pixels. This is the gap the node smoke leaves open -- an app that links but
+# aborts at runtime (a missing font) or hangs in toolkit init comes up blank,
+# and only a real browser render sees it. Needs node plus a WebKit WebDriver:
+# WebKitWebDriver (distro webkit2gtk-driver, under xvfb) in CI, safaridriver
+# (real Safari) locally. The script skips cleanly when no driver is launchable,
+# so a toolchain-free CI stays green. The enforced set is clock (raw Xlib) and
+# xaw-hello (Athena/Xt). Heavier app-specific paint checks live with those apps.
+WASM_PAINT_APPS := clock xaw-hello
+.PHONY: check-wasm-paint
+## Render the wasm apps in a WebKit browser (WebDriver) and assert the canvas paints
+check-wasm-paint:
+	$(Q)if ! command -v emcc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then \
+	    if [ "$$WASM_PAINT_REQUIRED" = "1" ]; then \
+	        echo "  FAIL    check-wasm-paint (emcc or node not found; WASM_PAINT_REQUIRED=1)" >&2; \
+	        exit 1; \
+	    fi; \
+	    echo "  SKIP    check-wasm-paint (emcc or node not found)"; \
+	    exit 0; \
+	fi; \
+	$(MAKE) WASM=1 examples-wasm wasm-xaw-app || exit 1; \
+	node scripts/wasm-paint-check.mjs $(OUT) $(WASM_PAINT_APPS)
 
 # Report the wasm toolchain prerequisites and pixman staging status, so a
 # missing tool (emcc/emar, host autotools for the pixman cross-build, node for
@@ -501,4 +550,4 @@ check-wasm-prereqs:
 .PHONY: check-wasm-all
 ## Run every WebAssembly smoke (examples + libXt + Xaw + yield + node); skips without emcc
 check-wasm-all: check-wasm check-wasm-libxt check-wasm-xaw check-wasm-yield \
-    check-wasm-node
+    check-wasm-fixed-font-property check-wasm-node

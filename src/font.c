@@ -1662,9 +1662,9 @@ Font XLoadFont(Display *display, _Xconst char *name)
      */
     if (usesFixedFallbackFont(name)) {
         resource->useFixedBitmap = True;
-        resource->hasCoreMetrics =
-            coreFontMetricsForName(name, &resource->coreAscent,
-                                   &resource->coreDescent, &resource->coreWidth);
+        resource->hasCoreMetrics = coreFontMetricsForName(
+            name, &resource->coreAscent, &resource->coreDescent,
+            &resource->coreWidth);
         SET_XID_VALUE(font, resource);
         return font;
     }
@@ -2060,6 +2060,13 @@ Bool XGetFontProperty(XFontStruct *font_struct,
             *value_return = (unsigned long) internalInternAtom(name);
             free(name);
             res = True;
+        } else {
+            CompatFont *resource = GET_FONT_RESOURCE(font_struct->fid);
+            if (resource && resource->useFixedBitmap && resource->name) {
+                *value_return =
+                    (unsigned long) internalInternAtom(resource->name);
+                res = True;
+            }
         }
         break;
     default:
@@ -2068,6 +2075,36 @@ Bool XGetFontProperty(XFontStruct *font_struct,
     // Can't provide values for XA_UNDERLINE_POSITION and XA_UNDERLINE_THICKNESS
     return res;
 }
+
+#ifdef __EMSCRIPTEN__
+int x11compat_wasm_fixed_font_property_selftest(void)
+{
+    Font font = ALLOC_XID();
+    if (font == None)
+        return 1;
+
+    CompatFont *resource = calloc(1, sizeof(*resource));
+    if (!resource) {
+        FREE_XID(font);
+        return 1;
+    }
+    resource->name = strdup("fixed");
+    resource->useFixedBitmap = True;
+    SET_XID_TYPE(font, FONT);
+    SET_XID_VALUE(font, resource);
+
+    XFontStruct fontStruct = {.fid = font};
+    unsigned long value = None;
+    Bool ok = XGetFontProperty(&fontStruct, XA_FONT, &value);
+    const char *name = ok ? getAtomName(NULL, (Atom) value) : NULL;
+    int failed = !name || strcmp(name, "fixed") != 0;
+
+    free(resource->name);
+    free(resource);
+    FREE_XID(font);
+    return failed;
+}
+#endif
 
 static Bool fillXCharStruct(TTF_Font *font,
                             unsigned int character,

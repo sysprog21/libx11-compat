@@ -7,7 +7,7 @@
  /* In addition, caddr_t is deprecated but will just be recast here to	*/
 -/* the recommended void *.						*/
 +/* the recommended void * where the system headers do not expose it.	*/
-+#ifndef __APPLE__
++#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
  typedef void *			caddr_t;
  #endif
  #endif

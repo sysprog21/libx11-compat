@@ -8,6 +8,9 @@
 #include <X11/Xlib.h>
 #include <X11/XKBlib.h>
 #include <X11/Xlibint.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #include "sdl-compat.h"
 #include "events.h"
@@ -2730,10 +2733,30 @@ static long motionMaskForButtonState(unsigned int buttonState)
 
 static char pendingAsciiRing[4];
 static unsigned pendingAsciiHead, pendingAsciiTail;
+static char committedAscii;
+#ifdef __EMSCRIPTEN__
+static Bool wasmKeydownPending;
+static Uint32 wasmKeydownWindow;
+static SDL_Keycode wasmKeydownSym;
+static SDL_Keymod wasmKeydownMod;
+static Bool wasmTextInputPending;
+static char wasmTextInputChar;
+#endif
 
 static void clearPendingAsciiRing(void)
 {
     pendingAsciiHead = pendingAsciiTail = 0;
+}
+
+static void clearCommittedAsciiRing(void)
+{
+    committedAscii = 0;
+}
+
+static void clearAsciiDedupRings(void)
+{
+    clearPendingAsciiRing();
+    clearCommittedAsciiRing();
 }
 
 static void pushPendingAsciiChar(char c)
@@ -2755,6 +2778,23 @@ static Bool popMatchingPendingAsciiChar(char c)
     return True;
 }
 
+static void pushCommittedAsciiChar(char c)
+{
+    committedAscii = c;
+}
+
+static Bool popMatchingCommittedAsciiChar(char c)
+{
+    if (!committedAscii || !c)
+        return False;
+    if (committedAscii != c) {
+        committedAscii = 0;
+        return False;
+    }
+    committedAscii = 0;
+    return True;
+}
+
 static char asciiTextForKeydown(Display *display, const SDL_Event *event)
 {
     SDL_Keycode keycode = XC_EVENT_KEYSYM(event);
@@ -2769,6 +2809,114 @@ static char asciiTextForKeydown(Display *display, const SDL_Event *event)
         return (char) keysym;
     return '\0';
 }
+
+#ifdef __EMSCRIPTEN__
+static Bool shouldSuppressDuplicateWasmKeydown(const SDL_Event *event)
+{
+    if (event->key.repeat)
+        return False;
+    Uint32 window = event->key.windowID;
+    SDL_Keycode sym = XC_EVENT_KEYSYM(event);
+    SDL_Keymod mod = XC_EVENT_KEYMOD(event);
+    if (wasmKeydownPending && wasmKeydownWindow == window &&
+        wasmKeydownSym == sym && wasmKeydownMod == mod)
+        return True;
+    wasmKeydownPending = True;
+    wasmKeydownWindow = window;
+    wasmKeydownSym = sym;
+    wasmKeydownMod = mod;
+    return False;
+}
+
+static void clearDuplicateWasmKeydown(const SDL_Event *event)
+{
+    if (!wasmKeydownPending)
+        return;
+    if (wasmKeydownWindow == event->key.windowID &&
+        wasmKeydownSym == XC_EVENT_KEYSYM(event))
+        wasmKeydownPending = False;
+    wasmTextInputPending = False;
+}
+
+static Bool shouldSuppressDuplicateWasmTextInput(char c)
+{
+    if (emscripten_run_script_int("!!window.__libx11CompatComposing"))
+        return False;
+    if (wasmTextInputPending && wasmTextInputChar == c)
+        return True;
+    wasmTextInputPending = True;
+    wasmTextInputChar = c;
+    return False;
+}
+
+static size_t wasmUtf8CharLen(const char *text)
+{
+    unsigned char c = (unsigned char) text[0];
+    if (c < 0x80)
+        return 1;
+    if ((c & 0xe0) == 0xc0 && text[1] &&
+        ((unsigned char) text[1] & 0xc0) == 0x80)
+        return 2;
+    if ((c & 0xf0) == 0xe0 && text[1] && text[2] &&
+        ((unsigned char) text[1] & 0xc0) == 0x80 &&
+        ((unsigned char) text[2] & 0xc0) == 0x80)
+        return 3;
+    if ((c & 0xf8) == 0xf0 && text[1] && text[2] && text[3] &&
+        ((unsigned char) text[1] & 0xc0) == 0x80 &&
+        ((unsigned char) text[2] & 0xc0) == 0x80 &&
+        ((unsigned char) text[3] & 0xc0) == 0x80)
+        return 4;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+void libx11CompatInjectTextInput(const char *text)
+{
+    if (!text || !*text)
+        return;
+    SDL_Window *focus = SDL_GetKeyboardFocus();
+    Uint32 windowID = focus ? SDL_GetWindowID(focus) : 0;
+    wasmTextInputPending = False;
+    clearAsciiDedupRings();
+    while (*text) {
+        char chunk[SDL_TEXTINPUTEVENT_TEXT_SIZE];
+        size_t len = 0;
+        while (text[len]) {
+            size_t charLen = wasmUtf8CharLen(text + len);
+            if (len + charLen >= sizeof(chunk))
+                break;
+            len += charLen;
+        }
+        if (len == 0)
+            break;
+        memcpy(chunk, text, len);
+        chunk[len] = '\0';
+        SDL_Event event;
+        SDL_zero(event);
+        event.type = SDL_TEXTINPUT;
+        event.text.windowID = windowID;
+        XC_SET_TEXT_EVENT(event, chunk);
+        SDL_PushEvent(&event);
+        text += len;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void libx11CompatInjectKey(int keycode, int down, int modifiers)
+{
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = down ? SDL_KEYDOWN : SDL_KEYUP;
+    SDL_Window *focus = SDL_GetKeyboardFocus();
+    if (focus)
+        event.key.windowID = SDL_GetWindowID(focus);
+    XC_EVENT_SET_KEYSYM(&event, (SDL_Keycode) keycode);
+    XC_EVENT_SET_KEYMOD(&event, (SDL_Keymod) modifiers);
+    XC_EVENT_SET_SCANCODE(&event, SDL_SCANCODE_UNKNOWN);
+    XC_EVENT_SET_KEY_PRESSED(&event, down);
+    SDL_PushEvent(&event);
+}
+#endif
 
 static Bool shouldSuppressIMTextKeydown(Display *display,
                                         const SDL_Event *event)
@@ -2831,6 +2979,22 @@ static Bool shouldSuppressIMTextKeydown(Display *display,
         textKey = True;
         break;
     }
+#ifdef __EMSCRIPTEN__
+    Bool wasmComposing =
+        emscripten_run_script_int("!!window.__libx11CompatComposing");
+    if (!(modifiers & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) && textKey) {
+        if (wasmComposing)
+            return True;
+        if (inputMethodHasActiveTextInput())
+            return True;
+    }
+#endif
+    if (!(modifiers & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) && textKey) {
+        char committedAscii = asciiTextForKeydown(display, event);
+        if (popMatchingCommittedAsciiChar(committedAscii))
+            return True;
+    }
+
     if (!inputMethodHasActiveTextInput() ||
         (modifiers & (KMOD_CTRL | KMOD_ALT | KMOD_GUI)) || !textKey)
         return False;
@@ -2894,12 +3058,21 @@ int convertEvent(Display *display,
     xEvent->eventStruct.display = display
     switch (sdlEvent->type) {
     case SDL_KEYDOWN:
+#ifdef __EMSCRIPTEN__
+        if (sdlEvent->key.repeat)
+            wasmTextInputPending = False;
+        if (shouldSuppressDuplicateWasmKeydown(sdlEvent))
+            return -1;
+#endif
         if (shouldSuppressIMTextKeydown(display, sdlEvent))
             return -1;
         type = KeyPress;
         LOG("SDL_KEYDOWN for winId %d\n", sdlEvent->key.windowID);
     case SDL_KEYUP:
         if (sdlEvent->type == SDL_KEYUP) {
+#ifdef __EMSCRIPTEN__
+            clearDuplicateWasmKeydown(sdlEvent);
+#endif
             LOG("SDL_KEYUP for winId %d\n", sdlEvent->key.windowID);
             type = KeyRelease;
         }
@@ -3803,7 +3976,7 @@ int convertEvent(Display *display,
 #endif
     case SDL_TEXTEDITING: /**< Keyboard text editing (composition) */
         LOG("SDL_TEXTEDITING\n");
-        clearPendingAsciiRing();
+        clearAsciiDedupRings();
         inputMethodHandlePreedit(XC_EDITING_EVENT_TEXT(sdlEvent),
                                  sdlEvent->edit.start);
         return -1;
@@ -3813,7 +3986,7 @@ int convertEvent(Display *display,
                                  heap char* SDL hands us to free.
                                  */
         LOG("SDL_TEXTEDITING_EXT\n");
-        clearPendingAsciiRing();
+        clearAsciiDedupRings();
         inputMethodHandlePreedit(
             sdlEvent->editExt.text ? sdlEvent->editExt.text : "",
             sdlEvent->editExt.start);
@@ -3826,10 +3999,19 @@ int convertEvent(Display *display,
             if (!inputMethodHasActiveTextInput())
                 return -1;
             const char *incomingText = XC_TEXT_EVENT_TEXT(sdlEvent);
+#ifdef __EMSCRIPTEN__
+            if (!incomingText[1] &&
+                shouldSuppressDuplicateWasmTextInput(incomingText[0]))
+                return -1;
+#endif
             if (!incomingText[1] &&
                 popMatchingPendingAsciiChar(incomingText[0]))
                 return -1;
             clearPendingAsciiRing();
+            if (!incomingText[1])
+                pushCommittedAsciiChar(incomingText[0]);
+            else
+                clearCommittedAsciiRing();
             type = KeyPress;
             FILL_STANDARD_VALUES(xkey);
 

@@ -2310,7 +2310,8 @@ jobs:
             build/wasm-sysroot
             build/wasm-deps
             build/upstream/motif
-          key: wasm-sysroot-v1-${{ runner.os }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk') }}
+            build/upstream/xwpe
+          key: wasm-sysroot-v1-${{ runner.os }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk', 'mk/xwpe.mk', 'mk/wasm-xwpe.mk', 'compat/xwpe-wasm/**') }}
           restore-keys: |
             wasm-sysroot-v1-${{ runner.os }}-
 
@@ -2320,5 +2321,46 @@ jobs:
       - name: WebAssembly smokes (examples + toolkit + yield + node runtime)
         run: make check-wasm-all
 
+      - name: Install WebKit WebDriver for the paint check
+        # Distro WebKitGTK + its W3C WebDriver, from Ubuntu's own repos -- no
+        # Playwright, no npm, no CDN browser download. WebKitGTK is ABI-matched
+        # to the runner's system libraries and has no headless mode, so the paint
+        # check runs under xvfb. scripts/wasm-paint-check.mjs autodetects
+        # WebKitWebDriver on Linux (safaridriver on macOS for local runs).
+        run: |
+          sudo apt-get install -y --no-install-recommends webkit2gtk-driver xvfb
+
+      - name: WebAssembly paint check (WebKitGTK renders each app)
+        # Pin the Xvfb screen to 24-bit depth (the default is too shallow and
+        # WebKit rendering init can fail on it). WASM_PAINT_REQUIRED makes a
+        # missing/unstartable driver a hard failure here (locally it skips), and
+        # first WebKitGTK process start + wasm compile wants a longer timeout
+        # than the local default under loaded CI. The sysctl relaxes Ubuntu
+        # 24.04's default restriction on unprivileged user namespaces, which
+        # WebKitGTK's sandbox needs to launch MiniBrowser (validated on Linux:
+        # the browser otherwise fails with "Failed to close file descriptor for
+        # child process"); harmless where the key is absent.
+        env:
+          WASM_PAINT_REQUIRED: "1"
+          WASM_PAINT_TIMEOUT_MS: "45000"
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          xvfb-run -a -s "-screen 0 1280x720x24" make check-wasm-paint
+
       - name: WebAssembly Motif smoke (libXm/libMrm link)
         run: make check-wasm-motif
+
+      - name: WebAssembly XCircuit (standalone Xt/Xw app cross-compiled)
+        run: make check-wasm-xcircuit
+
+      - name: WebAssembly Mosaic (Motif browser app cross-compiled)
+        env:
+          WASM_PAINT_REQUIRED: "1"
+          WASM_PAINT_TIMEOUT_MS: "45000"
+        run: xvfb-run -a -s "-screen 0 1280x720x24" make check-wasm-mosaic
+
+      - name: WebAssembly xwpe (X11 editor app cross-compiled)
+        env:
+          WASM_PAINT_REQUIRED: "1"
+          WASM_PAINT_TIMEOUT_MS: "45000"
+        run: xvfb-run -a -s "-screen 0 1280x720x24" make check-wasm-xwpe

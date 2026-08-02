@@ -103,6 +103,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->visual = visual;
     windowStruct->sdlTexture = NULL;
     windowStruct->sdlWindow = NULL;
+    windowStruct->borrowedSdlWindow = False;
     windowStruct->glxMetalView = NULL;
     windowStruct->glxCompositeTexture = NULL;
     windowStruct->glxCompositeFlip = NULL;
@@ -1112,7 +1113,7 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     free(windowStruct->glxCompositeFlip);
     free(windowStruct->glxReadbackBuf);
 
-    if (windowStruct->sdlWindow) {
+    if (windowStruct->sdlWindow && !windowStruct->borrowedSdlWindow) {
 #ifndef LIBX11_COMPAT_SDL3
         SDL_Rect closedRect = {windowStruct->x, windowStruct->y,
                                clampToIntRange((int64_t) windowStruct->w),
@@ -1154,6 +1155,8 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         }
 #endif
     }
+    windowStruct->sdlWindow = NULL;
+    windowStruct->borrowedSdlWindow = False;
     deleteWindowMapping(window);
     if (!windowStruct->internal)
         postEvent(display, window, DestroyNotify);

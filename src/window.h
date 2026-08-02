@@ -43,6 +43,11 @@ typedef struct {
      */
     SDL_Window *sdlWindow;
 
+    /* Emscripten has one DOM canvas. Secondary X top-levels borrow the primary
+     * SDL window and are composited into that canvas from their own X backing.
+     */
+    Bool borrowedSdlWindow;
+
     /* Cached SDL_MetalView (a CAMetalLayer-backed view) created once by the
      * optional GLX layer for on-screen ANGLE rendering, reused across surface
      * rebuilds so resizes do not stack layers or leak views. void * to avoid a
