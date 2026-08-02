@@ -1,0 +1,31 @@
+--- a/Xw/PopupMgr.c
++++ b/Xw/PopupMgr.c
+@@ -2886,9 +2886,26 @@ static void ClassPost (menuMgr, event, warpOn)
+          menuMgr->popup_mgr.origMouseX = buttonEvent->x_root;
+          menuMgr->popup_mgr.origMouseY = buttonEvent->y_root;
+       }
+ 
+-      x = buttonEvent->x_root - (XwCASCADEWIDTH + FUDGE_FACTOR + 
+-                                 topLevelPane ->core.border_width);
++      /*
++       * Top-level pulldowns belong under the menubutton that posted them,
++       * not under the exact pointer x.  Browser/canvas input can otherwise
++       * drift when the user presses at different points inside the label.
++       */
++      {
++         Widget postWidget = XtWindowToWidget(XtDisplay(menuMgr),
++               buttonEvent->window);
++         if (postWidget && XtParent(postWidget) &&
++             XtParent(postWidget) != assocWidget)
++            postWidget = XtParent(postWidget);
++         if (postWidget && postWidget != assocWidget)
++            XTranslateCoordinates(XtDisplay(menuMgr), XtWindow(postWidget),
++                  RootWindowOfScreen(XtScreen(menuMgr)),
++                  0, 0, &x, &y, &child);
++         else
++            x = buttonEvent->x_root - (XwCASCADEWIDTH + FUDGE_FACTOR +
++                                       topLevelPane ->core.border_width);
++      }
+       y = buttonEvent->y_root;
+ 
+       /* Attempt to center on the first button in the new menupane */

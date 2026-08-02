@@ -112,7 +112,7 @@ XCIRCUIT_WASM_LIB_PRELOAD := --preload-file \
 XCIRCUIT_WASM_LDFLAGS = -L$(abspath $(XCIRCUIT_WASM_LIBDIR)) \
     $(abspath $(WASM_APP_YIELD_OBJS)) -sASYNCIFY \
     -Wl,--wrap=poll -Wl,--wrap=select -sALLOW_MEMORY_GROWTH \
-    -sEMULATE_FUNCTION_POINTER_CASTS=1 \
+    -sEMULATE_FUNCTION_POINTER_CASTS=1 -sEXPORTED_RUNTIME_METHODS=ccall \
     $(WASM_FONT_PRELOAD) $(XCIRCUIT_WASM_LIB_PRELOAD) \
     $(abspath $(LIBXT_TARGET)) $(abspath $(TARGET)) \
     $(PIXMAN_LIBS)
@@ -220,7 +220,7 @@ $(XCIRCUIT_WASM_HTML): $(XCIRCUIT_WASM_STAMP) $(WASM_SHELL) mk/wasm-xcircuit.mk
 	$(Q)cp $(XCIRCUIT_WASM_WORK)/xcircuit.wasm $(OUT)/xcircuit.wasm
 	$(Q)test ! -e $(XCIRCUIT_WASM_WORK)/xcircuit.data || \
 	    cp $(XCIRCUIT_WASM_WORK)/xcircuit.data $(OUT)/xcircuit.data
-	$(Q)sed 's#{{{ SCRIPT }}}#<script src="xcircuit.js"></script>#' \
+	$(Q)sed 's#{{{ SCRIPT }}}#<script>Module.thisProgram="xcircuit";Module.libx11CompatBridgeDomEvents=true;Module.libx11CompatHasCcallBridge=true;Module.libx11CompatAssetVersion="20260802-xcircuit-menu";Module.locateFile=function(path,prefix){return /\\.(wasm|data)$$/.test(path)?(prefix||"")+path+"?v="+Module.libx11CompatAssetVersion:(prefix||"")+path;};</script><script src="xcircuit.js?v=20260802-xcircuit-menu"></script>#' \
 	    $(WASM_SHELL) > $@
 
 .PHONY: xcircuit-wasm

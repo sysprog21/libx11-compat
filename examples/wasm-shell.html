@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-store">
 <title>libX11-compat</title>
 <style>
   :root {
@@ -26,7 +27,7 @@
     }
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; }
+  html { min-height: 100%; }
   body {
     background: var(--bg);
     color: var(--text);
@@ -35,6 +36,8 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    min-width: max-content;
+    min-height: 100vh;
     gap: 18px;
     padding: 24px;
   }
@@ -67,7 +70,6 @@
     border: 0;
     border-radius: 4px;
     background: #000;
-    image-rendering: pixelated;
   }
   .overlay {
     position: absolute;
@@ -104,6 +106,24 @@
     padding: 1px 5px;
     border-radius: 4px;
   }
+  body.fullscreen-app {
+    gap: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+  body.fullscreen-app header,
+  body.fullscreen-app footer {
+    display: none;
+  }
+  body.fullscreen-app .frame {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
+  }
+  body.fullscreen-app canvas {
+    border-radius: 0;
+  }
 </style>
 </head>
 <body>
@@ -132,6 +152,301 @@
   var overlay = document.getElementById('overlay');
   var statusEl = document.getElementById('status');
   var canvas = document.getElementById('canvas');
+  canvas.setAttribute('tabindex', '0');
+  window.__libx11CompatComposing = false;
+  var imeBridge = null;
+  var imeSawComposition = false;
+  var imeCommittedText = '';
+  var imeRect = null;
+  function imeBridgeDisabled() {
+    return typeof Module !== 'undefined' && Module.libx11CompatDisableImeBridge;
+  }
+  function hasImeBridge() {
+    return typeof Module !== 'undefined' &&
+      !imeBridgeDisabled() &&
+      !!(Module._libx11CompatInjectTextInput && hasCcallBridge());
+  }
+  function hasImeKeyBridge() {
+    return typeof Module !== 'undefined' &&
+      !!(Module._libx11CompatInjectKey && hasCcallBridge());
+  }
+  function hasDomEventBridge() {
+    return typeof Module !== 'undefined' &&
+      Module.libx11CompatBridgeDomEvents;
+  }
+  function hasDomMouseBridge() {
+    return hasDomEventBridge() &&
+      !!(Module._libx11CompatInjectMouse && hasCcallBridge());
+  }
+  function hasDomWheelBridge() {
+    return hasDomMouseBridge();
+  }
+  // DOM/IME bridges need ccall. Builds that want them must both export ccall
+  // (-sEXPORTED_RUNTIME_METHODS=ccall) and set Module.libx11CompatHasCcallBridge;
+  // the per-app .mk shims do this. External shells opting in must set it too.
+  function hasCcallBridge() {
+    return !!Module.libx11CompatHasCcallBridge &&
+      typeof Module.ccall === 'function';
+  }
+  function drainDomEventBridge() {
+    if (hasDomEventBridge() && Module._libx11CompatDrainBrowserDomQueue &&
+        hasCcallBridge()) {
+      try {
+        Module.ccall('libx11CompatDrainBrowserDomQueue', null, [], []);
+      } catch (e) {
+      }
+    }
+  }
+  function ensureImeBridge() {
+    if (!hasImeBridge()) return null;
+    if (imeBridge) return imeBridge;
+    imeBridge = document.createElement('textarea');
+    imeBridge.setAttribute('aria-hidden', 'true');
+    imeBridge.setAttribute('autocomplete', 'off');
+    imeBridge.setAttribute('autocapitalize', 'off');
+    imeBridge.setAttribute('spellcheck', 'false');
+    imeBridge.style.cssText = [
+      'position:fixed',
+      'width:1px',
+      'height:1px',
+      'opacity:0.01',
+      'border:0',
+      'padding:0',
+      'resize:none',
+      'overflow:hidden',
+      'background:transparent',
+      'color:transparent',
+      'caret-color:transparent',
+      'outline:0',
+      'z-index:10',
+      'pointer-events:none'
+    ].join(';');
+    document.body.appendChild(imeBridge);
+    imeBridge.addEventListener('compositionstart', function () {
+      window.__libx11CompatComposing = true;
+      imeSawComposition = true;
+      showImePreedit();
+    }, true);
+    imeBridge.addEventListener('compositionend', function (event) {
+      window.__libx11CompatComposing = false;
+      var text = event.data || imeBridge.value;
+      if (text) {
+        injectCommittedText(text);
+        imeCommittedText = text;
+        imeSawComposition = false;
+        imeBridge.value = '';
+      }
+      hideImePreedit();
+    }, true);
+    imeBridge.addEventListener('beforeinput', function (event) {
+      if (window.__libx11CompatComposing) return;
+      var text = event.data || imeBridge.value;
+      if (text && event.inputType === 'insertText') {
+        injectCommittedText(text);
+        imeCommittedText = text;
+        imeSawComposition = false;
+        imeBridge.value = '';
+        hideImePreedit();
+        event.preventDefault();
+      }
+    }, true);
+    imeBridge.addEventListener('input', function (event) {
+      if (window.__libx11CompatComposing) return;
+      var text = event.data || imeBridge.value;
+      if (imeCommittedText && text === imeCommittedText) {
+        imeCommittedText = '';
+        imeBridge.value = '';
+        hideImePreedit();
+        return;
+      }
+      if (text && (imeSawComposition || event.inputType === 'insertCompositionText'))
+        injectCommittedText(text);
+      imeSawComposition = false;
+      imeBridge.value = '';
+      hideImePreedit();
+    }, true);
+    return imeBridge;
+  }
+  function sdlModifiers(event) {
+    return (event.shiftKey ? 0x0001 : 0) |
+      (event.ctrlKey ? 0x0040 : 0) |
+      (event.altKey ? 0x0100 : 0) |
+      (event.metaKey ? 0x0400 : 0);
+  }
+  function sdlKeycodeForBridgeKey(key) {
+    var keys = {
+      Backspace: 8, Tab: 9, Enter: 13, Escape: 27, Delete: 127,
+      F1: 1073741882, F2: 1073741883, F3: 1073741884, F4: 1073741885,
+      F5: 1073741886, F6: 1073741887, F7: 1073741888, F8: 1073741889,
+      F9: 1073741890, F10: 1073741891, F11: 1073741892,
+      F12: 1073741893,
+      Insert: 1073741897, Home: 1073741898, PageUp: 1073741899,
+      End: 1073741901, PageDown: 1073741902, ArrowRight: 1073741903,
+      ArrowLeft: 1073741904, ArrowDown: 1073741905,
+      ArrowUp: 1073741906
+    };
+    return keys[key] || 0;
+  }
+  function sdlKeycodeForBridgeEvent(event) {
+    var keycode = sdlKeycodeForBridgeKey(event.key);
+    if (keycode) return keycode;
+    if (/^Key[A-Z]$/.test(event.code)) return event.code.charCodeAt(3) + 32;
+    if (/^Digit[0-9]$/.test(event.code)) return event.code.charCodeAt(5);
+    var byCode = {
+      Space: 32, Minus: 45, Equal: 61, BracketLeft: 91, BracketRight: 93,
+      Backslash: 92, Semicolon: 59, Quote: 39, Comma: 44, Period: 46,
+      Slash: 47, Backquote: 96
+    };
+    if (byCode[event.code]) return byCode[event.code];
+    return event.key && event.key.length === 1 ? event.key.charCodeAt(0) : 0;
+  }
+  function forwardImeBridgeKey(event) {
+    if (event.target !== imeBridge || !hasImeKeyBridge()) return;
+    if (window.__libx11CompatComposing || event.isComposing) return;
+    var keycode = sdlKeycodeForBridgeKey(event.key);
+    if (!keycode) return;
+    Module.ccall('libx11CompatInjectKey', null, ['number', 'number', 'number'],
+      [keycode, event.type === 'keydown' ? 1 : 0, sdlModifiers(event)]);
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+  window.addEventListener('keydown', forwardImeBridgeKey, true);
+  window.addEventListener('keyup', forwardImeBridgeKey, true);
+  window.__libx11CompatSetImeRect = function (x, y, w, h) {
+    imeRect = { x: x, y: y, w: w, h: h };
+    if (imeBridge) positionImeBridge();
+  };
+  function positionImeBridge() {
+    if (!imeBridge) return;
+    var rect = canvas.getBoundingClientRect();
+    var x = imeRect ? imeRect.x : 4;
+    var y = imeRect ? imeRect.y : 56;
+    imeBridge.style.left = Math.max(0, Math.floor(rect.left + x)) + 'px';
+    imeBridge.style.top = Math.max(0, Math.floor(rect.top + y)) + 'px';
+  }
+  function showImePreedit() {
+    if (!ensureImeBridge()) return;
+    positionImeBridge();
+    imeBridge.style.width = Math.max(120, imeRect ? imeRect.w : 0) + 'px';
+    imeBridge.style.height = Math.max(22, imeRect ? imeRect.h : 0) + 'px';
+    imeBridge.style.opacity = '1';
+    imeBridge.style.color = '#111';
+    imeBridge.style.caretColor = '#111';
+    imeBridge.style.background = 'rgba(255,255,255,0.92)';
+  }
+  function hideImePreedit() {
+    if (!imeBridge) return;
+    imeBridge.style.width = '1px';
+    imeBridge.style.height = '1px';
+    imeBridge.style.opacity = '0.01';
+    imeBridge.style.color = 'transparent';
+    imeBridge.style.caretColor = 'transparent';
+    imeBridge.style.background = 'transparent';
+  }
+  function focusImeBridge() {
+    if (!ensureImeBridge()) {
+      canvas.focus({ preventScroll: true });
+      return;
+    }
+    positionImeBridge();
+    imeBridge.focus({ preventScroll: true });
+  }
+  function injectCommittedText(text) {
+    if (!text || !hasImeBridge()) return;
+    Module.ccall('libx11CompatInjectTextInput', null, ['string'], [text]);
+  }
+  canvas.addEventListener('mousedown', focusImeBridge, true);
+  canvas.addEventListener('focus', focusImeBridge, true);
+  canvas.addEventListener('mousedown', function (event) {
+    canvas.focus({ preventScroll: true });
+  }, true);
+  function bridgeKeyEvent(down, event) {
+    if (!hasDomEventBridge() || !hasImeKeyBridge() || event.isComposing) return;
+    if (!event.ctrlKey && !event.altKey && !event.metaKey &&
+        event.key && event.key.length === 1)
+      return;
+    var keycode = sdlKeycodeForBridgeEvent(event);
+    if (!keycode) return;
+    (window.__libx11CompatDomQueue || (window.__libx11CompatDomQueue = []))
+      .push([2, keycode, down ? 1 : 0, sdlModifiers(event), 0, 0]);
+    drainDomEventBridge();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+  function canvasLogicalPoint(event) {
+    var rect = canvas.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    var sx = rect.width > 0 ? canvas.width / rect.width : 1;
+    var sy = rect.height > 0 ? canvas.height / rect.height : 1;
+    /* Deliver logical (pre-HiDPI) coordinates. The compat layer renders at
+     * backing resolution, so sx is the devicePixelRatio (times any fullscreen
+     * fit), but the toolkit app lays out and hit-tests menus and links in its
+     * logical window space. Dividing sx by the device pixel ratio maps a screen
+     * click to where the app actually drew and hit-tests its target. Do not drop
+     * this divide: without it the bridge sends backing coordinates and clicks
+     * miss menus and links by the HiDPI factor on retina displays (the error is
+     * zero at devicePixelRatio 1, so CI does not catch it).
+     */
+    return {
+      x: Math.round((event.clientX - rect.left) * sx / dpr),
+      y: Math.round((event.clientY - rect.top) * sy / dpr)
+    };
+  }
+  function sdlMouseButton(event) {
+    return event.button === 1 ? 2 : event.button === 2 ? 3 : 1;
+  }
+  function bridgeMouseEvent(kind, event) {
+    if (!hasDomMouseBridge()) return;
+    var p = canvasLogicalPoint(event);
+    (window.__libx11CompatDomQueue || (window.__libx11CompatDomQueue = []))
+      .push([1, kind, p.x, p.y, sdlMouseButton(event), 0]);
+    drainDomEventBridge();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+  function bridgeWheelEvent(event) {
+    if (!hasDomWheelBridge()) return;
+    var p = canvasLogicalPoint(event);
+    (window.__libx11CompatDomQueue || (window.__libx11CompatDomQueue = []))
+      .push([3, p.x, p.y, event.deltaY, 0, 0]);
+    drainDomEventBridge();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+  canvas.addEventListener('mousemove', function (event) {
+    bridgeMouseEvent(0, event);
+  }, true);
+  canvas.addEventListener('mousedown', function (event) {
+    bridgeMouseEvent(1, event);
+  }, true);
+  canvas.addEventListener('mouseup', function (event) {
+    bridgeMouseEvent(2, event);
+  }, true);
+  canvas.addEventListener('wheel', bridgeWheelEvent, { capture: true, passive: false });
+  window.addEventListener('mouseup', function (event) {
+    if (event.target === canvas) return;
+    bridgeMouseEvent(2, event);
+  }, true);
+  canvas.addEventListener('keydown', function (event) {
+    bridgeKeyEvent(true, event);
+  }, true);
+  canvas.addEventListener('keyup', function (event) {
+    bridgeKeyEvent(false, event);
+  }, true);
+  window.addEventListener('keydown', function (event) {
+    if (event.target === canvas) return;
+    bridgeKeyEvent(true, event);
+  }, true);
+  window.addEventListener('keyup', function (event) {
+    if (event.target === canvas) return;
+    bridgeKeyEvent(false, event);
+  }, true);
+  canvas.addEventListener('compositionstart', function () {
+    if (!ensureImeBridge()) return;
+    window.__libx11CompatComposing = true;
+    imeSawComposition = true;
+    showImePreedit();
+  }, true);
   canvas.addEventListener('webglcontextlost', function (e) {
     setStatus('WebGL context lost, reload to restart');
     e.preventDefault();
@@ -141,10 +456,42 @@
     if (statusEl) statusEl.textContent = text || '';
   }
   function hideOverlay() { overlay.classList.add('hidden'); }
+  function syncCanvasCssSize() {
+    if (!canvas.width || !canvas.height) return;
+    var scale = window.devicePixelRatio || 1;
+    var width = canvas.width / scale;
+    var height = canvas.height / scale;
+    if (Module.libx11CompatFullscreenShell) {
+      var fit = Math.min(window.innerWidth / width, window.innerHeight / height, 1);
+      width *= fit;
+      height *= fit;
+    }
+    canvas.style.width = Math.floor(width) + 'px';
+    canvas.style.height = Math.floor(height) + 'px';
+  }
+  new MutationObserver(syncCanvasCssSize).observe(canvas, {
+    attributes: true,
+    attributeFilter: ['width', 'height']
+  });
+  window.addEventListener('resize', syncCanvasCssSize);
 
   var Module = {
     canvas: canvas,
+    preRun: [function () {
+      ENV.LIBX11_COMPAT_FORCE_SOFTWARE_PRESENT = '1';
+    }],
     setStatus: setStatus,
+    print: function (text) {
+      var log = window.__outLog || (window.__outLog = []);
+      log.push(String(text));
+      if (log.length > 1000) log.shift();
+    },
+    printErr: function (text) {
+      window.__errLast = String(text);
+      var log = window.__errLog || (window.__errLog = []);
+      log.push(String(text));
+      if (log.length > 1000) log.shift();
+    },
     totalDependencies: 0,
     monitorRunDependencies: function (left) {
       this.totalDependencies = Math.max(this.totalDependencies, left);
@@ -152,10 +499,20 @@
         ? 'Loading... (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')'
         : 'Starting...');
     },
-    onRuntimeInitialized: hideOverlay
+    onRuntimeInitialized: function () {
+      if (!Module.libx11CompatSkipInitialFocus)
+        ensureImeBridge();
+      syncCanvasCssSize();
+      if (!Module.libx11CompatSkipInitialFocus)
+        canvas.focus({ preventScroll: true });
+      hideOverlay();
+    }
   };
   setStatus('Loading...');
-  window.onerror = function () { setStatus('Error, see the JavaScript console'); };
+  window.onerror = function (message) {
+    window.__errLast = String(message);
+    setStatus('Error, see the JavaScript console');
+  };
 </script>
 {{{ SCRIPT }}}
 </body>

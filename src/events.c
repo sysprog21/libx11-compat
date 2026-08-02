@@ -10,6 +10,21 @@
 #include <X11/Xlibint.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+static void drainBrowserDomQueue(void);
+static int wasmExternalWakeCount;
+EM_JS(int, popBrowserDomQueue, (int *item), {
+    var q = globalThis.__libx11CompatDomQueue;
+    if (!q || !q.length)
+        return 0;
+    var e = q.shift();
+    HEAP32[item >> 2] = e[0] | 0;
+    HEAP32[(item + 4) >> 2] = e[1] | 0;
+    HEAP32[(item + 8) >> 2] = e[2] | 0;
+    HEAP32[(item + 12) >> 2] = e[3] | 0;
+    HEAP32[(item + 16) >> 2] = e[4] | 0;
+    HEAP32[(item + 20) >> 2] = e[5] | 0;
+    return 1;
+});
 #endif
 
 #include "sdl-compat.h"
@@ -125,7 +140,7 @@ static SDL_TimerID xtWakeTimer = 0;
 static Array trackedDisplays = {NULL, 0, 0};
 
 #if SDL_VERSION_ATLEAST(2, 0, 18)
-static __thread float wheelPreciseX = 0.0f, wheelPreciseY = 0.0f;
+static COMPAT_THREAD_LOCAL float wheelPreciseX = 0.0f, wheelPreciseY = 0.0f;
 #endif
 
 /* Serializes the first-open / last-close blocks in {init,closeEventPipe}. The
@@ -287,6 +302,9 @@ void pumpEventsSafe(void)
     }
 
     SDL_PumpEvents();
+#ifdef __EMSCRIPTEN__
+    drainBrowserDomQueue();
+#endif
     consumePumpWakeByte();
     mainDispatchRunDeferred();
 }
@@ -354,7 +372,7 @@ int convertEvent(Display *display,
                  XEvent *xEvent,
                  Bool freeInternalEvents);
 
-static __thread int sdlPeepEventsXlibDrainDepth;
+static COMPAT_THREAD_LOCAL int sdlPeepEventsXlibDrainDepth;
 
 int libx11CompatSdlPeepEventsIsXlibDrain(void)
 {
@@ -500,6 +518,10 @@ void wakeEventPipeForExternalEvent(Display *display)
     if (WRITE_EVENT_FD < 0)
         return;
 
+#ifdef __EMSCRIPTEN__
+    wasmExternalWakeCount++;
+#endif
+
     int sdlQueued = 0;
     Bool haveSdlQueued = getEventQueueLength(&sdlQueued);
     int maxDesiredQlen = 0;
@@ -539,6 +561,14 @@ void wakeEventPipeForExternalEvent(Display *display)
         unlockEventQueueLength();
     }
 }
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+int libx11CompatExternalWakeCount(void)
+{
+    return wasmExternalWakeCount;
+}
+#endif
 
 Bool postWmDeleteIfHandled(Display *display, Window window, Time time)
 {
@@ -1681,9 +1711,24 @@ static PointerHit resolvePointerHit(Window root,
                          IS_TYPE(rootChild, WINDOW) &&
                          GET_WINDOW_STRUCT(rootChild)->overrideRedirect &&
                          getGrabbedPointerWindow() != None;
-    Bool anchoredPopup = overridePopup &&
-                         GET_WINDOW_STRUCT(rootChild)->popupParent != None &&
-                         getPointerGrabOwnerEvents();
+    Bool anchoredPopup = False;
+    if (overridePopup) {
+        Bool popupAnchored = GET_WINDOW_STRUCT(rootChild)->popupParent != None;
+#ifdef __EMSCRIPTEN__
+        /* A wasm override-redirect popup borrows the owner top-level's single
+         * canvas instead of taking its own SDL_Window, so realizeTopLevelWindow
+         * returns before it records popupParent and no SDL crossing ever marks
+         * the borrowed surface under a held grab. The borrow itself anchors the
+         * popup to its owner, so treat a borrowed popup as anchored for this
+         * routing decision; without it the geometry descent below never fires
+         * and a menu drag misses every leave transition, leaving stale
+         * highlights on the item the pointer has already left.
+         */
+        if (!popupAnchored)
+            popupAnchored = GET_WINDOW_STRUCT(rootChild)->borrowedSdlWindow;
+#endif
+        anchoredPopup = popupAnchored && getPointerGrabOwnerEvents();
+    }
     if (overridePopup &&
         (pointerHoverIsWithin(rootChild) || (captureHeld && anchoredPopup))) {
         base = rootChild;
@@ -2757,6 +2802,15 @@ static void clearAsciiDedupRings(void)
 {
     clearPendingAsciiRing();
     clearCommittedAsciiRing();
+#ifdef __EMSCRIPTEN__
+    /* A composition transition (SDL_TEXTEDITING) or an injected commit resets
+     * the ascii dedup rings; retire the wasm text-input token with them.
+     * Otherwise a token left set by an earlier same-character event that saw no
+     * matching SDL_KEYUP would wrongly suppress a later legitimate one-char
+     * commit.
+     */
+    wasmTextInputPending = False;
+#endif
 }
 
 static void pushPendingAsciiChar(char c)
@@ -2832,10 +2886,17 @@ static void clearDuplicateWasmKeydown(const SDL_Event *event)
 {
     if (!wasmKeydownPending)
         return;
+
+    /* Only the keyup that matches the pending keydown ends this keypress, so
+     * clear both dedup tokens together here. Clearing wasmTextInputPending on
+     * an unrelated keyup would drop the token for a different key still held
+     * and let its duplicate text event through.
+     */
     if (wasmKeydownWindow == event->key.windowID &&
-        wasmKeydownSym == XC_EVENT_KEYSYM(event))
+        wasmKeydownSym == XC_EVENT_KEYSYM(event)) {
         wasmKeydownPending = False;
-    wasmTextInputPending = False;
+        wasmTextInputPending = False;
+    }
 }
 
 static Bool shouldSuppressDuplicateWasmTextInput(char c)
@@ -2869,6 +2930,29 @@ static size_t wasmUtf8CharLen(const char *text)
     return 1;
 }
 
+static Uint32 wasmInjectionWindowId(void)
+{
+    SDL_Window *focus = SDL_GetMouseFocus();
+    if (!focus)
+        focus = SDL_GetKeyboardFocus();
+    if (focus)
+        return SDL_GetWindowID(focus);
+    if (SCREEN_WINDOW != None && IS_TYPE(SCREEN_WINDOW, WINDOW)) {
+        WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+        Window *children = GET_CHILDREN(SCREEN_WINDOW);
+        for (size_t i = 0; i < screen->children.length; i++) {
+            Window child = children[i];
+            if (IS_TYPE(child, WINDOW)) {
+                WindowStruct *ws = GET_WINDOW_STRUCT(child);
+                if (ws && ws->sdlWindow && ws->mapState == Mapped &&
+                    !ws->overrideRedirect)
+                    return SDL_GetWindowID(ws->sdlWindow);
+            }
+        }
+    }
+    return 0;
+}
+
 EMSCRIPTEN_KEEPALIVE
 void libx11CompatInjectTextInput(const char *text)
 {
@@ -2899,6 +2983,7 @@ void libx11CompatInjectTextInput(const char *text)
         SDL_PushEvent(&event);
         text += len;
     }
+    wakeEventPipeForExternalEvent(NULL);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -2915,7 +3000,84 @@ void libx11CompatInjectKey(int keycode, int down, int modifiers)
     XC_EVENT_SET_SCANCODE(&event, SDL_SCANCODE_UNKNOWN);
     XC_EVENT_SET_KEY_PRESSED(&event, down);
     SDL_PushEvent(&event);
+    wakeEventPipeForExternalEvent(NULL);
 }
+
+static void wasmInjectMouseEvent(int kind, int x, int y, int button)
+{
+    SDL_Event event;
+    SDL_zero(event);
+    Uint32 windowID = wasmInjectionWindowId();
+    Window window = getWindowFromId(windowID);
+    int rememberedX = x, rememberedY = y;
+    scaleSdlPointToPixels(window, rememberedX, rememberedY, &rememberedX,
+                          &rememberedY);
+    replayTargetRememberPointer(rememberedX, rememberedY);
+    if (kind == 0) {
+        event.type = SDL_MOUSEMOTION;
+        event.motion.windowID = windowID;
+        event.motion.x = x;
+        event.motion.y = y;
+    } else {
+        event.type = kind == 1 ? SDL_MOUSEBUTTONDOWN : SDL_MOUSEBUTTONUP;
+        event.button.windowID = windowID;
+        event.button.button = button > 0 ? button : SDL_BUTTON_LEFT;
+        event.button.state = kind == 1 ? SDL_PRESSED : SDL_RELEASED;
+        event.button.x = x;
+        event.button.y = y;
+    }
+    SDL_PushEvent(&event);
+    wakeEventPipeForExternalEvent(NULL);
+}
+
+static void wasmInjectWheelEvent(int x, int y, int deltaY)
+{
+    if (deltaY == 0)
+        return;
+    Uint32 windowID = wasmInjectionWindowId();
+    if (windowID == 0)
+        return;
+    SDL_Event event;
+    SDL_zero(event);
+    Window window = getWindowFromId(windowID);
+    int rememberedX = x, rememberedY = y;
+    scaleSdlPointToPixels(window, rememberedX, rememberedY, &rememberedX,
+                          &rememberedY);
+    replayTargetRememberPointer(rememberedX, rememberedY);
+    event.type = SDL_MOUSEWHEEL;
+    event.wheel.windowID = windowID;
+    event.wheel.which = SDL_TOUCH_MOUSEID;
+    event.wheel.y = deltaY > 0 ? -1 : 1;
+    event.wheel.direction = SDL_MOUSEWHEEL_NORMAL;
+    SDL_PushEvent(&event);
+    wakeEventPipeForExternalEvent(NULL);
+}
+
+static void drainBrowserDomQueue(void)
+{
+    int item[6];
+    while (popBrowserDomQueue(item)) {
+        if (item[0] == 1)
+            wasmInjectMouseEvent(item[1], item[2], item[3], item[4]);
+        else if (item[0] == 2)
+            libx11CompatInjectKey(item[1], item[2], item[3]);
+        else if (item[0] == 3)
+            wasmInjectWheelEvent(item[1], item[2], item[3]);
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void libx11CompatDrainBrowserDomQueue(void)
+{
+    drainBrowserDomQueue();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void libx11CompatInjectMouse(int kind, int x, int y, int button)
+{
+    wasmInjectMouseEvent(kind, x, y, button);
+}
+
 #endif
 
 static Bool shouldSuppressIMTextKeydown(Display *display,
@@ -3867,6 +4029,14 @@ int convertEvent(Display *display,
                 LOG("Window %d lost keyboard focus\n",
                     sdlEvent->window.windowID);
                 type = FocusOut;
+#ifdef __EMSCRIPTEN__
+                /* Focus left this window, so a keyup for the currently tracked
+                 * keydown may never arrive; retire the wasm dedup tokens so a
+                 * later same-key press is not suppressed by a stranded token.
+                 */
+                wasmKeydownPending = False;
+                wasmTextInputPending = False;
+#endif
                 if (eventWindow != None && getKeyboardFocus() == eventWindow &&
                     isKeyboardFocusFromHost())
                     syncKeyboardFocusFromHost(None);

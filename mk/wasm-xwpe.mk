@@ -13,6 +13,13 @@ XWPE_WASM_STAMP := $(XWPE_WASM_DIR)/.build-stamp
 XWPE_WASM_HTML := $(OUT)/xwpe.html
 XWPE_WASM_LOG := $(abspath $(XWPE_WASM_DIR))/build.log
 XWPE_WASM_COMPAT := compat/xwpe-wasm
+XWPE_WASM_SAMPLE_SOURCES := \
+    examples/2048.c \
+    examples/clock.c \
+    examples/mandel.c \
+    examples/paint.c \
+    compat/wasm-idle-yield.c \
+    compat/wasm-poll-yield.c
 
 XWPE_WASM_REAL := libX11.a:$(abspath $(TARGET)) \
     libXmu.a:$(abspath $(XMU_COMPAT_TARGET))
@@ -30,12 +37,14 @@ XWPE_WASM_CFLAGS := $(OPTFLAGS) -std=gnu17 -Wno-everything \
 XWPE_WASM_DATA_PRELOAD := \
     --preload-file $(abspath $(XWPE_WASM_WORK))/syntax_def@/usr/local/lib/xwpe/syntax_def \
     --preload-file $(abspath $(XWPE_WASM_WORK))/help.xwpe_eng@/usr/local/lib/xwpe/help.xwpe_eng \
-    --preload-file $(abspath $(XWPE_WASM_WORK))/help.key_eng@/usr/local/lib/xwpe/help.key_eng
+    --preload-file $(abspath $(XWPE_WASM_WORK))/help.key_eng@/usr/local/lib/xwpe/help.key_eng \
+    $(foreach src,$(XWPE_WASM_SAMPLE_SOURCES),--preload-file $(abspath $(src))@/home/web/src/$(notdir $(src)))
 
 XWPE_WASM_LDFLAGS := $(abspath $(WASM_APP_YIELD_OBJS)) $(SDL_PORT_FLAGS) \
     -sASYNCIFY -Wl,--wrap=poll -Wl,--wrap=select -sALLOW_MEMORY_GROWTH \
     -sSTACK_SIZE=1048576 -sASYNCIFY_STACK_SIZE=24576 \
-    -sEMULATE_FUNCTION_POINTER_CASTS=1 $(WASM_FONT_PRELOAD) \
+    -sEMULATE_FUNCTION_POINTER_CASTS=1 -sEXPORTED_RUNTIME_METHODS=ccall \
+    $(WASM_FONT_PRELOAD) \
     $(XWPE_WASM_DATA_PRELOAD) -L$(abspath $(XWPE_WASM_LIBDIR)) \
     -Wl,--start-group
 
@@ -52,7 +61,7 @@ $(XWPE_WASM_STAMP): $(XWPE_SOURCE_STAMP) $(XWPE_PATCHES) $(TARGET) \
     $(XMU_COMPAT_TARGET) $(WASM_APP_YIELD_OBJS) $(WASM_FONT_STAMP) \
     $(WASM_SHELL) mk/wasm-xwpe.mk $(XWPE_WASM_COMPAT)/curses.h \
     $(XWPE_WASM_COMPAT)/term.h $(XWPE_WASM_COMPAT)/execinfo.h \
-    $(XWPE_WASM_COMPAT)/json-c/json.h
+    $(XWPE_WASM_COMPAT)/json-c/json.h $(XWPE_WASM_SAMPLE_SOURCES)
 	@echo "  SYSROOT xwpe (wasm)"
 	$(Q)rm -rf $(XWPE_WASM_DIR)
 	$(Q)mkdir -p $(XWPE_WASM_SYSROOT)/X11/extensions $(XWPE_WASM_LIBDIR) \
@@ -122,17 +131,28 @@ $(XWPE_WASM_STAMP): $(XWPE_SOURCE_STAMP) $(XWPE_PATCHES) $(TARGET) \
 	    tail -60 $(XWPE_WASM_LOG) >&2; exit 1; fi
 	$(Q)touch $@
 
+# The stamp builds we{,.wasm,.data} once; each browser artifact is a cheap copy
+# off it. One rule per file (not one recipe emitting all four) so deleting any
+# single artifact restores just it. Explicit targets cannot share a recipe
+# without GNU make 4.3's &:, which the macOS 3.81 floor lacks.
+$(OUT)/xwpe.js: $(XWPE_WASM_STAMP)
+	@echo "  COPY    $@"
+	$(Q)cp $(XWPE_WASM_WORK)/we $@
+	$(Q)perl -0pi -e 's/we\.(wasm|data)/xwpe.$$1/g' $@
+$(OUT)/xwpe.wasm: $(XWPE_WASM_STAMP)
+	@echo "  COPY    $@"
+	$(Q)cp $(XWPE_WASM_WORK)/we.wasm $@
+$(OUT)/xwpe.data: $(XWPE_WASM_STAMP)
+	@echo "  COPY    $@"
+	$(Q)test ! -e $(XWPE_WASM_WORK)/we.data || cp $(XWPE_WASM_WORK)/we.data $@
+
 $(XWPE_WASM_HTML): $(XWPE_WASM_STAMP) $(WASM_SHELL) mk/wasm-xwpe.mk
 	@echo "  HTML    $@"
-	$(Q)cp $(XWPE_WASM_WORK)/we $(OUT)/xwpe.js
-	$(Q)perl -0pi -e 's/we\.(wasm|data)/xwpe.$$1/g' $(OUT)/xwpe.js
-	$(Q)cp $(XWPE_WASM_WORK)/we.wasm $(OUT)/xwpe.wasm
-	$(Q)test ! -e $(XWPE_WASM_WORK)/we.data || cp $(XWPE_WASM_WORK)/we.data $(OUT)/xwpe.data
-	$(Q)sed 's#{{{ SCRIPT }}}#<script>Module.thisProgram="xwpe";Module.preRun=[function(){ENV.XWPE_LIB="/usr/local/lib/xwpe";}];</script><script src="xwpe.js"></script>#' \
+	$(Q)sed 's#{{{ SCRIPT }}}#<script>Module.thisProgram="xwpe";Module.libx11CompatDisableImeBridge=true;Module.libx11CompatBridgeDomEvents=true;Module.libx11CompatHasCcallBridge=true;Module.libx11CompatAssetVersion="20260802-src-preload";Module.locateFile=function(path,prefix){return /\\.(wasm|data)$$/.test(path)?(prefix||"")+path+"?v="+Module.libx11CompatAssetVersion:(prefix||"")+path;};Module.preRun.push(function(){ENV.XWPE_LIB="/usr/local/lib/xwpe";});</script><script src="xwpe.js?v=20260802-src-preload"></script>#' \
 	    $(WASM_SHELL) > $@
 
 .PHONY: xwpe-wasm
-xwpe-wasm: $(XWPE_WASM_HTML)
+xwpe-wasm: $(XWPE_WASM_HTML) $(OUT)/xwpe.js $(OUT)/xwpe.wasm $(OUT)/xwpe.data
 
 endif
 

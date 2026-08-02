@@ -151,7 +151,7 @@ $(XNEDIT_WASM_HTML): $(XNEDIT_WASM_STAMP) $(WASM_SHELL) mk/wasm-xnedit.mk
 	$(Q)cp $(XNEDIT_WASM_WORK)/source/xnedit.wasm $(OUT)/xnedit.wasm
 	$(Q)test ! -e $(XNEDIT_WASM_WORK)/source/xnedit.data || \
 	    cp $(XNEDIT_WASM_WORK)/source/xnedit.data $(OUT)/xnedit.data
-	$(Q)sed 's#{{{ SCRIPT }}}#<script src="xnedit.js"></script>#' \
+	$(Q)sed 's#{{{ SCRIPT }}}#<script>Module.libx11CompatHasCcallBridge=true;</script><script src="xnedit.js"></script>#' \
 	    $(WASM_SHELL) > $@
 
 .PHONY: xnedit-wasm

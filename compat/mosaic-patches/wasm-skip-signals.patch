@@ -1,0 +1,74 @@
+diff --git a/src/main.c b/src/main.c
+--- a/src/main.c
++++ b/src/main.c
+@@ -172,6 +172,7 @@ main (int argc, char **argv, char **envp)
+   int i;
+ 
+   userPath=getenv("PATH");
++#ifndef __EMSCRIPTEN__
+   signal(SIGBUS,  FatalProblem);
+   signal(SIGSEGV, FatalProblem);
+   signal(SIGILL,  FatalProblem);
+@@ -187,6 +188,7 @@ main (int argc, char **argv, char **envp)
+ #else
+   signal(SIGCHLD, (void (*)())ChildTerminated);
+ #endif
++#endif
+ 
+ #ifdef SOCKS
+   SOCKSinit(argv[0]);
+diff --git a/src/gui.c b/src/gui.c
+--- a/src/gui.c
++++ b/src/gui.c
+@@ -3667,6 +3667,17 @@ static mo_window *mo_open_another_window_internal (mo_window *win)
+ static mo_window *alarm_win = NULL;
+ static char *alarm_url = NULL;
+ 
++#ifdef __EMSCRIPTEN__
++static XtIntervalId wasm_open_window_timer = 0;
++static void wasm_open_window_timeout(XtPointer client_data, XtIntervalId *id)
++{
++  (void) client_data;
++  (void) id;
++  wasm_open_window_timer = 0;
++  mo_gui_handle_alarm();
++}
++#endif
++
+ void mo_gui_handle_alarm() {
+   if (splash) kill_splash();
+   if (!alarm_win || !alarm_url) return;
+@@ -3697,7 +3708,21 @@ mo_window *mo_open_window (Widget parent, char *url, mo_window *parentw)
+   mo_gui_notify_progress("Loading...");
+   mo_gui_update_meter(0,"0%");
+ 
+-  alarm_win = win; alarm_url = url; alarm(1);
++  alarm_win = win; alarm_url = url;
++#ifdef __EMSCRIPTEN__
++  if (app_context) {
++    /* Mirror alarm(1) reset semantics: keep a single pending timeout so
++       rapid mo_open_window calls fire once, 1s after the latest one. */
++    if (wasm_open_window_timer)
++      XtRemoveTimeOut(wasm_open_window_timer);
++    wasm_open_window_timer =
++      XtAppAddTimeOut(app_context, 1000, wasm_open_window_timeout, NULL);
++  } else
++    mo_gui_handle_alarm();
++#else
++  alarm(1);
++#endif
++
+   return win;
+ }
+ 
+@@ -4569,8 +4594,10 @@ splash_goto:
+     gargv = argv;
+     gargc = argc;
+ 
++#ifndef __EMSCRIPTEN__
+ #ifndef VMS
+     signal (SIGUSR1, (void *)ProcessExternalDirective);
++#endif
+ #endif
+ 
+     if(get_pref_boolean(eSPLASHSCREEN) && splash && !splash_cc) kill_splash();

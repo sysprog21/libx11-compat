@@ -22,7 +22,8 @@
 //        <app> is a basename without extension (clock, xnedit, ...); its
 //        <app>.js and, if present, <app>.data must sit in build-dir.
 // Env:   WASM_PAINT_TIMEOUT_MS (default 20000), WASM_PAINT_CALIBRATE=1 (report
-//        only, never fail), WASM_PAINT_WEBDRIVER (driver binary path).
+//        only, never fail), WASM_PAINT_STRICT_INPUT=0 (downgrade xwpe input
+//        failure to a warning), WASM_PAINT_WEBDRIVER (driver binary path).
 
 import { createServer } from "node:http";
 import { readFile, access } from "node:fs/promises";
@@ -39,6 +40,8 @@ if (!buildDir || appArgs.length === 0) {
 const apps = appArgs.map((a) => a.replace(/\.(html|js)$/, ""));
 const TIMEOUT_MS = Number(process.env.WASM_PAINT_TIMEOUT_MS || 20000);
 const CALIBRATE = process.env.WASM_PAINT_CALIBRATE === "1";
+const KEEP_BROWSER = process.env.WASM_PAINT_KEEP_BROWSER === "1";
+const STRICT_INPUT = process.env.WASM_PAINT_STRICT_INPUT !== "0";
 // Locally a missing WebKit driver is a clean skip; in CI (which installs one)
 // it must be a hard failure, or the paint gate silently passes with no browser.
 const REQUIRED = process.env.WASM_PAINT_REQUIRED === "1";
@@ -70,7 +73,7 @@ window.addEventListener("unhandledrejection", function(e){
   _cap((e && e.reason && (e.reason.message || e.reason)) || "unhandledrejection"); });
 var Module = {
   canvas: document.getElementById("canvas"),
-  thisProgram: ${JSON.stringify(name === "xwpe" ? "xwpe" : undefined)},
+  thisProgram: ${JSON.stringify(name === "xwpe" || name === "xcircuit" ? name : undefined)},
   preRun: [function(){ try {
     ENV.LIBX11_COMPAT_FORCE_SOFTWARE_PRESENT = "1";
     if (${JSON.stringify(name)} === "xwpe") {
@@ -136,6 +139,141 @@ const PROBE = `
   return { found: true, w: w, h: h, nonFirstPixels: nonFirstPixels, err: window.__errLast || window.__err || null };
 `;
 
+const CANVAS_HASH = `
+  var c = document.getElementById("canvas");
+  if (!c || c.width <= 0 || c.height <= 0) return null;
+  var sw = Math.min(c.width, 128), sh = Math.min(c.height, 96);
+  var off = document.createElement("canvas");
+  off.width = sw; off.height = sh;
+  var ctx = off.getContext("2d");
+  ctx.drawImage(c, 0, 0, c.width, c.height, 0, 0, sw, sh);
+  var d = ctx.getImageData(0, 0, sw, sh).data;
+  var h = 2166136261;
+  for (var i = 0; i < d.length; i++) h = Math.imul(h ^ d[i], 16777619);
+  return h >>> 0;
+`;
+
+const XWPE_MOUSE_POINT = `
+  var c = document.getElementById("canvas");
+  var r = c.getBoundingClientRect();
+  var sx = r.width / c.width, sy = r.height / c.height;
+  var x = Math.round(80 * sx - r.width / 2);
+  var y = Math.round(16 * sy - r.height / 2);
+  return { x: x, y: y };
+`;
+
+const MOSAIC_WHEEL_AND_MENU = `
+  var c = document.getElementById("canvas");
+  var r = c.getBoundingClientRect();
+  function h() {
+    if (!c || !c.width || !c.height) return null;
+    var off = document.createElement("canvas");
+    off.width = 160; off.height = 120;
+    var x = off.getContext("2d");
+    x.drawImage(c, 0, 0, 160, 120);
+    var d = x.getImageData(0, 0, 160, 120).data;
+    var out = 2166136261;
+    for (var i = 0; i < d.length; i++) out = Math.imul(out ^ d[i], 16777619);
+    return out >>> 0;
+  }
+  var before = h();
+  c.dispatchEvent(new WheelEvent("wheel", {
+    bubbles: true, cancelable: true,
+    clientX: r.left + r.width / 2,
+    clientY: r.top + r.height / 2,
+    deltaY: 480
+  }));
+  var fileX = r.left + 30, fileY = r.top + 18;
+  ["mousedown", "mouseup"].forEach(function(type) {
+    c.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, cancelable: true, button: 0,
+      clientX: fileX, clientY: fileY
+    }));
+  });
+  return { before: before };
+`;
+
+const MOSAIC_HASH = `
+  var c = document.getElementById("canvas");
+  if (!c || !c.width || !c.height) return null;
+  var off = document.createElement("canvas");
+  off.width = 160; off.height = 120;
+  var x = off.getContext("2d");
+  x.drawImage(c, 0, 0, 160, 120);
+  var d = x.getImageData(0, 0, 160, 120).data;
+  var out = 2166136261;
+  for (var i = 0; i < d.length; i++) out = Math.imul(out ^ d[i], 16777619);
+  return out >>> 0;
+`;
+
+const XCIRCUIT_MENU_BAR = `
+  var c = document.getElementById("canvas");
+  if (!c || !c.width || !c.height) return null;
+  var off = document.createElement("canvas");
+  off.width = 360; off.height = 56;
+  var ctx = off.getContext("2d");
+  ctx.drawImage(c, 0, 0, 720, 112, 0, 0, 360, 56);
+  var d = ctx.getImageData(0, 0, 360, 56).data;
+  var dark = 0;
+  for (var i = 0; i < d.length; i += 4)
+    if (d[i] < 24 && d[i + 1] < 24 && d[i + 2] < 24) dark++;
+  return { dark: dark, total: d.length / 4 };
+`;
+
+const XCIRCUIT_MENU_OPEN = `
+  var callback = arguments[arguments.length - 1];
+  var c = document.getElementById("canvas");
+  if (!c || !c.width || !c.height) return callback(null);
+  window.scrollTo(0, 0);
+  var r = c.getBoundingClientRect();
+  function h() {
+    var off = document.createElement("canvas");
+    off.width = 420; off.height = 360;
+    var ctx = off.getContext("2d");
+    ctx.drawImage(c, 0, 0, 420, 360, 0, 0, 420, 360);
+    var d = ctx.getImageData(0, 0, 420, 360).data;
+    var out = 2166136261;
+    for (var i = 0; i < d.length; i++)
+      out = Math.imul(out ^ d[i], 16777619);
+    return out >>> 0;
+  }
+  function popupLeft() {
+    var off = document.createElement("canvas");
+    off.width = 420; off.height = 300;
+    var ctx = off.getContext("2d");
+    ctx.drawImage(c, 0, 0, 420, 300, 0, 0, 420, 300);
+    var d = ctx.getImageData(0, 0, 420, 300).data;
+    for (var x = 32; x < 180; x++) {
+      var hits = 0;
+      for (var y = 60; y < 260; y++) {
+        var i = (y * 420 + x) * 4;
+        if (d[i] > 220 && d[i] < 252 &&
+            d[i + 1] > 220 && d[i + 1] < 252 &&
+            d[i + 2] > 185 && d[i + 2] < 242)
+          hits++;
+      }
+      if (hits > 120)
+        return x;
+    }
+    return -1;
+  }
+  var before = h();
+  c.dispatchEvent(new MouseEvent("mousemove", {
+    bubbles: true, cancelable: true, button: 0,
+    clientX: r.left + 60, clientY: r.top + 18
+  }));
+  c.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0,
+    clientX: r.left + 60, clientY: r.top + 18
+  }));
+  setTimeout(function() {
+    callback({
+      before: before, after: h(), popupLeft: popupLeft(),
+      rect: { left: r.left, top: r.top }
+    });
+  }, 1000);
+`;
+
 // ---- driver selection ----
 const isMac = platform() === "darwin";
 const driverBin = process.env.WASM_PAINT_WEBDRIVER ||
@@ -162,7 +300,7 @@ const drvPort = await (async () => {
   await new Promise((r) => s.close(r));
   return p;
 })();
-function drvReq(method, path, body) {
+function drvReq(method, path, body, timeoutMs) {
   return new Promise((resolve, reject) => {
     const data = body === undefined ? "" : JSON.stringify(body);
     const req = request({ host: "127.0.0.1", port: drvPort, path, method,
@@ -176,7 +314,9 @@ function drvReq(method, path, body) {
         });
       });
     // A driver that accepts the socket then hangs must not stall the whole run.
-    req.setTimeout(5000, () => req.destroy(new Error("driver request timeout")));
+    // Navigation blocks until the page load event, so it gets the paint budget;
+    // ordinary probe/action calls keep the short default.
+    req.setTimeout(timeoutMs || 5000, () => req.destroy(new Error("driver request timeout")));
     req.on("error", reject);
     req.end(data);
   });
@@ -215,7 +355,7 @@ driver.on("error", () => {});
 // dies with us on an uncaught throw or Ctrl-C, not just the normal exit path
 // below. The exit handler covers a thrown error; the signals do not fire exit
 // on their own, so route them through process.exit.
-process.on("exit", () => { try { driver.kill(); } catch {} });
+process.on("exit", () => { if (!KEEP_BROWSER) try { driver.kill(); } catch {} });
 process.on("SIGINT", () => process.exit(130));
 process.on("SIGTERM", () => process.exit(143));
 
@@ -239,13 +379,22 @@ for (const name of apps) {
   let sessionId = null;
   let best = { found: false, w: 0, h: 0, nonFirstPixels: -1 };
   let launchErr = null;
+  let inputChanged = name !== "xwpe" && name !== "mosaic" && name !== "xcircuit";
+  let inputErr = null;
+  let inputDetail = "";
+  let mouseQueueLen = 0;
+  let layoutErr = null;
+  let visualErr = null;
   try {
     const s = await drvReq("POST", "/session", { capabilities: caps });
     sessionId = s.json && s.json.value && s.json.value.sessionId;
     if (!sessionId) throw new Error(s.json && s.json.value && s.json.value.message || "session not created");
 
+    const page = (name === "xwpe" || name === "mosaic" || name === "xcircuit")
+      ? `${name}.html`
+      : `${name}.__paint__.html`;
     await drvReq("POST", `/session/${sessionId}/url`,
-      { url: `http://127.0.0.1:${httpPort}/${name}.__paint__.html` });
+      { url: `http://127.0.0.1:${httpPort}/${page}` }, TIMEOUT_MS);
 
     const deadline = Date.now() + TIMEOUT_MS;
     while (Date.now() < deadline) {
@@ -258,28 +407,156 @@ for (const name of apps) {
       }
       const p = r.json && r.json.value;
       if (p && p.found && (p.w > best.w || p.nonFirstPixels > best.nonFirstPixels)) best = p;
-      if (p && p.found && p.w > 0 && p.h > 0 && p.nonFirstPixels > 16) break;
+      const readyPixels = name === "xcircuit" ? 1000 : 16;
+      if (p && p.found && p.w > 0 && p.h > 0 &&
+          p.nonFirstPixels > readyPixels) {
+        break;
+      }
       await sleep(250);
+    }
+    if (name === "xwpe" && best.w > 0 && best.h > 0 && best.nonFirstPixels > 16) {
+      await sleep(1000);
+      const before = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+        { script: CANVAS_HASH, args: [] });
+      const beforeHash = before.json && before.json.value;
+      const pointResponse = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+        { script: XWPE_MOUSE_POINT, args: [] });
+      const point = pointResponse.json && pointResponse.json.value;
+      const canvasResponse = await drvReq("POST", `/session/${sessionId}/element`,
+        { using: "css selector", value: "#canvas" });
+      const canvasElement = canvasResponse.json && canvasResponse.json.value;
+      await drvReq("POST", `/session/${sessionId}/actions`, { actions: [{
+        type: "pointer", id: "xwpe-mouse",
+        parameters: { pointerType: "mouse" },
+        actions: [
+          { type: "pointerMove", duration: 0, origin: canvasElement, x: point.x, y: point.y },
+          { type: "pointerDown", button: 0 },
+          { type: "pause", duration: 500 },
+          { type: "pointerUp", button: 0 }
+        ]
+      }] });
+      const clickDeadline = Date.now() + 2500;
+      while (Date.now() < clickDeadline) {
+        await sleep(250);
+        const after = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+          { script: CANVAS_HASH, args: [] });
+        const afterHash = after.json && after.json.value;
+        if (beforeHash !== null && afterHash !== null && afterHash !== beforeHash) {
+          inputChanged = true;
+          inputDetail = " input=mouse-menu-click";
+          break;
+        }
+      }
+      if (!inputChanged) {
+        await drvReq("POST", `/session/${sessionId}/execute/sync`, { script: `
+          var c = document.getElementById("canvas");
+          c.focus();
+          ["keydown", "keyup"].forEach(function(type) {
+            c.dispatchEvent(new KeyboardEvent(type, {
+              bubbles: true, cancelable: true,
+              key: "ArrowDown", code: "ArrowDown"
+            }));
+          });
+        `, args: [] });
+        await sleep(250);
+        const after = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+          { script: CANVAS_HASH, args: [] });
+        const afterHash = after.json && after.json.value;
+        if (beforeHash !== null && afterHash !== null && afterHash !== beforeHash) {
+          inputChanged = true;
+          inputDetail = " input=key-arrow";
+        }
+      }
+      const queuedResponse = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+        { script: "return (window.__libx11CompatDomQueue || []).length;", args: [] });
+      mouseQueueLen = queuedResponse.json && queuedResponse.json.value || 0;
+      if (!inputChanged)
+        inputErr = `mouse click did not change canvas (queued ${mouseQueueLen})`;
+      if (inputErr && !STRICT_INPUT) {
+        inputChanged = true;
+        inputDetail = " input=mouse-unverified";
+      }
+    }
+    if (name === "mosaic" && best.w > 0 && best.h > 0 && best.nonFirstPixels > 16) {
+      const layout = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+        { script: "var c=document.getElementById('canvas'),r=c.getBoundingClientRect();return {right:r.right,bottom:r.bottom,iw:innerWidth,ih:innerHeight};", args: [] });
+      const value = layout.json && layout.json.value;
+      if (value && (value.right > value.iw || value.bottom > value.ih))
+        layoutErr = `canvas clipped (${Math.ceil(value.right)}x${Math.ceil(value.bottom)} > ${value.iw}x${value.ih})`;
+      const before = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+        { script: MOSAIC_WHEEL_AND_MENU, args: [] });
+      const inputBefore = before.json && before.json.value;
+      const baseline = inputBefore && typeof inputBefore.before === "number"
+        ? inputBefore.before
+        : null;
+      // Poll for the canvas to change and re-dispatch the wheel/menu input each
+      // round rather than checking once after a fixed wait: under a real browser
+      // a single scroll or menu press is timing-flaky, so keep nudging until the
+      // repaint lands or the deadline passes.
+      const inputDeadline = Date.now() + 8000;
+      while (baseline !== null && Date.now() < inputDeadline) {
+        await sleep(500);
+        const afterHash = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+          { script: MOSAIC_HASH, args: [] });
+        const h = afterHash.status === 200 && afterHash.json
+          ? afterHash.json.value
+          : null;
+        if (typeof h === "number" && h !== baseline) {
+          inputChanged = true;
+          inputDetail = " input=wheel-menu";
+          break;
+        }
+        await drvReq("POST", `/session/${sessionId}/execute/sync`,
+          { script: MOSAIC_WHEEL_AND_MENU, args: [] });
+      }
+      if (!inputChanged)
+        inputErr = "wheel/menu input did not change Mosaic canvas";
+    }
+    if (name === "xcircuit" && best.w > 0 && best.h > 0 && best.nonFirstPixels > 16) {
+      const menu = await drvReq("POST", `/session/${sessionId}/execute/sync`,
+        { script: XCIRCUIT_MENU_BAR, args: [] });
+      const value = menu.json && menu.json.value;
+      if (!value || value.dark > value.total / 4)
+        visualErr = `menu bar dark pixels ${value ? value.dark : "?"}/${value ? value.total : "?"}`;
+      const before = await drvReq("POST", `/session/${sessionId}/execute/async`,
+        { script: XCIRCUIT_MENU_OPEN, args: [] });
+      const inputBefore = before.json && before.json.value;
+      if (!inputBefore || inputBefore.rect.left < 0 || inputBefore.rect.top < 0)
+        layoutErr = `canvas clipped at ${inputBefore ? inputBefore.rect.left : "?"},${inputBefore ? inputBefore.rect.top : "?"}`;
+      else if (inputBefore.after === inputBefore.before)
+        inputErr = "File menu mousedown did not change XCircuit canvas";
+      else if (inputBefore.popupLeft < 0 || inputBefore.popupLeft > 45)
+        inputErr = `File menu opened at x=${inputBefore.popupLeft}`;
+      else {
+        inputChanged = true;
+        inputDetail = " input=file-menu";
+      }
     }
   } catch (e) {
     launchErr = e.message;
   } finally {
-    if (sessionId) { try { await drvReq("DELETE", `/session/${sessionId}`); } catch {} }
+    if (sessionId && !KEEP_BROWSER) { try { await drvReq("DELETE", `/session/${sessionId}`); } catch {} }
   }
 
   const painted = best.w > 0 && best.h > 0 && best.nonFirstPixels > 16;
   const detail = `canvas=${best.w}x${best.h} nonFirstPixels=${best.nonFirstPixels}`;
-  if (painted) {
-    console.log(`  OK      ${name} (${detail})`);
+  const inputOk = inputChanged && (!inputErr || !STRICT_INPUT);
+  if (painted && inputOk && !layoutErr && !visualErr) {
+    console.log(`  OK      ${name} (${detail}${inputDetail})`);
+    if (inputErr && !STRICT_INPUT)
+      console.error(`          WARN input: ${inputErr}`);
   } else {
     console.error(`  FAIL    ${name} (${detail})`);
     if (best.err) console.error(`          printErr: ${String(best.err).slice(0, 200)}`);
+    if (inputErr) console.error(`          input: ${inputErr}`);
+    if (layoutErr) console.error(`          layout: ${layoutErr}`);
+    if (visualErr) console.error(`          visual: ${visualErr}`);
     if (launchErr) console.error(`          driver: ${String(launchErr).slice(0, 200)}`);
     failed++;
   }
 }
 
-try { driver.kill(); } catch {}
+if (!KEEP_BROWSER) try { driver.kill(); } catch {}
 server.close();
 
 if (CALIBRATE) {
