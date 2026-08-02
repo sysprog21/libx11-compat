@@ -9,11 +9,16 @@
 # each. Defined outside the WASM guard so check-wasm (which recurses with
 # WASM=1) can iterate the same list. They draw with core Xlib only, so none
 # needs a preloaded font (see the pattern rule below).
-WASM_EXAMPLES := clock moire life mandel
+WASM_EXAMPLES := paint life clock mandel processing clipboard catclock moire
 
 # Defined outside the WASM guard so the check-wasm-prereqs diagnostic (runnable
 # from a normal make) can report the pinned version and staged-archive path.
 PIXMAN_VERSION := 0.42.2
+
+# Defined outside the WASM guard so check-wasm-fixed-font-property (a normal-make
+# target that recurses with WASM=1 to build it) passes a real path to node
+# rather than an empty string, which would silently make the smoke a no-op.
+WASM_FIXED_FONT_PROPERTY_TEST := $(OUT)/tests/test-wasm-fixed-font-property.js
 
 ifeq ($(WASM),1)
 
@@ -47,7 +52,10 @@ $(WASM_DEP_DIR):
 	@mkdir -p $@
 
 # Fetch (or copy) the tarball and content-verify it before use, failing closed.
-$(PIXMAN_WASM_CACHE): | $(WASM_DEP_DIR)
+# Depend on this fragment (which carries the pinned digest and mirror URLs) so a
+# digest or mirror change refetches and reverifies instead of reusing a stale
+# cached tarball that was verified against the old pin.
+$(PIXMAN_WASM_CACHE): mk/wasm-deps.mk | $(WASM_DEP_DIR)
 	@set -f; sha=$(PIXMAN_WASM_SHA256); \
 	digest() { (sha256sum "$$1" 2>/dev/null || shasum -a 256 "$$1") | cut -d' ' -f1; }; \
 	if [ -n "$(PIXMAN_WASM_TARBALL)" ]; then \
@@ -132,7 +140,9 @@ WASM_FONT_STAMP := $(WASM_FONT_DIR)/.stamp
 # Top level of a search-path dir so the non-recursive font-cache scan finds it.
 WASM_FONT_TTF_DIR := $(WASM_FONT_DIR)/usr/share/fonts
 
-$(DEJAVU_CACHE): | $(WASM_DEP_DIR)
+# Depends on this fragment so a digest or mirror change refetches (see the
+# pixman cache rule above).
+$(DEJAVU_CACHE): mk/wasm-deps.mk | $(WASM_DEP_DIR)
 	@set -f; sha=$(DEJAVU_SHA256); \
 	digest() { (sha256sum "$$1" 2>/dev/null || shasum -a 256 "$$1") | cut -d' ' -f1; }; \
 	if [ -n "$(DEJAVU_TTF_ZIP)" ]; then \
@@ -159,7 +169,9 @@ $(DEJAVU_CACHE): | $(WASM_DEP_DIR)
 	fi
 	@mv "$@.tmp" "$@"
 
-$(NOTO_CJK_CACHE): | $(WASM_DEP_DIR)
+# Depends on this fragment so a digest or mirror change refetches (see the
+# pixman cache rule above).
+$(NOTO_CJK_CACHE): mk/wasm-deps.mk | $(WASM_DEP_DIR)
 	@set -f; sha=$(NOTO_CJK_SHA256); \
 	digest() { (sha256sum "$$1" 2>/dev/null || shasum -a 256 "$$1") | cut -d' ' -f1; }; \
 	if [ -n "$(NOTO_CJK_FONT)" ]; then \
@@ -228,10 +240,11 @@ $(TARGET): $(OBJS)
 # wasm MEMFS stays empty and no --preload-file is needed. A face-loading
 # example would add --preload-file for the bundled TTFs.
 WASM_EXAMPLE_HTML := $(addprefix $(OUT)/,$(addsuffix .html,$(WASM_EXAMPLES)))
-# The examples drive their render loop through emscripten_set_main_loop (each
-# example's __EMSCRIPTEN__ path), so the browser calls one frame per animation
-# frame and the main thread never blocks. That removes the need for ASYNCIFY,
-# whose whole-program instrumentation added roughly 260 KB per artifact.
+# The grouped html/js/wasm rule rebuilds all three only when the requested
+# target is out of date, so list the sidecars too: a deleted .js or .wasm with a
+# current .html is then seen as missing and restored before check-wasm validates.
+WASM_EXAMPLE_JS := $(addprefix $(OUT)/,$(addsuffix .js,$(WASM_EXAMPLES)))
+WASM_EXAMPLE_WASM := $(addprefix $(OUT)/,$(addsuffix .wasm,$(WASM_EXAMPLES)))
 # --shell-file swaps emscripten's stock page for a themed launcher (a canvas
 # frame, dark/light theme, loading overlay) shared by every example; it derives
 # its title from the page name. emmalloc is smaller than the default dlmalloc.
@@ -246,6 +259,12 @@ WASM_SHELL := examples/wasm-shell.html
 # runtime pass confirms a canvas still paints.
 WASM_EXAMPLE_LDFLAGS := -sMALLOC=emmalloc -sENVIRONMENT=web \
     -sDYNAMIC_EXECUTION=0 --shell-file $(WASM_SHELL)
+WASM_IDLE_YIELD_OBJ := $(OBJROOT)/compat/wasm-idle-yield.o
+WASM_POLL_YIELD_OBJ := $(OBJROOT)/compat/wasm-poll-yield.o
+WASM_EXAMPLE_YIELD_OBJS := $(WASM_IDLE_YIELD_OBJ) $(WASM_POLL_YIELD_OBJ)
+WASM_EXAMPLE_YIELD_LDFLAGS := -Wl,--wrap=poll -Wl,--wrap=select \
+    -sASYNCIFY -sALLOW_MEMORY_GROWTH -sSTACK_SIZE=1048576 \
+    -sASYNCIFY_STACK_SIZE=24576
 
 # Font stack. These examples never open a font file, so they drop the
 # SDL_ttf/freetype/harfbuzz stack (about 1.6 MB, over half the artifact): filter
@@ -253,7 +272,9 @@ WASM_EXAMPLE_LDFLAGS := -sMALLOC=emmalloc -sENVIRONMENT=web \
 # residual TTF references (pulled in by XOpenDisplay's font-storage init) with
 # no-op stubs (examples/wasm-nofont-stub.c). The example .c files include no SDL
 # headers, so the -sUSE_SDL=2 left in the filtered CPPFLAGS still links the
-# core's SDL2 use.
+# core's SDL2 use. Some examples are deliberately plain blocking Xlib clients
+# (XNextEvent/select/usleep), so link the existing browser yield bridge instead
+# of carrying per-example Emscripten loops.
 #
 # life draws text (XDrawString on the default "fixed" font). It used to keep the
 # full font stack because loading even the bitmap alias opened a TTF face; the
@@ -271,18 +292,30 @@ $(WASM_NOFONT_STUB): examples/wasm-nofont-stub.c mk/wasm-deps.mk
 	@echo "  CC      $<"
 	$(Q)$(CC) -sUSE_SDL=2 -sUSE_SDL_TTF=2 $(FP_CFLAGS) -c $< -o $@
 
-# Every example drops the font stack and links the TTF stub.
-$(OUT)/%.html: examples/%.c $(TARGET) $(WASM_NOFONT_STUB) $(WASM_SHELL) mk/wasm-deps.mk
-	@echo "  LD      $@"
+# Every example drops the font stack and links the TTF stub. One emcc -o %.html
+# emits the .html, .js, and .wasm together, so all three are targets of this one
+# rule: a multi-target PATTERN rule (unlike multiple explicit targets) tells make
+# a single recipe run produces every listed target, so deleting the .js or .wasm
+# reruns the link and restores it. This is the grouped-target behavior without
+# GNU make 4.3's &: syntax, which the macOS 3.81 floor lacks. The recipe writes
+# -o the .html explicitly (via the stem) so a rebuild triggered by a missing .js
+# or .wasm still drives emcc's .html output, not $@.
+$(OUT)/%.html $(OUT)/%.js $(OUT)/%.wasm: examples/%.c $(TARGET) \
+    $(WASM_NOFONT_STUB) $(WASM_EXAMPLE_YIELD_OBJS) $(WASM_SHELL) mk/wasm-deps.mk
+	@echo "  LD      $(OUT)/$*.html"
 	$(Q)$(CC) $(WASM_EXAMPLE_CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
-	    $(TARGET) $(WASM_NOFONT_STUB) $(WASM_EXAMPLE_LINK_LIBS) \
-	    $(WASM_EXAMPLE_LDFLAGS) -o $@
+	    $(TARGET) $(WASM_NOFONT_STUB) $(WASM_EXAMPLE_YIELD_OBJS) \
+	    $(WASM_EXAMPLE_LINK_LIBS) $(WASM_EXAMPLE_LDFLAGS) \
+	    $(WASM_EXAMPLE_YIELD_LDFLAGS) -o $(OUT)/$*.html
+
+$(OUT)/catclock.html: examples/catback.xbm examples/catwhite.xbm \
+    examples/cattie.xbm examples/eyes.xbm
 
 .PHONY: clock examples-wasm
 ## Build the wasm clock browser artifact (clock.html, clock.js, clock.wasm)
 clock: $(OUT)/clock.html
 ## Build every wasm example browser artifact (clock, moire, life, mandel)
-examples-wasm: $(WASM_EXAMPLE_HTML)
+examples-wasm: $(WASM_EXAMPLE_HTML) $(WASM_EXAMPLE_JS) $(WASM_EXAMPLE_WASM)
 
 # Toolkit link smoke: link the libXt init test against the wasm libXt and
 # libX11-compat archives. A clean link proves the wasm libXt archive is
@@ -331,11 +364,8 @@ wasm-xaw-test: $(WASM_XAW_TEST)
 # (XNextEvent and friends) call a hook that is NULL by default; an unmodified
 # showcase app links this object, built with -sASYNCIFY, whose constructor
 # installs emscripten_sleep(0) so the app yields to the browser instead of
-# freezing the tab. The in-tree examples do NOT link it (they drive
-# set_main_loop and stay ASYNCIFY-free); it lives here so the showcase app recipe
-# has one place to pull the yield from. Built by the generic object rule.
-WASM_IDLE_YIELD_OBJ := $(OBJROOT)/compat/wasm-idle-yield.o
-
+# freezing the tab. Examples and the showcase app recipe both pull this when they
+# need browser-safe blocking waits. Built by the generic object rule.
 # Link smoke for the yield override: a program that blocks in XNextEvent, linked
 # with the override and -sASYNCIFY. A clean link proves the override resolves
 # emscripten_sleep (which needs ASYNCIFY) and supersedes the core's default hook,
@@ -351,7 +381,7 @@ $(WASM_YIELD_TEST): tests/test-wasm-yield.c $(TARGET) $(WASM_IDLE_YIELD_OBJ) \
 .PHONY: wasm-yield-test
 wasm-yield-test: $(WASM_YIELD_TEST)
 
-WASM_FIXED_FONT_PROPERTY_TEST := $(OUT)/tests/test-wasm-fixed-font-property.js
+# WASM_FIXED_FONT_PROPERTY_TEST is defined above, outside the WASM guard.
 $(WASM_FIXED_FONT_PROPERTY_TEST): tests/test-wasm-fixed-font-property.c \
     $(TARGET) mk/wasm-deps.mk
 	@mkdir -p $(dir $@)
@@ -499,9 +529,10 @@ check-wasm-node:
 # and only a real browser render sees it. Needs node plus a WebKit WebDriver:
 # WebKitWebDriver (distro webkit2gtk-driver, under xvfb) in CI, safaridriver
 # (real Safari) locally. The script skips cleanly when no driver is launchable,
-# so a toolchain-free CI stays green. The enforced set is clock (raw Xlib) and
-# xaw-hello (Athena/Xt). Heavier app-specific paint checks live with those apps.
-WASM_PAINT_APPS := clock xaw-hello
+# so a toolchain-free CI stays green. The enforced base app is clock (raw Xlib);
+# the toolkit apps (Motif and Athena/Xt) are painted by their own showcase paint
+# checks (check-wasm-mosaic, check-wasm-xcircuit, check-wasm-xnedit, check-wasm-xwpe).
+WASM_PAINT_APPS := clock
 .PHONY: check-wasm-paint
 ## Render the wasm apps in a WebKit browser (WebDriver) and assert the canvas paints
 check-wasm-paint:
@@ -513,7 +544,7 @@ check-wasm-paint:
 	    echo "  SKIP    check-wasm-paint (emcc or node not found)"; \
 	    exit 0; \
 	fi; \
-	$(MAKE) WASM=1 examples-wasm wasm-xaw-app || exit 1; \
+	$(MAKE) WASM=1 examples-wasm || exit 1; \
 	node scripts/wasm-paint-check.mjs $(OUT) $(WASM_PAINT_APPS)
 
 # Report the wasm toolchain prerequisites and pixman staging status, so a
@@ -547,7 +578,19 @@ check-wasm-prereqs:
 # which the base test gate must not require. check-wasm-motif (mk/wasm-motif.mk)
 # is a heavier separate build, so it stays out of the aggregate; run it alongside
 # in CI.
+#
+# Run the sub-smokes sequentially in the recipe rather than as prerequisites:
+# each recurses with WASM=1 and writes the same $(OUT) tree, so listing them as
+# prerequisites would let make -j run them concurrently and race over shared
+# outputs (pixman, the core archive). A per-target .NOTPARALLEL needs GNU make
+# 4.4; a bare one would serialize the whole build, so a shell loop is the
+# portable fix. Each sub-target keeps its own emcc self-skip, so this stays green
+# on a toolchain-free CI.
 .PHONY: check-wasm-all
-## Run every WebAssembly smoke (examples + libXt + Xaw + yield + node); skips without emcc
-check-wasm-all: check-wasm check-wasm-libxt check-wasm-xaw check-wasm-yield \
-    check-wasm-fixed-font-property check-wasm-node
+## Run every WebAssembly smoke (examples + libXt + Xaw + yield + node + paint); skips without emcc
+check-wasm-all:
+	$(Q)set -e; for t in check-wasm check-wasm-libxt check-wasm-xaw \
+	    check-wasm-yield check-wasm-fixed-font-property check-wasm-node \
+	    check-wasm-paint; do \
+	    $(MAKE) $$t || exit 1; \
+	done

@@ -59,6 +59,7 @@ include mk/wasm-mosaic.mk
 include mk/wasm-xnedit.mk
 include mk/wasm-xcircuit.mk
 include mk/wasm-xwpe.mk
+include mk/wasm-pages.mk
 include mk/upstream-headers.mk
 include mk/format.mk
 include mk/help.mk
