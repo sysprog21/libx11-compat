@@ -3,9 +3,9 @@
  *
  * Press Esc or q (or close the window) to quit.
  *
- * Exercises: XDrawArc / XFillArc, XDrawLine, XCopyArea-based double
- * buffering off a pixmap, gettimeofday-paced redraw via select() on
- * ConnectionNumber, XSetForeground for swapping hand colors, WM_DELETE_WINDOW.
+ * Exercises: XDrawArc / XFillArc, XDrawLine, XCopyArea-based double buffering
+ * off a pixmap, gettimeofday-paced redraw via select() on ConnectionNumber,
+ * XSetForeground for swapping hand colors, WM_DELETE_WINDOW.
  */
 
 #include <math.h>
@@ -17,6 +17,10 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define WIN_SIZE 256
 #define TICK_MS 100
@@ -60,7 +64,8 @@ static void render(Display *dpy,
     }
 
     /* Smooth hand positions: minute hand creeps with seconds, hour hand with
-     * minutes. */
+     * minutes.
+     */
     double s = now->tm_sec;
     double m = now->tm_min + s / 60.0;
     double h = (now->tm_hour % 12) + m / 60.0;
@@ -153,11 +158,22 @@ int main(void)
             last_sec = now.tm_sec;
         }
 
+#ifdef __EMSCRIPTEN__
+
+        /* The browser main thread cannot block on select() or the canvas never
+         * paints. emscripten_sleep yields to the browser (needs -sASYNCIFY) so
+         * SDL delivers canvas repaints and input, then resumes the loop. The X
+         * connection fd is not polled in this path.
+         */
+        (void) x_fd;
+        emscripten_sleep(TICK_MS);
+#else
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(x_fd, &rfds);
         struct timeval tv = {0, TICK_MS * 1000};
         select(x_fd + 1, &rfds, NULL, NULL, &tv);
+#endif
     }
 done:
     XFreeGC(dpy, blit_gc);

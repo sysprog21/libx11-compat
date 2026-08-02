@@ -2,6 +2,11 @@
 
 .PHONY: all
 
+# The wasm leg has no shared object: it links a static archive (and the clock
+# browser artifact) from mk/wasm-deps.mk, which owns TARGET and the default
+# goal there. Everything below is the native .so build.
+ifneq ($(WASM),1)
+
 ## Build the SDL2-backed X11 compatibility shared library
 all: $(TARGET)
 
@@ -33,3 +38,5 @@ endif
 $(TARGET): $(OBJS) $(SDL_WRAPPER_TARGETS) | $(OUT)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) $(LDFLAGS_LIB) -shared -o $@ $(OBJS) $(LDLIBS)
+
+endif # native .so build

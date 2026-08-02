@@ -11,8 +11,17 @@ GLX ?= 1
 # PYTHON is set in mk/toolchain.mk; do not redefine here.
 # SDL detection lives in mk/sdl.mk; this file consumes SDL_CPPFLAGS and
 # SDL_COMPAT_LIBS from it.
+ifeq ($(WASM),1)
+# Pixman is a static archive staged under WASM_SYSROOT (set in mk/wasm.mk) for
+# the wasm build. The paths are deterministic, so pinning them directly avoids
+# a parse-time pkg-config against a .pc that the sysroot rule has not built yet,
+# and guarantees no host pixman can leak in.
+PIXMAN_CFLAGS := -I$(WASM_SYSROOT)/include/pixman-1
+PIXMAN_LIBS := -L$(WASM_SYSROOT)/lib -lpixman-1
+else
 PIXMAN_CFLAGS := $(shell $(PKG_CONFIG) --cflags pixman-1 2>/dev/null)
 PIXMAN_LIBS := $(shell $(PKG_CONFIG) --libs pixman-1 2>/dev/null)
+endif
 
 # Include path layering. Order matters: locally-tracked headers under
 # include/X11/ win first, the upstream xorg snapshot staged by
@@ -80,10 +89,18 @@ ifeq ($(STRICT),1)
 endif
 # SDL_COMPAT_LIBS comes from mk/sdl.mk. CoreFoundation on Darwin backs the
 # live-resize run-loop observer in src/mac-live-resize.c.
-LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm -pthread \
+#
+# The native-only link bits (-pthread, -ldl, the Darwin frameworks) are gated
+# on the WASM target rather than the build host: the wasm leg is single-
+# threaded (ASYNCIFY, no pthreads), has no dlopen, and pulls SDL/libm from
+# Emscripten ports, so it links only the pixman archive and the SDL port flags.
+LDLIBS += $(SDL_COMPAT_LIBS) $(PIXMAN_LIBS) -lm
+ifneq ($(WASM),1)
+LDLIBS += -pthread \
           $(if $(filter Linux,$(UNAME_S)),-ldl) \
           $(if $(filter Darwin,$(UNAME_S)),-framework CoreFoundation) \
           $(if $(filter Darwin,$(UNAME_S)),-lobjc)
+endif
 
 GREEN  := \033[0;32m
 BLUE   := \033[0;34m

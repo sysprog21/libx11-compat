@@ -3,8 +3,17 @@
 # them into one -include so downstream fragments stay focused on their
 # own build rules. The empty rule on $(ALL_DEPS) prevents make from
 # trying to "build" a .d when its .c was removed.
-ALL_DEPS := $(OBJS:.o=.d) \
-            $(OUT)/xext-compat.d \
+ALL_DEPS := $(OBJS:.o=.d)
+
+# The wasm leg builds only the core library, so it must not pull in the
+# toolkit dep files. Beyond being irrelevant, a stale libXt .d from a prior
+# native build lists the generated StringDefs.h as a prerequisite (DEPFLAGS
+# names the .d itself as a target), so `-include`ing it makes GNU Make rebuild
+# StringDefs.h to refresh the included makefile. That regeneration runs the
+# makestrs host tool, which under WASM would be built with emcc and cannot run.
+# Gating the toolkit deps out keeps them from ever entering a wasm build.
+ifneq ($(WASM),1)
+ALL_DEPS += $(OUT)/xext-compat.d \
             $(OUT)/xmu-compat.d \
             $(OUT)/xinerama-compat.d \
             $(OUT)/ice-compat.d \
@@ -21,6 +30,7 @@ ifdef LIBXPM_OBJS
 endif
 ifdef LIBXAW_OBJS
   ALL_DEPS += $(LIBXAW_OBJS:.o=.d)
+endif
 endif
 
 $(ALL_DEPS):
