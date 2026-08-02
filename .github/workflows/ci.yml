@@ -2278,3 +2278,47 @@ jobs:
       - name: ccache stats
         if: ${{ !cancelled() }}
         run: ccache --show-stats
+
+  wasm:
+    # WebAssembly leg. check-wasm-all and check-wasm-motif skip when emcc is
+    # absent, so without this job they gate nothing; here emcc is present, so
+    # they actually run. The pixman cross-build needs host autotools (autogen.sh)
+    # and the Motif clone needs bison/flex, both in MOTIF_BUILD_PKGS. node (the
+    # runtime compile smoke) is preinstalled on the runner. The staged wasm
+    # sysroot and Motif clone are cached so pixman is not refetched every run.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make pkg-config python3 gcc git file curl ${{ env.MOTIF_BUILD_PKGS }}
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache staged wasm sysroot (pixman) and Motif clone
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/wasm-sysroot
+            build/wasm-deps
+            build/upstream/motif
+          key: wasm-sysroot-v1-${{ runner.os }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk') }}
+          restore-keys: |
+            wasm-sysroot-v1-${{ runner.os }}-
+
+      - name: Report wasm prerequisites
+        run: make check-wasm-prereqs
+
+      - name: WebAssembly smokes (examples + toolkit + yield + node runtime)
+        run: make check-wasm-all
+
+      - name: WebAssembly Motif smoke (libXm/libMrm link)
+        run: make check-wasm-motif

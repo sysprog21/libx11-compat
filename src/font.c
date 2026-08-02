@@ -1648,6 +1648,28 @@ Font XLoadFont(Display *display, _Xconst char *name)
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
+
+#ifdef __EMSCRIPTEN__
+
+    /* In the browser, let the built-in bitmap aliases (fixed / cursor / 6x13)
+     * load with no TTF face. compatFontOpenFace would otherwise scan for and
+     * open a freetype face, so an app that uses only these core fonts could not
+     * link the nofont stub and drop the ~1.6 MB freetype/harfbuzz stack. The
+     * embedded 6x13 bitmap covers them: the draw path already renders a
+     * NULL-face fixed font through it, and queryFontStruct builds the
+     * XFontStruct from the core metrics. Native keeps opening a TTF face here,
+     * so its "fixed" rendering is unchanged.
+     */
+    if (usesFixedFallbackFont(name)) {
+        resource->useFixedBitmap = True;
+        resource->hasCoreMetrics =
+            coreFontMetricsForName(name, &resource->coreAscent,
+                                   &resource->coreDescent, &resource->coreWidth);
+        SET_XID_VALUE(font, resource);
+        return font;
+    }
+#endif
+
     if (!resource->name || !compatFontOpenFace(resource, name)) {
         free(resource->name);
         free(resource->filePath);
@@ -1671,7 +1693,14 @@ Bool compatFontIsClientUsable(Font fontXid)
     if (fontXid == None || !IS_TYPE(fontXid, FONT))
         return False;
     CompatFont *resource = GET_FONT_RESOURCE(fontXid);
-    return resource && resource->ttf && !resource->closePending;
+
+    /* A fixed-bitmap alias with no TTF face (the wasm freetype-free path) is
+     * still client usable: it renders and measures through the embedded 6x13
+     * bitmap. Native fixed fonts keep a TTF face, so this disjunct never
+     * changes a native outcome.
+     */
+    return resource && (resource->ttf || resource->useFixedBitmap) &&
+           !resource->closePending;
 }
 
 Bool compatFontRetainForGC(Font fontXid)
@@ -1679,7 +1708,12 @@ Bool compatFontRetainForGC(Font fontXid)
     if (fontXid == None || !IS_TYPE(fontXid, FONT))
         return False;
     CompatFont *resource = GET_FONT_RESOURCE(fontXid);
-    if (!resource || !resource->ttf)
+
+    /* Retain a fixed-bitmap alias (NULL TTF face) for GC use as well; it draws
+     * through the embedded bitmap. Native fixed fonts keep a face, so this is a
+     * no-op there.
+     */
+    if (!resource || (!resource->ttf && !resource->useFixedBitmap))
         return False;
     resource->gcRefs++;
     return True;
@@ -2273,6 +2307,23 @@ char **XListFontsWithInfo(Display *display,
 XFontStruct *XLoadQueryFont(Display *display, _Xconst char *name)
 {
     // https://tronche.com/gui/x/xlib/graphics/font-metrics/XLoadQueryFont.html
+#ifdef __EMSCRIPTEN__
+
+    /* A fixed-bitmap alias has no TTF cache entry in a freetype-free build, so
+     * the cache preflight below would miss it even though XLoadFont builds it
+     * from the embedded bitmap. Route straight to the load+query path so
+     * XLoadQueryFont("fixed") works there too.
+     */
+    if (usesFixedFallbackFont(name)) {
+        Font fontId = XLoadFont(display, name);
+        if (fontId == None)
+            return NULL;
+        XFontStruct *fontStruct = XQueryFont(display, fontId);
+        if (!fontStruct)
+            compatFontClose(display, fontId);
+        return fontStruct;
+    }
+#endif
     FontCacheEntry *cacheHit = findFontCacheEntryByName(name);
     if (!cacheHit) {
         LOG("XLoadQueryFont MISS: %s\n", name ? name : "(null)");
@@ -2301,6 +2352,33 @@ size_t compatFontQueryCount(void)
     return fontQueryCount;
 }
 
+/* Build an XFontStruct for a fixed-bitmap alias that has no TTF face (the wasm
+ * freetype-free path). The embedded 6x13 bitmap is monospace and covers the
+ * Latin-1 range, so the struct is the core-metric fixed cell with per_char left
+ * NULL, mirroring what applyCoreFontMetrics produces for a TTF fixed font.
+ */
+static void fillFontStructFixedBitmap(XFontStruct *fontStruct,
+                                      Font fontId,
+                                      const CompatFont *resource)
+{
+    fontStruct->fid = fontId;
+    fontStruct->direction = FontLeftToRight;
+
+    /* The embedded bitmap covers 0..127 only (FIXED_BITMAP_CHAR_COUNT);
+     * advertise exactly that so all_chars_exist is truthful and a client does
+     * not expect a high-bit glyph the renderer would refuse. Native fixed fonts
+     * keep a TTF face and their own 0..255 range, so this is a wasm-only shape.
+     */
+    fontStruct->min_char_or_byte2 = 0;
+    fontStruct->max_char_or_byte2 = FIXED_BITMAP_CHAR_COUNT - 1;
+    fontStruct->min_byte1 = 0;
+    fontStruct->max_byte1 = 0;
+    fontStruct->all_chars_exist = True;
+    fontStruct->default_char = '?';
+    applyCoreFontMetrics(fontStruct, resource->coreAscent,
+                         resource->coreDescent, resource->coreWidth);
+}
+
 static XFontStruct *queryFontStruct(Display *display,
                                     XID fontId,
                                     Bool requireClientUsable)
@@ -2318,6 +2396,21 @@ static XFontStruct *queryFontStruct(Display *display,
     compatFontSyncScale(fontId, GET_FONT_RESOURCE(fontId));
     TTF_Font *font = GET_FONT(fontId);
     if (!font) {
+        /* A fixed-bitmap alias has no TTF face; report the embedded 6x13
+         * metrics instead of BadFont so XLoadQueryFont("fixed") works without
+         * freetype.
+         */
+        CompatFont *resource = GET_FONT_RESOURCE(fontId);
+        if (resource && resource->useFixedBitmap && resource->hasCoreMetrics) {
+            XFontStruct *fontStruct = calloc(1, sizeof(XFontStruct));
+            if (!fontStruct) {
+                handleOutOfMemory(0, display, 0, 0);
+                return NULL;
+            }
+            fillFontStructFixedBitmap(fontStruct, fontId, resource);
+            fontQueryCount++;
+            return fontStruct;
+        }
         handleError(0, display, fontId, 0, BadFont, 0);
         return NULL;
     }

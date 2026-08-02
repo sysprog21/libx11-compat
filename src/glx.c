@@ -206,17 +206,17 @@ static int fbConfigPoolCount;
  */
 static pthread_mutex_t glxLock = PTHREAD_MUTEX_INITIALIZER;
 
-static __thread Display *currentDisplay;
-static __thread GLXContext currentContext;
-static __thread GLXDrawable currentDrawable;
-static __thread GLXDrawable currentReadDrawable;
+static COMPAT_THREAD_LOCAL Display *currentDisplay;
+static COMPAT_THREAD_LOCAL GLXContext currentContext;
+static COMPAT_THREAD_LOCAL GLXDrawable currentDrawable;
+static COMPAT_THREAD_LOCAL GLXDrawable currentReadDrawable;
 /* The EGL draw surface this thread's context is bound to. glXSwapBuffers
  * rebinds only when the drawable's surface differs from this (a resize rebuilt
  * it, or it was destroyed and recreated), so the common per-frame path skips a
  * redundant eglMakeCurrent while a changed surface still self-heals.
  */
-static __thread EGLSurface currentDrawSurface;
-static __thread EGLSurface currentReadSurface;
+static COMPAT_THREAD_LOCAL EGLSurface currentDrawSurface;
+static COMPAT_THREAD_LOCAL EGLSurface currentReadSurface;
 
 /* gl4es hooks, soft-resolved once by initGlTranslationLayerIfPresent. All NULL
  * when no gl4es is linked, so a plain GLES/ANGLE client is unaffected. The

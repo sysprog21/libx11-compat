@@ -34,6 +34,35 @@ static int eventFds[2] = {-1, -1};
 #define READ_EVENT_FD eventFds[0]
 #define WRITE_EVENT_FD eventFds[1]
 
+/* Idle-wait yield for the blocking event entries (XNextEvent, XWindowEvent,
+ * XIfEvent, XMaskEvent). On native this is a 1 ms sleep. In the browser a
+ * synchronous busy-wait would freeze the tab, so an unmodified app must yield
+ * to the event loop instead. That requires ASYNCIFY (or JSPI), which the
+ * in-tree examples deliberately do not link (they drive their own set_main_loop
+ * and never reach these idle waits, so pulling in emscripten_sleep would only
+ * fail their non-ASYNCIFY link). So the core defaults to SDL_Delay and an
+ * unmodified showcase app links compat/wasm-idle-yield.c, built with
+ * -sASYNCIFY, whose constructor installs a hook that calls emscripten_sleep(0);
+ * the blocking XtAppMainLoop/XNextEvent then yields one browser turn per idle
+ * iteration with no change to the app source. A function pointer (installed
+ * once at startup, before any event is pumped) is used rather than a weak
+ * symbol because -flto can otherwise resolve a weak reference to the core's own
+ * default before the override object is linked.
+ */
+#ifdef __EMSCRIPTEN__
+void (*compatBrowserIdleYieldHook)(void) = NULL;
+static inline void compatIdleYield(void)
+{
+    if (compatBrowserIdleYieldHook)
+        compatBrowserIdleYieldHook();
+    else
+        SDL_Delay(1);
+}
+#define COMPAT_IDLE_YIELD() compatIdleYield()
+#else
+#define COMPAT_IDLE_YIELD() SDL_Delay(1)
+#endif
+
 static unsigned long lastEventSerial = 1;
 
 /* lastEventSerial is a process-global event serial counter bumped and read from
@@ -4450,7 +4479,7 @@ int XNextEvent(Display *display, XEvent *event_return)
                 int putBackCount = countPutBackEvents(display);
                 if (displayEventQueueLength(display) > putBackCount)
                     resetEventWakeups(display, putBackCount);
-                SDL_Delay(1);
+                COMPAT_IDLE_YIELD();
                 continue;
             }
         }
@@ -5517,7 +5546,7 @@ int XWindowEvent(Display *display, Window w, long mask, XEvent *event)
     while (!XCheckWindowEvent(display, w, mask, event)) {
         drawWindowDataToScreen();
         pumpEventsSafe();
-        SDL_Delay(1);
+        COMPAT_IDLE_YIELD();
     }
     return 0;
 }
@@ -5544,7 +5573,7 @@ int XIfEvent(register Display *display,
     while (!checkIfEvent(display, event, predicate, arg)) {
         drawWindowDataToScreen();
         pumpEventsSafe();
-        SDL_Delay(1);
+        COMPAT_IDLE_YIELD();
     }
     return 0;
 }
@@ -5577,7 +5606,7 @@ int XMaskEvent(Display *display, long mask, XEvent *event)
     while (!XCheckMaskEvent(display, mask, event)) {
         drawWindowDataToScreen();
         pumpEventsSafe();
-        SDL_Delay(1);
+        COMPAT_IDLE_YIELD();
     }
     return 0;
 }

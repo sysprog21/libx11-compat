@@ -11,6 +11,10 @@
 # needs a preloaded font (see the pattern rule below).
 WASM_EXAMPLES := clock moire life mandel
 
+# Defined outside the WASM guard so the check-wasm-prereqs diagnostic (runnable
+# from a normal make) can report the pinned version and staged-archive path.
+PIXMAN_VERSION := 0.42.2
+
 ifeq ($(WASM),1)
 
 # Pixman is not an Emscripten built-in port, so it is fetched and cross-built
@@ -28,7 +32,6 @@ ifeq ($(WASM),1)
 # (autoconf/automake/libtool). The pinned digest is that archive's, not the
 # cairographics release tarball's (different bytes).
 WASM_DEP_DIR := $(OUT)/wasm-deps
-PIXMAN_VERSION := 0.42.2
 PIXMAN_WASM_SHA256 := 4191a5084bae000a61e3513b06027b6f8f559d17d61769ed9de27dfb0cec8699
 PIXMAN_WASM_URLS ?= \
     https://gitlab.freedesktop.org/pixman/pixman/-/archive/pixman-$(PIXMAN_VERSION)/pixman-pixman-$(PIXMAN_VERSION).tar.gz
@@ -82,19 +85,125 @@ $(WASM_PIXMAN_LIB): $(PIXMAN_WASM_CACHE) mk/wasm-deps.mk
 	@echo "  WASMDEP pixman-$(PIXMAN_VERSION)"
 	$(Q)rm -rf $(PIXMAN_WASM_SRC) && mkdir -p $(PIXMAN_WASM_SRC)
 	$(Q)tar xzf $< -C $(PIXMAN_WASM_SRC) --strip-components=1
-	$(Q)cd $(PIXMAN_WASM_SRC) && NOCONFIGURE=1 ./autogen.sh >autogen.log 2>&1 && \
-	    emconfigure ./configure \
+	$(Q)cd $(PIXMAN_WASM_SRC) && \
+	    { NOCONFIGURE=1 ./autogen.sh >autogen.log 2>&1 || \
+	      { echo "  FAIL    pixman autogen.sh (need host autoconf/automake/libtool)" >&2; \
+	        tail -30 autogen.log >&2; exit 1; }; } && \
+	    { emconfigure ./configure \
 	    --host=wasm32-unknown-emscripten --prefix=$(WASM_SYSROOT) \
 	    --enable-static --disable-shared \
 	    --disable-mmx --disable-sse2 --disable-ssse3 --disable-vmx \
 	    --disable-arm-simd --disable-neon \
-	    --disable-gtk --disable-libpng --disable-openmp CFLAGS="-O2" >configure.log 2>&1
-	$(Q)emmake make -C $(PIXMAN_WASM_SRC) SUBDIRS=pixman install >$(PIXMAN_WASM_SRC)/build.log 2>&1
+	    --disable-gtk --disable-libpng --disable-openmp CFLAGS="-O2" >configure.log 2>&1 || \
+	      { echo "  FAIL    pixman configure" >&2; tail -30 configure.log >&2; exit 1; }; }
+	$(Q)emmake make -C $(PIXMAN_WASM_SRC) SUBDIRS=pixman install \
+	    >$(PIXMAN_WASM_SRC)/build.log 2>&1 || \
+	    { echo "  FAIL    pixman build" >&2; tail -30 $(PIXMAN_WASM_SRC)/build.log >&2; exit 1; }
 
 # Every first-party object needs pixman.h, so gate compilation on the staged
 # archive. Order-only: the sysroot is deterministic, so a rebuilt archive must
 # not force every object to recompile.
 $(OBJS): | $(WASM_PIXMAN_LIB)
+
+# DejaVu TTFs preloaded into MEMFS so toolkit apps render text in the
+# browser. Xt/Xaw and Motif ask for a scalable ISO8859 font by default (not the
+# "fixed" bitmap alias), and XLoadQueryFont -- the path the toolkits use -- only
+# resolves fonts the cache scan found, not the hardcoded probe-path fallbacks.
+# That scan (src/font.c updateFontCache) is NON-RECURSIVE and reads the search
+# dirs (/usr/share/fonts, ...) directly, so the TTFs must sit at the top level of
+# one, not nested under truetype/dejavu; nested, the scan misses them and the app
+# aborts "no font found". The release zip is fetched and digest-verified like
+# pixman; an offline build passes DEJAVU_TTF_ZIP=/path/to/dejavu-fonts-ttf-<ver>
+# .zip. Every unmodified toolkit app pulls this (WASM_FONT_PRELOAD is part of the
+# app link); the examples draw with core fonts and never touch it.
+DEJAVU_VERSION := 2.37
+DEJAVU_SHA256 := 7576310b219e04159d35ff61dd4a4ec4cdba4f35c00e002a136f00e96a908b0a
+DEJAVU_URLS ?= \
+    https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_$(subst .,_,$(DEJAVU_VERSION))/dejavu-fonts-ttf-$(DEJAVU_VERSION).zip
+DEJAVU_TTF_ZIP ?=
+DEJAVU_CACHE := $(WASM_DEP_DIR)/dejavu-fonts-ttf-$(DEJAVU_VERSION).zip
+NOTO_CJK_SHA256 := dce08bd4fd91aa8aa76ed8fea4b694c2dfb8550f67871e326843212ddbeb88b4
+NOTO_CJK_URLS ?= \
+    https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf
+NOTO_CJK_FONT ?=
+NOTO_CJK_CACHE := $(WASM_DEP_DIR)/NotoSansCJKtc-Regular.otf
+WASM_FONT_DIR := $(OUT)/wasm-fonts
+WASM_FONT_STAMP := $(WASM_FONT_DIR)/.stamp
+# Top level of a search-path dir so the non-recursive font-cache scan finds it.
+WASM_FONT_TTF_DIR := $(WASM_FONT_DIR)/usr/share/fonts
+
+$(DEJAVU_CACHE): | $(WASM_DEP_DIR)
+	@set -f; sha=$(DEJAVU_SHA256); \
+	digest() { (sha256sum "$$1" 2>/dev/null || shasum -a 256 "$$1") | cut -d' ' -f1; }; \
+	if [ -n "$(DEJAVU_TTF_ZIP)" ]; then \
+	    echo "  COPY    $(notdir $(DEJAVU_TTF_ZIP))"; \
+	    cp "$(DEJAVU_TTF_ZIP)" "$@.tmp" || exit 1; \
+	    got=`digest "$@.tmp"`; \
+	    if [ "$$got" != "$$sha" ]; then \
+	        echo "DEJAVU_TTF_ZIP sha256 mismatch: got $$got want $$sha" >&2; \
+	        rm -f "$@.tmp"; exit 1; \
+	    fi; \
+	else \
+	    ok=0; \
+	    for url in $(DEJAVU_URLS); do \
+	        echo "  FETCH   $$url"; \
+	        curl -fsSL --max-time 120 -o "$@.tmp" "$$url" || continue; \
+	        got=`digest "$@.tmp"`; \
+	        if [ "$$got" = "$$sha" ]; then ok=1; break; fi; \
+	        echo "  ...digest mismatch from this mirror, trying next" >&2; \
+	    done; \
+	    if [ "$$ok" != 1 ]; then \
+	        echo "no dejavu-$(DEJAVU_VERSION) mirror returned the expected digest $$sha" >&2; \
+	        rm -f "$@.tmp"; exit 1; \
+	    fi; \
+	fi
+	@mv "$@.tmp" "$@"
+
+$(NOTO_CJK_CACHE): | $(WASM_DEP_DIR)
+	@set -f; sha=$(NOTO_CJK_SHA256); \
+	digest() { (sha256sum "$$1" 2>/dev/null || shasum -a 256 "$$1") | cut -d' ' -f1; }; \
+	if [ -n "$(NOTO_CJK_FONT)" ]; then \
+	    echo "  COPY    $(notdir $(NOTO_CJK_FONT))"; \
+	    cp "$(NOTO_CJK_FONT)" "$@.tmp" || exit 1; \
+	    got=`digest "$@.tmp"`; \
+	    if [ "$$got" != "$$sha" ]; then \
+	        echo "NOTO_CJK_FONT sha256 mismatch: got $$got want $$sha" >&2; \
+	        rm -f "$@.tmp"; exit 1; \
+	    fi; \
+	else \
+	    ok=0; \
+	    for url in $(NOTO_CJK_URLS); do \
+	        echo "  FETCH   $$url"; \
+	        curl -fL --max-time 180 -o "$@.tmp" "$$url" || continue; \
+	        got=`digest "$@.tmp"`; \
+	        if [ "$$got" = "$$sha" ]; then ok=1; break; fi; \
+	        echo "  ...digest mismatch from this mirror, trying next" >&2; \
+	    done; \
+	    if [ "$$ok" != 1 ]; then \
+	        echo "no Noto CJK mirror returned the expected digest $$sha" >&2; \
+	        rm -f "$@.tmp"; exit 1; \
+	    fi; \
+	fi
+	@mv "$@.tmp" "$@"
+
+$(WASM_FONT_STAMP): $(DEJAVU_CACHE) mk/wasm-deps.mk
+	@echo "  WASMFONT dejavu-$(DEJAVU_VERSION)"
+	$(Q)rm -rf $(WASM_FONT_DIR) && mkdir -p $(WASM_FONT_TTF_DIR)
+	$(Q)unzip -o -j $< "*/DejaVuSans.ttf" "*/DejaVuSansMono.ttf" \
+	    -d $(WASM_FONT_TTF_DIR) >/dev/null
+	$(Q)touch $@
+
+# Preload flags an app adds to render scalable text: mount the staged font tree
+# at /usr/share/fonts, matching the core's search path. Requires the FS (kept on
+# by default; only the examples strip it). The .data sidecar carries the fonts.
+WASM_FONT_PRELOAD = --preload-file \
+    $(abspath $(WASM_FONT_DIR))/usr/share/fonts@/usr/share/fonts
+WASM_CJK_FONT_PRELOAD = --preload-file \
+    $(abspath $(NOTO_CJK_CACHE))@/usr/share/fonts/NotoSansCJKtc-Regular.otf
+
+.PHONY: wasm-fonts
+## Stage the wasm DejaVu font tree for --preload-file
+wasm-fonts: $(WASM_FONT_STAMP)
 
 .PHONY: wasm-deps
 ## Stage the wasm dependency sysroot (pixman) without compiling the library
@@ -127,21 +236,30 @@ WASM_EXAMPLE_HTML := $(addprefix $(OUT)/,$(addsuffix .html,$(WASM_EXAMPLES)))
 # frame, dark/light theme, loading overlay) shared by every example; it derives
 # its title from the page name. emmalloc is smaller than the default dlmalloc.
 WASM_SHELL := examples/wasm-shell.html
-WASM_EXAMPLE_LDFLAGS := -sMALLOC=emmalloc --shell-file $(WASM_SHELL)
+# Size levers beyond emmalloc, both safe for these browser-only artifacts:
+# -sENVIRONMENT=web drops the node/worker JS glue and -sDYNAMIC_EXECUTION=0
+# removes eval-based codegen from the loader. -sFILESYSTEM=0 was considered but
+# left off: it strips the virtual filesystem entirely, and whether the core
+# touches a file syscall at init (font-cache probing) under emscripten is not
+# verifiable in the headless build smoke, only in a browser. --closure 1 is a
+# further cut but can miscompile the custom shell. Revisit both once a Safari
+# runtime pass confirms a canvas still paints.
+WASM_EXAMPLE_LDFLAGS := -sMALLOC=emmalloc -sENVIRONMENT=web \
+    -sDYNAMIC_EXECUTION=0 --shell-file $(WASM_SHELL)
 
-# Font stack. A text-free example (clock, moire, mandel) never loads a font, so
-# it drops the SDL_ttf/freetype/harfbuzz stack (about 1.6 MB, over half the
-# artifact): filter the TTF/freetype port flags out of the compile+link and
-# satisfy font.c/xft.c's residual TTF references (pulled in by XOpenDisplay's
-# font-storage init) with no-op stubs (examples/wasm-nofont-stub.c). The example
-# .c files include no SDL headers, so the -sUSE_SDL=2 left in the filtered
-# CPPFLAGS still links the core's SDL2 use.
+# Font stack. These examples never open a font file, so they drop the
+# SDL_ttf/freetype/harfbuzz stack (about 1.6 MB, over half the artifact): filter
+# the TTF/freetype port flags out of the compile+link and satisfy font.c/xft.c's
+# residual TTF references (pulled in by XOpenDisplay's font-storage init) with
+# no-op stubs (examples/wasm-nofont-stub.c). The example .c files include no SDL
+# headers, so the -sUSE_SDL=2 left in the filtered CPPFLAGS still links the
+# core's SDL2 use.
 #
-# life draws text (XDrawString on the "fixed" bitmap font), so it keeps the full
-# font stack via an explicit rule below: loading even the bitmap font still opens
-# a TTF face today, so the stub's NULL face would make the load fail. Letting
-# bitmap fonts load without a TTF face is a core font.c change tracked
-# separately; until then only text-free examples shrink.
+# life draws text (XDrawString on the default "fixed" font). It used to keep the
+# full font stack because loading even the bitmap alias opened a TTF face; the
+# core now loads fixed/cursor/6x13 with a NULL face under __EMSCRIPTEN__ and
+# renders them from the embedded 6x13 bitmap, so life drops freetype too and
+# shares the single pattern rule below.
 WASM_EXAMPLE_CPPFLAGS := $(filter-out -sUSE_SDL_TTF=2 -sUSE_FREETYPE=1,$(CPPFLAGS))
 WASM_EXAMPLE_LINK_LIBS := $(PIXMAN_LIBS) -lm
 WASM_NOFONT_STUB := $(OUT)/examples/wasm-nofont-stub.o
@@ -153,14 +271,7 @@ $(WASM_NOFONT_STUB): examples/wasm-nofont-stub.c mk/wasm-deps.mk
 	@echo "  CC      $<"
 	$(Q)$(CC) -sUSE_SDL=2 -sUSE_SDL_TTF=2 $(FP_CFLAGS) -c $< -o $@
 
-# life keeps the full font stack. This explicit rule wins over the text-free
-# pattern rule below.
-$(OUT)/life.html: examples/life.c $(TARGET) $(WASM_SHELL) mk/wasm-deps.mk
-	@echo "  LD      $@"
-	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
-	    $(TARGET) $(LDLIBS) $(WASM_EXAMPLE_LDFLAGS) -o $@
-
-# Text-free examples: drop the font stack, link the TTF stub.
+# Every example drops the font stack and links the TTF stub.
 $(OUT)/%.html: examples/%.c $(TARGET) $(WASM_NOFONT_STUB) $(WASM_SHELL) mk/wasm-deps.mk
 	@echo "  LD      $@"
 	$(Q)$(CC) $(WASM_EXAMPLE_CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
@@ -214,6 +325,30 @@ $(WASM_XAW_TEST): tests/test-libxaw-link.c $(WASM_XAW_ARCHIVES) mk/wasm-deps.mk
 
 .PHONY: wasm-xaw-test
 wasm-xaw-test: $(WASM_XAW_TEST)
+
+# Browser idle-yield override object. The core's blocking event waits
+# (XNextEvent and friends) call a hook that is NULL by default; an unmodified
+# showcase app links this object, built with -sASYNCIFY, whose constructor
+# installs emscripten_sleep(0) so the app yields to the browser instead of
+# freezing the tab. The in-tree examples do NOT link it (they drive
+# set_main_loop and stay ASYNCIFY-free); it lives here so the showcase app recipe
+# has one place to pull the yield from. Built by the generic object rule.
+WASM_IDLE_YIELD_OBJ := $(OBJROOT)/compat/wasm-idle-yield.o
+
+# Link smoke for the yield override: a program that blocks in XNextEvent, linked
+# with the override and -sASYNCIFY. A clean link proves the override resolves
+# emscripten_sleep (which needs ASYNCIFY) and supersedes the core's default hook,
+# so the browser yield mechanism is wired end to end.
+WASM_YIELD_TEST := $(OUT)/tests/test-wasm-yield.js
+$(WASM_YIELD_TEST): tests/test-wasm-yield.c $(TARGET) $(WASM_IDLE_YIELD_OBJ) \
+    mk/wasm-deps.mk
+	@mkdir -p $(dir $@)
+	@echo "  LD      $@"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) tests/test-wasm-yield.c \
+	    $(TARGET) $(WASM_IDLE_YIELD_OBJ) $(LDLIBS) -sASYNCIFY -o $@
+
+.PHONY: wasm-yield-test
+wasm-yield-test: $(WASM_YIELD_TEST)
 
 # The wasm leg gets its own default goal instead of `all`. GNU Make accumulates
 # prerequisites across every `all:` rule, and the toolkit fragments (libXt,
@@ -298,10 +433,72 @@ check-wasm-xaw:
 	esac; \
 	echo "  OK      check-wasm-xaw (Xaw stack links on the core)"
 
+# Link-smoke the browser idle-yield override. Skips without emcc.
+.PHONY: check-wasm-yield
+## Link-smoke the wasm idle-yield override (skips when emcc is unavailable)
+check-wasm-yield:
+	$(Q)if ! command -v emcc >/dev/null 2>&1; then \
+	    echo "  SKIP    check-wasm-yield (emcc not found)"; \
+	    exit 0; \
+	fi; \
+	$(MAKE) WASM=1 wasm-yield-test || exit 1; \
+	if [ ! -s $(OUT)/tests/test-wasm-yield.wasm ]; then \
+	    echo "check-wasm-yield: missing test-wasm-yield.wasm" >&2; exit 1; \
+	fi; \
+	case `file -b $(OUT)/tests/test-wasm-yield.wasm` in \
+	    *WebAssembly*) ;; \
+	    *) echo "check-wasm-yield: not a wasm module" >&2; exit 1;; \
+	esac; \
+	echo "  OK      check-wasm-yield (idle-yield override links with ASYNCIFY)"
+
+# Structural runtime smoke: fully compile each example module in node (parses
+# every section and function body, a real step up from the 4-byte magic check
+# the link smokes use). It does not instantiate or run main, so it stays
+# headless and works with the -sENVIRONMENT=web artifacts; a canvas paint check
+# is still manual in Safari. Skips without emcc or node.
+.PHONY: check-wasm-node
+## Compile-validate the wasm example modules in node (skips without emcc/node)
+check-wasm-node:
+	$(Q)if ! command -v emcc >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then \
+	    echo "  SKIP    check-wasm-node (emcc or node not found)"; \
+	    exit 0; \
+	fi; \
+	$(MAKE) WASM=1 examples-wasm || exit 1; \
+	node scripts/wasm-node-smoke.mjs \
+	    $(addprefix $(OUT)/,$(addsuffix .wasm,$(WASM_EXAMPLES)))
+
+# Report the wasm toolchain prerequisites and pixman staging status, so a
+# missing tool (emcc/emar, host autotools for the pixman cross-build, node for
+# the runtime smoke) is an explicit diagnostic rather than a surprise failure
+# mid-build. Emscripten 3.1.45+ is the tested floor: older releases predate some
+# ASYNCIFY/-flto flag semantics the leg relies on.
+.PHONY: check-wasm-prereqs
+## Report WebAssembly toolchain prerequisites and pixman staging status
+check-wasm-prereqs:
+	@echo "WebAssembly toolchain (tested emcc floor: 3.1.45):"
+	@for t in emcc emar node file curl autoreconf automake libtool; do \
+	    if command -v $$t >/dev/null 2>&1; then \
+	        printf '  %-11s %s\n' "$$t" "`command -v $$t`"; \
+	    else \
+	        printf '  %-11s MISSING\n' "$$t"; \
+	    fi; \
+	done
+	@emcc --version 2>/dev/null | head -1 | sed 's/^/  emcc:       /' || true
+	@if [ -s $(OUT)/wasm-sysroot/lib/libpixman-1.a ]; then \
+	    echo "  pixman:     staged ($(OUT)/wasm-sysroot/lib/libpixman-1.a)"; \
+	elif [ -n "$(PIXMAN_WASM_TARBALL)" ]; then \
+	    echo "  pixman:     offline tarball set (PIXMAN_WASM_TARBALL)"; \
+	else \
+	    echo "  pixman:     will fetch pixman-$(PIXMAN_VERSION) from the mirror"; \
+	fi
+
 # One-command coverage of every wasm smoke. Each target skips cleanly without
 # emcc, so this stays green on a toolchain-free CI. Not folded into the default
 # `check`: the example smoke fetches/builds pixman (network plus host autotools),
-# which the base test gate must not require.
+# which the base test gate must not require. check-wasm-motif (mk/wasm-motif.mk)
+# is a heavier separate build, so it stays out of the aggregate; run it alongside
+# in CI.
 .PHONY: check-wasm-all
-## Run every WebAssembly smoke (examples + libXt + Xaw); skips without emcc
-check-wasm-all: check-wasm check-wasm-libxt check-wasm-xaw
+## Run every WebAssembly smoke (examples + libXt + Xaw + yield + node); skips without emcc
+check-wasm-all: check-wasm check-wasm-libxt check-wasm-xaw check-wasm-yield \
+    check-wasm-node
