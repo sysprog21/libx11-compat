@@ -153,7 +153,13 @@ $(OUT)/mosaic.data: $(MOSAIC_WASM_STAMP)
 	$(Q)test ! -e $(MOSAIC_WASM_WORK)/src/Mosaic.data || \
 	    cp $(MOSAIC_WASM_WORK)/src/Mosaic.data $@
 
-$(MOSAIC_WASM_HTML): $(MOSAIC_WASM_STAMP) $(WASM_SHELL) mk/wasm-mosaic.mk
+# The pages bundle depends only on each app's .html. xcircuit and xnedit copy
+# their module into $(OUT) from inside the .html recipe, but mosaic emits the
+# module as separate .js/.wasm/.data targets, so list them as prerequisites
+# here; without this, building (and bundling) mosaic.html stages no module and
+# the deployed showcase 404s on mosaic.js/.wasm.
+$(MOSAIC_WASM_HTML): $(MOSAIC_WASM_STAMP) $(WASM_SHELL) mk/wasm-mosaic.mk \
+    $(OUT)/mosaic.js $(OUT)/mosaic.wasm $(OUT)/mosaic.data
 	@echo "  HTML    $@"
 	$(Q)sed 's#{{{ SCRIPT }}}#<script>document.body.classList.add("fullscreen-app");Module.libx11CompatFullscreenShell=true;Module.libx11CompatSkipInitialFocus=true;Module.libx11CompatBridgeDomEvents=true;Module.libx11CompatHasCcallBridge=true;Module.libx11CompatAssetVersion="20260802-mosaic-input";Module.locateFile=function(path,prefix){var p=path.replace(/^Mosaic\\./,"mosaic.");return /\\.(wasm|data)$$/.test(p)?(prefix||"")+p+"?v="+Module.libx11CompatAssetVersion:(prefix||"")+p;};</script><script src="mosaic.js?v=20260802-mosaic-input"></script>#' \
 	    $(WASM_SHELL) > $@

@@ -146,7 +146,13 @@ $(OUT)/xwpe.data: $(XWPE_WASM_STAMP)
 	@echo "  COPY    $@"
 	$(Q)test ! -e $(XWPE_WASM_WORK)/we.data || cp $(XWPE_WASM_WORK)/we.data $@
 
-$(XWPE_WASM_HTML): $(XWPE_WASM_STAMP) $(WASM_SHELL) mk/wasm-xwpe.mk
+# The pages bundle depends only on each app's .html. xcircuit and xnedit copy
+# their module into $(OUT) from inside the .html recipe, but xwpe emits the
+# module as separate .js/.wasm/.data targets, so list them as prerequisites
+# here; without this, building (and bundling) xwpe.html stages no module and the
+# deployed showcase 404s on xwpe.js/.wasm.
+$(XWPE_WASM_HTML): $(XWPE_WASM_STAMP) $(WASM_SHELL) mk/wasm-xwpe.mk \
+    $(OUT)/xwpe.js $(OUT)/xwpe.wasm $(OUT)/xwpe.data
 	@echo "  HTML    $@"
 	$(Q)sed 's#{{{ SCRIPT }}}#<script>Module.thisProgram="xwpe";Module.libx11CompatDisableImeBridge=true;Module.libx11CompatBridgeDomEvents=true;Module.libx11CompatHasCcallBridge=true;Module.libx11CompatAssetVersion="20260802-src-preload";Module.locateFile=function(path,prefix){return /\\.(wasm|data)$$/.test(path)?(prefix||"")+path+"?v="+Module.libx11CompatAssetVersion:(prefix||"")+path;};Module.preRun.push(function(){ENV.XWPE_LIB="/usr/local/lib/xwpe";});</script><script src="xwpe.js?v=20260802-src-preload"></script>#' \
 	    $(WASM_SHELL) > $@
