@@ -17,6 +17,95 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+
+EM_JS(void, browser_clipboard_install_key_listener, (const char *text), {
+    if (window.__libx11ClipboardKeyListener)
+        return;
+    window.__libx11ClipboardKeyListener = true;
+    const value = UTF8ToString(text);
+    function copyText() {
+        const active = document.activeElement;
+        const area = document.createElement("textarea");
+        area.value = value;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.top = "0";
+        area.style.left = "-9999px";
+        document.body.appendChild(area);
+        area.focus();
+        area.select();
+        try {
+            window.__libx11ClipboardKeyCopyOk =
+                !!document.execCommand && document.execCommand("copy");
+        } catch (e) {
+            window.__libx11ClipboardKeyCopyOk = false;
+        } finally {
+            document.body.removeChild(area);
+            if (active && active.focus)
+                active.focus();
+        }
+    }
+    window.addEventListener("keydown", function (event) {
+        if (!event.ctrlKey && !event.metaKey && !event.altKey &&
+            event.key && event.key.toLowerCase() === "c")
+            copyText();
+    }, true);
+});
+
+EM_JS(int, browser_clipboard_last_key_copy_ok, (void), {
+    return window.__libx11ClipboardKeyCopyOk ? 1 : 0;
+});
+
+EM_ASYNC_JS(int, browser_clipboard_write, (const char *text), {
+    const value = UTF8ToString(text);
+    const active = document.activeElement;
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.top = "0";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    try {
+        if (document.execCommand && document.execCommand("copy"))
+            return 1;
+    } catch (e) {
+    } finally {
+        document.body.removeChild(area);
+        if (active && active.focus)
+            active.focus();
+    }
+    if (!navigator.clipboard || !navigator.clipboard.writeText)
+        return 0;
+    try {
+        await navigator.clipboard.writeText(value);
+        return 1;
+    } catch (e) {
+        return 0;
+    }
+});
+
+EM_ASYNC_JS(char *, browser_clipboard_read, (void), {
+    if (!navigator.clipboard || !navigator.clipboard.readText)
+        return 0;
+    try {
+        const text = await navigator.clipboard.readText();
+        const len = lengthBytesUTF8(text) + 1;
+        const ptr = _malloc(len);
+        if (!ptr)
+            return 0;
+        stringToUTF8(text, ptr, len);
+        return ptr;
+    } catch (e) {
+        return 0;
+    }
+});
+#endif
+
 static volatile bool quitRequested = false;
 
 /* Handler only sets the flag; everything else (SDL, stdio, malloc) is not
@@ -37,6 +126,7 @@ static Bool isSelectionNotify(Display *display, XEvent *event, XPointer arg)
 
 #define WIN_W 560
 #define WIN_H 220
+static const char SAMPLE_TEXT[] = "clipboard text from SDL";
 
 typedef struct {
     Display *display;
@@ -144,6 +234,21 @@ static void showTargets(App *app)
 
 static void showClipboardText(App *app)
 {
+#ifdef __EMSCRIPTEN__
+    char *browserText = browser_clipboard_read();
+    if (browserText) {
+        SDL_SetClipboardText(browserText);
+        app->status = "Browser clipboard text:";
+        snprintf(app->details, sizeof(app->details), "%s", browserText);
+        free(browserText);
+        return;
+    }
+    app->status = "Browser clipboard read failed";
+    snprintf(app->details, sizeof(app->details), "%s",
+             "Use C first, or allow clipboard access when the browser asks.");
+    return;
+#endif
+
     convertSelection(app, app->utf8);
 
     XEvent event;
@@ -194,8 +299,17 @@ static int runOnce(App *app)
 static void seedClipboard(App *app)
 {
     XSetSelectionOwner(app->display, app->clipboard, None, CurrentTime);
-    SDL_SetClipboardText("clipboard text from SDL");
+    SDL_SetClipboardText(SAMPLE_TEXT);
+#ifdef __EMSCRIPTEN__
+    if (browser_clipboard_last_key_copy_ok() ||
+        browser_clipboard_write(SAMPLE_TEXT)) {
+        app->status = "Copied sample text into browser clipboard";
+    } else {
+        app->status = "Browser clipboard write failed";
+    }
+#else
     app->status = "Copied sample text into SDL clipboard";
+#endif
     snprintf(app->details, sizeof(app->details), "%s",
              "Press T to inspect targets or V to read the text back.");
 }
@@ -218,6 +332,10 @@ int main(int argc, char **argv)
 
     signal(SIGINT, onSignal);
     signal(SIGTERM, onSignal);
+
+#ifdef __EMSCRIPTEN__
+    browser_clipboard_install_key_listener(SAMPLE_TEXT);
+#endif
 
     app.display = XOpenDisplay(NULL);
     if (!app.display) {

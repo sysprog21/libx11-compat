@@ -70,6 +70,22 @@ void compatTrace(const char *fmt, ...);
 #define LIBX11_COMPAT_HIDDEN
 #endif
 
+/* Thread-local storage qualifier that degrades to plain static in the
+ * single-threaded (non-pthread) Emscripten build. That build does not
+ * zero-initialize a thread's TLS block, so a __thread variable reads
+ * engine-dependent garbage on first use: under headless WebKitGTK the
+ * XOpenDisplay recursion guard tripped on its own uninitialized flag and every
+ * client came up "Can't open display". With no pthreads there is exactly one
+ * thread, so a plain static is behaviorally identical and lives in the data
+ * segment, which is initialized correctly. Every other target keeps real
+ * thread-local storage.
+ */
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+#define COMPAT_THREAD_LOCAL
+#else
+#define COMPAT_THREAD_LOCAL __thread
+#endif
+
 /* Returns nonzero when LIBX11_COMPAT_WARN_UNIMPLEMENTED is set to a non-empty,
  * non-"0" value. Lets a release build surface unimplemented-call coverage on
  * demand (e.g. a missing-Xlib gate driving a real app) without a debug rebuild.

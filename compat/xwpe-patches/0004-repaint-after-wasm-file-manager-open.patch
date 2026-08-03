@@ -1,0 +1,20 @@
+Repaint wasm desktop after File Manager opens a file.
+
+Opening a file mutates the editor window tree and then returns directly from the
+File Manager handler. In the browser build the dialog's saved view/backing
+shadow can otherwise be presented over the newly opened editor. Force a fresh
+desktop repaint at that successful exit.
+
+--- a/we_fl_unix.c
++++ b/we_fl_unix.c
+@@ -1275,6 +1275,10 @@ int WpeHandleFileManager(ECNT * cn)
+             svdir = NULL;
+           }
+ 
++#ifdef __EMSCRIPTEN__
++          e_repaint_desk_nopic(cn->f[cn->mxedt]);
++#endif
++
+           return(0);
+         }
+ 

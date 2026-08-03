@@ -1,0 +1,40 @@
+Use measured Xft ASCII advance for wasm cell width.
+
+XftFont::max_advance_width can be wider than the actual monospace ASCII cell
+advance. xwpe uses font_width for both drawing and mouse hit testing, so use the
+rendered "M" advance under wasm instead of a hard-coded width.
+
+--- a/WeXterm.c
++++ b/WeXterm.c
+@@ -247,6 +247,15 @@ void WpeXFontGet(XrmDatabase xresdb)
+   /* Override font metrics from Xft */
+   WpeXInfo.font_height = WpeXInfo.xftfont->ascent + WpeXInfo.xftfont->descent;
+   WpeXInfo.font_width = WpeXInfo.xftfont->max_advance_width;
++#ifdef __EMSCRIPTEN__
++ {
++  XGlyphInfo ext;
++  XftTextExtentsUtf8(WpeXInfo.display, WpeXInfo.xftfont,
++    (const FcChar8 *)"M", 1, &ext);
++  if (ext.xOff > 0)
++   WpeXInfo.font_width = ext.xOff;
++ }
++#endif
+   WpeXInfo.font_descent = WpeXInfo.xftfont->descent;
+ 
+   /* Save configured pattern for fallback lookups */
+@@ -359,6 +368,15 @@ int e_x_refit_font_for_dpi(void)
+  WpeXInfo.xftfont = newfont;
+  WpeXInfo.font_height  = WpeXInfo.xftfont->ascent + WpeXInfo.xftfont->descent;
+  WpeXInfo.font_width   = WpeXInfo.xftfont->max_advance_width;
++#ifdef __EMSCRIPTEN__
++ {
++  XGlyphInfo ext;
++  XftTextExtentsUtf8(WpeXInfo.display, WpeXInfo.xftfont,
++    (const FcChar8 *)"M", 1, &ext);
++  if (ext.xOff > 0)
++   WpeXInfo.font_width = ext.xOff;
++ }
++#endif
+  WpeXInfo.font_descent = WpeXInfo.xftfont->descent;
+ 
+  if (WpeXInfo.xftpattern)

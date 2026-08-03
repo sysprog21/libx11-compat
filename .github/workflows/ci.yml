@@ -85,6 +85,10 @@ env:
   # chain. python3-pil backs the offscreen replay smoke's image assertions.
   GRACE_BUILD_PKGS: "python3-pil"
   DIFFERENTIAL_PKGS: "imagemagick openssh-client python3-pil rsync xauth xvfb"
+  # Pinned Emscripten SDK, shared by every wasm job. Folded into each wasm cache
+  # key so an SDK bump never reuses a sysroot/deps/port cache built by the old
+  # SDK.
+  EMSDK_VERSION: "3.1.64"
 
 jobs:
   # ---- Lint: formatting, newline, security, cppcheck ----
@@ -2278,3 +2282,239 @@ jobs:
       - name: ccache stats
         if: ${{ !cancelled() }}
         run: ccache --show-stats
+
+  # WebAssembly leg, split into parallel cross-compile-and-paint jobs so it is
+  # no longer one ~17-minute serial pole. Each matrix entry is self-contained:
+  # it rebuilds the shared core+toolkit foundation and then its own app, sharing
+  # no build state with the others (isolated runners cannot race). This trades
+  # duplicated toolkit compute for wall-clock -- the entries run concurrently.
+  # Within a build, make -j$(nproc) parallelizes compilation; the check-wasm-all
+  # loop keeps its sub-targets serial (each sub-make still parallelizes via the
+  # jobserver) to avoid the documented shared-output race. The pixman sysroot,
+  # Motif/xwpe clones, and the Emscripten port cache are cached, so only
+  # first-party sources rebuild per run. check-wasm-* skip cleanly without emcc;
+  # here emcc is present so they actually run. MOTIF_BUILD_PKGS supplies the host
+  # autotools (pixman autogen.sh) and bison/flex (Motif clone); node (the runtime
+  # compile smoke) is preinstalled on the runner.
+  wasm:
+    name: wasm (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: examples
+            targets: check-wasm-all
+          - name: xcircuit
+            targets: check-wasm-xcircuit
+          - name: mosaic
+            targets: check-wasm-motif check-wasm-mosaic
+          - name: xwpe
+            targets: check-wasm-xwpe
+          - name: xnedit
+            targets: check-wasm-xnedit
+    env:
+      # Point the Emscripten port/sysroot cache at a workspace path we can cache
+      # across runs; without it every run rebuilds the SDL2/SDL_ttf/freetype
+      # ports cold, which under -j serializes behind emcc's port lock.
+      EM_CACHE: ${{ github.workspace }}/.emcache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make pkg-config python3 gcc git file curl ${{ env.MOTIF_BUILD_PKGS }}
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      # Per-entry cache keys: the parallel matrix entries build different subsets
+      # (examples never clones Motif/xwpe, xnedit needs Motif, ...), so a single
+      # shared immutable key would let whichever entry saves first freeze an
+      # incomplete cache the others cannot update. The restore-keys prefix still
+      # lets a cold entry warm-start from any sibling's cache.
+      - name: Cache staged wasm sysroot (pixman) and Motif clone
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/wasm-sysroot
+            build/wasm-deps
+            build/upstream/motif
+            build/upstream/xwpe
+          key: wasm-sysroot-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk', 'mk/xwpe.mk', 'mk/wasm-xwpe.mk', 'compat/xwpe-wasm/**') }}-${{ matrix.name }}
+          restore-keys: |
+            wasm-sysroot-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk', 'mk/xwpe.mk', 'mk/wasm-xwpe.mk', 'compat/xwpe-wasm/**') }}-
+            wasm-sysroot-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-
+
+      - name: Cache Emscripten ports (SDL2/SDL_ttf/freetype)
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.emcache
+          key: emcache-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-${{ matrix.name }}
+          restore-keys: |
+            emcache-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-
+
+      - name: Report wasm prerequisites
+        run: make check-wasm-prereqs
+
+      - name: Install WebKit WebDriver for the paint check
+        # Distro WebKitGTK + its W3C WebDriver, from Ubuntu's own repos -- no
+        # Playwright, no npm, no CDN browser download. WebKitGTK is ABI-matched
+        # to the runner's system libraries and has no headless mode, so the paint
+        # check runs under xvfb. scripts/wasm-paint-check.mjs autodetects
+        # WebKitWebDriver on Linux (safaridriver on macOS for local runs).
+        run: sudo apt-get install -y --no-install-recommends webkit2gtk-driver xvfb
+
+      - name: WebAssembly ${{ matrix.name }} (cross-compile + WebKitGTK paint)
+        # Pin the Xvfb screen to 24-bit depth (WebKit rendering init can fail on
+        # a shallower default). WASM_PAINT_REQUIRED makes a missing/unstartable
+        # driver a hard failure here (locally it skips); the longer timeout
+        # covers first WebKitGTK start + wasm compile under loaded CI. The sysctl
+        # relaxes Ubuntu 24.04's unprivileged-userns restriction that WebKitGTK's
+        # sandbox needs to launch MiniBrowser; harmless where the key is absent.
+        # The loop keeps multi-target entries (motif then mosaic) serial to avoid
+        # the shared-output race; each make -j parallelizes its own build.
+        env:
+          WASM_PAINT_REQUIRED: "1"
+          WASM_PAINT_TIMEOUT_MS: "45000"
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          for t in ${{ matrix.targets }}; do
+            xvfb-run -a -s "-screen 0 1280x720x24" make -j"$(nproc)" "$t" || exit 1
+          done
+
+  # Assemble the GitHub Pages showcase bundle. This rebuilds every app to bundle
+  # it, so it is the wall-clock long pole; it runs as its own job in parallel
+  # with the paint matrix above rather than after it. make -j builds the apps
+  # concurrently on top of the shared toolkit -- one make graph dedupes the
+  # toolkit targets, so there is no cross-invocation shared-output race here. No
+  # browser: pages only cross-compiles and bundles. Deploy is a separate job
+  # (wasm-deploy) gated on both this job and the paint matrix, so a broken app
+  # never ships; here the bundle is only uploaded as an artifact.
+  wasm-pages:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      EM_CACHE: ${{ github.workspace }}/.emcache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make pkg-config python3 gcc git file curl ${{ env.MOTIF_BUILD_PKGS }}
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v16
+        with:
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      - name: Cache staged wasm sysroot (pixman) and Motif clone
+        uses: actions/cache@v6
+        with:
+          path: |
+            build/wasm-sysroot
+            build/wasm-deps
+            build/upstream/motif
+            build/upstream/xwpe
+          key: wasm-sysroot-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk', 'mk/xwpe.mk', 'mk/wasm-xwpe.mk', 'compat/xwpe-wasm/**') }}-pages
+          restore-keys: |
+            wasm-sysroot-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-${{ hashFiles('mk/wasm-deps.mk', 'mk/motif.mk', 'mk/wasm-motif.mk', 'mk/xwpe.mk', 'mk/wasm-xwpe.mk', 'compat/xwpe-wasm/**') }}-
+            wasm-sysroot-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-
+
+      - name: Cache Emscripten ports (SDL2/SDL_ttf/freetype)
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.emcache
+          key: emcache-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-pages
+          restore-keys: |
+            emcache-v1-${{ runner.os }}-emsdk${{ env.EMSDK_VERSION }}-
+
+      - name: Report wasm prerequisites
+        run: make check-wasm-prereqs
+
+      - name: Build GitHub Pages wasm showcase bundle
+        run: make -j"$(nproc)" check-wasm-pages
+
+      - name: Upload the built showcase bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pages
+          path: build/pages
+          retention-days: 1
+          include-hidden-files: true
+
+  # Publish the showcase bundle, only on a push to main and only after both the
+  # paint matrix (every app renders) and wasm-pages (bundle builds) succeed, so a
+  # broken app can never ship. It consumes the artifact from wasm-pages rather
+  # than rebuilding, so gating deploy on the matrix costs no extra build time.
+  wasm-deploy:
+    needs: [wasm, wasm-pages]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    # Deploy uses the PAGES_DEPLOY_TOKEN PAT, so GITHUB_TOKEN needs no write.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download the built showcase bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-pages
+          path: build/pages
+
+      # Only republish gh-pages when the push changed something that feeds the
+      # built pages: C sources, the build system, or the app/example/showcase
+      # inputs (examples, compat patches, build scripts, and UI fixtures baked
+      # into the .data bundles). Docs/CI-only pushes rebuild for validation but
+      # do not deploy. This is a publish gate, so it fails open: any doubt about
+      # what changed -> deploy.
+      - name: Detect source or build-system changes
+        id: pages-changes
+        env:
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          # First push (all-zero base) or a base GC'd by a force-push: cannot
+          # diff, so deploy. Shallow-fetch just the base so a tree diff works
+          # without full history and without the compare API's 300-file cap.
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git fetch --no-tags --depth=1 origin "$BASE" 2>/dev/null; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Capture first (fail open if the diff itself errors), then match with
+          # a here-string: piping into grep -q would let grep close the pipe on
+          # its first match, SIGPIPE the still-writing git diff, and -o pipefail
+          # would flip a real match to relevant=false on large pushes.
+          changed=$(git diff --name-only "$BASE" "$HEAD") \
+            || { echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          if grep -Eq '\.(c|h|mk)$|(^|/)Makefile$|(^|/)(examples|compat|scripts|tests/ui)/' <<< "$changed"; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy showcase to sysprog21/libx11-compat-demo
+        if: ${{ steps.pages-changes.outputs.relevant == 'true' }}
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.PAGES_DEPLOY_TOKEN }}
+          external_repository: sysprog21/libx11-compat-demo
+          publish_branch: gh-pages
+          publish_dir: build/pages
+          # keep .nojekyll so _-prefixed asset dirs are served
+          enable_jekyll: false

@@ -52,9 +52,9 @@ $(XNEDIT_SOURCE_STAMP): mk/xnedit.mk $(XNEDIT_PATCHES)
 	    git clean $(MOTIF_GIT_Q) -fdx >/dev/null
 	$(Q)set -e; for patch in $(abspath $(XNEDIT_PATCHES)); do \
 	    cd $(abspath $(XNEDIT_SRC_DIR)); \
-	    if git apply --check "$$patch"; then \
-	        git apply "$$patch"; \
-	    elif git apply --reverse --check "$$patch"; then \
+	    if git apply --ignore-space-change --unidiff-zero --check "$$patch"; then \
+	        git apply --ignore-space-change --unidiff-zero "$$patch"; \
+	    elif git apply --ignore-space-change --unidiff-zero --reverse --check "$$patch"; then \
 	        :; \
 	    else \
 	        echo "  PATCH   failed $$patch" >&2; exit 1; \

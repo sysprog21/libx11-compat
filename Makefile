@@ -13,6 +13,10 @@
 #   - upstream-headers.mk adds order-only deps to $(OBJS), $(CHECK_BINS),
 #     $(EXAMPLE_BINS), so it must be after their definers.
 #   - deps.mk aggregates *_OBJS dep-file lists, so it must be last.
+#   - wasm.mk is first of all: it retargets CC/TARGET for WASM=1 before
+#     toolchain.mk applies the native compiler default. wasm-deps.mk comes
+#     after the object list is defined (it links the wasm archive/clock).
+include mk/wasm.mk
 include mk/toolchain.mk
 include mk/config.mk
 include mk/sdl.mk
@@ -48,6 +52,14 @@ include mk/gl4es.mk
 include mk/mesa-demos.mk
 include mk/tests.mk
 include mk/examples.mk
+include mk/wasm-deps.mk
+include mk/wasm-motif.mk
+include mk/wasm-apps.mk
+include mk/wasm-mosaic.mk
+include mk/wasm-xnedit.mk
+include mk/wasm-xcircuit.mk
+include mk/wasm-xwpe.mk
+include mk/wasm-pages.mk
 include mk/upstream-headers.mk
 include mk/format.mk
 include mk/help.mk

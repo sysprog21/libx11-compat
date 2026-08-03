@@ -61,7 +61,7 @@ endef
 $(OUT):
 	@mkdir -p $@
 
-$(OUT)/%.o: %.c $(SDL_BACKEND_STAMP) | $(OUT)
+$(OBJROOT)/%.o: %.c $(SDL_BACKEND_STAMP) | $(OUT)
 	$(cc_object)
 
 # Upstream sources staged under $(OUT)/upstream/src/ live next to their
@@ -74,7 +74,7 @@ $(OUT)/%.o: %.c $(SDL_BACKEND_STAMP) | $(OUT)
 # compiling these translation units and keeps the WIN32 macro rewrites in
 # Xlibint.h disabled so the function-pointer storage in src/xlibint-stubs.c
 # stays consistent across platforms.
-$(OUT)/upstream/src/%.o: $(OUT)/upstream/src/%.c $(SDL_BACKEND_STAMP) | $(OUT)
+$(OBJROOT)/upstream/src/%.o: $(OUT)/upstream/src/%.c $(SDL_BACKEND_STAMP) | $(OUT)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(LEGACY_FP_CFLAGS) $(CFLAGS_EXTRA) -Wno-sign-compare -D_XLIBINT_ \

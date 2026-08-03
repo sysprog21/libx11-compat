@@ -20,6 +20,24 @@
 # When SDL_BACKEND is not set on the command line or environment, auto-detect:
 # prefer SDL3 (both sdl3 and sdl3-ttf present via pkg-config), else fall back to
 # SDL2. An explicit SDL_BACKEND=... always wins.
+#
+# WASM=1 is a third leg: the SDL2 API compiled against Emscripten's bundled
+# SDL2/SDL_ttf/freetype ports. It shares the SDL2-spelled source path but links
+# no wrapper and probes no host SDL: the port flags below are the whole
+# interface, needed identically at compile and link time.
+ifeq ($(WASM),1)
+
+# override: the wasm leg is SDL2-port only, so a stray command-line
+# SDL_BACKEND=sdl3 must not leave a mislabeled stamp or reach the sdl3 flags.
+override SDL_BACKEND := sdl2
+SDL_USE_WRAPPER := 0
+SDL_PORT_FLAGS := -sUSE_SDL=2 -sUSE_SDL_TTF=2 -sUSE_FREETYPE=1
+SDL_CPPFLAGS := $(SDL_PORT_FLAGS)
+SDL_COMPAT_LIBS := $(SDL_PORT_FLAGS)
+SDL_RUNTIME_LIBDIR :=
+
+else # native (host SDL2 or SDL3)
+
 ifeq ($(origin SDL_BACKEND),undefined)
 SDL_BACKEND := $(shell $(PKG_CONFIG) --exists sdl3 sdl3-ttf 2>/dev/null && echo sdl3 || echo sdl2)
 endif
@@ -29,8 +47,6 @@ endif
 ifeq ($(filter $(SDL_BACKEND),sdl2 sdl3),)
 $(error Invalid SDL_BACKEND '$(SDL_BACKEND)'; expected 'sdl2' or 'sdl3')
 endif
-
-SDL_BACKEND_STAMP := $(OUT)/.sdl-backend
 
 # Detection prefers pkg-config (the interface sdl2-compat standardizes on) and
 # falls back to sdl2-config for a classic SDL2 install. sdl2-compat ships both
@@ -81,6 +97,12 @@ SDL_COMPAT_LIBS := -L$(abspath $(OUT)) -lSDL2-x11compat -lSDL2_ttf-x11compat
 SDL_RUNTIME_LIBDIR := $(if $(SDL2_LIBDIR),$(SDL2_LIBDIR),$(if $(SDL2_PREFIX),$(SDL2_PREFIX)/lib))
 
 endif
+
+endif # WASM vs native
+
+# Shared by every backend: a stamp recording the resolved SDL config so a
+# backend switch forces the affected objects to rebuild.
+SDL_BACKEND_STAMP := $(OUT)/.sdl-backend
 
 .PHONY: sdl-backend-force
 

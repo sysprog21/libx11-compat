@@ -3,9 +3,9 @@
  *
  * Press Esc or q (or close the window) to quit.
  *
- * Exercises: XDrawArc / XFillArc, XDrawLine, XCopyArea-based double
- * buffering off a pixmap, gettimeofday-paced redraw via select() on
- * ConnectionNumber, XSetForeground for swapping hand colors, WM_DELETE_WINDOW.
+ * Exercises: XDrawArc / XFillArc, XDrawLine, XCopyArea-based double buffering
+ * off a pixmap, gettimeofday-paced redraw via select() on ConnectionNumber,
+ * XSetForeground for swapping hand colors, WM_DELETE_WINDOW.
  */
 
 #include <math.h>
@@ -17,6 +17,10 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define WIN_SIZE 256
 #define TICK_MS 100
@@ -60,7 +64,8 @@ static void render(Display *dpy,
     }
 
     /* Smooth hand positions: minute hand creeps with seconds, hour hand with
-     * minutes. */
+     * minutes.
+     */
     double s = now->tm_sec;
     double m = now->tm_min + s / 60.0;
     double h = (now->tm_hour % 12) + m / 60.0;
@@ -77,6 +82,86 @@ static void present(Display *dpy, Window win, Pixmap buf, GC blit_gc)
     XCopyArea(dpy, buf, win, blit_gc, 0, 0, WIN_SIZE, WIN_SIZE, 0, 0);
     XFlush(dpy);
 }
+
+/* Everything the render loop needs, so one frame can run from either the native
+ * loop or the browser's animation-frame callback.
+ */
+struct clock_ctx {
+    Display *dpy;
+    Window win;
+    Pixmap buf;
+    GC bg_gc, face_gc, hour_gc, second_gc, blit_gc;
+    Atom wm_delete;
+    int last_sec;
+    int quit;
+};
+
+/* One frame: drain pending events, then redraw when the second changes. Sets
+ * quit on a request to exit so the caller stops its loop.
+ */
+static void clock_frame(struct clock_ctx *c)
+{
+    while (XPending(c->dpy)) {
+        XEvent e;
+        XNextEvent(c->dpy, &e);
+        switch (e.type) {
+        case Expose:
+            if (e.xexpose.count == 0)
+                present(c->dpy, c->win, c->buf, c->blit_gc);
+            break;
+        case KeyPress: {
+            KeySym ks = XLookupKeysym(&e.xkey, 0);
+            if (ks == XK_Escape || ks == XK_q || ks == XK_Q)
+                c->quit = 1;
+        } break;
+        case ClientMessage:
+            if ((Atom) e.xclient.data.l[0] == c->wm_delete)
+                c->quit = 1;
+            break;
+        }
+    }
+    if (c->quit)
+        return;
+
+    time_t now_t = time(NULL);
+    struct tm now;
+    localtime_r(&now_t, &now);
+    if (now.tm_sec != c->last_sec) {
+        render(c->dpy, c->buf, c->bg_gc, c->face_gc, c->hour_gc, c->second_gc,
+               &now);
+        present(c->dpy, c->win, c->buf, c->blit_gc);
+        c->last_sec = now.tm_sec;
+    }
+}
+
+static void clock_teardown(struct clock_ctx *c)
+{
+    XFreeGC(c->dpy, c->blit_gc);
+    XFreeGC(c->dpy, c->second_gc);
+    XFreeGC(c->dpy, c->hour_gc);
+    XFreeGC(c->dpy, c->face_gc);
+    XFreeGC(c->dpy, c->bg_gc);
+    XFreePixmap(c->dpy, c->buf);
+    XDestroyWindow(c->dpy, c->win);
+    XCloseDisplay(c->dpy);
+}
+
+#ifdef __EMSCRIPTEN__
+
+/* The browser drives the loop one frame per animation frame, so the main thread
+ * never blocks and ASYNCIFY is not needed. Free on quit so a page that reuses
+ * the module (an SPA embed) does not leak the Display and its resources.
+ */
+static void clock_em_frame(void *arg)
+{
+    struct clock_ctx *c = arg;
+    clock_frame(c);
+    if (c->quit) {
+        emscripten_cancel_main_loop();
+        clock_teardown(c);
+    }
+}
+#endif
 
 int main(void)
 {
@@ -121,52 +206,35 @@ int main(void)
     GC second_gc = XCreateGC(dpy, buf, GCForeground, &gcv);
     GC blit_gc = XCreateGC(dpy, win, 0, NULL);
 
+    struct clock_ctx ctx = {.dpy = dpy, .win = win, .buf = buf,
+                            .bg_gc = bg_gc, .face_gc = face_gc,
+                            .hour_gc = hour_gc, .second_gc = second_gc,
+                            .blit_gc = blit_gc, .wm_delete = wm_delete,
+                            .last_sec = -1, .quit = 0};
+
+#ifdef __EMSCRIPTEN__
+
+    /* Drive the loop off requestAnimationFrame (fps 0). simulate_infinite_loop
+     * (1) makes this call not return, matching the native for(;;), so ctx must
+     * outlive it: keep it static. No blocking, so no ASYNCIFY.
+     */
+    static struct clock_ctx em_ctx;
+    em_ctx = ctx;
+    emscripten_set_main_loop_arg(clock_em_frame, &em_ctx, 0, 1);
+    return 0; /* not reached */
+#else
     int x_fd = ConnectionNumber(dpy);
-    int last_sec = -1;
-    for (;;) {
-        while (XPending(dpy)) {
-            XEvent e;
-            XNextEvent(dpy, &e);
-            switch (e.type) {
-            case Expose:
-                if (e.xexpose.count == 0)
-                    present(dpy, win, buf, blit_gc);
-                break;
-            case KeyPress: {
-                KeySym ks = XLookupKeysym(&e.xkey, 0);
-                if (ks == XK_Escape || ks == XK_q || ks == XK_Q)
-                    goto done;
-            } break;
-            case ClientMessage:
-                if ((Atom) e.xclient.data.l[0] == wm_delete)
-                    goto done;
-                break;
-            }
-        }
-
-        time_t now_t = time(NULL);
-        struct tm now;
-        localtime_r(&now_t, &now);
-        if (now.tm_sec != last_sec) {
-            render(dpy, buf, bg_gc, face_gc, hour_gc, second_gc, &now);
-            present(dpy, win, buf, blit_gc);
-            last_sec = now.tm_sec;
-        }
-
+    while (!ctx.quit) {
+        clock_frame(&ctx);
+        if (ctx.quit)
+            break;
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(x_fd, &rfds);
         struct timeval tv = {0, TICK_MS * 1000};
         select(x_fd + 1, &rfds, NULL, NULL, &tv);
     }
-done:
-    XFreeGC(dpy, blit_gc);
-    XFreeGC(dpy, second_gc);
-    XFreeGC(dpy, hour_gc);
-    XFreeGC(dpy, face_gc);
-    XFreeGC(dpy, bg_gc);
-    XFreePixmap(dpy, buf);
-    XDestroyWindow(dpy, win);
-    XCloseDisplay(dpy);
+    clock_teardown(&ctx);
     return 0;
+#endif
 }

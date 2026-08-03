@@ -168,6 +168,17 @@ void invalidatePrimitiveClipCache(void);
 
 void drawWindowDataToScreen(void);
 
+#ifdef __EMSCRIPTEN__
+/* Force a full recomposite of the single wasm DOM canvas. A borrowed overlay (a
+ * menu or popup sharing the host window's SDL surface) composites straight onto
+ * the host surface, so when one unmaps or moves its pixels must be overpainted
+ * by the host backing. Marking the host fully dirty makes the next present
+ * repaint it whole; the surviving overlays then redraw on top. Call after a
+ * borrowed overlay is torn down.
+ */
+void invalidateWasmCanvasComposite(void);
+#endif
+
 /* Runtime kill switch for the per-window accelerated present path. When
  * LIBX11_COMPAT_FORCE_SOFTWARE_PRESENT is set to a truthy value every top-level
  * window keeps the SDL_GetWindowSurface software present, so the accelerated

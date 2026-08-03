@@ -13,6 +13,10 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #define SCREEN_WIDTH 500
 #define SCREEN_HEIGHT 500
 
@@ -91,6 +95,56 @@ static void draw_frame(Display *dpy, Pixmap pixmap, GC gc, int screen, float t)
     draw_lines(dpy, pixmap, gc, SCREEN_WIDTH, SCREEN_HEIGHT, sinf(t) * M_PI / 6);
 }
 
+/* Loop state for the browser animation-frame callback (the native path keeps
+ * its own locals, including the headless --once mode).
+ */
+struct moire_ctx {
+    Display *dpy;
+    Window window;
+    Pixmap pixmap;
+    GC gc;
+    int screen;
+    Atom delete_window;
+    float t;
+    bool running;
+    bool exposed;
+};
+
+#ifdef __EMSCRIPTEN__
+
+static void moire_teardown(struct moire_ctx *c)
+{
+    XFreeGC(c->dpy, c->gc);
+    XFreePixmap(c->dpy, c->pixmap);
+    XDestroyWindow(c->dpy, c->window);
+    XCloseDisplay(c->dpy);
+}
+
+/* One animation frame: drain events, draw the rotated grids, present, advance
+ * the phase. The browser drives this, so no blocking and no ASYNCIFY. Free on
+ * the close request so a page that reuses the module does not leak.
+ */
+static void moire_em_frame(void *arg)
+{
+    struct moire_ctx *c = arg;
+    while (XPending(c->dpy)) {
+        XEvent event;
+        XNextEvent(c->dpy, &event);
+        handle_event(&event, c->delete_window, &c->exposed, &c->running);
+    }
+    if (!c->running) {
+        emscripten_cancel_main_loop();
+        moire_teardown(c);
+        return;
+    }
+    draw_frame(c->dpy, c->pixmap, c->gc, c->screen, c->t);
+    XCopyArea(c->dpy, c->pixmap, c->window, c->gc, 0, 0, SCREEN_WIDTH,
+              SCREEN_HEIGHT, 0, 0);
+    XFlush(c->dpy);
+    c->t = remainderf(c->t + M_PI / 600, 2 * M_PI);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     bool once = argc > 1 && strcmp(argv[1], "--once") == 0;
@@ -132,6 +186,19 @@ int main(int argc, char **argv)
     bool running = true, exposed = false;
     float t = 0.0f;
 
+#ifdef __EMSCRIPTEN__
+    (void) once; /* no command-line args in the browser */
+    /* Drive off requestAnimationFrame; simulate_infinite_loop keeps the runtime
+     * alive, so ctx must be static. No blocking, so no ASYNCIFY.
+     */
+    static struct moire_ctx ctx;
+    ctx = (struct moire_ctx){.dpy = dpy, .window = window, .pixmap = pixmap,
+                             .gc = gc, .screen = screen,
+                             .delete_window = delete_window, .t = t,
+                             .running = running, .exposed = exposed};
+    emscripten_set_main_loop_arg(moire_em_frame, &ctx, 0, 1);
+    return EXIT_SUCCESS; /* not reached */
+#else
     while (running) {
         while (XPending(dpy)) {
             XEvent event;
@@ -169,4 +236,5 @@ int main(int argc, char **argv)
     XDestroyWindow(dpy, window);
     XCloseDisplay(dpy);
     return EXIT_SUCCESS;
+#endif
 }

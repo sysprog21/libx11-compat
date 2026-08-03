@@ -2,8 +2,14 @@
 # under $(OUT)/upstream/src-libXaw/ by scripts/sync-upstream-headers.py.
 
 LIBXAW_SRC_DIR := $(OUT)/upstream/src-libXaw
+# Static archive with a separate object dir under wasm; native .so otherwise.
+ifeq ($(WASM),1)
+LIBXAW_OBJ_DIR := $(OUT)/libxaw-wasm
+LIBXAW_TARGET := $(OUT)/libXaw-compat.a
+else
 LIBXAW_OBJ_DIR := $(OUT)/libxaw
 LIBXAW_TARGET := $(OUT)/libXaw-compat.so
+endif
 
 UPSTREAM_HEADERS_DIR ?= $(OUT)/upstream/include
 UPSTREAM_HEADERS_STAMP ?= $(UPSTREAM_HEADERS_DIR)/.upstream-stamp
@@ -55,15 +61,24 @@ $(LIBXAW_OBJ_DIR)/%.o: $(UPSTREAM_HEADERS_STAMP) $(LIBXT_STAGED_H) \
 
 LIBXAW_LDFLAGS := $(call shared_lib_rpath_ldflags,$(notdir $(LIBXAW_TARGET)))
 
+ifeq ($(WASM),1)
+$(LIBXAW_TARGET): $(LIBXAW_OBJS) | $(OUT)
+	@echo "  AR      $@"
+	$(Q)rm -f $@
+	$(Q)$(AR) rcs $@ $(LIBXAW_OBJS)
+else
 $(LIBXAW_TARGET): $(LIBXAW_OBJS) $(LIBXT_TARGET) $(TARGET) \
     $(LIBXPM_TARGET) $(XMU_COMPAT_TARGET) | $(OUT)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) $(LIBXAW_LDFLAGS) -shared -o $@ $(LIBXAW_OBJS) \
 	    -L$(OUT) -lXt-compat -lX11-compat -lXpm-compat -lXmu-compat \
 	    $(LDLIBS)
+endif
 
 .PHONY: libxaw
-## Build the libXaw compatibility shared library
+## Build the libXaw compatibility library (shared native, static wasm)
 libxaw: $(LIBXAW_TARGET)
 
+ifneq ($(WASM),1)
 all: $(LIBXAW_TARGET)
+endif

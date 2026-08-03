@@ -1,0 +1,23 @@
+Let the xwpe input loop handle ordinary mouse presses.
+
+e_x_change() is a repaint/resize side poller, but it also checked
+ButtonPressMask. Under wasm/browser event timing it can consume a click before
+e_x_getch() sees it. Keep the close-button shortcuts here, but put normal
+button presses back for the input loop that already translates them to xwpe
+mouse codes.
+
+--- a/we_xterm.c
++++ b/we_xterm.c
+@@ -1289,6 +1289,12 @@
+      if (e_mouse.x > (pic->e.x + pic->a.x - 10)/2 &&
+        e_mouse.x < (pic->e.x + pic->a.x + 6)/2 )
+       return(CtrlC);
++#ifdef __EMSCRIPTEN__
++     if (e_mouse.x <= 1 && e_mouse.y == 0)
++      return(CtrlC);
++#endif
++     XPutBackEvent(WpeXInfo.display, &report);
++     return(0);
+     }
+     break;
+   }

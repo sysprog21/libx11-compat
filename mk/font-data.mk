@@ -66,4 +66,4 @@ $(FONT_GEN_HEADER): $(FONT_BDF_CACHE) scripts/embed-bdf-font.py | $(FONT_GEN_DIR
 # font.c #includes the table, so its object cannot compile until the header
 # exists. Order-only: the content is deterministic, so regeneration must not
 # force a recompile on every build.
-$(OUT)/src/font.o: | $(FONT_GEN_HEADER)
+$(OBJROOT)/src/font.o: | $(FONT_GEN_HEADER)

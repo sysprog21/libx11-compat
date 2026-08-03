@@ -234,7 +234,7 @@ static void offerReplayTargetForWindow(Window window)
     for (Window current = window; current != None;
          current = GET_PARENT(current)) {
         WindowStruct *ws = GET_WINDOW_STRUCT(current);
-        if (!ws || !ws->sdlWindow)
+        if (!ws || !ws->sdlWindow || ws->borrowedSdlWindow)
             continue;
         int wid = 0, hgt = 0;
         SDL_GetWindowSize(ws->sdlWindow, &wid, &hgt);
@@ -259,6 +259,10 @@ static void showTopLevelWindow(Display *display, Window window, Bool raise)
      */
     endCoalesceClientRepaint();
     drawWindowDataToScreen();
+    if (windowStruct->borrowedSdlWindow) {
+        replayDeferredWmProperties(display, window);
+        return;
+    }
 #if defined(__APPLE__)
     if (raise)
         activateHostApplication();
@@ -399,6 +403,32 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
     int createH = (int) windowStruct->h;
     SDL_Window *sdlWindow = NULL;
 
+#ifdef __EMSCRIPTEN__
+    if (SCREEN_WINDOW != None) {
+        WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+        Window *children = GET_CHILDREN(SCREEN_WINDOW);
+        for (size_t i = 0; i < screen->children.length; i++) {
+            Window sibling = children[i];
+            if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                continue;
+            WindowStruct *sws = GET_WINDOW_STRUCT(sibling);
+            if (sws && sws->sdlWindow && !sws->borrowedSdlWindow &&
+                sws->mapState == Mapped && !sws->overrideRedirect) {
+                windowStruct->sdlWindow = sws->sdlWindow;
+                windowStruct->borrowedSdlWindow = True;
+                windowStruct->hiDpiScaleX = sws->hiDpiScaleX;
+                windowStruct->hiDpiScaleY = sws->hiDpiScaleY;
+                windowStruct->hiDpiPromoted = False;
+                windowStruct->presentUsesSoftware = True;
+                windowStruct->needsPresent = True;
+                windowStruct->hasPresented = False;
+                (void) getWindowRenderer(window);
+                return True;
+            }
+        }
+    }
+#endif
+
 #ifdef LIBX11_COMPAT_SDL3
     /* A Wayland client cannot self-position a top-level, so an
      * override-redirect popup created as an ordinary window floats wherever the
@@ -449,6 +479,7 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
 
     registerWindowMapping(window, SDL_GetWindowID(sdlWindow));
     windowStruct->sdlWindow = sdlWindow;
+    windowStruct->borrowedSdlWindow = False;
     windowStruct->hiDpiPromoted = promoteHiDpi;
 
     /* Decide the present path for this window's lifetime, before anything calls
@@ -521,6 +552,27 @@ static Bool realizeTopLevelWindow(Display *display, Window window)
         int logicalW = 0, logicalH = 0;
         Bool haveSize = False;
         SDL_GetWindowSize(sdlWindow, &logicalW, &logicalH);
+
+#ifdef __EMSCRIPTEN__
+        /* The single DOM canvas is the whole screen for a wasm client, but
+         * SDL_GetDesktopDisplayMode reports the browser display size, which is
+         * larger than the canvas. Report the X screen size as the canvas's
+         * logical size so a toolkit's on-screen popup avoidance (a Motif Help
+         * pulldown shifting left to stay visible instead of overflowing the
+         * canvas edge) measures against the real bounds. Only the host reaches
+         * this non-borrowed realize path; later top-levels borrow its window.
+         */
+        if (logicalW > 0 && logicalH > 0) {
+            Screen *screen = &GET_DISPLAY(display)->screens[0];
+            screen->width = logicalW;
+            screen->height = logicalH;
+            WindowStruct *rootStruct = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+            if (rootStruct) {
+                rootStruct->w = (unsigned int) logicalW;
+                rootStruct->h = (unsigned int) logicalH;
+            }
+        }
+#endif
 
         /* Prefer SDL_GetWindowSizeInPixels: it reports the window's physical
          * backing size directly and does not depend on a renderer or the
@@ -714,11 +766,152 @@ void repositionAnchoredPopup(Window window)
                           clampToIntRange(relY));
 }
 
+/* Demote promoted physical-pixel geometry back to logical points. Leaving the
+ * physical size would feed physical dims in as logical on the next realize (it
+ * treats ws->w/h as logical and re-promotes to pixels) and grow the window by
+ * the HiDPI factor each unmap/map cycle. The next realize re-derives the scale,
+ * so reset it to 1.0. No-op at scale 1.0 (Linux / CI dummy).
+ */
+static void demoteHiDpiGeometry(WindowStruct *ws)
+{
+    if (ws->hiDpiPromoted && ws->hiDpiScaleX > 0.0 && ws->hiDpiScaleY > 0.0 &&
+        (ws->hiDpiScaleX != 1.0 || ws->hiDpiScaleY != 1.0)) {
+        ws->w = (unsigned int) lround((double) ws->w / ws->hiDpiScaleX);
+        ws->h = (unsigned int) lround((double) ws->h / ws->hiDpiScaleY);
+    }
+    ws->hiDpiScaleX = 1.0;
+    ws->hiDpiScaleY = 1.0;
+    ws->hiDpiPromoted = False;
+}
+
 void unrealizeTopLevelWindow(Display *display, Window window)
 {
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     if (!windowStruct->sdlWindow)
         return;
+
+    if (windowStruct->borrowedSdlWindow) {
+        windowStruct->popupParent = None;
+        windowStruct->popupAnchorX = windowStruct->x;
+        windowStruct->popupAnchorY = windowStruct->y;
+        drainAnchoredPopups(display, window);
+        windowStruct->sdlWindow = NULL;
+        windowStruct->borrowedSdlWindow = False;
+        windowStruct->needsPresent = False;
+        windowStruct->hasPresented = False;
+#ifdef __EMSCRIPTEN__
+        /* This overlay composited onto the shared canvas; repaint the host so
+         * its vacated pixels do not linger as a ghost. The caller's present
+         * pass repaints the host and recomposites the surviving overlays on
+         * top.
+         */
+        invalidateWasmCanvasComposite();
+#endif
+        return;
+    }
+
+#ifdef __EMSCRIPTEN__
+    /* Wasm single-canvas borrow model: every later top-level aliases this
+     * window's SDL_Window (realizeTopLevelWindow sets borrowedSdlWindow and
+     * copies sdlWindow). Destroying the canvas here would leave every borrower
+     * with a dangling sdlWindow. If a still-mapped borrower exists, hand the
+     * shared canvas to it instead of tearing it down: the heir becomes the real
+     * owner, the remaining mapped borrowers keep aliasing the same live window,
+     * and this window relinquishes its pointer without destroying it. Only
+     * mapped borrowers can still hold the alias; an unmapped one already
+     * cleared its sdlWindow through the borrowed branch above.
+     */
+    if (SCREEN_WINDOW != None) {
+        SDL_Window *shared = windowStruct->sdlWindow;
+        Window *screenChildren = GET_CHILDREN(SCREEN_WINDOW);
+        size_t childCount = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+        WindowStruct *heir = NULL;
+        Window heirWindow = None;
+        for (size_t i = 0; i < childCount; i++) {
+            Window sibling = screenChildren[i];
+            if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                continue;
+            WindowStruct *sws = GET_WINDOW_STRUCT(sibling);
+
+            /* Skip override-redirect popups: a popup cannot be the canvas host
+             * (the compositor would stop treating it as an overlay and no later
+             * top-level could borrow it), so only a regular top-level inherits.
+             */
+            if (sws && sws->borrowedSdlWindow && sws->sdlWindow == shared &&
+                sws->mapState == Mapped && !sws->overrideRedirect) {
+                heir = sws;
+                heirWindow = sibling;
+                break;
+            }
+        }
+        if (!heir) {
+            /* No regular top-level can inherit the canvas, so it is destroyed
+             * below. Detach any remaining borrower (an override-redirect popup)
+             * first so it does not keep a dangling alias; a hostless popup just
+             * stops presenting until it is realized again.
+             */
+            for (size_t i = 0; i < childCount; i++) {
+                Window sibling = screenChildren[i];
+                if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                    continue;
+                WindowStruct *sws = GET_WINDOW_STRUCT(sibling);
+                if (sws && sws->borrowedSdlWindow && sws->sdlWindow == shared) {
+                    sws->sdlWindow = NULL;
+                    sws->borrowedSdlWindow = False;
+                    sws->needsPresent = False;
+                    sws->hasPresented = False;
+                }
+            }
+        }
+        if (heir) {
+            /* Promote the heir. It already aliases the canvas and presented as
+             * a software overlay, so it stays on the software path; force a
+             * full recomposite so the newly owned surface is painted from its
+             * backing texture. Route the SDL window id to the heir so input
+             * keeps landing on a live window.
+             */
+            heir->borrowedSdlWindow = False;
+            heir->presentUsesSoftware = True;
+            heir->needsPresent = True;
+            heir->fullyDirty = True;
+            heir->hasPresented = False;
+            registerWindowMapping(heirWindow, SDL_GetWindowID(shared));
+            offerReplayTargetForWindow(heirWindow);
+
+            /* Tear down only this window's own present machinery. The renderer
+             * and readback scratch are this window's objects (bound to the
+             * shared canvas), so freeing them removes any accelerated renderer
+             * from the canvas and lets the heir's SDL_GetWindowSurface bind a
+             * fresh software surface; the canvas itself is left alive.
+             */
+            if (windowStruct->presentTexture) {
+                SDL_DestroyTexture(windowStruct->presentTexture);
+                windowStruct->presentTexture = NULL;
+            }
+            if (windowStruct->presentRenderer) {
+                SDL_DestroyRenderer(windowStruct->presentRenderer);
+                windowStruct->presentRenderer = NULL;
+            }
+            free(windowStruct->presentReadback);
+            windowStruct->presentReadback = NULL;
+            windowStruct->presentReadbackCap = 0;
+            windowStruct->presentTexW = 0;
+            windowStruct->presentTexH = 0;
+            windowStruct->presentUsesSoftware = False;
+            windowStruct->sdlWindow = NULL;
+            windowStruct->borrowedSdlWindow = False;
+            windowStruct->needsPresent = False;
+            windowStruct->hasPresented = False;
+
+            /* This window survives unmapped and may be remapped, so demote its
+             * promoted geometry here too; the normal teardown below that does
+             * this is skipped by the early return.
+             */
+            demoteHiDpiGeometry(windowStruct);
+            return;
+        }
+    }
+#endif
 
     /* Clear this window's own anchor before draining its popup children. The
      * anchor is recomputed at each realize, so a window remapped later must not
@@ -787,25 +980,10 @@ void unrealizeTopLevelWindow(Display *display, Window window)
     windowStruct->hasPresented = False;
 
     /* Demote the promoted physical-pixel geometry back to logical points before
-     * the SDL window is gone. realizeTopLevelWindow creates the next SDL window
-     * from ws->w/h as *logical* dimensions and then re-promotes to pixels;
-     * leaving the physical size here would feed physical dims in as logical on
-     * remap and grow the window by the HiDPI factor on every unmap/map cycle.
-     * The next realize re-derives the scale, so reset it to 1.0. No-op at scale
-     * 1.0 (Linux / CI dummy).
+     * the SDL window is gone, so a remap does not grow the window by the HiDPI
+     * factor each cycle.
      */
-    if (windowStruct->hiDpiPromoted && windowStruct->hiDpiScaleX > 0.0 &&
-        windowStruct->hiDpiScaleY > 0.0 &&
-        (windowStruct->hiDpiScaleX != 1.0 ||
-         windowStruct->hiDpiScaleY != 1.0)) {
-        windowStruct->w = (unsigned int) lround((double) windowStruct->w /
-                                                windowStruct->hiDpiScaleX);
-        windowStruct->h = (unsigned int) lround((double) windowStruct->h /
-                                                windowStruct->hiDpiScaleY);
-    }
-    windowStruct->hiDpiScaleX = 1.0;
-    windowStruct->hiDpiScaleY = 1.0;
-    windowStruct->hiDpiPromoted = False;
+    demoteHiDpiGeometry(windowStruct);
 }
 
 Window XCreateSimpleWindow(Display *display,

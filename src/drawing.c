@@ -141,6 +141,166 @@ static Bool presentUsesIntegerScale(double sx,
            backingSpansWindow && !libx11CompatInLiveResizePresent();
 }
 
+#ifdef __EMSCRIPTEN__
+static Window wasmCanvasHostWindow(void)
+{
+    WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    for (size_t i = 0; i < screen->children.length; i++) {
+        Window w = children[i];
+        if (!IS_TYPE(w, WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(w);
+        if (ws && ws->sdlWindow && ws->mapState == Mapped &&
+            !ws->overrideRedirect)
+            return w;
+    }
+    return None;
+}
+
+static Bool presentWasmOverlayToHost(Window overlay,
+                                     WindowStruct *child,
+                                     Window host,
+                                     SDL_Renderer *screen)
+{
+    if (overlay == host || host == None)
+        return False;
+    WindowStruct *hostStruct = GET_WINDOW_STRUCT(host);
+    if (!hostStruct || !hostStruct->sdlWindow)
+        return False;
+    if (!child->sdlTexture) {
+        (void) getWindowRenderer(overlay);
+        if (!child->sdlTexture)
+            return False;
+    }
+
+    SDL_Surface *hostSurface = SDL_GetWindowSurface(hostStruct->sdlWindow);
+    if (!hostSurface)
+        return False;
+
+    int texW = 0, texH = 0;
+    SDL_QueryTexture(child->sdlTexture, NULL, NULL, &texW, &texH);
+    int srcW = (int) child->w;
+    int srcH = (int) child->h;
+    if (texW < srcW)
+        srcW = texW;
+    if (texH < srcH)
+        srcH = texH;
+    if (srcW <= 0 || srcH <= 0)
+        return False;
+
+    SDL_Rect src = {0, 0, srcW, srcH};
+    SDL_Surface *staging = SDL_CreateRGBSurfaceWithFormat(
+        0, srcW, srcH, 32, SDL_PIXELFORMAT_RGBA8888);
+    if (!staging)
+        return False;
+    SDL_Texture *prevTarget = SDL_GetRenderTarget(screen);
+    if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0 ||
+        SDL_RenderReadPixels(screen, &src, SDL_PIXELFORMAT_RGBA8888,
+                             staging->pixels, staging->pitch) != 0) {
+        /* The read may have already retargeted the SCREEN renderer at the child
+         * backing; put it back so a later present pass in this frame does not
+         * draw into the wrong texture. The success path leaves the target for
+         * the caller to restore via its screenTargetMutated bookkeeping.
+         */
+        SDL_SetRenderTarget(screen, prevTarget);
+        SDL_FreeSurface(staging);
+        return False;
+    }
+
+    double sx =
+        hostStruct->w > 0 ? (double) hostSurface->w / hostStruct->w : 1.0;
+    double sy =
+        hostStruct->h > 0 ? (double) hostSurface->h / hostStruct->h : 1.0;
+    int64_t logicalX = (int64_t) child->x - hostStruct->x;
+    int64_t logicalY = (int64_t) child->y - hostStruct->y;
+
+    /* Crop the overlay against the host bounds rather than sliding a partially
+     * off-canvas popup back into view. A negative origin drops the hidden
+     * leading columns/rows from the staging source; overflow past the right or
+     * bottom edge trims the trailing ones. The visible origin then sits inside
+     * the host, so the popup composites where the toolkit placed it instead of
+     * jumping.
+     */
+    int64_t cropLeft = logicalX < 0 ? -logicalX : 0;
+    int64_t cropTop = logicalY < 0 ? -logicalY : 0;
+    int64_t visX = logicalX < 0 ? 0 : logicalX;
+    int64_t visY = logicalY < 0 ? 0 : logicalY;
+    int64_t visW = (int64_t) srcW - cropLeft;
+    int64_t visH = (int64_t) srcH - cropTop;
+    if (visX + visW > (int64_t) hostStruct->w)
+        visW = (int64_t) hostStruct->w - visX;
+    if (visY + visH > (int64_t) hostStruct->h)
+        visH = (int64_t) hostStruct->h - visY;
+
+    Bool presented = True;
+    if (visW > 0 && visH > 0) {
+        SDL_Rect stagingSrc = {(int) cropLeft, (int) cropTop, (int) visW,
+                               (int) visH};
+        SDL_Rect dst = {
+            .x = (int) lround((double) visX * sx),
+            .y = (int) lround((double) visY * sy),
+            .w = (int) lround((double) visW * sx),
+            .h = (int) lround((double) visH * sy),
+        };
+
+#if defined(LIBX11_COMPAT_SDL3) || SDL_VERSION_ATLEAST(2, 0, 12)
+        xc_BlitScaledMode(
+            staging, &stagingSrc, hostSurface, &dst,
+            presentScaleIsIntegral(sx) && presentScaleIsIntegral(sy)
+                ? XC_SCALEMODE_NEAREST
+                : XC_SCALEMODE_LINEAR);
+#else
+        SDL_BlitScaled(staging, &stagingSrc, hostSurface, &dst);
+#endif
+#ifdef LIBX11_COMPAT_SDL3
+        presented =
+            SDL_UpdateWindowSurfaceRects(hostStruct->sdlWindow, &dst, 1);
+#else
+        presented =
+            SDL_UpdateWindowSurfaceRects(hostStruct->sdlWindow, &dst, 1) == 0;
+#endif
+    }
+    SDL_FreeSurface(staging);
+
+    /* A failed surface update left the frame undrawn; keep the pending and
+     * dirty state so the next present pass retries this frame instead of
+     * dropping it permanently. Restore the render target the readback moved to
+     * the child backing, since the caller only restores it on the success path.
+     */
+    if (!presented) {
+        SDL_SetRenderTarget(screen, prevTarget);
+        return False;
+    }
+
+    child->needsPresent = False;
+    child->hasPresentRect = False;
+    pixman_region32_clear(&child->dirty);
+    child->fullyDirty = False;
+    child->hasPresented = True;
+    return True;
+}
+
+void invalidateWasmCanvasComposite(void)
+{
+    Window host = wasmCanvasHostWindow();
+    if (host == None)
+        return;
+    WindowStruct *hostStruct = GET_WINDOW_STRUCT(host);
+    if (!hostStruct)
+        return;
+
+    /* Full host repaint erases wherever the gone overlay was; the surviving
+     * overlays recomposite on top in the same present pass (see the
+     * host-present coupling in drawWindowDataToScreen). A whole-canvas repaint
+     * per popup close is fine: popups are infrequent and this is not an
+     * animation path.
+     */
+    hostStruct->needsPresent = True;
+    hostStruct->fullyDirty = True;
+}
+#endif
+
 static double nsToMs(uint64_t ns)
 {
     return (double) ns / 1000000.0;
@@ -947,6 +1107,16 @@ void drawWindowDataToScreen()
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
     SDL_Texture *prevTarget = SDL_GetRenderTarget(screen);
     Bool screenTargetMutated = False;
+#ifdef __EMSCRIPTEN__
+    Window wasmHost = wasmCanvasHostWindow();
+
+    /* Set once the host repaints this pass. The host is composited before its
+     * overlays (it is the earlier SCREEN child), and a host repaint overwrites
+     * the whole shared surface, so any overlay above it must recomposite the
+     * same pass even if the overlay itself did not change.
+     */
+    Bool wasmHostPresented = False;
+#endif
     size_t i;
     for (i = 0; i < GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length; i++) {
         /* A child destroyed mid-teardown lingers in the array typed
@@ -991,8 +1161,29 @@ void drawWindowDataToScreen()
             if (!child->sdlTexture)
                 continue;
         }
+#ifdef __EMSCRIPTEN__
+        /* Overlay windows (menus, popups, extra top-levels) share the host's
+         * single canvas and composite onto its surface. Recomposite when the
+         * overlay changed OR when the host just repainted under it; either way
+         * this child never falls through to the SDL-window present path.
+         */
+        if (wasmHost != None && children[i] != wasmHost) {
+            if ((child->needsPresent || wasmHostPresented) &&
+                presentWasmOverlayToHost(children[i], child, wasmHost,
+                                         screen)) {
+                screenTargetMutated = True;
+                presentedWindows++;
+                presentedPixels += (uint64_t) child->w * (uint64_t) child->h;
+            }
+            continue;
+        }
+#endif
         if (!child->needsPresent)
             continue;
+#ifdef __EMSCRIPTEN__
+        if (children[i] == wasmHost)
+            wasmHostPresented = True;
+#endif
 
         /* Accelerated windows never touch SDL_GetWindowSurface (mutually
          * exclusive with the per-window renderer). The helper mutates the

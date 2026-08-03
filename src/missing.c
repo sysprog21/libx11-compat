@@ -2875,9 +2875,14 @@ Status XGetCommand(Display *dpy, Window w, char ***argvp, int *argcp)
         *argcp = 0;
     if (!argvp || !argcp)
         return 0;
-    if (XGetWindowProperty(dpy, w, XA_WM_COMMAND, 0, ((long) INT_MAX + 3) / 4,
-                           False, XA_STRING, &actualType, &actualFormat,
-                           &nitems, &bytesAfter, &property) != Success ||
+
+    /* long_length is in 4-byte units; INT_MAX / 4 + 1 covers a full INT_MAX
+     * byte property. Written this way rather than ((long) INT_MAX + 3) / 4 so
+     * it does not overflow a 32-bit long on wasm32 (the value is identical).
+     */
+    if (XGetWindowProperty(dpy, w, XA_WM_COMMAND, 0, INT_MAX / 4 + 1, False,
+                           XA_STRING, &actualType, &actualFormat, &nitems,
+                           &bytesAfter, &property) != Success ||
         actualType != XA_STRING || actualFormat != 8 || bytesAfter != 0 ||
         !property) {
         if (property)
@@ -2962,9 +2967,10 @@ Status XGetClassHint(Display *dpy, Window w, XClassHint *classhint) /* RETURN */
         return 0;
     classhint->res_name = NULL;
     classhint->res_class = NULL;
-    if (XGetWindowProperty(dpy, w, XA_WM_CLASS, 0, ((long) INT_MAX + 3) / 4,
-                           False, XA_STRING, &actualType, &actualFormat,
-                           &nitems, &bytesAfter, &property) != Success ||
+    /* See XGetCommand: INT_MAX / 4 + 1 units, overflow-safe on 32-bit long. */
+    if (XGetWindowProperty(dpy, w, XA_WM_CLASS, 0, INT_MAX / 4 + 1, False,
+                           XA_STRING, &actualType, &actualFormat, &nitems,
+                           &bytesAfter, &property) != Success ||
         actualType != XA_STRING || actualFormat != 8 || bytesAfter != 0 ||
         !property) {
         if (property)

@@ -573,7 +573,7 @@ void libx11CompatRunDeferredDisplayClose(void)
  * This must be thread-local: concurrent client XOpenDisplay calls are valid,
  * only same-thread recursion from SDL's probe should be refused.
  */
-static __thread Bool sdlVideoInitInProgress = False;
+static COMPAT_THREAD_LOCAL Bool sdlVideoInitInProgress = False;
 
 Display *XOpenDisplay(_Xconst char *display_name)
 {

@@ -37,6 +37,63 @@ static void windowOpOnMain(void *p)
     a->fn(a->window);
 }
 
+#ifdef __EMSCRIPTEN__
+static Bool clampBorrowedOverlayToHost(Window window)
+{
+    WindowStruct *ws = GET_WINDOW_STRUCT(window);
+    if (!ws || !ws->borrowedSdlWindow || !ws->overrideRedirect ||
+        !ws->sdlWindow || SCREEN_WINDOW == None)
+        return False;
+
+    WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    WindowStruct *host = NULL;
+    for (size_t i = 0; i < screen->children.length; i++) {
+        Window child = children[i];
+        if (child == window || !IS_TYPE(child, WINDOW))
+            continue;
+        WindowStruct *candidate = GET_WINDOW_STRUCT(child);
+        if (candidate && candidate->sdlWindow == ws->sdlWindow &&
+            !candidate->borrowedSdlWindow) {
+            host = candidate;
+            break;
+        }
+    }
+    if (!host)
+        return False;
+
+    int64_t minX = host->x;
+    int64_t minY = host->y;
+    int64_t maxX = (int64_t) host->x + host->w - ws->w;
+    int64_t maxY = (int64_t) host->y + host->h - ws->h;
+    if (maxX < minX)
+        maxX = minX;
+    if (maxY < minY)
+        maxY = minY;
+
+    int64_t clampedX = ws->x;
+    if (clampedX < minX)
+        clampedX = minX;
+    else if (clampedX > maxX)
+        clampedX = maxX;
+    int64_t clampedY = ws->y;
+    if (clampedY < minY)
+        clampedY = minY;
+    else if (clampedY > maxY)
+        clampedY = maxY;
+    int newX = clampToIntRange(clampedX);
+    int newY = clampToIntRange(clampedY);
+    if (newX == ws->x && newY == ws->y)
+        return False;
+
+    ws->x = newX;
+    ws->y = newY;
+    ws->needsPresent = True;
+    invalidateWasmCanvasComposite();
+    return True;
+}
+#endif
+
 void runWindowOpOnMain(void (*fn)(Window), Window window)
 {
     struct windowOpArgs a = {fn, window};
@@ -103,6 +160,7 @@ void initWindowStruct(WindowStruct *windowStruct,
     windowStruct->visual = visual;
     windowStruct->sdlTexture = NULL;
     windowStruct->sdlWindow = NULL;
+    windowStruct->borrowedSdlWindow = False;
     windowStruct->glxMetalView = NULL;
     windowStruct->glxCompositeTexture = NULL;
     windowStruct->glxCompositeFlip = NULL;
@@ -694,7 +752,8 @@ Window findPopupParentToplevel(Window popup, int *offsetX, int *offsetY)
         if (m->window == popup || !IS_TYPE(m->window, WINDOW))
             continue;
         WindowStruct *ws = GET_WINDOW_STRUCT(m->window);
-        if (!ws || !ws->sdlWindow || ws->mapState != Mapped)
+        if (!ws || !ws->sdlWindow || ws->borrowedSdlWindow ||
+            ws->mapState != Mapped)
             continue;
 
         /* w/h may be HiDPI-promoted to physical pixels while x/y and the popup
@@ -998,6 +1057,36 @@ void releaseActiveGrabsForUnviewableWindow(Display *display, Window window)
         XUngrabKeyboard(display, CurrentTime);
 }
 
+#ifdef __EMSCRIPTEN__
+static void restoreMappedCanvasAfterDestroy(Window destroyed)
+{
+    if (SCREEN_WINDOW == None)
+        return;
+
+    WindowStruct *screen = GET_WINDOW_STRUCT(SCREEN_WINDOW);
+    Window *children = GET_CHILDREN(SCREEN_WINDOW);
+    WindowStruct *best = NULL;
+    uint64_t bestArea = 0;
+    for (size_t i = 0; i < screen->children.length; i++) {
+        Window sibling = children[i];
+        if (sibling == destroyed || !IS_TYPE(sibling, WINDOW))
+            continue;
+        WindowStruct *ws = GET_WINDOW_STRUCT(sibling);
+        if (!ws || !ws->sdlWindow || ws->borrowedSdlWindow ||
+            ws->mapState != Mapped)
+            continue;
+        uint64_t area = (uint64_t) ws->w * (uint64_t) ws->h;
+        if (area > bestArea) {
+            best = ws;
+            bestArea = area;
+        }
+    }
+    if (best)
+        SDL_SetWindowSize(best->sdlWindow, clampToIntRange((int64_t) best->w),
+                          clampToIntRange((int64_t) best->h));
+}
+#endif
+
 void destroyWindow(Display *display, Window window, Bool freeParentData)
 {
     /* Tears down the SDL window/renderer (SDL_DestroyWindow /
@@ -1112,7 +1201,71 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
     free(windowStruct->glxCompositeFlip);
     free(windowStruct->glxReadbackBuf);
 
-    if (windowStruct->sdlWindow) {
+#ifdef __EMSCRIPTEN__
+    /* Wasm single-canvas borrow model: a later top-level may still be aliasing
+     * this window's SDL_Window (borrowedSdlWindow). The owner-teardown below
+     * would destroy the canvas and leave that borrower with a dangling
+     * sdlWindow, so first hand the shared canvas to a still-mapped borrower,
+     * mirroring the unmap-path transfer in unrealizeTopLevelWindow. Nulling
+     * sdlWindow here makes the teardown block skip SDL_DestroyWindow, keeping
+     * the canvas alive for the heir; the heir recomposites from its backing.
+     */
+    if (windowStruct->sdlWindow && !windowStruct->borrowedSdlWindow &&
+        SCREEN_WINDOW != None) {
+        SDL_Window *shared = windowStruct->sdlWindow;
+        Window *screenChildren = GET_CHILDREN(SCREEN_WINDOW);
+        size_t childCount = GET_WINDOW_STRUCT(SCREEN_WINDOW)->children.length;
+        for (size_t k = 0; k < childCount; k++) {
+            Window sibling = screenChildren[k];
+            if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                continue;
+            WindowStruct *heir = GET_WINDOW_STRUCT(sibling);
+
+            /* Skip override-redirect popups: a popup cannot be the canvas host,
+             * so only a regular top-level inherits.
+             */
+            if (!heir || !heir->borrowedSdlWindow ||
+                heir->sdlWindow != shared || heir->mapState != Mapped ||
+                heir->overrideRedirect)
+                continue;
+            heir->borrowedSdlWindow = False;
+            heir->presentUsesSoftware = True;
+            heir->needsPresent = True;
+            heir->fullyDirty = True;
+            heir->hasPresented = False;
+            registerWindowMapping(sibling, SDL_GetWindowID(shared));
+            int heirW = 0, heirH = 0;
+            SDL_GetWindowSize(shared, &heirW, &heirH);
+            replayTargetOfferWindow(SDL_GetWindowID(shared), heir->x, heir->y,
+                                    heirW, heirH);
+            windowStruct->sdlWindow = NULL;
+            windowStruct->borrowedSdlWindow = False;
+            break;
+        }
+        if (windowStruct->sdlWindow) {
+            /* No regular top-level inherited the canvas, so it is destroyed by
+             * the teardown below. Detach any remaining borrower (an
+             * override-redirect popup) first so it does not keep a dangling
+             * alias; a hostless popup just stops presenting until realized
+             * again.
+             */
+            for (size_t k = 0; k < childCount; k++) {
+                Window sibling = screenChildren[k];
+                if (sibling == window || !IS_TYPE(sibling, WINDOW))
+                    continue;
+                WindowStruct *b = GET_WINDOW_STRUCT(sibling);
+                if (b && b->borrowedSdlWindow && b->sdlWindow == shared) {
+                    b->sdlWindow = NULL;
+                    b->borrowedSdlWindow = False;
+                    b->needsPresent = False;
+                    b->hasPresented = False;
+                }
+            }
+        }
+    }
+#endif
+
+    if (windowStruct->sdlWindow && !windowStruct->borrowedSdlWindow) {
 #ifndef LIBX11_COMPAT_SDL3
         SDL_Rect closedRect = {windowStruct->x, windowStruct->y,
                                clampToIntRange((int64_t) windowStruct->w),
@@ -1132,6 +1285,9 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
 #endif
         replayTargetForgetWindow(SDL_GetWindowID(windowStruct->sdlWindow));
         SDL_DestroyWindow(windowStruct->sdlWindow);
+#ifdef __EMSCRIPTEN__
+        restoreMappedCanvasAfterDestroy(window);
+#endif
         windowStruct->sdlWindow = NULL;
 #ifndef LIBX11_COMPAT_SDL3
 
@@ -1154,6 +1310,8 @@ void destroyWindow(Display *display, Window window, Bool freeParentData)
         }
 #endif
     }
+    windowStruct->sdlWindow = NULL;
+    windowStruct->borrowedSdlWindow = False;
     deleteWindowMapping(window);
     if (!windowStruct->internal)
         postEvent(display, window, DestroyNotify);
@@ -2284,6 +2442,20 @@ Bool configureWindow(Display *display,
             windowStruct->popupAnchorY = y;
             if (x != oldX || y != oldY)
                 popupNeedsReposition = True;
+        } else if (isMappedTopLevelWindow && windowStruct->borrowedSdlWindow) {
+            /* A borrowed overlay composites at an offset into the shared canvas
+             * and owns no SDL window to move; record the origin for the
+             * compositor and skip the SDL geometry calls, which would move the
+             * shared host window instead.
+             */
+            windowStruct->x = x;
+            windowStruct->y = y;
+#ifdef __EMSCRIPTEN__
+            if (x != oldX || y != oldY) {
+                windowStruct->needsPresent = True;
+                invalidateWasmCanvasComposite();
+            }
+#endif
         } else if (isMappedTopLevelWindow) {
             int hostX = x, hostY = y;
             topLevelWindowHostPosition(window, x, y, &hostX, &hostY);
@@ -2376,7 +2548,7 @@ Bool configureWindow(Display *display,
             (unsigned) height, isMappedTopLevelWindow);
         if ((unsigned int) width != windowStruct->w ||
             (unsigned int) height != windowStruct->h) {
-            if (isMappedTopLevelWindow) {
+            if (isMappedTopLevelWindow && !windowStruct->borrowedSdlWindow) {
                 /* SDL_SetWindowSize makes SDL post RESIZED/SIZE_CHANGED for
                  * this window. This resize is client-initiated and already gets
                  * its ConfigureNotify from the postEvent below, so arm the echo
@@ -2413,6 +2585,18 @@ Bool configureWindow(Display *display,
             windowStruct->h = (unsigned int) height;
             if (windowStruct->sdlTexture)
                 resizeWindowTexture(window);
+#ifdef __EMSCRIPTEN__
+            /* Only borrowed top-levels share the single canvas composite and so
+             * need an explicit invalidate on resize. Windows that own their SDL
+             * window get their present from
+             * SDL_SetWindowSize/resizeWindowTexture above, and non-top-level
+             * children never reach this branch.
+             */
+            if (isMappedTopLevelWindow && windowStruct->borrowedSdlWindow) {
+                windowStruct->needsPresent = True;
+                invalidateWasmCanvasComposite();
+            }
+#endif
             if (isMappedTopLevelWindow && windowStruct->popupParent != None)
                 popupNeedsReposition = True;
             hasChanged = True;
@@ -2436,6 +2620,11 @@ Bool configureWindow(Display *display,
      */
     if (popupNeedsReposition)
         repositionAnchoredPopup(window);
+
+#ifdef __EMSCRIPTEN__
+    if (isMappedTopLevelWindow && clampBorrowedOverlayToHost(window))
+        hasChanged = True;
+#endif
 
     if (!hasChanged)
         return True;

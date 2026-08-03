@@ -8,9 +8,8 @@
  *   c       clear the grid
  *   q/Esc   quit
  *
- * Exercises: XCreatePixmap + XCopyArea double buffering, bulk
- * XFillRectangle, select() on ConnectionNumber for timed redraws,
- * WM_DELETE_WINDOW.
+ * Exercises: XCreatePixmap + XCopyArea double buffering, bulk XFillRectangle,
+ * select() on ConnectionNumber for timed redraws, WM_DELETE_WINDOW.
  */
 
 #include <stdio.h>
@@ -22,6 +21,10 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 #define CELL_PX 8
 #define GRID_W 80
@@ -99,6 +102,103 @@ static long ms_since(const struct timeval *start)
            (now.tv_usec - start->tv_usec) / 1000L;
 }
 
+/* Loop state, so one frame runs from either the native loop or the browser
+ * animation-frame callback. The grid itself is file-scope global state.
+ */
+struct life_ctx {
+    Display *dpy;
+    Window win;
+    Pixmap buf;
+    GC bg_gc, fg_gc, blit_gc;
+    Atom wm_delete;
+    int paused;
+    struct timeval last_step;
+    int quit;
+};
+
+/* One frame: drain events (keys toggle pause, step, randomize, clear, quit),
+ * then advance the generation when running and due.
+ */
+static void life_frame(struct life_ctx *c)
+{
+    while (XPending(c->dpy)) {
+        XEvent e;
+        XNextEvent(c->dpy, &e);
+        switch (e.type) {
+        case Expose:
+            if (e.xexpose.count == 0)
+                present(c->dpy, c->win, c->buf, c->blit_gc);
+            break;
+        case KeyPress: {
+            KeySym ks = XLookupKeysym(&e.xkey, 0);
+            Bool needsRender = False;
+            if (ks == XK_Escape || ks == XK_q || ks == XK_Q) {
+                c->quit = 1;
+                return;
+            }
+            if (ks == XK_space) {
+                c->paused = !c->paused;
+            } else if ((ks == XK_s || ks == XK_S) && c->paused) {
+                step();
+                needsRender = True;
+            } else if (ks == XK_r || ks == XK_R) {
+                randomize();
+                needsRender = True;
+            } else if (ks == XK_c || ks == XK_C) {
+                clear_grid();
+                needsRender = True;
+            }
+            if (needsRender) {
+                render(c->dpy, c->buf, c->bg_gc, c->fg_gc, c->paused);
+                present(c->dpy, c->win, c->buf, c->blit_gc);
+            }
+        } break;
+        case ClientMessage:
+            if ((Atom) e.xclient.data.l[0] == c->wm_delete) {
+                c->quit = 1;
+                return;
+            }
+            break;
+        }
+    }
+    if (c->quit)
+        return;
+
+    if (!c->paused && ms_since(&c->last_step) >= STEP_MS) {
+        step();
+        render(c->dpy, c->buf, c->bg_gc, c->fg_gc, c->paused);
+        present(c->dpy, c->win, c->buf, c->blit_gc);
+        gettimeofday(&c->last_step, NULL);
+    }
+}
+
+static void life_teardown(struct life_ctx *c)
+{
+    XFreeGC(c->dpy, c->blit_gc);
+    XFreeGC(c->dpy, c->fg_gc);
+    XFreeGC(c->dpy, c->bg_gc);
+    XFreePixmap(c->dpy, c->buf);
+    XDestroyWindow(c->dpy, c->win);
+    XCloseDisplay(c->dpy);
+}
+
+#ifdef __EMSCRIPTEN__
+
+/* The browser drives the loop one frame per animation frame; the STEP_MS gate
+ * inside life_frame keeps the generation cadence, so no blocking and no
+ * ASYNCIFY. Free on quit so a page that reuses the module does not leak.
+ */
+static void life_em_frame(void *arg)
+{
+    struct life_ctx *c = arg;
+    life_frame(c);
+    if (c->quit) {
+        emscripten_cancel_main_loop();
+        life_teardown(c);
+    }
+}
+#endif
+
 int main(void)
 {
     srand((unsigned) time(NULL));
@@ -136,60 +236,28 @@ int main(void)
 
     randomize();
 
-    int paused = 0;
+    struct life_ctx ctx = {.dpy = dpy, .win = win, .buf = buf, .bg_gc = bg_gc,
+                           .fg_gc = fg_gc, .blit_gc = blit_gc,
+                           .wm_delete = wm_delete, .paused = 0, .quit = 0};
+    gettimeofday(&ctx.last_step, NULL);
+
+#ifdef __EMSCRIPTEN__
+
+    /* Drive off requestAnimationFrame; simulate_infinite_loop keeps the runtime
+     * alive, so ctx must be static. No blocking, so no ASYNCIFY.
+     */
+    static struct life_ctx em_ctx;
+    em_ctx = ctx;
+    emscripten_set_main_loop_arg(life_em_frame, &em_ctx, 0, 1);
+    return 0; /* not reached */
+#else
     int x_fd = ConnectionNumber(dpy);
-    struct timeval last_step;
-    gettimeofday(&last_step, NULL);
-
-    for (;;) {
-        /* Drain any pending events without blocking. */
-        while (XPending(dpy)) {
-            XEvent e;
-            XNextEvent(dpy, &e);
-            switch (e.type) {
-            case Expose:
-                if (e.xexpose.count == 0)
-                    present(dpy, win, buf, blit_gc);
-                break;
-            case KeyPress: {
-                KeySym ks = XLookupKeysym(&e.xkey, 0);
-                Bool needsRender = False;
-                if (ks == XK_Escape || ks == XK_q || ks == XK_Q)
-                    goto done;
-                if (ks == XK_space) {
-                    paused = !paused;
-                } else if ((ks == XK_s || ks == XK_S) && paused) {
-                    step();
-                    needsRender = True;
-                } else if (ks == XK_r || ks == XK_R) {
-                    randomize();
-                    needsRender = True;
-                } else if (ks == XK_c || ks == XK_C) {
-                    clear_grid();
-                    needsRender = True;
-                }
-                if (needsRender) {
-                    render(dpy, buf, bg_gc, fg_gc, paused);
-                    present(dpy, win, buf, blit_gc);
-                }
-            } break;
-            case ClientMessage:
-                if ((Atom) e.xclient.data.l[0] == wm_delete)
-                    goto done;
-                break;
-            }
-        }
-
-        /* Step on schedule when running. */
-        if (!paused && ms_since(&last_step) >= STEP_MS) {
-            step();
-            render(dpy, buf, bg_gc, fg_gc, paused);
-            present(dpy, win, buf, blit_gc);
-            gettimeofday(&last_step, NULL);
-        }
-
+    while (!ctx.quit) {
+        life_frame(&ctx);
+        if (ctx.quit)
+            break;
         /* Sleep until either an X event arrives or the next step is due. */
-        long wait_ms = paused ? 200 : STEP_MS - ms_since(&last_step);
+        long wait_ms = ctx.paused ? 200 : STEP_MS - ms_since(&ctx.last_step);
         if (wait_ms < 0)
             wait_ms = 0;
         fd_set rfds;
@@ -198,12 +266,7 @@ int main(void)
         struct timeval tv = {wait_ms / 1000, (wait_ms % 1000) * 1000};
         select(x_fd + 1, &rfds, NULL, NULL, &tv);
     }
-done:
-    XFreeGC(dpy, blit_gc);
-    XFreeGC(dpy, fg_gc);
-    XFreeGC(dpy, bg_gc);
-    XFreePixmap(dpy, buf);
-    XDestroyWindow(dpy, win);
-    XCloseDisplay(dpy);
+    life_teardown(&ctx);
     return 0;
+#endif
 }

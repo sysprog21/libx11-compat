@@ -2,8 +2,14 @@
 # $(OUT)/upstream/src-libXpm/ by scripts/sync-upstream-headers.py.
 
 LIBXPM_SRC_DIR := $(OUT)/upstream/src-libXpm
+# Static archive with a separate object dir under wasm; native .so otherwise.
+ifeq ($(WASM),1)
+LIBXPM_OBJ_DIR := $(OUT)/libxpm-wasm
+LIBXPM_TARGET  := $(OUT)/libXpm-compat.a
+else
 LIBXPM_OBJ_DIR := $(OUT)/libxpm
 LIBXPM_TARGET  := $(OUT)/libXpm-compat.so
+endif
 
 LIBXPM_SRC_BASES := \
     Attrib.c CrBufFrI.c CrBufFrP.c CrDatFrI.c CrDatFrP.c CrIFrBuf.c \
@@ -37,14 +43,23 @@ $(LIBXPM_OBJ_DIR)/%.o: $(LIBXPM_SRC_DIR)/%.c $(UPSTREAM_HEADERS_STAMP) \
 	$(Q)$(CC) $(LIBXPM_CPPFLAGS) $(LEGACY_FP_CFLAGS) $(LIBXPM_CFLAGS) $(CFLAGS_EXTRA) \
 	    $(DEPFLAGS) -c $< -o $@
 
+ifeq ($(WASM),1)
+$(LIBXPM_TARGET): $(LIBXPM_OBJS) | $(OUT)
+	@echo "  AR      $@"
+	$(Q)rm -f $@
+	$(Q)$(AR) rcs $@ $(LIBXPM_OBJS)
+else
 $(LIBXPM_TARGET): $(LIBXPM_OBJS) $(TARGET) | $(OUT)
 	@echo "  LD      $@"
 	$(Q)$(CC) $(LDFLAGS) $(LIBXPM_LDFLAGS) -shared -o $@ $(LIBXPM_OBJS) -L$(OUT) -lX11-compat $(LDLIBS)
+endif
 
 .PHONY: libxpm
-## Build the libXpm compatibility shared library
+## Build the libXpm compatibility library (shared native, static wasm)
 libxpm: $(LIBXPM_TARGET)
 
+ifneq ($(WASM),1)
 all: $(LIBXPM_TARGET)
+endif
 
 # Header-dependency files are -included by mk/deps.mk via $(ALL_DEPS).

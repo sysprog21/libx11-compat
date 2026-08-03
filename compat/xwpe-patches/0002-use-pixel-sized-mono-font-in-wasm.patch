@@ -1,0 +1,41 @@
+Use stable pixel-sized mono metrics for wasm.
+
+The wasm display is HiDPI-backed, so deriving Xft point size from screen DPI can
+make the cell width much wider than the legacy 8x13 grid xwpe was laid out for.
+Pin the wasm Xft request to the bundled DejaVu Sans Mono at pixel size so the
+cell width comes from the rendered font instead of browser/screen DPI.
+
+--- a/WeXterm.c
++++ b/WeXterm.c
+@@ -206,7 +206,15 @@ void WpeXFontGet(XrmDatabase xresdb)
+   int pt_size = WpeXInfo.font_height <= 13 ? 10 : WpeXInfo.font_height - 3;
+ 
++#ifdef __EMSCRIPTEN__
++  snprintf(xft_spec, sizeof(xft_spec), "DejaVu Sans Mono:size=%d", pt_size);
++#else
+   snprintf(xft_spec, sizeof(xft_spec), "monospace:size=%d", pt_size);
++#endif
+   WpeXInfo.xftpattern = FcNameParse((const FcChar8 *)xft_spec);
++#ifdef __EMSCRIPTEN__
++  if (WpeXInfo.xftpattern)
++   FcPatternAddDouble(WpeXInfo.xftpattern, FC_PIXEL_SIZE, (double)WpeXInfo.font_height);
++#endif
+   if (!WpeXInfo.xftpattern)
+   {
+    fprintf(stderr, "Xwpe: FcNameParse failed for \"%s\"\n", xft_spec);
+@@ -321,7 +338,15 @@ int e_x_refit_font_for_dpi(void)
+  pt_size = seed_h <= 13 ? 10 : seed_h - 3;
+
++#ifdef __EMSCRIPTEN__
++ snprintf(xft_spec, sizeof(xft_spec), "DejaVu Sans Mono:size=%d", pt_size);
++#else
+  snprintf(xft_spec, sizeof(xft_spec), "monospace:size=%d", pt_size);
++#endif
+  parsed = FcNameParse((const FcChar8 *)xft_spec);
++#ifdef __EMSCRIPTEN__
++ if (parsed)
++  FcPatternAddDouble(parsed, FC_PIXEL_SIZE, (double)seed_h);
++#endif
+  if (!parsed)
+   return 0;
+  configured = FcPatternDuplicate(parsed);
