@@ -82,9 +82,14 @@ XFIG_CONFIGURE_FLAGS := \
 # XFIG_CACHE_DIR shares the build/upstream/.cache directory with
 # mk/xclock.mk; the directory rule lives in mk/xclock.mk so no duplicate
 # target warning is emitted.
+# SourceForge's prdownloads redirect intermittently serves HTTP 500 from an
+# unhealthy mirror, which failed the differential CI at random. Retry so a
+# re-rolled redirect can land on a healthy mirror; the sha256 check below still
+# rejects a truncated or corrupt download.
 $(XFIG_TARBALL): | $(XFIG_CACHE_DIR)
 	@echo "  FETCH   $(XFIG_URL)"
-	$(Q)curl -fsSL -o $@.tmp $(XFIG_URL)
+	$(Q)curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o $@.tmp \
+	    $(XFIG_URL)
 	$(Q)echo "$(XFIG_SHA256)  $@.tmp" | shasum -a 256 -c -
 	$(Q)mv $@.tmp $@
 

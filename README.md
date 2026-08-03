@@ -75,6 +75,12 @@ The bundle covers a 2048 game, a paint demo, Conway's Game of Life, an analog cl
 See [`docs/EXAMPLES.md`](docs/EXAMPLES.md) for the API each example exercises.
 The screenshot above is from the larger ViolaWWW port described in [Larger Workloads Under Investigation](#larger-workloads-under-investigation).
 
+### WebAssembly showcases
+
+The same unmodified clients cross-compile to WebAssembly with Emscripten and run in the browser with no X server, published as the [libx11-compat WebAssembly showcases](https://sysprog21.github.io/libx11-compat-demo/):
+the examples above alongside XNEdit (Motif), xwpe, NCSA Mosaic, and XCircuit.
+Build the bundle locally with `make check-wasm-pages` (needs `emcc`).
+
 ## Larger Workloads Under Investigation
 
 Several ports beyond the bundled demos now provide high-value integration coverage for `libx11-compat`.
