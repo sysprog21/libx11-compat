@@ -21,6 +21,12 @@
 #define UI_SNAPSHOT_NAME_MAX 96
 #define UI_SNAPSHOT_PROP_BYTES_MAX 128
 
+/* Number of named properties captured per window. Must equal TRACKED_ATOM_COUNT
+ * in state-snapshot.c; a _Static_assert there catches any drift so this array
+ * can never under-run the tracked set.
+ */
+#define UI_SNAPSHOT_TRACKED_PROP_MAX 8
+
 typedef enum {
     UI_PROP_SOURCE_NONE = 0,
     UI_PROP_SOURCE_STORED,
@@ -57,11 +63,12 @@ typedef struct {
     long event_mask;
     char wm_class[UI_SNAPSHOT_NAME_MAX];
     char wm_name[UI_SNAPSHOT_NAME_MAX];
-    /* WM_HINTS, WM_STATE, WM_PROTOCOLS, WM_CLASS, WM_NAME, _MOTIF_WM_HINTS,
-     * _NET_WM_STATE, _NET_WM_WINDOW_TYPE. See state-snapshot.c for the bound
-     * and the layout.
+
+    /* WM_HINTS, WM_CLASS, WM_NAME, _NET_WM_NAME, _NET_WM_STATE,
+     * _NET_WM_WINDOW_TYPE, _MOTIF_WM_HINTS, WM_PROTOCOLS. See TRACKED_ATOMS in
+     * state-snapshot.c for the authoritative order and bound.
      */
-    UiSnapshotProperty properties[8];
+    UiSnapshotProperty properties[UI_SNAPSHOT_TRACKED_PROP_MAX];
     int property_count;
 } UiSnapshotWindow;
 

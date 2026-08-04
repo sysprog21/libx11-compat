@@ -29,6 +29,7 @@
 #include "image.h"
 #include "input.h"
 #include "main-dispatch.h"
+#include "net-atoms.h"
 #include "path/compose.h"
 #include "path/edges.h"
 #include "path/path.h"
@@ -6464,17 +6465,19 @@ static int test_properties(Display *display)
         CHECK(protoCount == 0 && protoBack == NULL,
               "XGetWMProtocols absent case must yield no protocols");
 
-        Atom wmProtocols = XInternAtom(display, "WM_PROTOCOLS", False);
-        Atom wmDelete = XInternAtom(display, "WM_DELETE_WINDOW", False);
+        /* WM_PROTOCOLS and WM_DELETE_WINDOW are predefined atoms (net-atoms.h);
+         * only WM_TAKE_FOCUS still needs interning.
+         */
         Atom wmTakeFocus = XInternAtom(display, "WM_TAKE_FOCUS", False);
-        Atom protoSet[2] = {wmDelete, wmTakeFocus};
-        XChangeProperty(display, bareWindow, wmProtocols, XA_ATOM, 32,
+        Atom protoSet[2] = {WM_DELETE_WINDOW, wmTakeFocus};
+        XChangeProperty(display, bareWindow, WM_PROTOCOLS, XA_ATOM, 32,
                         PropModeReplace, (unsigned char *) protoSet, 2);
         protoBack = NULL;
         protoCount = -1;
         CHECK(XGetWMProtocols(display, bareWindow, &protoBack, &protoCount),
               "XGetWMProtocols must succeed once WM_PROTOCOLS is set");
-        CHECK(protoCount == 2 && protoBack && protoBack[0] == wmDelete &&
+        CHECK(protoCount == 2 && protoBack &&
+                  protoBack[0] == WM_DELETE_WINDOW &&
                   protoBack[1] == wmTakeFocus,
               "WM_PROTOCOLS atom list did not round-trip");
         XFree(protoBack);
@@ -6691,10 +6694,13 @@ static int test_ewmh_close_window_clientmessage(Display *display)
     XSelectInput(display, window, StructureNotifyMask);
 
     Atom closeWindow = XInternAtom(display, "_NET_CLOSE_WINDOW", False);
-    Atom wmProtocols = XInternAtom(display, "WM_PROTOCOLS", False);
-    Atom wmDeleteWindow = XInternAtom(display, "WM_DELETE_WINDOW", False);
-    CHECK(closeWindow != None && wmProtocols != None && wmDeleteWindow != None,
-          "ewmh-close: atom intern failed");
+
+    /* WM_PROTOCOLS / WM_DELETE_WINDOW are predefined atoms (net-atoms.h); only
+     * _NET_CLOSE_WINDOW still needs interning here.
+     */
+    Atom wmProtocols = WM_PROTOCOLS;
+    Atom wmDeleteWindow = WM_DELETE_WINDOW;
+    CHECK(closeWindow != None, "ewmh-close: atom intern failed");
 
     /* Path A: target advertises WM_DELETE_WINDOW. Dispatch must post a
      * WM_PROTOCOLS / WM_DELETE_WINDOW ClientMessage to the target and leave the
@@ -12803,6 +12809,22 @@ static int test_state_snapshot(Display *display)
     Atom wm_class_atom = XInternAtom(display, "WM_CLASS", False);
     XChangeProperty(display, window, wm_class_atom, XA_STRING, 8,
                     PropModeReplace, (const unsigned char *) "TestProbe", 9);
+
+    /* The snapshot tracks WM_PROTOCOLS by compile-time constant
+     * (TRACKED_ATOMS), so the atom a client interns and stores must equal that
+     * fixed predefined id, not a dynamically assigned one. Guard the invariant
+     * directly: it holds even in the unit environment where the SDL round-trip
+     * below may not drain.
+     */
+    Atom wm_protocols_atom = XInternAtom(display, "WM_PROTOCOLS", False);
+    Atom wm_delete_atom = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    CHECK(wm_protocols_atom == WM_PROTOCOLS,
+          "WM_PROTOCOLS did not intern to its predefined id");
+    CHECK(wm_delete_atom == WM_DELETE_WINDOW,
+          "WM_DELETE_WINDOW did not intern to its predefined id");
+    Atom protocols[] = {wm_delete_atom};
+    XChangeProperty(display, window, wm_protocols_atom, XA_ATOM, 32,
+                    PropModeReplace, (const unsigned char *) protocols, 1);
     XMapWindow(display, window);
 
     /* mkstemp under $TMPDIR (falls back to /tmp) so parallel test runs and
@@ -12837,18 +12859,52 @@ static int test_state_snapshot(Display *display)
     if (rc == 0) {
         FILE *fp = fopen(path, "r");
         if (fp) {
-            char header[64];
-            size_t r = fread(header, 1, sizeof(header) - 1, fp);
-            header[r] = '\0';
+            /* Read the whole file: the snapshot enumerates up to
+             * UI_SNAPSHOT_MAX_WINDOWS records, so the target window's record
+             * can sit past a fixed-size prefix and a stored-record needle would
+             * false-fail on truncation.
+             */
+            fseek(fp, 0, SEEK_END);
+            long jsonLen = ftell(fp);
+            rewind(fp);
+            char *json = jsonLen > 0 ? malloc((size_t) jsonLen + 1) : NULL;
+            if (json) {
+                size_t r = fread(json, 1, (size_t) jsonLen, fp);
+                json[r] = '\0';
+            }
             fclose(fp);
-            if (!strstr(header, "\"focused_window\"")) {
-                fprintf(stderr, "%s:%d: snapshot JSON missing focused_window\n",
-                        __FILE__, __LINE__);
+            if (!json) {
+                fprintf(stderr, "%s:%d: snapshot JSON read failed\n", __FILE__,
+                        __LINE__);
                 failures++;
                 unlink(path);
                 XDestroyWindow(display, window);
                 return 0;
             }
+
+            /* Match the stored record, not just the tracked slot: every tracked
+             * atom emits a record even when absent (source "none"), so a bare
+             * "atom":129 needle would pass without the property being captured.
+             * Require format 32, length 1, source "stored", exactly the
+             * XA_ATOM[1] value written above.
+             */
+            char needle[96];
+            snprintf(needle, sizeof(needle),
+                     "\"atom\":%lu,\"format\":32,\"length\":1,"
+                     "\"source\":\"stored\"",
+                     (unsigned long) WM_PROTOCOLS);
+            if (!strstr(json, "\"focused_window\"") || !strstr(json, needle)) {
+                fprintf(stderr,
+                        "%s:%d: snapshot JSON missing focused_window or "
+                        "stored WM_PROTOCOLS record\n",
+                        __FILE__, __LINE__);
+                failures++;
+                free(json);
+                unlink(path);
+                XDestroyWindow(display, window);
+                return 0;
+            }
+            free(json);
         } else {
             fprintf(stderr, "%s:%d: snapshot JSON file missing\n", __FILE__,
                     __LINE__);
