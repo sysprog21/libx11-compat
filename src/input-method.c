@@ -20,6 +20,7 @@
 
 static char *currLocaleModifierList = defaultLocaleModifierList;
 static XIC focusedInputConnection = NULL;
+
 /* The IC XSetICFocus is about to install, live only across its preedit-clear
  * callback. XDestroyIC nulls it if that callback destroys the incoming IC, so
  * XSetICFocus can bail instead of dereferencing freed memory.
@@ -168,6 +169,7 @@ unsigned long inputMethodSetCurrentText(char *text)
         free(text);
         return 0;
     }
+
     /* id 0 is reserved to mean "no commit" (a real KeyPress leaves subwindow
      * None == 0), so skip it on wraparound. A collision with a still-live id
      * would need ~2^64 commits with one never consumed, so it is not guarded.
@@ -250,11 +252,13 @@ void inputMethodUnsetFocus(XIC inputConnection)
         return;
     if (focusedInputConnection)
         inputMethodHandlePreedit("", 0);
+
     /* The clear above can fire a done callback that re-focuses another IC; do
      * not clobber that. Only finish the unset when this IC still holds focus.
      */
     if (inputConnection && focusedInputConnection != inputConnection)
         return;
+
     /* If that clear was a reentrant no-op (we were called from inside a preedit
      * callback), preeditActive may still be set; clear it so the IC is not
      * stuck mid-preedit and skipping its start callback when focused again.
@@ -297,6 +301,7 @@ static void setInternalPreeditFont(_XIC *ic, GC gc)
         "*Arial Unicode*",       "*Hiragino Sans GB*", "*STHeiti*",
         "*Noto Sans CJK*",       "*Source Han Sans*",  "*WenQuanYi*",
         "*Droid Sans Fallback*", "helvetica"};
+
     /* Resolve the preedit font once per IC and cache it. Probing up to eight
      * patterns on every keystroke while composing is needless work, and
      * XDestroyIC frees the cached font.
@@ -327,6 +332,7 @@ static void drawInternalPreedit(_XIC *ic, const char *text, int len)
     clearInternalPreedit(ic);
     if (len <= 0)
         return;
+
     /* Preedit strings are short; cap before len * 8 so a pathological length
      * cannot overflow the rect math or hand XDrawString a huge count.
      */
@@ -404,6 +410,7 @@ static void handlePreeditImpl(const char *text, int caret)
 {
     if (!focusedInputConnection)
         return;
+
     /* User preedit callbacks below can re-enter Xlib and XDestroyIC or unfocus
      * this IC. Capture it so each callback can be followed by a check that
      * bails before touching freed or no-longer-focused state.
@@ -413,6 +420,7 @@ static void handlePreeditImpl(const char *text, int caret)
     const char *s = text ? text : "";
     int len = (int) strlen(s);
     int charLen = countUtf8Chars(s);
+
     /* The host reports where the insertion point sits inside the composition;
      * clamp it into the preedit so a bogus backend value cannot drive the caret
      * past the text. A negative value means "unreported", so trail at the end
@@ -431,6 +439,7 @@ static void handlePreeditImpl(const char *text, int caret)
         if (ic->hasPreeditStartCallback && ic->preeditStartCallback.callback) {
             ic->preeditStartCallback.callback(
                 (XIM) self, ic->preeditStartCallback.client_data, NULL);
+
             /* A callback that destroyed/unfocused this IC drops focus, so bail
              * before touching freed or no-longer-focused state. While merely
              * destroying (focus unchanged, IC still alive) keep going so the
@@ -611,6 +620,7 @@ void XDestroyIC(XIC inputConnection)
     if (ic->destroying)
         return;
     ic->destroying = True;
+
     /* If XSetICFocus is mid-switch into this IC, tell it the target died so it
      * does not install and dereference this freed connection.
      */
@@ -747,7 +757,8 @@ static Bool parseCommonICAttributes(XIC inputConnection,
     return True;
 }
 
-Bool parsePreEditAttributes(XIC inputConnection, XVaNestedList attributes)
+static Bool parsePreEditAttributes(XIC inputConnection,
+                                   XVaNestedList attributes)
 {
     return parseCommonICAttributes(inputConnection, attributes, True);
 }
@@ -852,7 +863,7 @@ static Bool fillCommonICAttributes(XIC inputConnection,
     return True;
 }
 
-Bool fillPreEditAttributes(XIC inputConnection, XVaNestedList returnArgs)
+static Bool fillPreEditAttributes(XIC inputConnection, XVaNestedList returnArgs)
 {
     return fillCommonICAttributes(inputConnection, returnArgs, True);
 }
@@ -896,6 +907,7 @@ static char *setICListValues(XIC inputConnection,
             if (IS_MAPPED_TOP_LEVEL_WINDOW(topLevel)) {
                 SDL_Window *sdlWindow = GET_WINDOW_STRUCT(topLevel)->sdlWindow;
                 SDL_RaiseWindow(sdlWindow);
+
                 /* The input rect and host text input belong to the IC that owns
                  * focus; reconfiguring an unfocused IC must not retarget or
                  * stop the focused one's IME.
@@ -938,7 +950,9 @@ static char *setICListValues(XIC inputConnection,
     return NULL;
 }
 
-char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
+static char *setICValues(XIC inputConnection,
+                         va_list arguments,
+                         Bool allowSetReadOnly)
 {
     char *key = NULL;
     while ((key = va_arg(arguments, char *))) {
@@ -967,6 +981,7 @@ char *setICValues(XIC inputConnection, va_list arguments, Bool allowSetReadOnly)
             if (IS_MAPPED_TOP_LEVEL_WINDOW(topLevel)) {
                 SDL_Window *sdlWindow = GET_WINDOW_STRUCT(topLevel)->sdlWindow;
                 SDL_RaiseWindow(sdlWindow);
+
                 /* Retarget SDL's IM window only for the IC that owns focus, so
                  * reconfiguring an unfocused IC does not move or stop the
                  * focused one's host text input. The restart keeps printable
@@ -1058,6 +1073,7 @@ XIC XCreateIC(XIM inputMethod, ...)
     if ((key = setICValues(inputConnection, argumentList, True))) {
         LOG("setICValues failed in %s because of key %s!\n", __func__, key);
         va_end(argumentList);
+
         /* setICValues may have allocated inputRect before failing; XDestroyIC
          * tolerates a partially built IC and frees it.
          */
@@ -1154,6 +1170,7 @@ void XSetICFocus(XIC inputConnection)
     // do beyond enabling SDL's host IME while this IC owns focus.
     if (!inputConnection)
         return;
+
     /* Switching focus directly from another IC (no XUnsetICFocus in between)
      * must tear down the old IC's on-screen preedit; clear it while it is still
      * the focused connection. That clear can fire the old IC's preedit
@@ -1290,6 +1307,7 @@ XFontSet XCreateFontSet(Display *display,
     char *pattern = firstFontSetPattern(base_font_name_list);
     if (!pattern)
         return NULL;
+
     /* Try the alias first when one exists; if it fails (or there is no alias)
      * try the original caller-supplied pattern before falling back to "fixed".
      * Otherwise an alias miss silently downgrades a loadable user pattern to
@@ -1356,6 +1374,7 @@ int Xutf8LookupString(XIC inputConnection,
             return 0;
         }
         LOG("InputMethod Event! text = '%s'.\n", pendingText);
+
         /* Xutf8LookupString returns a byte count and an unterminated string, so
          * the NUL is excluded from the length, the buffer check, and the copy.
          * size_t throughout: narrowing strlen to int first would let a >INT_MAX
@@ -1369,6 +1388,7 @@ int Xutf8LookupString(XIC inputConnection,
                 *status_return = XBufferOverflow;
             return textLen > (size_t) INT_MAX ? INT_MAX : (int) textLen;
         }
+
         /* A single ASCII byte maps to a keysym (XLookupBoth); a multi-byte or
          * multi-character commit is text only, so report XLookupChars with no
          * keysym rather than deriving one from a UTF-8 continuation byte.

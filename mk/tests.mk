@@ -6,6 +6,7 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
               $(OUT)/tests/test-xinerama-link \
               $(OUT)/tests/test-libxpm-link \
               $(OUT)/tests/test-xft-link \
+              $(OUT)/tests/test-xlibint-link \
               $(OUT)/tests/test-xtest
 # The GLX tests only exist when the optional GLX layer is built (GLX=1).
 # test-glx-link covers the no-provider degrade path; test-glx-provider drives the
@@ -237,6 +238,25 @@ $(OUT)/tests/test-glx-init-fail: tests/test-glx-init-fail.c $(TARGET) $(FAKE_EGL
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) -DFAKE_EGL_PATH=\"$(abspath $(FAKE_EGL_LIB))\" \
 	    $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+# check and test-xtest are whitebox tests: they call core internals directly.
+# Linking them against the fat test twin (libX11-compat-test.so) instead of the
+# pinned .so keeps those ~50 internals out of the shipped library's export list.
+# The twin, not the bare objects, because on Linux the whitebox binary shares a
+# process with the system libX11.so.6 that SDL2 loads; only a -Bsymbolic shared
+# library (which an executable cannot be) keeps our lock/event globals from being
+# interposed by it. Everything else links the pinned .so via the rule below.
+#
+# The twin only exists on the native .so build; under WASM=1 X11_TEST_LIB is
+# empty, so fall back to $(TARGET), which is the full-symbol static archive
+# there (no export pinning, no system libX11 to interpose) exactly as the
+# generic rule linked these before this change.
+X11_WHITEBOX_LIB := $(if $(X11_TEST_LIB),$(X11_TEST_LIB),$(TARGET))
+$(OUT)/tests/check $(OUT)/tests/test-xtest: $(OUT)/tests/%: tests/%.c $(X11_WHITEBOX_LIB)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(X11_WHITEBOX_LIB) \
+	    $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 $(OUT)/tests/%: tests/%.c $(TARGET)
 	@mkdir -p $(dir $@)

@@ -426,7 +426,7 @@ XImage *XCreateImage(Display *display,
     return image;
 }
 
-char *getImageDataPointer(XImage *image, unsigned int x, unsigned int y)
+static char *getImageDataPointer(XImage *image, unsigned int x, unsigned int y)
 {
     char *pointer = image->data;
     pointer += image->bytes_per_line * y;
@@ -675,7 +675,7 @@ XImage *XSubImage(XImage *image,
     return subImage;
 }
 
-int destroyImage(XImage *image)
+static int destroyImage(XImage *image)
 {
     // https://tronche.com/gui/x/xlib/utilities/XDestroyImage.html
     if (image->data)

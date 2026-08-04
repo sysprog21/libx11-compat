@@ -1,0 +1,8 @@
+# Core-internal symbols that must stay exported for whitebox tests which link
+# the core .so (not the objects). The pure whitebox tests (check, test-xtest)
+# link the core objects directly, so their internals need no export; but the
+# Motif-tier link tests (test-motif-link, test-toolkit-probe) reach the core
+# only through libXm -> libX11-compat.so, so a handful of internals they probe
+# have to remain visible in the shared library. Keep this list minimal; the
+# linker fails those tests loudly if an entry goes missing.
+compatSelfScalingToolkitLoaded
