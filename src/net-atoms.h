@@ -63,6 +63,15 @@
 #define _MOTIF_WM_HINTS ((Atom) 127)
 #define _XSETTINGS_SETTINGS_ATOM ((Atom) 128)
 
-#define _NET_LAST_PREDEFINED ((Atom) 128)
+/* ICCCM WM_PROTOCOLS / WM_DELETE_WINDOW are not in the core Xatom.h predefined
+ * set, but the in-process WM interns them at display init and the state
+ * snapshot tracks WM_PROTOCOLS by compile-time constant. Pinning fixed ids here
+ * guarantees the value a client stores equals the value the snapshot looks up,
+ * instead of a dynamically assigned id that would drift.
+ */
+#define WM_PROTOCOLS ((Atom) 129)
+#define WM_DELETE_WINDOW ((Atom) 130)
+
+#define _NET_LAST_PREDEFINED ((Atom) 130)
 
 #endif /* _NET_ATOMS_H_ */

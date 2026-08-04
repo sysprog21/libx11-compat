@@ -87,10 +87,17 @@ static long stateSnapshotTimeoutSec(void)
  */
 static const Atom TRACKED_ATOMS[] = {
     XA_WM_HINTS,   XA_WM_CLASS,         XA_WM_NAME,      _NET_WM_NAME,
-    _NET_WM_STATE, _NET_WM_WINDOW_TYPE, _MOTIF_WM_HINTS,
+    _NET_WM_STATE, _NET_WM_WINDOW_TYPE, _MOTIF_WM_HINTS, WM_PROTOCOLS,
 };
 #define TRACKED_ATOM_COUNT \
     ((int) (sizeof(TRACKED_ATOMS) / sizeof(TRACKED_ATOMS[0])))
+
+/* The per-window UiSnapshotWindow.properties array is sized by
+ * UI_SNAPSHOT_TRACKED_PROP_MAX in the header; keep the two in lockstep so the
+ * capture loop can never write past the array or silently drop a tracked atom.
+ */
+_Static_assert(TRACKED_ATOM_COUNT == UI_SNAPSHOT_TRACKED_PROP_MAX,
+               "properties[] must be sized for exactly TRACKED_ATOM_COUNT");
 
 Bool stateSnapshotOwnsEventType(Uint32 eventType)
 {
@@ -263,13 +270,12 @@ static void populateWindowEntry(UiSnapshotWindow *entry, Window window)
     if (ws->windowName)
         copyName(entry->wm_name, sizeof(entry->wm_name), ws->windowName);
 
+    /* properties[] is sized UI_SNAPSHOT_TRACKED_PROP_MAX, which a
+     * _Static_assert pins to TRACKED_ATOM_COUNT, so the loop over every tracked
+     * atom can never overrun the array; no runtime clamp needed.
+     */
     entry->property_count = 0;
-    int slots = TRACKED_ATOM_COUNT;
-    if (slots >
-        (int) (sizeof(entry->properties) / sizeof(entry->properties[0])))
-        slots =
-            (int) (sizeof(entry->properties) / sizeof(entry->properties[0]));
-    for (int i = 0; i < slots; i++) {
+    for (int i = 0; i < TRACKED_ATOM_COUNT; i++) {
         Atom atom = TRACKED_ATOMS[i];
         WindowProperty *stored = findProperty(&ws->properties, atom, NULL);
         writePropertyRecord(&entry->properties[entry->property_count], atom,
@@ -517,6 +523,7 @@ int stateSnapshotHandleEvent(Display *display, const SDL_Event *event)
 {
     char *path = (char *) event->user.data1;
     uint64_t eventGeneration = (uint64_t) (uintptr_t) event->user.data2;
+
     /* If the request that posted this event already timed out, the worker has
      * moved on (or has dispatched a fresh request with its own path and
      * generation). Free the stale path, do not touch stateDone, do not signal.
@@ -533,6 +540,7 @@ int stateSnapshotHandleEvent(Display *display, const SDL_Event *event)
         free(path);
         return -5;
     }
+
     /* UiSnapshot is ~100 KB (UI_SNAPSHOT_MAX_WINDOWS window records). Heap it
      * rather than placing it on the stack: this handler runs from the SDL event
      * path, which a multithreaded XInitThreads client can pump from a secondary
@@ -555,6 +563,7 @@ int stateSnapshotHandleEvent(Display *display, const SDL_Event *event)
             LOG("state-snapshot: write %s failed (rc=%d)\n", path, rc);
     }
     pthread_mutex_lock(&stateMutex);
+
     /* Re-check the generation now that we have the mutex; a concurrent
      * stateSnapshotRequestAndWait could have bumped it between our pre-write
      * check and the signal.
