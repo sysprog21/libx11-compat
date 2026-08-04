@@ -11,6 +11,21 @@
 PREFIX ?= /usr/local
 DESTDIR ?=
 
+# Strip local symbols from the installed libraries: the export surface (dynamic
+# symbols) is untouched, so only the internal names in .symtab go, shaving ~6%
+# off each .so. The in-tree build/ copies keep their local symbols so crash
+# backtraces stay symbolic during development; only the deployed artifact slims.
+# Override STRIP (e.g. STRIP=: for a packager that strips its own way, or a
+# cross strip) to change or disable it.
+STRIP ?= strip
+
+# strip -x rewrites the Mach-O, which invalidates the ad-hoc signature ld64 puts
+# on arm64 binaries. Apple's own strip re-signs, but lld or an older toolchain
+# does not, and dyld then refuses the installed dylib ("code signature invalid").
+# Re-sign explicitly on Darwin so the default install is safe on any toolchain;
+# elsewhere CODESIGN_RESIGN is the no-op colon builtin that just swallows the path.
+CODESIGN_RESIGN := $(if $(filter Darwin,$(UNAME_S)),codesign --force --sign - ,:)
+
 # Libraries a downstream links by their standard X11 SONAME (each gets a
 # libNAME.so -> libNAME-compat.so alias).
 XCOMPAT_INSTALL_ALIASED := X11 Xft Xext Xt Xmu Xaw Xpm Xinerama ICE SM
@@ -34,10 +49,14 @@ install: $(XCOMPAT_INSTALL_LIB_FILES) $(UPSTREAM_HEADERS_STAMP)
 	$(Q)mkdir -p "$(DESTDIR)$(PREFIX)/lib" "$(DESTDIR)$(PREFIX)/include"
 	$(Q)for l in $(XCOMPAT_INSTALL_ALIASED); do \
 	    cp "$(OUT)/lib$$l-compat.so" "$(DESTDIR)$(PREFIX)/lib/" && \
+	    $(STRIP) -x "$(DESTDIR)$(PREFIX)/lib/lib$$l-compat.so" && \
+	    $(CODESIGN_RESIGN) "$(DESTDIR)$(PREFIX)/lib/lib$$l-compat.so" && \
 	    ln -sf "lib$$l-compat.so" "$(DESTDIR)$(PREFIX)/lib/lib$$l.so" || exit 1; \
 	done
 	$(Q)for w in $(XCOMPAT_INSTALL_WRAPPERS); do \
-	    cp "$(OUT)/lib$$w.so" "$(DESTDIR)$(PREFIX)/lib/"; \
+	    cp "$(OUT)/lib$$w.so" "$(DESTDIR)$(PREFIX)/lib/" && \
+	    $(STRIP) -x "$(DESTDIR)$(PREFIX)/lib/lib$$w.so" && \
+	    $(CODESIGN_RESIGN) "$(DESTDIR)$(PREFIX)/lib/lib$$w.so" || exit 1; \
 	done
 	$(Q)cp -R "$(UPSTREAM_HEADERS_DIR)/." "$(DESTDIR)$(PREFIX)/include/"
 	$(Q)for d in $(XCOMPAT_INSTALL_HEADER_DIRS); do \

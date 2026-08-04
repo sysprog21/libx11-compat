@@ -51,6 +51,11 @@ CPPFLAGS += -Iinclude -Isrc \
 CFLAGS += -std=c99 -Wall -Wextra -Wno-unused-parameter \
           -Wno-typedef-redefinition -fPIC
 
+# Per-function/-data sections so the shared-library link can --gc-sections away
+# code no exported symbol reaches once mk/library.mk pins the export surface.
+# ELF-only leverage; clang on Mach-O ignores these and dead-strips by symbol.
+CFLAGS += -ffunction-sections -fdata-sections
+
 # Release optimization default for first-party objects: libX11-compat core, the
 # staged upstream libX11 sources, the compat toolkit libraries (libXt/Xpm/Xaw/
 # Xmu/Xext/Xinerama/ICE/SM/Xft-compat), tests, and bundled examples. Debug CI

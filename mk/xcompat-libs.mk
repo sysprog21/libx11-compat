@@ -107,9 +107,21 @@ $(SM_COMPAT_TARGET): $(OUT)/sm-compat.o $(ICE_COMPAT_TARGET) | $(OUT)
 	$(Q)$(CC) $(LDFLAGS) $(SM_COMPAT_LDFLAGS) -shared -o $@ $< \
 	    -L$(OUT) -lICE-compat
 
+# -Wl,--no-undefined makes a missing core helper (one src/xft.c calls but that is
+# absent from tests/private-symbols.txt) fail this link loudly on Linux, matching
+# the macOS two-level namespace which already rejects it. Every symbol xft-compat.o
+# references resolves from -lX11-compat + $(LDLIBS) (SDL, SDL_ttf, pixman, libc),
+# so this only tightens error reporting, it does not change what links. macOS ld64
+# spells the same guard -Wl,-undefined,error, which is already its default.
+#
+# Dropped under a sanitizer build: -fsanitize leaves the __asan_*/__ubsan_*
+# runtime symbols undefined in the .so (resolved from the executable at load
+# time), which --no-undefined would reject, breaking the ASan/UBSan/TSan jobs.
+XFT_SANITIZED := $(findstring -fsanitize,$(CFLAGS_EXTRA) $(LDFLAGS))
+XFT_COMPAT_NO_UNDEF := $(if $(filter Linux,$(UNAME_S)),$(if $(XFT_SANITIZED),,-Wl$(comma)--no-undefined))
 $(XFT_COMPAT_TARGET): $(OUT)/xft-compat.o $(TARGET) | $(OUT)
 	@echo "  LD      $@"
-	$(Q)$(CC) $(LDFLAGS) $(XFT_COMPAT_LDFLAGS) -shared -o $@ $< \
+	$(Q)$(CC) $(LDFLAGS) $(XFT_COMPAT_LDFLAGS) $(XFT_COMPAT_NO_UNDEF) -shared -o $@ $< \
 	    -L$(OUT) -lX11-compat $(LDLIBS)
 
 .PHONY: xext xmu xinerama ice sm xft

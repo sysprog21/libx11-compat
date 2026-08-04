@@ -178,7 +178,7 @@ void *removeArray(Array *a, size_t index, Bool preserveOrder)
     return element;
 }
 
-Bool equalCmp(void *element, void *arg)
+static Bool equalCmp(void *element, void *arg)
 {
     return element == arg;
 }

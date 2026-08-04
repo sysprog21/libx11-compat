@@ -9,6 +9,7 @@
 static Visual *VISUAL_LIST = NULL;
 static size_t NUM_VISUALS = 0;
 static int VISUAL_DEPTH = 24;
+
 /* The shared Visual table is screen-0 visuals; a per-screen variant would need
  * a separate entry per screen. Keeping this a constant avoids global mutation
  * racing with concurrent visual lookups.
@@ -22,6 +23,7 @@ Bool initVisuals()
         LOG("Warn: Visual memory already allocated!\n");
         return True;
     }
+
     /* Defer NUM_VISUALS so a malloc failure leaves the two globals consistent.
      * freeVisuals() walks NUM_VISUALS entries of VISUAL_LIST, and would
      * otherwise dereference NULL during failure cleanup.
@@ -84,7 +86,7 @@ VisualID XVisualIDFromVisual(Visual *visual)
     return visual->visualid;
 }
 
-void fillVisualInfo(XVisualInfo *info, Visual *visual)
+static void fillVisualInfo(XVisualInfo *info, Visual *visual)
 {
     info->visual = visual;
     info->visualid = visual->visualid;
@@ -174,6 +176,7 @@ Status XMatchVisualInfo(Display *display,
         LOG("Visuals memory is not initialized in %s!\n", __func__);
         return 0;
     }
+
     /* Only the default screen has visuals registered; for any other screen
      * report no match rather than returning a visual whose `screen` field would
      * silently be rewritten to 0 by fillVisualInfo.

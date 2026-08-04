@@ -71,17 +71,6 @@ SDL_Color uLongToColor(XcPixelFormat pixelFormat, unsigned long color)
     return res;
 }
 
-SDL_Color uLongToColorFromVisual(Visual *visual, unsigned long color)
-{
-    SDL_Color res;
-    res.r = (visual->red_mask & color) >> 24;
-    res.g = (visual->green_mask & color) >> 16;
-    res.b = (visual->blue_mask & color) >> 8;
-    res.a =
-        (~(visual->red_mask | visual->green_mask | visual->blue_mask)) & color;
-    return res;
-}
-
 int XFreeColormap(Display *display, Colormap colormap)
 {
     // https://tronche.com/gui/x/xlib/color/XFreeColormap.html
@@ -258,6 +247,7 @@ static Bool parseRgbComponent(const char **cursor, unsigned short *value)
     unsigned int raw = 0;
     for (int i = 0; i < digits; i++)
         raw = (raw << 4) | (unsigned int) hexValue(start[i]);
+
     /* X11 rgb: components scale a k-digit value to 16 bits by bit replication,
      * so rgb:f/f/f is full intensity (0xffff), not 0xf000.
      */
@@ -351,6 +341,7 @@ int XFreeColors(Display *display,
     // https://tronche.com/gui/x/xlib/color/XFreeColors.html
     SET_X_SERVER_REQUEST(display, X_FreeColors);
     TYPE_CHECK(colormap, COLORMAP, display, 0);
+
     /* Direct-color visual: pixels are not allocated entries, so nothing to
      * release.
      */
@@ -367,6 +358,7 @@ Status XAllocColor(Display *display, Colormap colormap, XColor *screen_in_out)
     TYPE_CHECK(colormap, COLORMAP, display, 0);
     if (!screen_in_out)
         return 0;
+
     /* Spec: on success, .pixel is filled with the allocated index and the
      * .red/.green/.blue fields with the actually rendered values (which may
      * differ from the requested ones on indexed visuals). The compat layer's

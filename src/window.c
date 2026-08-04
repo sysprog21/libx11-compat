@@ -2044,17 +2044,6 @@ int XReparentWindow(Display *display,
     return reparentWindowImpl(display, window, parent, x, y);
 }
 
-int indexInWindowList(Window *windowList, int numWindows, Window window)
-{
-    int i;
-    for (i = 0; i < numWindows; i++) {
-        if (*windowList == window)
-            return i;
-        windowList++;
-    }
-    return -1;
-}
-
 Bool XTranslateCoordinates(Display *display,
                            Window sourceWindow,
                            Window destinationWindow,

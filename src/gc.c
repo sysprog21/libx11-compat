@@ -67,6 +67,7 @@ GC XCreateGC(Display *display,
     graphicContextStruct->gid = contextId;
     SET_XID_TYPE(contextId, GRAPHICS_CONTEXT);
     SET_XID_VALUE(contextId, gc);
+
     /* Initialize every field to safe defaults before any fallible allocation.
      * XFreeGC walks gc->clipRects via free() and gc->font via
      * compatFontReleaseForGC; if the dashes malloc below fails the cleanup path
@@ -77,6 +78,7 @@ GC XCreateGC(Display *display,
     gc->numDashes = 0;
     gc->function = GXcopy;
     gc->planeMask = 0xFFFFFFFF;
+
     /* Per X11 spec the defaults are pixel indices 0 (foreground) and 1
      * (background). This shim treats pixel values as direct ARGB (see
      * src/colors.h), so default to opaque black/white instead. Otherwise
@@ -130,11 +132,11 @@ GContext XGContextFromGC(GC gc)
     return gc->gid;
 }
 
-Bool setDashes(Display *display,
-               GraphicContext *gc,
-               const char dashes[],
-               size_t numDashes,
-               Bool verifyValues)
+static Bool setDashes(Display *display,
+                      GraphicContext *gc,
+                      const char dashes[],
+                      size_t numDashes,
+                      Bool verifyValues)
 {
     if (verifyValues) {
         size_t i;
@@ -257,6 +259,7 @@ Status XGetGCValues(Display *display,
 {
     // https://tronche.com/gui/x/xlib/GC/XGetGCValues.html
     GraphicContext *graphicContext = GET_GC(gc);
+
     /* A GC id can resolve to NULL (freed or stale, for example a GC retired
      * when the client closed and reopened its display).
      *

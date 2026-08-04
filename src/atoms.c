@@ -17,6 +17,7 @@ static Bool predefinedAtomMatchesName(const char *predefinedName,
 {
     if (strcmp(predefinedName, name) == 0)
         return True;
+
     /* The predefined list stores the C identifier (e.g. "XA_PRIMARY"); the X11
      * atom name strips the "XA_" prefix.
      */
@@ -24,7 +25,7 @@ static Bool predefinedAtomMatchesName(const char *predefinedName,
            strcmp(&predefinedName[3], name) == 0;
 }
 
-AtomStruct *getAtomStruct(Atom atom)
+static AtomStruct *getAtomStruct(Atom atom)
 {
     AtomStruct *atomStruct = atomStorageStart;
     while (atomStruct) {
@@ -35,7 +36,7 @@ AtomStruct *getAtomStruct(Atom atom)
     return NULL;
 }
 
-AtomStruct *getAtomStructByName(const char *name)
+static AtomStruct *getAtomStructByName(const char *name)
 {
     size_t i;
     for (i = 0; i < PREDEFINED_ATOM_LIST_SIZE; i++) {
@@ -117,7 +118,9 @@ Status XGetAtomNames(Display *dpy, Atom *atoms, int count, char **names_return)
     return returned_names == count ? 1 : 0;
 }
 
-Atom _internAtom(const char *atomName, Bool only_if_exists, Bool *outOfMemory)
+static Atom _internAtom(const char *atomName,
+                        Bool only_if_exists,
+                        Bool *outOfMemory)
 {
     if (outOfMemory)
         *outOfMemory = False;
