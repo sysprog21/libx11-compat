@@ -1,0 +1,30 @@
+Source: libx11-compat
+Section: libs
+Priority: optional
+Maintainer: libx11-compat maintainers <https://github.com/sysprog21/libx11-compat/issues>
+Build-Depends: debhelper-compat (= 13),
+               pkgconf,
+               python3,
+               libsdl2-dev,
+               libsdl2-ttf-dev,
+               libpixman-1-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/sysprog21/libx11-compat
+Vcs-Git: https://github.com/sysprog21/libx11-compat.git
+Vcs-Browser: https://github.com/sysprog21/libx11-compat
+Rules-Requires-Root: no
+
+Package: libx11-compat
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: in-process Xlib implementation layered on SDL
+ libx11-compat is an in-process implementation of the X Window System
+ client library (Xlib) layered on top of SDL (SDL2 or SDL3), SDL_ttf,
+ and pixman. It lets existing Xlib clients keep their source unchanged
+ while running on platforms where a conventional X server is
+ unavailable or inconvenient: Wayland-only sessions, headless CI, and
+ similar environments.
+ .
+ This package ships the compat shared libraries (libX11-compat.so and
+ friends) with standard-name aliases plus the public X11 API headers,
+ so a downstream build can link against the shim as an ordinary X11.

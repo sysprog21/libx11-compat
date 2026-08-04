@@ -1,0 +1,5 @@
+libx11-compat (0.1.0-1) unstable; urgency=medium
+
+  * Initial packaging.
+
+ -- libx11-compat maintainers <https://github.com/sysprog21/libx11-compat/issues>  Tue, 04 Aug 2026 17:00:00 +0000

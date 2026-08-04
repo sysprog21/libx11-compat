@@ -57,20 +57,9 @@ TTF_WRAP(char *, TTF_FontFaceFamilyName, (const TTF_Font *font), (font))
 TTF_WRAP(int, TTF_FontFaceIsFixedWidth, (const TTF_Font *font), (font))
 TTF_WRAP(const char *, TTF_GetError, (void), ())
 TTF_WRAP(int, TTF_GetFontStyle, (const TTF_Font *font), (font))
-#if SDL_TTF_VERSION_ATLEAST(2, 20, 0)
 TTF_WRAP(int, TTF_GlyphIsProvided, (TTF_Font * font, Uint16 ch), (font, ch))
-TTF_WRAP(int, TTF_GlyphIsProvided32, (TTF_Font * font, Uint32 ch), (font, ch))
-#else
-TTF_WRAP(int,
-         TTF_GlyphIsProvided,
-         (const TTF_Font *font, Uint16 ch),
-         (font, ch))
 #if SDL_TTF_VERSION_ATLEAST(2, 0, 18)
-TTF_WRAP(int,
-         TTF_GlyphIsProvided32,
-         (const TTF_Font *font, Uint32 ch),
-         (font, ch))
-#endif
+TTF_WRAP(int, TTF_GlyphIsProvided32, (TTF_Font * font, Uint32 ch), (font, ch))
 #endif
 TTF_WRAP(int,
          TTF_GlyphMetrics,

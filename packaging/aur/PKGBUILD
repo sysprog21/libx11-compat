@@ -1,0 +1,37 @@
+# Maintainer: libx11-compat maintainers <https://github.com/sysprog21/libx11-compat/issues>
+pkgname=libx11-compat-git
+pkgver=r1.0000000
+pkgrel=1
+pkgdesc="In-process Xlib implementation layered on SDL (SDL2/SDL3), SDL_ttf, and pixman"
+arch=('x86_64' 'aarch64')
+url="https://github.com/sysprog21/libx11-compat"
+license=('MIT')
+depends=('sdl2' 'sdl2_ttf' 'pixman')
+makedepends=('git' 'python' 'pkgconf')
+provides=('libx11-compat')
+conflicts=('libx11-compat')
+source=("libx11-compat::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd libx11-compat
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd libx11-compat
+  # Note: the build stages pinned upstream Xorg headers via
+  # scripts/sync-upstream-headers.py, which downloads cached tarballs.
+  make
+}
+
+package() {
+  cd libx11-compat
+  # Install into a private prefix: the shipped headers (X11/, GL/, ...)
+  # and libX11.so aliases would otherwise clash with the real X11 dev
+  # packages. Downstreams point their build at this tree, e.g.
+  # ./configure --with-libx11-compat=/usr/lib/libx11-compat
+  make install PREFIX=/usr/lib/libx11-compat DESTDIR="$pkgdir"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
