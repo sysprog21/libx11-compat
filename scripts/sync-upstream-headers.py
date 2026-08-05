@@ -12,7 +12,10 @@ Subcommands:
 ``fetch DEST [--force]``
     Download (cached) tarballs and extract headers into ``DEST/X11/`` and
     the whitelisted libX11 ``src/`` files into ``DEST/../src/``. Idempotent
-    through ``DEST/.upstream-stamp``.
+    through ``DEST/.upstream-stamp``. For offline builds, set
+    ``LIBX11_COMPAT_TARBALL_DIR`` to a directory holding the pinned
+    tarballs; entries whose sha256 matches the pin are used instead of
+    downloading.
 
 ``diff``
     Compare local ``include/X11/`` to upstream and classify each path as
@@ -478,6 +481,23 @@ def download(url: str, expected_sha: str) -> Path:
                 file=sys.stderr,
             )
             dest.unlink(missing_ok=True)
+    # Offline builds (distro packaging, network-restricted chroots) can drop
+    # the pinned tarballs into a directory and point this variable at it; a
+    # tarball whose sha256 matches the pin is used instead of the network.
+    # The cache under build/ does not survive `make distclean`, so the seed
+    # directory should live outside the build tree.
+    seed_dir = os.environ.get("LIBX11_COMPAT_TARBALL_DIR")
+    if seed_dir:
+        candidate = Path(seed_dir) / dest.name
+        if candidate.is_file():
+            if sha256_of(candidate) == expected_sha:
+                print(f"  SEED    {candidate}", file=sys.stderr)
+                shutil.copyfile(candidate, dest)
+                return dest
+            print(
+                f"  WARN    seed {candidate} has unexpected sha256; ignoring",
+                file=sys.stderr,
+            )
     print(f"  FETCH   {url}", file=sys.stderr)
     tmp_fd, tmp_name = tempfile.mkstemp(dir=CACHE_DIR, prefix=".dl-")
     os.close(tmp_fd)
@@ -509,8 +529,8 @@ def download(url: str, expected_sha: str) -> Path:
         if last_exc is not None:
             raise SystemExit(
                 f"failed to download {url} after {attempts} attempts: {last_exc}\n"
-                f"  pre-seed the cache at {CACHE_DIR}/{dest.name} "
-                f"to build offline"
+                f"  to build offline, place {dest.name} in a directory and\n"
+                f"  set LIBX11_COMPAT_TARBALL_DIR to that directory"
             ) from last_exc
         actual = sha256_of(tmp_path)
         if actual != expected_sha:
