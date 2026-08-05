@@ -19,7 +19,12 @@ the pinned sha256 either way. The RPM spec declares the tarballs as
 PKGBUILD lists them in `source=()` (checksummed by makepkg) and points
 the variable at `$srcdir`; for Debian, place the tarballs in a directory
 outside the source tree (the clean target wipes the in-tree cache) and
-export the variable before `dpkg-buildpackage`.
+export the variable before a direct `dpkg-buildpackage`. Under sbuild
+the build runs in a clean chroot where the caller's environment does
+not reach the inner make, so inject both the tarballs and the variable
+into the chroot explicitly (e.g. copy the tarballs in with
+`--chroot-setup-commands` or a bind mount, and pass the variable via
+`$build_environment` in `.sbuildrc`).
 
 ## Debian / Ubuntu / Pardus (`../debian/`)
 
