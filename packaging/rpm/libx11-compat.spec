@@ -17,6 +17,15 @@ Summary:        In-process Xlib implementation layered on SDL
 License:        MIT
 URL:            https://github.com/sysprog21/libx11-compat
 Source0:        %{url}/archive/%{commit}/%{name}-%{shortcommit}.tar.gz
+# Pinned upstream Xorg tarballs the build stages headers/sources from
+# (see scripts/sync-upstream-headers.py, which verifies their sha256).
+# Declaring them as sources keeps the build fully offline in mock/koji.
+Source1:        https://xorg.freedesktop.org/archive/individual/lib/libX11-1.8.13.tar.xz
+Source2:        https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2025.1.tar.xz
+Source3:        https://xorg.freedesktop.org/archive/individual/lib/libXt-1.3.1.tar.xz
+Source4:        https://xorg.freedesktop.org/archive/individual/lib/libXpm-3.5.19.tar.xz
+Source5:        https://xorg.freedesktop.org/archive/individual/lib/libXmu-1.3.1.tar.xz
+Source6:        https://xorg.freedesktop.org/archive/individual/lib/libXaw-1.0.16.tar.xz
 
 BuildRequires:  gcc
 BuildRequires:  make
@@ -41,11 +50,11 @@ so a downstream build can link against the shim as an ordinary X11.
 %prep
 %autosetup -n %{name}-%{commit}
 
-# Note: the build stages pinned upstream Xorg headers via
-# scripts/sync-upstream-headers.py, which downloads cached tarballs.
-# For a fully offline (mock/koji) build, pre-populate the download
-# cache first (run `make upstream-sync` with network access).
+# The staging script seeds the pinned upstream tarballs from
+# LIBX11_COMPAT_TARBALL_DIR (sha256-verified) instead of the network,
+# so the build works in an offline mock/koji chroot.
 %build
+export LIBX11_COMPAT_TARBALL_DIR=%{_sourcedir}
 %make_build
 
 %install

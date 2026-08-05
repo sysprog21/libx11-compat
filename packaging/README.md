@@ -10,10 +10,16 @@ Downstreams point their build at this tree, e.g.
 `./configure --with-libx11-compat=/usr/lib/libx11-compat`.
 
 Note for all recipes: the build stages pinned upstream Xorg headers via
-`scripts/sync-upstream-headers.py`, which downloads cached tarballs. For
-a fully offline build (sbuild, mock, or a clean chroot without network),
-pre-populate the download cache first by running `make upstream-sync`
-with network access.
+`scripts/sync-upstream-headers.py`, which downloads sha256-pinned
+tarballs. For offline builds (sbuild, mock/koji, or a clean chroot
+without network), the script seeds those tarballs from the directory
+named by `LIBX11_COMPAT_TARBALL_DIR` instead of the network, verifying
+the pinned sha256 either way. The RPM spec declares the tarballs as
+`Source1:`..`Source6:` and points the variable at `%{_sourcedir}`; the
+PKGBUILD lists them in `source=()` (checksummed by makepkg) and points
+the variable at `$srcdir`; for Debian, place the tarballs in a directory
+outside the source tree (the clean target wipes the in-tree cache) and
+export the variable before `dpkg-buildpackage`.
 
 ## Debian / Ubuntu / Pardus (`../debian/`)
 

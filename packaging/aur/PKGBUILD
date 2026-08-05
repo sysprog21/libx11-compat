@@ -10,26 +10,40 @@ depends=('sdl2' 'sdl2_ttf' 'pixman')
 makedepends=('git' 'python' 'pkgconf')
 provides=('libx11-compat')
 conflicts=('libx11-compat')
-source=("libx11-compat::git+$url.git")
-sha256sums=('SKIP')
+# The pinned upstream Xorg tarballs the build stages headers/sources
+# from are declared as sources so makepkg downloads and checksums them;
+# scripts/sync-upstream-headers.py seeds them from $srcdir via
+# LIBX11_COMPAT_TARBALL_DIR (re-verifying the pinned sha256) instead of
+# fetching over the network mid-build.
+source=("libx11-compat::git+$url.git"
+        'https://xorg.freedesktop.org/archive/individual/lib/libX11-1.8.13.tar.xz'
+        'https://xorg.freedesktop.org/archive/individual/proto/xorgproto-2025.1.tar.xz'
+        'https://xorg.freedesktop.org/archive/individual/lib/libXt-1.3.1.tar.xz'
+        'https://xorg.freedesktop.org/archive/individual/lib/libXpm-3.5.19.tar.xz'
+        'https://xorg.freedesktop.org/archive/individual/lib/libXmu-1.3.1.tar.xz'
+        'https://xorg.freedesktop.org/archive/individual/lib/libXaw-1.0.16.tar.xz')
+noextract=('libX11-1.8.13.tar.xz'
+           'xorgproto-2025.1.tar.xz'
+           'libXt-1.3.1.tar.xz'
+           'libXpm-3.5.19.tar.xz'
+           'libXmu-1.3.1.tar.xz'
+           'libXaw-1.0.16.tar.xz')
+sha256sums=('SKIP'
+            '69606f485c2c07c14ef64f75b7bb326d48587af33795d9ab3e607c0b5f94f11c'
+            '56898c716c0578df8a2d828c9c3e5c528277705c0484381a81960fe1a67668e8'
+            'e0a774b33324f4d4c05b199ea45050f87206586d81655f8bef4dba434d931288'
+            'ad3576d689221a39dc728f0e0dc02ca7bb6a0d724c9a77fd1bfa1e9af83be900'
+            '81a99e94c4501e81c427cbaa4a11748b584933e94b7a156830c3621256857bc4'
+            '731d572b54c708f81e197a6afa8016918e2e06dfd3025e066ca642a5b8c39c8f')
 
 pkgver() {
   cd libx11-compat
   printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
-prepare() {
-  cd libx11-compat
-  # Stage the pinned upstream Xorg headers up front: the fetch happens
-  # over the network via scripts/sync-upstream-headers.py, outside
-  # makepkg's source/checksum handling, so do it in prepare() where
-  # network access is expected rather than mid-build().
-  make upstream-sync
-}
-
 build() {
   cd libx11-compat
-  make
+  LIBX11_COMPAT_TARBALL_DIR="$srcdir" make
 }
 
 package() {

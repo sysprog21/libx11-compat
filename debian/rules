@@ -1,8 +1,10 @@
 #!/usr/bin/make -f
 # Note: the build stages pinned upstream Xorg headers via
-# scripts/sync-upstream-headers.py, which downloads cached tarballs.
-# For a fully offline build, pre-populate the download cache first
-# (run `make upstream-sync` with network access) before building.
+# scripts/sync-upstream-headers.py, which downloads sha256-pinned
+# tarballs. For an offline build, place those tarballs in a directory
+# outside the source tree (the clean target wipes the in-tree cache)
+# and export LIBX11_COMPAT_TARBALL_DIR pointing at it; the script then
+# seeds from that directory instead of the network.
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
