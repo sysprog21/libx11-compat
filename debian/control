@@ -1,7 +1,7 @@
 Source: libx11-compat
 Section: libs
 Priority: optional
-Maintainer: libx11-compat maintainers <https://github.com/sysprog21/libx11-compat/issues>
+Maintainer: libx11-compat maintainers <libx11-compat@users.noreply.github.com>
 Build-Depends: debhelper-compat (= 13),
                pkgconf,
                python3,

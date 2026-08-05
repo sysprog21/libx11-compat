@@ -9,15 +9,13 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 %:
 	dh $@
 
-override_dh_auto_build:
-	$(MAKE)
 
 # Install into a private prefix: the shipped headers (X11/, GL/, ...)
 # and libX11.so aliases would otherwise clash with the real X11 dev
 # packages. Downstreams point their build at this tree, e.g.
 # ./configure --with-libx11-compat=/usr/lib/libx11-compat
 override_dh_auto_install:
-	$(MAKE) install PREFIX=/usr/lib/libx11-compat DESTDIR=$(CURDIR)/debian/libx11-compat
+	dh_auto_install -- PREFIX=/usr/lib/libx11-compat
 
 override_dh_auto_test:
 	# The full check suite needs a display and optional workloads;

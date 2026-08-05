@@ -1,0 +1,6 @@
+.debhelper/
+debhelper-build-stamp
+files
+libx11-compat/
+libx11-compat.debhelper.log
+libx11-compat.substvars

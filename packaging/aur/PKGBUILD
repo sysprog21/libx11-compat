@@ -1,4 +1,4 @@
-# Maintainer: libx11-compat maintainers <https://github.com/sysprog21/libx11-compat/issues>
+# Maintainer: libx11-compat maintainers <libx11-compat@users.noreply.github.com>
 pkgname=libx11-compat-git
 pkgver=r1.0000000
 pkgrel=1
@@ -18,10 +18,17 @@ pkgver() {
   printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
+prepare() {
+  cd libx11-compat
+  # Stage the pinned upstream Xorg headers up front: the fetch happens
+  # over the network via scripts/sync-upstream-headers.py, outside
+  # makepkg's source/checksum handling, so do it in prepare() where
+  # network access is expected rather than mid-build().
+  make upstream-sync
+}
+
 build() {
   cd libx11-compat
-  # Note: the build stages pinned upstream Xorg headers via
-  # scripts/sync-upstream-headers.py, which downloads cached tarballs.
   make
 }
 
