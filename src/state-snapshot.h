@@ -1,6 +1,7 @@
 #ifndef LIBX11_COMPAT_STATE_SNAPSHOT_H
 #define LIBX11_COMPAT_STATE_SNAPSHOT_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <X11/Xlib.h>
 #include "sdl-compat.h"
@@ -85,6 +86,13 @@ typedef struct {
     int window_count;
     UiSnapshotWindow windows[UI_SNAPSHOT_MAX_WINDOWS];
 } UiSnapshot;
+
+/* _NET_WM_WINDOW_TYPE values counted in popup_window_count. A strict subset of
+ * netWmWindowTypeHonored (src/window-internal.h): see the table definition in
+ * state-snapshot.c for why SPLASH and DOCK are excluded.
+ */
+extern const Atom netWmWindowTypePopup[];
+extern const size_t netWmWindowTypePopupCount;
 
 /* Synchronous request: marshal the snapshot on the main thread, write JSON to
  * path, signal the waiter.

@@ -6840,6 +6840,278 @@ static int test_ewmh_close_window_clientmessage(Display *display)
     return 1;
 }
 
+/* Set membership over a small unsorted atom array. The EWMH assertions below
+ * compare atom sets in both directions, where the sets are short enough that a
+ * linear scan beats any indexing and keeps the comparison readable.
+ */
+static Bool atomInSet(const Atom *set, size_t count, Atom atom)
+{
+    for (size_t i = 0; i < count; i++)
+        if (set[i] == atom)
+            return True;
+    return False;
+}
+
+/* EWMH root advertisement: an EWMH-aware toolkit tests for a supporting-WM
+ * check window before it bothers sending _NET_WM_STATE / _NET_WM_WINDOW_TYPE
+ * requests, so the root must carry _NET_SUPPORTING_WM_CHECK pointing at a child
+ * that points back at itself and carries _NET_WM_NAME. _NET_SUPPORTED must list
+ * exactly the atoms the shim acts on: an atom we ignore would make clients wait
+ * on state changes that never arrive, a missing one loses the request.
+ */
+static int test_ewmh_root_supported(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Atom supportingCheck =
+        XInternAtom(display, "_NET_SUPPORTING_WM_CHECK", False);
+    Atom supported = XInternAtom(display, "_NET_SUPPORTED", False);
+    Atom activeWindow = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+    Atom closeWindow = XInternAtom(display, "_NET_CLOSE_WINDOW", False);
+    Atom utf8String = XInternAtom(display, "UTF8_STRING", False);
+    CHECK(supportingCheck != None && supported != None &&
+              activeWindow != None && closeWindow != None && utf8String != None,
+          "ewmh-supported: atom intern failed");
+
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long nItems = 0, bytesAfter = 0;
+    unsigned char *data = NULL;
+    CHECK(XGetWindowProperty(display, root, supportingCheck, 0, 1, False,
+                             XA_WINDOW, &actualType, &actualFormat, &nItems,
+                             &bytesAfter, &data) == Success,
+          "ewmh-supported: root _NET_SUPPORTING_WM_CHECK read failed");
+    CHECK(actualType == XA_WINDOW && actualFormat == 32 && nItems == 1 && data,
+          "ewmh-supported: root _NET_SUPPORTING_WM_CHECK missing or malformed");
+    Window checkWindow = (Window) ((long *) data)[0];
+    XFree(data);
+    CHECK(checkWindow != None && checkWindow != root,
+          "ewmh-supported: check window is not a distinct window");
+
+    /* Same ID read back off the child, per the two-property handshake. */
+    data = NULL;
+    CHECK(XGetWindowProperty(display, checkWindow, supportingCheck, 0, 1, False,
+                             XA_WINDOW, &actualType, &actualFormat, &nItems,
+                             &bytesAfter, &data) == Success,
+          "ewmh-supported: check window _NET_SUPPORTING_WM_CHECK read failed");
+    CHECK(actualType == XA_WINDOW && actualFormat == 32 && nItems == 1 &&
+              data && (Window) ((long *) data)[0] == checkWindow,
+          "ewmh-supported: check window does not point at itself");
+    XFree(data);
+
+    data = NULL;
+    CHECK(XGetWindowProperty(display, checkWindow, _NET_WM_NAME, 0, 64, False,
+                             utf8String, &actualType, &actualFormat, &nItems,
+                             &bytesAfter, &data) == Success,
+          "ewmh-supported: check window _NET_WM_NAME read failed");
+    CHECK(actualType == utf8String && actualFormat == 8 && nItems > 0 && data,
+          "ewmh-supported: check window carries no UTF8_STRING _NET_WM_NAME");
+    XFree(data);
+
+    /* The check window is library plumbing, not a client top-level. */
+    Window queryRoot = None, queryParent = None, *queryChildren = NULL;
+    unsigned int queryCount = 0;
+    CHECK(XQueryTree(display, root, &queryRoot, &queryParent, &queryChildren,
+                     &queryCount),
+          "ewmh-supported: XQueryTree(root) failed");
+    Bool checkVisibleToClients = False;
+    for (unsigned int i = 0; i < queryCount; i++) {
+        if (queryChildren[i] == checkWindow)
+            checkVisibleToClients = True;
+    }
+    if (queryChildren)
+        XFree(queryChildren);
+    CHECK(!checkVisibleToClients,
+          "ewmh-supported: check window surfaced in XQueryTree");
+
+    /* Advertised set == honored set. The honored substates and window types are
+     * the tables window-wm.c / window-property.c read, so this list is the
+     * contract both sides share; equality is checked in both directions.
+     */
+    const Atom expected[] = {
+        supported,
+        supportingCheck,
+        _NET_WM_STATE,
+        _NET_WM_STATE_MODAL,
+        _NET_WM_STATE_FULLSCREEN,
+        _NET_WM_STATE_MAXIMIZED_HORZ,
+        _NET_WM_STATE_MAXIMIZED_VERT,
+        _NET_WM_STATE_HIDDEN,
+#if SDL_VERSION_ATLEAST(2, 0, 16)
+        /* Matches the same gate on netWmStateHonored: below 2.0.16 the
+         * always-on-top apply is compiled out, so the atom must not be
+         * advertised either.
+         */
+        _NET_WM_STATE_ABOVE,
+#endif
+        _NET_WM_WINDOW_TYPE,
+        _NET_WM_WINDOW_TYPE_MENU,
+        _NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
+        _NET_WM_WINDOW_TYPE_POPUP_MENU,
+        _NET_WM_WINDOW_TYPE_TOOLTIP,
+        _NET_WM_WINDOW_TYPE_SPLASH,
+        _NET_WM_WINDOW_TYPE_DOCK,
+        _NET_WM_WINDOW_TYPE_NOTIFICATION,
+        _NET_WM_WINDOW_TYPE_COMBO,
+        closeWindow,
+        _NET_WM_NAME,
+        _NET_WM_ICON,
+    };
+    const size_t expectedCount = sizeof(expected) / sizeof(expected[0]);
+
+    data = NULL;
+    CHECK(XGetWindowProperty(display, root, supported, 0, 128, False, XA_ATOM,
+                             &actualType, &actualFormat, &nItems, &bytesAfter,
+                             &data) == Success,
+          "ewmh-supported: root _NET_SUPPORTED read failed");
+    CHECK(actualType == XA_ATOM && actualFormat == 32 && data,
+          "ewmh-supported: _NET_SUPPORTED has wrong type or format");
+    CHECK(nItems == expectedCount,
+          "ewmh-supported: _NET_SUPPORTED length does not match honored set");
+
+    Atom *advertised = (Atom *) data;
+    Bool setsMatch = True;
+    for (size_t i = 0; i < expectedCount; i++)
+        setsMatch &= atomInSet(advertised, nItems, expected[i]);
+    for (unsigned long j = 0; j < nItems; j++)
+        setsMatch &= atomInSet(expected, expectedCount, advertised[j]);
+    XFree(data);
+    CHECK(setsMatch,
+          "ewmh-supported: _NET_SUPPORTED does not equal the honored atom set");
+
+    /* _NET_ACTIVE_WINDOW must stay out until the root property it implies is
+     * actually maintained: the ClientMessage handler alone is not the whole
+     * hint, and a client reading the root property would otherwise see nothing.
+     * Pinned so re-adding the atom without the property fails here.
+     */
+    CHECK(!atomInSet(expected, expectedCount, activeWindow),
+          "ewmh-supported: _NET_ACTIVE_WINDOW advertised without the root "
+          "property");
+
+    /* The snapshot's popup classifier is a deliberate strict subset of the
+     * borderless types (SPLASH and DOCK are borderless but not popups). Pin the
+     * subset relation so a type added to the honored table forces a decision
+     * about popup_window_count instead of silently diverging.
+     */
+    Bool popupSubset = netWmWindowTypePopupCount > 0;
+    for (size_t i = 0; i < netWmWindowTypePopupCount; i++)
+        popupSubset &=
+            atomInSet(expected, expectedCount, netWmWindowTypePopup[i]);
+    CHECK(popupSubset,
+          "ewmh-supported: popup window types are not a subset of the "
+          "advertised types");
+
+    /* A secondary display (Motif and Xt probes open one) shares the root, so it
+     * must adopt the existing check window instead of stacking up a fresh
+     * internal window per open.
+     */
+    Display *nested = XOpenDisplay(NULL);
+    CHECK(nested != NULL, "ewmh-supported: nested XOpenDisplay failed");
+
+    /* Close the nested display before any CHECK can return: leaving it open
+     * pins numDisplaysOpen above 1, and the harness's final XCloseDisplay would
+     * then skip destroyScreenWindow / freeAtomStorage / SDL_Quit entirely,
+     * burying one real failure under a flood of teardown leak reports.
+     */
+    data = NULL;
+    int nestedRead = XGetWindowProperty(
+        display, root, supportingCheck, 0, 1, False, XA_WINDOW, &actualType,
+        &actualFormat, &nItems, &bytesAfter, &data);
+    Bool checkWindowStable = nestedRead == Success && nItems == 1 && data &&
+                             (Window) ((long *) data)[0] == checkWindow;
+    XFree(data);
+    XCloseDisplay(nested);
+    CHECK(nestedRead == Success,
+          "ewmh-supported: re-read after nested open failed");
+    CHECK(checkWindowStable,
+          "ewmh-supported: nested display replaced the check window");
+    return 1;
+}
+
+/* _NET_WM_WINDOW_TYPE borderless decision. The _NET_SUPPORTED assertions above
+ * only read the shared table; they cannot see the code that matches against it,
+ * and SDL_SetWindowBordered is a no-op under the dummy video driver, so the SDL
+ * flag proves nothing headlessly. Assert the pure decoder directly instead, and
+ * additionally check the SDL flag when the driver honors the toggle.
+ */
+static int test_ewmh_window_type_borderless(Display *display)
+{
+    /* Every honored type must decode as borderless, alone and buried in a
+     * multi-entry list the way a real toolkit writes it. Iterating the shared
+     * table means a type added there is exercised here for free.
+     */
+    for (size_t i = 0; i < netWmWindowTypeHonoredCount; i++) {
+        Atom single = netWmWindowTypeHonored[i];
+        CHECK(netWmWindowTypeWantsBorderless(&single, 1),
+              "window-type: honored type did not decode as borderless");
+        Atom mixed[3] = {_NET_WM_WINDOW_TYPE_NORMAL, single,
+                         _NET_WM_WINDOW_TYPE_DIALOG};
+        CHECK(netWmWindowTypeWantsBorderless(mixed, 3),
+              "window-type: honored type missed inside a type list");
+    }
+
+    /* Types outside the table must not reach the borderless path. Without this
+     * the loop above would still pass against an unconditional True.
+     */
+    Atom unhonored[] = {_NET_WM_WINDOW_TYPE_NORMAL, _NET_WM_WINDOW_TYPE_DIALOG,
+                        _NET_WM_WINDOW_TYPE_UTILITY,
+                        _NET_WM_WINDOW_TYPE_TOOLBAR,
+                        _NET_WM_WINDOW_TYPE_DESKTOP};
+    for (size_t i = 0; i < sizeof(unhonored) / sizeof(unhonored[0]); i++) {
+        CHECK(!netWmWindowTypeWantsBorderless(&unhonored[i], 1),
+              "window-type: unhonored type decoded as borderless");
+    }
+    CHECK(!netWmWindowTypeWantsBorderless(
+              unhonored, sizeof(unhonored) / sizeof(unhonored[0])),
+          "window-type: all-unhonored list decoded as borderless");
+    CHECK(!netWmWindowTypeWantsBorderless(NULL, 4),
+          "window-type: NULL type list decoded as borderless");
+    Atom empty = _NET_WM_WINDOW_TYPE_MENU;
+    CHECK(!netWmWindowTypeWantsBorderless(&empty, 0),
+          "window-type: zero-length type list decoded as borderless");
+
+    /* End to end through XChangeProperty: the property must round-trip, and on
+     * a driver that honors the toggle the border must actually drop.
+     */
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 48, 0, 0, 0);
+    CHECK(window != None, "window-type: window creation failed");
+    CHECK(XMapWindow(display, window), "window-type: window map failed");
+    SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
+    CHECK(sdlWindow != NULL, "window-type: window has no SDL backing");
+
+    Uint32 flagsBefore = SDL_GetWindowFlags(sdlWindow);
+    SDL_SetWindowBordered(sdlWindow, SDL_FALSE);
+    Uint32 flagsAfter = SDL_GetWindowFlags(sdlWindow);
+    SDL_SetWindowBordered(sdlWindow, SDL_TRUE);
+    Bool driverHonorsBorder = (flagsAfter & SDL_WINDOW_BORDERLESS) !=
+                              (flagsBefore & SDL_WINDOW_BORDERLESS);
+
+    long type = (long) _NET_WM_WINDOW_TYPE_MENU;
+    CHECK(XChangeProperty(display, window, _NET_WM_WINDOW_TYPE, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) &type, 1),
+          "window-type: menu type write failed");
+    if (driverHonorsBorder) {
+        CHECK((SDL_GetWindowFlags(sdlWindow) & SDL_WINDOW_BORDERLESS) != 0,
+              "window-type: menu type did not drop the SDL border");
+    }
+
+    Atom storedType = None;
+    int storedFormat = 0;
+    unsigned long storedItems = 0, storedAfter = 0;
+    unsigned char *storedData = NULL;
+    CHECK(XGetWindowProperty(display, window, _NET_WM_WINDOW_TYPE, 0, 1, False,
+                             XA_ATOM, &storedType, &storedFormat, &storedItems,
+                             &storedAfter, &storedData) == Success,
+          "window-type: read back failed");
+    Bool storedOk = storedType == XA_ATOM && storedFormat == 32 &&
+                    storedItems == 1 && storedData &&
+                    ((Atom *) storedData)[0] == _NET_WM_WINDOW_TYPE_MENU;
+    XFree(storedData);
+    CHECK(storedOk, "window-type: property did not round-trip");
+    XDestroyWindow(display, window);
+    return 1;
+}
+
 /* MWM _MOTIF_WM_HINTS write routing: a XChangeProperty write that clears
  * MWM_DECOR_BORDER must drop the SDL window border; clearing MWM_FUNC_RESIZE
  * must drop SDL_WINDOW_RESIZABLE. Under SDL's dummy video driver
@@ -14003,6 +14275,8 @@ int main(void)
              test_ewmh_active_window_clientmessage);
     run_test("ewmh_close_window_clientmessage",
              test_ewmh_close_window_clientmessage);
+    run_test("ewmh_root_supported", test_ewmh_root_supported);
+    run_test("ewmh_window_type_borderless", test_ewmh_window_type_borderless);
     run_test("mwm_hints_apply", test_mwm_hints_apply);
     run_test("normal_hints_resizable", test_normal_hints_resizable);
     run_test("snap_axis_to_increment", test_snap_axis_to_increment);

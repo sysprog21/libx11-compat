@@ -2381,9 +2381,9 @@ Status XQueryTree(Display *display,
     size_t total = GET_WINDOW_STRUCT(window)->children.length;
     Window *source = GET_CHILDREN(window);
 
-    /* Internal windows (the hidden clipboard requestor) are library plumbing
-     * and must not surface to a client walking the tree. Copy only the real
-     * ones.
+    /* Internal windows (the hidden clipboard requestor, the EWMH
+     * supporting-WM-check window) are library plumbing and must not surface to
+     * a client walking the tree. Copy only the real ones.
      */
     Window *out = malloc(sizeof(Window) * total);
     if (!out && total > 0)

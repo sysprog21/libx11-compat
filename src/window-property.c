@@ -26,6 +26,27 @@
 #include "net-atoms.h"
 #include "window.h"
 
+const Atom netWmWindowTypeHonored[] = {
+    _NET_WM_WINDOW_TYPE_MENU,         _NET_WM_WINDOW_TYPE_DROPDOWN_MENU,
+    _NET_WM_WINDOW_TYPE_POPUP_MENU,   _NET_WM_WINDOW_TYPE_TOOLTIP,
+    _NET_WM_WINDOW_TYPE_SPLASH,       _NET_WM_WINDOW_TYPE_DOCK,
+    _NET_WM_WINDOW_TYPE_NOTIFICATION, _NET_WM_WINDOW_TYPE_COMBO,
+};
+const size_t netWmWindowTypeHonoredCount = ARRAY_LENGTH(netWmWindowTypeHonored);
+
+Bool netWmWindowTypeWantsBorderless(const Atom *types, unsigned int count)
+{
+    if (!types)
+        return False;
+
+    for (unsigned int t = 0; t < count; t++)
+        for (size_t k = 0; k < netWmWindowTypeHonoredCount; k++)
+            if (types[t] == netWmWindowTypeHonored[k])
+                return True;
+
+    return False;
+}
+
 static Bool isNetPropertyWithNoWindowSideEffects(Atom property)
 {
     return property == _NET_WM_USER_TIME ||
@@ -265,6 +286,7 @@ int XChangeProperty(Display *display,
         while (i < 20 && offset + 2 <= (size_t) numberOfElements) {
             w = pixelData[0];
             h = pixelData[1];
+
             /* _NET_WM_ICON pixel data is CARD32 width, height, then w*h BGRA
              * pixels. Both w and h come straight from the client, so w*h plus
              * the two-word header must be guarded against size_t wrap before it
@@ -275,6 +297,7 @@ int XChangeProperty(Display *display,
             size_t iconLength = 2 + (size_t) w * (size_t) h;
             if (offset + iconLength > (size_t) numberOfElements)
                 break;
+
             /* SDL_CreateRGBSurfaceFrom takes width, height and pitch as signed
              * int. Reject candidates that would not fit before they can win the
              * bestIcon selection: otherwise an oversized icon followed by a
@@ -304,32 +327,26 @@ int XChangeProperty(Display *display,
             applyWindowIconToSdl(window);
         }
     }
+
     /* React to _NET_WM_WINDOW_TYPE: menu/popup/tooltip/splash/dock types
      * normally come from a borderless window-manager decoration request.
      * libx11-compat has no WM, so the closest equivalent is dropping SDL's
      * border.
+     *
+     * Only the format is checked, not that type is XA_ATOM: format 32 already
+     * fixes the element stride at sizeof(long), which is what makes the Atom
+     * cast below safe, and legacy toolkits that mislabel the property type
+     * still get the borderless menu they asked for. The _NET_WM_STATE reader in
+     * window-wm.c demands XA_ATOM because it also writes the list back, where a
+     * wrong type would be published to clients.
      */
     if (property == _NET_WM_WINDOW_TYPE && format == 32 &&
-        IS_MAPPED_TOP_LEVEL_WINDOW(window) && windowProperty->dataLength > 0) {
-        Atom *types = (Atom *) windowProperty->data;
-        Bool wantBorderless = False;
-        for (unsigned int t = 0; t < windowProperty->dataLength; t++) {
-            Atom ty = types[t];
-            if (ty == _NET_WM_WINDOW_TYPE_MENU ||
-                ty == _NET_WM_WINDOW_TYPE_DROPDOWN_MENU ||
-                ty == _NET_WM_WINDOW_TYPE_POPUP_MENU ||
-                ty == _NET_WM_WINDOW_TYPE_TOOLTIP ||
-                ty == _NET_WM_WINDOW_TYPE_SPLASH ||
-                ty == _NET_WM_WINDOW_TYPE_DOCK ||
-                ty == _NET_WM_WINDOW_TYPE_NOTIFICATION ||
-                ty == _NET_WM_WINDOW_TYPE_COMBO) {
-                wantBorderless = True;
-                break;
-            }
-        }
-        if (wantBorderless)
-            applyWindowBorderlessToSdl(window);
+        IS_MAPPED_TOP_LEVEL_WINDOW(window) &&
+        netWmWindowTypeWantsBorderless((const Atom *) windowProperty->data,
+                                       windowProperty->dataLength)) {
+        applyWindowBorderlessToSdl(window);
     }
+
     /* A Motif XmDialogShell writes _MOTIF_WM_HINTS during widget realization to
      * clear MWM_DECOR_BORDER or MWM_FUNC_RESIZE. The write handler forwards the
      * decoded bits to SDL so dialogs are not resizable when their hints forbid
@@ -339,6 +356,7 @@ int XChangeProperty(Display *display,
      */
     if (property == _MOTIF_WM_HINTS && format == 32)
         applyMotifWmHintsFromProperty(window);
+
     /* WM_NORMAL_HINTS (XSizeHints) decides resizability the way a real WM does
      * for clients that never speak Motif: resizable unless the client pinned a
      * fixed size. Clients that write it directly via XChangeProperty (rather
@@ -347,6 +365,7 @@ int XChangeProperty(Display *display,
      */
     if (property == XA_WM_NORMAL_HINTS && format == 32) {
         applyNormalHintsResizableFromProperty(window);
+
         /* XSetWMSizeHints caches the resize increments straight from the
          * XSizeHints struct, but a client that writes WM_NORMAL_HINTS through a
          * raw XChangeProperty (as here) bypasses that path; decode the stored
@@ -356,6 +375,7 @@ int XChangeProperty(Display *display,
          */
         cacheResizeIncrementsFromNormalHintsProperty(window);
     }
+
     /* WM_TRANSIENT_FOR establishes a parent / popup link (ICCCM 4.1.2.6). Plain
      * transient_for does NOT make the child modal; SDL's modal hook is only
      * safe when the child is actually marked modal via _NET_WM_STATE_MODAL or
@@ -369,6 +389,7 @@ int XChangeProperty(Display *display,
         windowStruct->deferredTransientApplied = False;
         applyTransientForRelationship(window);
     }
+
     /* A direct write to _NET_WM_STATE drives both the SDL flag mirror
      * (fullscreen / maximized / above) and the modal transient_for pairing,
      * since the modal decision depends on this exact state set. Top-level
@@ -522,6 +543,7 @@ int XGetWindowProperty(Display *display,
                 handleOutOfMemory(0, display, 0, 0);
                 return BadAlloc;
             }
+
             /* dataReturnSize == 0 hits two UBSan traps: NULL + 0 pointer
              * arithmetic on an empty property (windowProperty->data is NULL
              * when dataLength is 0), and memcpy(dst, NULL, 0) which the
@@ -551,6 +573,7 @@ int XGetWindowProperty(Display *display,
          */
         static const char *fontName = "Sans 10";
         static const char *iconTheme = "default";
+
         /* Each setting:
          *   CARD8 type, CARD8 unused, CARD16 name_len, char name[name_len],
          *   pad to 4, CARD32 last_change_serial, type-specific body.
