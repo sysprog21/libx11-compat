@@ -311,6 +311,14 @@ extern const size_t netWmWindowTypeHonoredCount;
  */
 Bool netWmWindowTypeWantsBorderless(const Atom *types, unsigned int count);
 
+/* Decode the stored _NET_WM_WINDOW_TYPE and drop the SDL border when it names
+ * an honored borderless type. Called from the XChangeProperty handler and from
+ * the top-level realize replay, since EWMH has clients set the type before the
+ * map request and the SDL window does not exist yet at that point. No-op until
+ * the top-level is realized and mapped, or when no usable type is stored.
+ */
+void applyNetWmWindowTypeFromProperty(Window window);
+
 /* Create the EWMH supporting-WM-check window and publish _NET_SUPPORTED,
  * _NET_SUPPORTING_WM_CHECK and the check window's _NET_WM_NAME. Idempotent: a
  * second display opened against the same root reuses the existing check window.

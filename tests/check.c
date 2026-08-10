@@ -7095,6 +7095,27 @@ static int test_ewmh_window_type_borderless(Display *display)
               "window-type: menu type did not drop the SDL border");
     }
 
+    /* EWMH has clients set the type before the map request, which is what GTK,
+     * Qt and Motif do. The SDL window does not exist yet at that point, so the
+     * write handler cannot apply it and the realize replay has to.
+     */
+    Window premap = XCreateSimpleWindow(display, root, 0, 0, 64, 48, 0, 0, 0);
+    CHECK(premap != None, "window-type: premap window creation failed");
+    long premapType = (long) _NET_WM_WINDOW_TYPE_SPLASH;
+    CHECK(XChangeProperty(display, premap, _NET_WM_WINDOW_TYPE, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) &premapType, 1),
+          "window-type: premap type write failed");
+    CHECK(GET_WINDOW_STRUCT(premap)->sdlWindow == NULL,
+          "window-type: premap write realized the window too early");
+    CHECK(XMapWindow(display, premap), "window-type: premap map failed");
+    SDL_Window *premapSdl = GET_WINDOW_STRUCT(premap)->sdlWindow;
+    CHECK(premapSdl != NULL, "window-type: premap window has no SDL backing");
+    if (driverHonorsBorder) {
+        CHECK((SDL_GetWindowFlags(premapSdl) & SDL_WINDOW_BORDERLESS) != 0,
+              "window-type: type set before map did not drop the SDL border");
+    }
+    XDestroyWindow(display, premap);
+
     Atom storedType = None;
     int storedFormat = 0;
     unsigned long storedItems = 0, storedAfter = 0;

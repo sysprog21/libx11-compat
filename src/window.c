@@ -698,6 +698,7 @@ static void replayDeferredWmProperties(Display *display, Window window)
     applyMotifWmHintsFromProperty(window);
     applyNormalHintsResizableFromProperty(window);
     applyNetWmStateFromProperty(window);
+    applyNetWmWindowTypeFromProperty(window);
     applyTransientForRelationship(window);
 
     /* This window may itself be the deferred parent for one or more

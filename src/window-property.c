@@ -89,6 +89,25 @@ static void applyWindowBorderlessToSdl(Window window)
     SDL_SetWindowBordered(GET_WINDOW_STRUCT(window)->sdlWindow, SDL_FALSE);
 }
 
+void applyNetWmWindowTypeFromProperty(Window window)
+{
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    WindowProperty *prop =
+        findProperty(&windowStruct->properties, _NET_WM_WINDOW_TYPE, NULL);
+    if (!prop || prop->dataFormat != 32)
+        return;
+
+    /* applyWindowBorderlessToSdl routes itself to the main thread, so this
+     * decode can run wherever the caller is.
+     */
+    if (netWmWindowTypeWantsBorderless((const Atom *) prop->data,
+                                       prop->dataLength))
+        applyWindowBorderlessToSdl(window);
+}
+
 int XChangeProperty(Display *display,
                     Window window,
                     Atom property,
@@ -340,12 +359,8 @@ int XChangeProperty(Display *display,
      * window-wm.c demands XA_ATOM because it also writes the list back, where a
      * wrong type would be published to clients.
      */
-    if (property == _NET_WM_WINDOW_TYPE && format == 32 &&
-        IS_MAPPED_TOP_LEVEL_WINDOW(window) &&
-        netWmWindowTypeWantsBorderless((const Atom *) windowProperty->data,
-                                       windowProperty->dataLength)) {
-        applyWindowBorderlessToSdl(window);
-    }
+    if (property == _NET_WM_WINDOW_TYPE && format == 32)
+        applyNetWmWindowTypeFromProperty(window);
 
     /* A Motif XmDialogShell writes _MOTIF_WM_HINTS during widget realization to
      * clear MWM_DECOR_BORDER or MWM_FUNC_RESIZE. The write handler forwards the
