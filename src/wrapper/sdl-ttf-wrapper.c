@@ -57,7 +57,23 @@ TTF_WRAP(char *, TTF_FontFaceFamilyName, (const TTF_Font *font), (font))
 TTF_WRAP(int, TTF_FontFaceIsFixedWidth, (const TTF_Font *font), (font))
 TTF_WRAP(const char *, TTF_GetError, (void), ())
 TTF_WRAP(int, TTF_GetFontStyle, (const TTF_Font *font), (font))
+
+/* SDL_ttf carried a const font argument here until 2.0.18 dropped it (2.0.12,
+ * 2.0.14 and 2.0.15 all prototype const TTF_Font *, 2.0.18 and 2.24 do not), so
+ * the split is a single upper bound rather than a window: the definition below
+ * declares the same symbol the installed SDL_ttf.h prototypes, and any mismatch
+ * is a hard conflicting-types error rather than a warning.
+ * TTF_GlyphIsProvided32 arrived in 2.0.18, after the revert, so it is non-const
+ * for its whole life.
+ */
+#if !SDL_TTF_VERSION_ATLEAST(2, 0, 18)
+TTF_WRAP(int,
+         TTF_GlyphIsProvided,
+         (const TTF_Font *font, Uint16 ch),
+         (font, ch))
+#else
 TTF_WRAP(int, TTF_GlyphIsProvided, (TTF_Font * font, Uint16 ch), (font, ch))
+#endif
 #if SDL_TTF_VERSION_ATLEAST(2, 0, 18)
 TTF_WRAP(int, TTF_GlyphIsProvided32, (TTF_Font * font, Uint32 ch), (font, ch))
 #endif

@@ -302,6 +302,22 @@ static void destroyScreenWindowImpl(Display *display)
         windowStruct->sdlRenderer = NULL;
         SDL_DestroyWindow(windowStruct->sdlWindow);
         freeArray(&windowStruct->children);
+
+        /* The root carries real heap state: properties (the HiDPI scale, the
+         * EWMH _NET_SUPPORTED / _NET_SUPPORTING_WM_CHECK advertisement), a name
+         * if a client ever called XStoreName on it, and a colormap-window list.
+         * This path frees the struct itself rather than going through
+         * destroyWindow, so it has to release the same fields destroyWindow
+         * does or they leak once per display cycle.
+         */
+        for (i = 0; i < windowStruct->properties.length; i++)
+            freeWindowProperty(windowStruct->properties.array[i]);
+        freeArray(&windowStruct->properties);
+        free(windowStruct->windowName);
+        free(windowStruct->colormapWindows);
+        free(windowStruct->presentReadback);
+        free(windowStruct->glxCompositeFlip);
+        free(windowStruct->glxReadbackBuf);
         pixman_region32_fini(&windowStruct->visibleRegion);
         pixman_region32_fini(&windowStruct->dirty);
         free(windowStruct);

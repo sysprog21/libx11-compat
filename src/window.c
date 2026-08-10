@@ -303,8 +303,19 @@ static void postVisibilityForWindowAndSiblings(Display *display, Window window)
         return;
     }
     Window *children = GET_CHILDREN(parent);
-    for (size_t i = 0; i < GET_WINDOW_STRUCT(parent)->children.length; i++)
-        postEvent(display, children[i], VisibilityNotify);
+    for (size_t i = 0; i < GET_WINDOW_STRUCT(parent)->children.length; i++) {
+        /* A child torn down mid-teardown lingers in the array typed
+         * CLOSED_WINDOW with a NULL struct (destroyScreenWindowImpl destroys
+         * the top-levels with freeParentData=False, so they stay listed).
+         * Filter it on the type slot before postEvent dereferences the struct,
+         * matching hasPendingWindowPresent and repaintTopLevelsOverlappingRect.
+         * Reached when a client calls XCloseDisplay with a popup still mapped:
+         * draining the anchored popup unmaps it, and this walk then visits
+         * siblings that are already gone.
+         */
+        if (IS_TYPE(children[i], WINDOW))
+            postEvent(display, children[i], VisibilityNotify);
+    }
 }
 
 static Bool hasUnmappedAncestor(Window window)
@@ -687,6 +698,7 @@ static void replayDeferredWmProperties(Display *display, Window window)
     applyMotifWmHintsFromProperty(window);
     applyNormalHintsResizableFromProperty(window);
     applyNetWmStateFromProperty(window);
+    applyNetWmWindowTypeFromProperty(window);
     applyTransientForRelationship(window);
 
     /* This window may itself be the deferred parent for one or more
@@ -2370,9 +2382,9 @@ Status XQueryTree(Display *display,
     size_t total = GET_WINDOW_STRUCT(window)->children.length;
     Window *source = GET_CHILDREN(window);
 
-    /* Internal windows (the hidden clipboard requestor) are library plumbing
-     * and must not surface to a client walking the tree. Copy only the real
-     * ones.
+    /* Internal windows (the hidden clipboard requestor, the EWMH
+     * supporting-WM-check window) are library plumbing and must not surface to
+     * a client walking the tree. Copy only the real ones.
      */
     Window *out = malloc(sizeof(Window) * total);
     if (!out && total > 0)

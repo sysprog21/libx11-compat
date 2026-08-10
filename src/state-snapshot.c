@@ -113,14 +113,27 @@ static uint64_t nowMs(void)
     return (uint64_t) t.tv_sec * 1000ULL + (uint64_t) (t.tv_nsec / 1000000L);
 }
 
+/* Window types the snapshot counts as transient popups. This is a deliberate
+ * strict subset of netWmWindowTypeHonored (src/window-property.c): every popup
+ * type is borderless, but SPLASH and DOCK are borderless windows that persist
+ * rather than pop up, so counting them here would inflate popup_window_count
+ * and break the replay assertions that watch a menu open and close. The subset
+ * relation is asserted by check.c test_ewmh_root_supported, so a type added to
+ * the honored table without a decision about this list fails the suite.
+ */
+const Atom netWmWindowTypePopup[] = {
+    _NET_WM_WINDOW_TYPE_MENU,          _NET_WM_WINDOW_TYPE_POPUP_MENU,
+    _NET_WM_WINDOW_TYPE_DROPDOWN_MENU, _NET_WM_WINDOW_TYPE_TOOLTIP,
+    _NET_WM_WINDOW_TYPE_NOTIFICATION,  _NET_WM_WINDOW_TYPE_COMBO,
+};
+const size_t netWmWindowTypePopupCount = ARRAY_LENGTH(netWmWindowTypePopup);
+
 static Bool isPopupAtomSet(Atom typeAtom)
 {
-    return typeAtom == _NET_WM_WINDOW_TYPE_MENU ||
-           typeAtom == _NET_WM_WINDOW_TYPE_POPUP_MENU ||
-           typeAtom == _NET_WM_WINDOW_TYPE_DROPDOWN_MENU ||
-           typeAtom == _NET_WM_WINDOW_TYPE_TOOLTIP ||
-           typeAtom == _NET_WM_WINDOW_TYPE_NOTIFICATION ||
-           typeAtom == _NET_WM_WINDOW_TYPE_COMBO;
+    for (size_t i = 0; i < netWmWindowTypePopupCount; i++)
+        if (typeAtom == netWmWindowTypePopup[i])
+            return True;
+    return False;
 }
 
 static void copyName(char *dst, size_t dstSize, const char *src)
@@ -464,9 +477,10 @@ static void populateSnapshot(Display *display, UiSnapshot *snap)
         Window child = children[i];
         WindowStruct *cws = GET_WINDOW_STRUCT(child);
 
-        /* Internal windows (the hidden clipboard requestor) are library
-         * plumbing, not part of the client's window tree; keep them out of the
-         * snapshot.
+        /* Internal windows (the hidden clipboard requestor, the EWMH
+         * supporting-WM-check window) are library plumbing, not part of the
+         * client's window tree; keep them out of the snapshot. Placed first so
+         * they land in no counter, not just out of the window array.
          */
         if (cws->internal)
             continue;

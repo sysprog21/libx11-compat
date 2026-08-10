@@ -865,6 +865,13 @@ Display *XOpenDisplay(_Xconst char *display_name)
      * handler.
      */
     compatPublishHiDpiScaleProperty(display);
+
+    /* Announce the in-process WM through the EWMH check handshake. Without it
+     * an EWMH-aware toolkit finds no supporting-WM-check window on the root,
+     * decides no compliant manager is running, and stops sending the very
+     * _NET_WM_STATE / _NET_WM_WINDOW_TYPE requests this shim honors.
+     */
+    publishEwmhWmSupport(display);
     return display;
 }
 

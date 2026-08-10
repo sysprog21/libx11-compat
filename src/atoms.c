@@ -77,6 +77,16 @@ const char *getAtomName(Display *display, Atom atom)
     return atomStruct ? atomStruct->name : NULL;
 }
 
+/* Drops every dynamically interned atom on the last XCloseDisplay.
+ *
+ * lastUsedAtom is deliberately NOT rewound to _NET_LAST_PREDEFINED here. The
+ * counter only ever moves forward, so an id cached by a client (or by a module
+ * that skipped the re-resolve convention) across a close/reopen resolves to
+ * nothing and fails visibly. Rewinding would hand that same id to an unrelated
+ * atom in the next session, turning a dead reference into a silently wrong one.
+ * The cost is that a process cycling displays burns ids monotonically, which is
+ * bounded by MAX_ATOM_VALUE and irrelevant in practice.
+ */
 void freeAtomStorage()
 {
     AtomStruct *atomStorage;

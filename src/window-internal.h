@@ -274,6 +274,57 @@ void applyNetWmStateAction(Display *display,
  */
 void applyNetWmStateFromProperty(Window window);
 
+/* The window state the in-process WM derives from a stored _NET_WM_STATE atom
+ * list, and the table pairing each honored substate atom with the field it
+ * sets. The root _NET_SUPPORTED advertisement is built from the same table, so
+ * an atom can never be announced without being applied, or applied without
+ * being announced. Two atoms may share a field (both MAXIMIZED axes drive one
+ * SDL maximize).
+ */
+typedef struct {
+    Bool modal;
+    Bool fullscreen;
+    Bool maximized;
+    Bool hidden;
+    Bool above;
+} NetWmStateSet;
+
+typedef struct {
+    Atom atom;
+    size_t offset; /* offsetof(NetWmStateSet, field) */
+} NetWmStateHonoredAtom;
+
+extern const NetWmStateHonoredAtom netWmStateHonored[];
+extern const size_t netWmStateHonoredCount;
+
+/* _NET_WM_WINDOW_TYPE values the property handler acts on by dropping the SDL
+ * border. Same single-source-of-truth contract as netWmStateHonored above.
+ */
+extern const Atom netWmWindowTypeHonored[];
+extern const size_t netWmWindowTypeHonoredCount;
+
+/* Pure decoder behind the borderless hook: True when any of the count types
+ * names an honored borderless type. Split out of the XChangeProperty handler
+ * because SDL_SetWindowBordered is a no-op under the dummy video driver, so the
+ * decision is only observable headlessly through this predicate. Tolerates a
+ * NULL list.
+ */
+Bool netWmWindowTypeWantsBorderless(const Atom *types, unsigned int count);
+
+/* Decode the stored _NET_WM_WINDOW_TYPE and drop the SDL border when it names
+ * an honored borderless type. Called from the XChangeProperty handler and from
+ * the top-level realize replay, since EWMH has clients set the type before the
+ * map request and the SDL window does not exist yet at that point. No-op until
+ * the top-level is realized and mapped, or when no usable type is stored.
+ */
+void applyNetWmWindowTypeFromProperty(Window window);
+
+/* Create the EWMH supporting-WM-check window and publish _NET_SUPPORTED,
+ * _NET_SUPPORTING_WM_CHECK and the check window's _NET_WM_NAME. Idempotent: a
+ * second display opened against the same root reuses the existing check window.
+ */
+void publishEwmhWmSupport(Display *display);
+
 /* True for the bit gravities whose retained contents stay pinned at the
  * top-left (0,0) corner on resize: NorthWestGravity and StaticGravity. The
  * resize backing-copy and expose paths model only this anchor and discard/full-
