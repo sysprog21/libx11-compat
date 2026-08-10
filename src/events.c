@@ -2060,6 +2060,13 @@ static Bool enqueueResetExposures(Display *display)
     Window *children = GET_CHILDREN(SCREEN_WINDOW);
     for (size_t i = screen->children.length; i > 0; i--) {
         Window child = children[i - 1];
+
+        /* A destroyed child lingers in the array typed CLOSED_WINDOW with a
+         * NULL struct until the root's list is freed, so filter on the type
+         * slot before dereferencing, as the other walkers over this array do.
+         */
+        if (!IS_TYPE(child, WINDOW))
+            continue;
         if (GET_WINDOW_STRUCT(child)->sdlWindow &&
             !enqueuePutBackExpose(display, child)) {
             return False;

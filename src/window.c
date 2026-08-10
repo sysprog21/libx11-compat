@@ -303,8 +303,19 @@ static void postVisibilityForWindowAndSiblings(Display *display, Window window)
         return;
     }
     Window *children = GET_CHILDREN(parent);
-    for (size_t i = 0; i < GET_WINDOW_STRUCT(parent)->children.length; i++)
-        postEvent(display, children[i], VisibilityNotify);
+    for (size_t i = 0; i < GET_WINDOW_STRUCT(parent)->children.length; i++) {
+        /* A child torn down mid-teardown lingers in the array typed
+         * CLOSED_WINDOW with a NULL struct (destroyScreenWindowImpl destroys
+         * the top-levels with freeParentData=False, so they stay listed).
+         * Filter it on the type slot before postEvent dereferences the struct,
+         * matching hasPendingWindowPresent and repaintTopLevelsOverlappingRect.
+         * Reached when a client calls XCloseDisplay with a popup still mapped:
+         * draining the anchored popup unmaps it, and this walk then visits
+         * siblings that are already gone.
+         */
+        if (IS_TYPE(children[i], WINDOW))
+            postEvent(display, children[i], VisibilityNotify);
+    }
 }
 
 static Bool hasUnmappedAncestor(Window window)
