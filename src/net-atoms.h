@@ -72,6 +72,18 @@
 #define WM_PROTOCOLS ((Atom) 129)
 #define WM_DELETE_WINDOW ((Atom) 130)
 
-#define _NET_LAST_PREDEFINED ((Atom) 130)
+/* UTF8_STRING and COMPOUND_TEXT are text-property encodings every modern
+ * toolkit writes, and the WM_NAME / _NET_WM_NAME title path compares against
+ * both on every write. Interned dynamically they were the worst case in
+ * XInternAtom: absent from this table, so each lookup scanned all of it and
+ * then walked the dynamic list to its end (measured around 2us per call, and
+ * growing with the client's atom count). Pinning ids turns those comparisons
+ * into integer tests and removes the reason the call sites had to re-resolve
+ * per write to avoid dangling across freeAtomStorage.
+ */
+#define UTF8_STRING ((Atom) 131)
+#define COMPOUND_TEXT ((Atom) 132)
+
+#define _NET_LAST_PREDEFINED ((Atom) 132)
 
 #endif /* _NET_ATOMS_H_ */

@@ -423,14 +423,8 @@ int XChangeProperty(Display *display,
      * atom lists) pass through untouched.
      */
     if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME)) {
-        /* Re-resolve per write. freeAtomStorage drops dynamic atoms on the last
-         * XCloseDisplay without resetting lastUsedAtom, so a static cache would
-         * dangle to a stale id across a close/open cycle and silently stop
-         * matching modern toolkit writes.
-         */
-        Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
-        Atom compound = XInternAtom(display, "COMPOUND_TEXT", False);
-        if (type == XA_STRING || type == utf8 || type == compound) {
+        if (type == XA_STRING || type == UTF8_STRING ||
+            type == COMPOUND_TEXT) {
             /* Property bytes are not required to be NUL-terminated. */
             size_t copyLen = (size_t) numberOfElements;
             char *titleBuf = malloc(copyLen + 1);

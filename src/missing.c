@@ -504,7 +504,7 @@ static int textPropertyToTextList(
      * representation). COMPOUND_TEXT requires real iconv work and is refused
      * here rather than mis-decoded.
      */
-    Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
+    Atom utf8 = UTF8_STRING;
     if (text_prop->encoding != utf8 && text_prop->encoding != XA_STRING)
         return XConverterNotFound;
 
@@ -584,13 +584,13 @@ int XmbTextListToTextProperty(Display *dpy,
         text_prop->encoding = XA_STRING;
         break;
     case XCompoundTextStyle:
-        text_prop->encoding = XInternAtom(dpy, "COMPOUND_TEXT", False);
+        text_prop->encoding = COMPOUND_TEXT;
         break;
     case XTextStyle:
         text_prop->encoding = XInternAtom(dpy, "TEXT", False);
         break;
     case XUTF8StringStyle:
-        text_prop->encoding = XInternAtom(dpy, "UTF8_STRING", False);
+        text_prop->encoding = UTF8_STRING;
         break;
     default:
         text_prop->encoding = XA_STRING;
@@ -2390,8 +2390,8 @@ int XwcTextPropertyToTextList(Display *dpy,
         return XConverterNotFound;
     if (text_prop->nitems > (unsigned long) INT_MAX)
         return XNoMemory;
-    Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
-    Atom compoundText = dpy ? XInternAtom(dpy, "COMPOUND_TEXT", False) : None;
+    Atom utf8 = UTF8_STRING;
+    Atom compoundText = COMPOUND_TEXT;
 
     /* XmbTextListToTextProperty stamps XTextStyle payloads with the "TEXT"
      * atom; per ICCCM that means "whatever locale-encoded text the server
@@ -2484,9 +2484,9 @@ int XwcTextListToTextProperty(Display *dpy,
     text_prop->value = NULL;
     text_prop->nitems = 0;
     text_prop->format = 8;
-    Atom utf8 = dpy ? XInternAtom(dpy, "UTF8_STRING", False) : None;
+    Atom utf8 = UTF8_STRING;
     Atom textAtom = dpy ? XInternAtom(dpy, "TEXT", False) : None;
-    Atom compoundText = dpy ? XInternAtom(dpy, "COMPOUND_TEXT", False) : None;
+    Atom compoundText = COMPOUND_TEXT;
     Bool utf8Target = False;
     switch (style) {
     case XStringStyle:
@@ -3780,7 +3780,7 @@ static Bool textPropertyFromString(Display *dpy,
     tp->value = (unsigned char *) copy;
     tp->nitems = (unsigned long) len;
     tp->format = 8;
-    tp->encoding = isUtf8 ? XInternAtom(dpy, "UTF8_STRING", False) : XA_STRING;
+    tp->encoding = isUtf8 ? UTF8_STRING : XA_STRING;
     return True;
 }
 

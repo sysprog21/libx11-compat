@@ -398,7 +398,7 @@ void publishEwmhWmSupport(Display *display)
     Atom supportingCheck = internalInternAtom("_NET_SUPPORTING_WM_CHECK");
     Atom supported = internalInternAtom("_NET_SUPPORTED");
     Atom closeWindow = internalInternAtom("_NET_CLOSE_WINDOW");
-    Atom utf8String = internalInternAtom("UTF8_STRING");
+    Atom utf8String = UTF8_STRING;
     if (supportingCheck == None || supported == None || closeWindow == None ||
         utf8String == None)
         return;
