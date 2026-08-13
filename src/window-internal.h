@@ -319,6 +319,15 @@ Bool netWmWindowTypeWantsBorderless(const Atom *types, unsigned int count);
  */
 void applyNetWmWindowTypeFromProperty(Window window);
 
+/* Push a title to SDL for a mapped top-level, or stash it on the window struct
+ * until the top-level is realized. Called from the XChangeProperty handler for
+ * WM_NAME and _NET_WM_NAME writes, and from XStoreName by way of that handler.
+ * Does not write any property: the caller owns the store.
+ */
+int updateWindowTitle(Display *display,
+                      Window window,
+                      _Xconst char *window_name);
+
 /* Create the EWMH supporting-WM-check window and publish _NET_SUPPORTED,
  * _NET_SUPPORTING_WM_CHECK and the check window's _NET_WM_NAME. Idempotent: a
  * second display opened against the same root reuses the existing check window.

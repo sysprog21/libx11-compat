@@ -23,6 +23,7 @@
 #include "display.h"
 #include "errors.h"
 #include "events.h"
+#include "main-dispatch.h"
 #include "net-atoms.h"
 #include "window.h"
 
@@ -73,6 +74,20 @@ static void applyWindowIconToSdl(Window window)
     WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
     SDL_SetWindowIcon(windowStruct->sdlWindow, windowStruct->icon);
 }
+
+/* WM_NAME / _NET_WM_NAME hold a title only under one of the text encodings.
+ * Anything else stored at format 8 (an atom list, a client's own payload) is
+ * not a string and must never reach SDL_SetWindowTitle. The write hook and the
+ * delete revert share this predicate because they have to agree: if the revert
+ * were laxer, deleting the preferred name would promote a payload the write
+ * path deliberately ignored.
+ */
+static Bool isTitleTextType(Atom type)
+{
+    return type == XA_STRING || type == UTF8_STRING || type == COMPOUND_TEXT;
+}
+
+static void reapplyWindowTitle(Display *display, Window window);
 
 /* Drop SDL's border for menu / popup / dock window types, routed to the main
  * event thread when a client worker sets _NET_WM_WINDOW_TYPE. Called only after
@@ -417,34 +432,134 @@ int XChangeProperty(Display *display,
     }
 
     /* Motif, GTK, and Qt set their window titles via XChangeProperty on WM_NAME
-     * / _NET_WM_NAME rather than calling XStoreName. The handler routes any
-     * format-8 string-encoded write through XStoreName so SDL's window title
-     * reflects what the client just asked for. Non-string property types (e.g.
+     * / _NET_WM_NAME rather than calling XStoreName. Re-resolve the preferred
+     * stored title so SDL follows the same _NET_WM_NAME-over-WM_NAME precedence
+     * as XGetWMName and the delete-side revert. Non-string property types (e.g.
      * atom lists) pass through untouched.
      */
-    if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME)) {
-        /* Re-resolve per write. freeAtomStorage drops dynamic atoms on the last
-         * XCloseDisplay without resetting lastUsedAtom, so a static cache would
-         * dangle to a stale id across a close/open cycle and silently stop
-         * matching modern toolkit writes.
-         */
-        Atom utf8 = XInternAtom(display, "UTF8_STRING", False);
-        Atom compound = XInternAtom(display, "COMPOUND_TEXT", False);
-        if (type == XA_STRING || type == utf8 || type == compound) {
-            /* Property bytes are not required to be NUL-terminated. */
-            size_t copyLen = (size_t) numberOfElements;
-            char *titleBuf = malloc(copyLen + 1);
-            if (titleBuf) {
-                if (copyLen > 0 && windowProperty->data)
-                    memcpy(titleBuf, windowProperty->data, copyLen);
-                titleBuf[copyLen] = '\0';
-                XStoreName(display, window, titleBuf);
-                free(titleBuf);
-            }
-        }
-    }
+    if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME) &&
+        isTitleTextType(type))
+        reapplyWindowTitle(display, window);
     postEvent(display, window, PropertyNotify, property, PropertyNewValue);
     return 1;
+}
+
+Atom *XListProperties(register Display *display,
+                      Window window,
+                      int *n_props) /* RETURN */
+{
+    // https://tronche.com/gui/x/xlib/window-information/XListProperties.html
+    SET_X_SERVER_REQUEST(display, X_ListProperties);
+    *n_props = 0;
+    TYPE_CHECK(window, WINDOW, display, NULL);
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+
+    /* n_props is an int, so the count is narrowed here rather than guarded the
+     * way XTextPropertyToStringList guards its own. The difference is who
+     * supplies the number: that one decodes a caller-supplied XTextProperty and
+     * has to assume nothing, while this one counts entries in a store the
+     * library owns. Reaching INT_MAX properties on one window would mean
+     * exhausting memory on the WindowProperty records long before the cast
+     * mattered.
+     */
+    int count = (int) windowStruct->properties.length;
+
+    /* A property-free window returns NULL with a zero count, not an empty
+     * allocation, matching libX11.
+     */
+    if (!count)
+        return NULL;
+    Atom *props = malloc(sizeof(Atom) * (size_t) count);
+    if (!props) {
+        handleOutOfMemory(0, display, 0, 0);
+        return NULL;
+    }
+    for (int i = 0; i < count; i++) {
+        props[i] =
+            ((WindowProperty *) windowStruct->properties.array[i])->property;
+    }
+    *n_props = count;
+    return props;
+}
+
+/* _NET_WM_WINDOW_TYPE, _MOTIF_WM_HINTS and WM_NORMAL_HINTS each drive an SDL
+ * decoration knob on write, but every applier returns without touching SDL when
+ * its property is absent, so a delete would otherwise leave the window wearing
+ * state the client just removed. Reset both knobs to what realizeTopLevelWindow
+ * would have created the window with, then let whichever sources remain
+ * re-assert. Routing the revert back through the appliers keeps them the only
+ * place decoration policy lives, so the revert cannot drift from the apply.
+ */
+static void reapplyWindowDecorations(Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(reapplyWindowDecorations, window);
+        return;
+    }
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    SDL_SetWindowBordered(
+        windowStruct->sdlWindow,
+        windowStruct->overrideRedirect ? SDL_FALSE : SDL_TRUE);
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    SDL_SetWindowResizable(windowStruct->sdlWindow, SDL_FALSE);
+#endif
+    applyNetWmWindowTypeFromProperty(window);
+    applyMotifWmHintsFromProperty(window);
+    applyNormalHintsResizableFromProperty(window);
+}
+
+/* Push the title the window should show now. Mirrors XGetWMName's preference so
+ * the SDL titlebar and the ICCCM getter cannot disagree, and falls back to the
+ * empty string once the client has deleted both name properties.
+ *
+ * Self-routing like reapplyWindowDecorations above, and for the same reason:
+ * XDeleteProperty is a public entry point a client worker thread may call, and
+ * the whole store read (the findProperty scan plus the copy of the stored
+ * bytes) has to run on the main thread. Routing only the final SDL call would
+ * leave the scan racing concurrent main-thread writes to the same store.
+ */
+struct titleRevertArgs {
+    Display *display;
+    Window window;
+};
+
+static void reapplyWindowTitleOnMain(void *p)
+{
+    struct titleRevertArgs *a = (struct titleRevertArgs *) p;
+    reapplyWindowTitle(a->display, a->window);
+}
+
+static void reapplyWindowTitle(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct titleRevertArgs a = {display, window};
+        runOnMainThread(reapplyWindowTitleOnMain, &a);
+        return;
+    }
+
+    static const Atom titleSources[] = {_NET_WM_NAME, XA_WM_NAME};
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+
+    for (size_t i = 0; i < ARRAY_LENGTH(titleSources); i++) {
+        WindowProperty *prop =
+            findProperty(&windowStruct->properties, titleSources[i], NULL);
+        if (!prop || prop->dataFormat != 8 || !isTitleTextType(prop->type) ||
+            !prop->dataLength || !prop->data)
+            continue;
+        /* Property bytes are not required to be NUL-terminated. */
+        char *titleBuf = malloc(prop->dataLength + 1);
+        if (!titleBuf)
+            return;
+        memcpy(titleBuf, prop->data, prop->dataLength);
+        titleBuf[prop->dataLength] = '\0';
+        updateWindowTitle(display, window, titleBuf);
+        free(titleBuf);
+        return;
+    }
+    updateWindowTitle(display, window, "");
 }
 
 int XDeleteProperty(Display *display, Window window, Atom property)
@@ -476,15 +591,29 @@ int XDeleteProperty(Display *display, Window window, Atom property)
         postEvent(display, window, PropertyNotify, property, PropertyDelete);
     }
 
-    /* Re-resolve SDL flag mirror and modal pairing after the property is
-     * actually gone: applyNetWmStateFromProperty and
-     * applyTransientForRelationship both read _NET_WM_STATE via findProperty,
-     * so the read must see the post-delete state.
+    /* Every revert below re-reads the store, so all of them must run after the
+     * property is actually gone. The set handled here has to match the set
+     * XChangeProperty applies on write; test_property_side_effect_symmetry
+     * asserts that by round-tripping each atom.
      */
     if (property == _NET_WM_STATE) {
         applyNetWmStateFromProperty(window);
         applyTransientForRelationship(window);
     }
+    if (property == _NET_WM_WINDOW_TYPE || property == _MOTIF_WM_HINTS ||
+        property == XA_WM_NORMAL_HINTS)
+        reapplyWindowDecorations(window);
+
+    /* The WM_NORMAL_HINTS write hook caches PResizeInc alongside the resizable
+     * mirror, and the cache is what the live-resize drag-end snap quantises to.
+     * Re-run the decode so a delete clears it; leaving it set would keep
+     * snapping to a cell size the client just withdrew. The decoder itself
+     * handles the now-absent property by dropping hasResizeInc.
+     */
+    if (property == XA_WM_NORMAL_HINTS)
+        cacheResizeIncrementsFromNormalHintsProperty(window);
+    if (property == XA_WM_NAME || property == _NET_WM_NAME)
+        reapplyWindowTitle(display, window);
     return 1;
 }
 

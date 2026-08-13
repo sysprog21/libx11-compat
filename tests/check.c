@@ -239,6 +239,53 @@ static Bool wait_window_flag(SDL_Window *w, Uint32 mask, Bool wantSet)
     return ((SDL_GetWindowFlags(w) & mask) != 0) == (wantSet != False);
 }
 
+/* True when a rectangle shows a single flat colour, meaning no preedit glyphs
+ * are on screen there. The preedit draws dark text on its own background, so a
+ * uniform area is the observable for "nothing is being composed".
+ *
+ * Deliberately not a check for white. The internal preedit lives in a
+ * library-owned child window, so taking it down uncovers the client's own
+ * background and hands the client an Expose; which colour surfaces is the
+ * client's business, not the input method's. Asserting white here would only
+ * re-encode the old behaviour of painting the preedit background straight onto
+ * the client's drawable.
+ */
+static Bool areaIsUniform(Display *display,
+                          Window window,
+                          int x,
+                          int y,
+                          int w,
+                          int h)
+{
+    XImage *img = XGetImage(display, window, x, y, (unsigned int) w,
+                            (unsigned int) h, AllPlanes, ZPixmap);
+    if (!img)
+        return False;
+    unsigned long first = XGetPixel(img, 0, 0);
+    Bool uniform = True;
+    for (int py = 0; py < h && uniform; py++) {
+        for (int px = 0; px < w; px++) {
+            if (XGetPixel(img, px, py) != first) {
+                uniform = False;
+                break;
+            }
+        }
+    }
+    XDestroyImage(img);
+    return uniform;
+}
+
+static Bool windowHasProperty(Display *display, Window window, Atom property)
+{
+    int count = 0;
+    Atom *props = XListProperties(display, window, &count);
+    Bool found = False;
+    for (int i = 0; i < count; i++)
+        found |= props[i] == property;
+    XFree(props);
+    return found;
+}
+
 static XEvent make_event(int type, Window window)
 {
     XEvent event;
@@ -5764,6 +5811,34 @@ static int test_events(Display *display)
     CHECK(focusKeepResult == (Window) PointerRoot,
           "host focus gain on top-level clobbered PointerRoot focus");
 
+
+    XDestroyWindow(display, window);
+    XDestroyWindow(display, resetWindow);
+    SDL_zero(resetEvent);
+    resetEvent.type = SDL_RENDER_TARGETS_RESET;
+    SDL_PushEvent(&resetEvent);
+    CHECK(!XCheckTypedEvent(display, Expose, &out),
+          "render reset with no top-level children posted Expose");
+    XFreePixmap(display, backgroundPixmap);
+    return 1;
+}
+
+/* Window-gravity moves and host-driven parent resizes. Split out of
+ * test_events: CHECK returns on the first failure, so keeping these behind 1500
+ * lines of unrelated assertions meant any earlier failure silently skipped
+ * every one of them.
+ */
+static int test_event_window_gravity(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(window != None, "gravity: parent window creation failed");
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask);
+    CHECK(XMapWindow(display, window), "gravity: parent map failed");
+    XEvent out;
+    while (XCheckWindowEvent(display, window, ExposureMask, &out)) {
+    }
+
     Window gravityChild =
         XCreateSimpleWindow(display, window, 2, 3, 8, 8, 0, 0, 0);
     CHECK(gravityChild != None, "gravity child creation failed");
@@ -5982,13 +6057,6 @@ static int test_events(Display *display)
     XDestroyWindow(display, hostResizeWin);
 
     XDestroyWindow(display, window);
-    XDestroyWindow(display, resetWindow);
-    SDL_zero(resetEvent);
-    resetEvent.type = SDL_RENDER_TARGETS_RESET;
-    SDL_PushEvent(&resetEvent);
-    CHECK(!XCheckTypedEvent(display, Expose, &out),
-          "render reset with no top-level children posted Expose");
-    XFreePixmap(display, backgroundPixmap);
     return 1;
 }
 
@@ -6199,7 +6267,11 @@ static int test_properties(Display *display)
         CHECK(sdlTitle && !strcmp(sdlTitle, desired),
               "_NET_WM_NAME XChangeProperty did not update SDL title");
 
-        /* Plain XA_WM_NAME with XA_STRING should detour identically. */
+        /* Plain XA_WM_NAME with XA_STRING should detour when it is the
+         * preferred title source.
+         */
+        CHECK(XDeleteProperty(display, titleWin, netWmName),
+              "title detour _NET_WM_NAME delete failed");
         const char *wmDesired = "compat-wm-name-detour";
         CHECK(XChangeProperty(display, titleWin, XA_WM_NAME, XA_STRING, 8,
                               PropModeReplace, (unsigned char *) wmDesired,
@@ -6208,6 +6280,17 @@ static int test_properties(Display *display)
         sdlTitle = SDL_GetWindowTitle(sdlw);
         CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
               "WM_NAME XChangeProperty did not update SDL title");
+        CHECK(XChangeProperty(display, titleWin, netWmName, utf8, 8,
+                              PropModeReplace, (unsigned char *) desired,
+                              (int) strlen(desired)),
+              "XChangeProperty(_NET_WM_NAME restore) failed");
+        CHECK(XChangeProperty(display, titleWin, XA_WM_NAME, XA_STRING, 8,
+                              PropModeReplace, (unsigned char *) wmDesired,
+                              (int) strlen(wmDesired)),
+              "XChangeProperty(WM_NAME under _NET_WM_NAME) failed");
+        sdlTitle = SDL_GetWindowTitle(sdlw);
+        CHECK(sdlTitle && !strcmp(sdlTitle, desired),
+              "WM_NAME write incorrectly overrode _NET_WM_NAME title");
 
         /* Non-text property writes to WM_NAME (atom payload) must NOT touch the
          * title: detour only triggers on XA_STRING / UTF8_STRING /
@@ -6219,7 +6302,7 @@ static int test_properties(Display *display)
                             PropModeReplace, (unsigned char *) &atomPayload, 1),
             "XChangeProperty(WM_NAME, ATOM) failed");
         sdlTitle = SDL_GetWindowTitle(sdlw);
-        CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
+        CHECK(sdlTitle && !strcmp(sdlTitle, desired),
               "non-text WM_NAME write should not change SDL title");
         XDestroyWindow(display, titleWin);
     }
@@ -6627,6 +6710,120 @@ static int test_ewmh_wm_state_initial_property(Display *display)
           "ewmh-initial: empty _NET_WM_STATE rewrite failed");
     CHECK(wait_window_flag(sdlWindow, SDL_WINDOW_FULLSCREEN, False),
           "ewmh-initial: direct _NET_WM_STATE rewrite did not clear SDL state");
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* Every property XChangeProperty applies SDL state from must revert that state
+ * on XDeleteProperty. Applying on write and never reverting leaves the window
+ * wearing decorations, a title, or a mode the client has removed, and the
+ * asymmetry stays invisible until a toolkit deletes a property mid-session.
+ * Round-tripping each atom through write-then-delete beats comparing two
+ * hand-listed tables, since it cannot drift from the handlers.
+ *
+ * Coverage is uneven because of what the dummy video driver surfaces. The SDL
+ * title round-trips fully. SDL_SetWindowBordered and SDL_SetWindowResizable do
+ * not move SDL_GetWindowFlags headless (the write path is equally unobservable,
+ * which is why test_ewmh_window_type_borderless checks only the decoder), so
+ * for those three atoms this pins the store-level revert and that the delete
+ * path runs its appliers without faulting. A real video driver is needed to
+ * assert the knob itself.
+ */
+static int test_property_side_effect_symmetry(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(window != None, "symmetry: window creation failed");
+    CHECK(XMapWindow(display, window), "symmetry: window map failed");
+    SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
+    CHECK(sdlWindow != NULL, "symmetry: window has no SDL backing");
+
+    Atom netWmWindowType = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    Atom netWmWindowTypeMenu =
+        XInternAtom(display, "_NET_WM_WINDOW_TYPE_MENU", False);
+    Atom motifWmHints = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    Atom netWmName = XInternAtom(display, "_NET_WM_NAME", False);
+    Atom utf8String = XInternAtom(display, "UTF8_STRING", False);
+
+    /* Each decoration atom: write it, delete it, and confirm the store no
+     * longer holds it. The delete drives reapplyWindowDecorations, so a revert
+     * that faults or recurses fails here even though the knob is invisible.
+     */
+    Atom typeData = netWmWindowTypeMenu;
+    CHECK(XChangeProperty(display, window, netWmWindowType, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) &typeData, 1),
+          "symmetry: _NET_WM_WINDOW_TYPE write failed");
+    CHECK(XDeleteProperty(display, window, netWmWindowType),
+          "symmetry: _NET_WM_WINDOW_TYPE delete failed");
+    CHECK(!windowHasProperty(display, window, netWmWindowType),
+          "symmetry: _NET_WM_WINDOW_TYPE survived its delete");
+
+    long motifData[5] = {2 /* MWM_HINTS_DECORATIONS */, 0, 0 /* no decor */, 0,
+                         0};
+    CHECK(XChangeProperty(display, window, motifWmHints, motifWmHints, 32,
+                          PropModeReplace, (unsigned char *) motifData, 5),
+          "symmetry: _MOTIF_WM_HINTS write failed");
+    CHECK(XDeleteProperty(display, window, motifWmHints),
+          "symmetry: _MOTIF_WM_HINTS delete failed");
+    CHECK(!windowHasProperty(display, window, motifWmHints),
+          "symmetry: _MOTIF_WM_HINTS survived its delete");
+
+    XSizeHints sizeHints = {0};
+    sizeHints.flags = PMinSize | PMaxSize;
+    sizeHints.min_width = 40;
+    sizeHints.min_height = 30;
+    sizeHints.max_width = 400;
+    sizeHints.max_height = 300;
+    XSetWMNormalHints(display, window, &sizeHints);
+    CHECK(XDeleteProperty(display, window, XA_WM_NORMAL_HINTS),
+          "symmetry: WM_NORMAL_HINTS delete failed");
+    CHECK(!windowHasProperty(display, window, XA_WM_NORMAL_HINTS),
+          "symmetry: WM_NORMAL_HINTS survived its delete");
+
+    /* WM_NAME / _NET_WM_NAME: deleting the preferred source falls back to the
+     * other, and deleting both leaves an empty title rather than a stale one.
+     */
+    CHECK(XStoreName(display, window, "legacy-title"),
+          "symmetry: WM_NAME write failed");
+    CHECK(
+        XChangeProperty(display, window, netWmName, utf8String, 8,
+                        PropModeReplace, (unsigned char *) "modern-title", 12),
+        "symmetry: _NET_WM_NAME write failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "modern-title"),
+          "symmetry: _NET_WM_NAME write did not reach the SDL title");
+    CHECK(XDeleteProperty(display, window, netWmName),
+          "symmetry: _NET_WM_NAME delete failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "legacy-title"),
+          "symmetry: deleting _NET_WM_NAME did not fall back to WM_NAME");
+    CHECK(XDeleteProperty(display, window, XA_WM_NAME),
+          "symmetry: WM_NAME delete failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), ""),
+          "symmetry: deleting both name properties left a stale SDL title");
+
+    /* The write hook only treats WM_NAME as a title under a text encoding, so
+     * the delete revert has to apply the same filter. A format-8 WM_NAME stored
+     * under some other type is not a string: the write must leave the title
+     * alone, and deleting the preferred _NET_WM_NAME must not promote that
+     * payload to the titlebar.
+     */
+    CHECK(XStoreName(display, window, "text-title"),
+          "symmetry: WM_NAME text write failed");
+    Atom privateType = XInternAtom(display, "LIBX11_COMPAT_TEST_BLOB", False);
+    CHECK(XChangeProperty(display, window, XA_WM_NAME, privateType, 8,
+                          PropModeReplace, (unsigned char *) "\x01\x02blob", 6),
+          "symmetry: non-text WM_NAME write failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "text-title"),
+          "symmetry: non-text WM_NAME write reached the SDL title");
+    CHECK(XChangeProperty(display, window, netWmName, utf8String, 8,
+                          PropModeReplace, (unsigned char *) "preferred", 9),
+          "symmetry: _NET_WM_NAME write over non-text WM_NAME failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "preferred"),
+          "symmetry: _NET_WM_NAME did not take the title");
+    CHECK(XDeleteProperty(display, window, netWmName),
+          "symmetry: _NET_WM_NAME delete over non-text WM_NAME failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), ""),
+          "symmetry: delete revert promoted a non-text WM_NAME to the title");
 
     XDestroyWindow(display, window);
     return 1;
@@ -10562,6 +10759,190 @@ static int test_xrm(Display *display)
     return 1;
 }
 
+/* Composing over content the client has already drawn must leave that content
+ * intact. The internal preedit renderer used to paint the client's own drawable
+ * and erase it with a plain fill, so the text under the preedit was destroyed
+ * with no Expose behind it: XNEdit showed a blank strip at the caret for the
+ * rest of the session, and while composing, the client's repaints and the
+ * preedit fought over the same pixels. Compose and commit over a known colour,
+ * repainting on Expose the way a real client does, and require the colour back.
+ */
+static int test_preedit_preserves_client_content(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window win = XCreateSimpleWindow(display, root, 0, 0, 240, 60, 0, 0, 0);
+    CHECK(win != None, "preedit-content: window creation failed");
+    XSelectInput(display, win, ExposureMask | SubstructureNotifyMask);
+    CHECK(XMapWindow(display, win), "preedit-content: map failed");
+
+    GC gc = XCreateGC(display, win, 0, NULL);
+    CHECK(gc != NULL, "preedit-content: GC creation failed");
+    const unsigned long clientColor = 0xff0000ff;
+    XSetForeground(display, gc, clientColor);
+    XFillRectangle(display, win, gc, 0, 0, 240, 60);
+
+    XIM im = XOpenIM(display, NULL, NULL, NULL);
+    CHECK(im, "preedit-content: XOpenIM failed");
+    XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                       XNClientWindow, win, XNFocusWindow, win, NULL);
+    CHECK(ic, "preedit-content: XCreateIC failed");
+    XSetICFocus(ic);
+
+    XEvent ev;
+    while (XCheckWindowEvent(display, win, ExposureMask, &ev)) {
+    }
+
+    SDL_Event compose;
+    SDL_zero(compose);
+    compose.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(compose, "ni");
+    XEvent ignored;
+    CHECK(convertEvent(display, &compose, &ignored, True) == -1,
+          "preedit-content: compose produced a committed X event");
+
+    /* Reading the client drawable is the right way to observe the preedit even
+     * though it now lives in a child window: a child renders into its parent's
+     * backing here, so XGetImage on the parent returns the composited result.
+     * Verified directly, the same region reads back as the preedit's own
+     * background (0xffffffff) mid-compose rather than the client colour below.
+     * If children ever gain separate backing this assertion goes quiet rather
+     * than failing, so it would have to move to the preedit drawable.
+     */
+    CHECK(!areaIsUniform(display, win, 2, 2, 40, 18),
+          "preedit-content: preedit was not visibly drawn");
+
+    /* Commit clears the preedit. The client must be told to repaint what it
+     * covered, and repainting must restore its own pixels.
+     */
+    SDL_Event commit;
+    set_text_input_event(&commit, "\xe4\xbd\xa0");
+    convertEvent(display, &commit, &ignored, True);
+
+    int exposes = 0;
+    while (XCheckWindowEvent(display, win, ExposureMask, &ev)) {
+        exposes++;
+        XFillRectangle(display, win, gc, ev.xexpose.x, ev.xexpose.y,
+                       (unsigned int) ev.xexpose.width,
+                       (unsigned int) ev.xexpose.height);
+    }
+    CHECK(exposes > 0,
+          "preedit-content: clearing the preedit asked for no repaint");
+
+    XImage *img = XGetImage(display, win, 2, 2, 40, 18, AllPlanes, ZPixmap);
+    CHECK(img, "preedit-content: XGetImage failed");
+
+    /* RGB only: the alpha byte is not guaranteed to survive the render and
+     * readback round trip on a depth-24 visual or a backend that drops it, and
+     * the question here is whether the client's content came back, not how the
+     * top byte was encoded. Matches every other colour readback in this file.
+     */
+    Bool restored =
+        (XGetPixel(img, 20, 9) & 0x00ffffff) == (clientColor & 0x00ffffff);
+    XDestroyImage(img);
+    CHECK(restored,
+          "preedit-content: client content under the preedit was destroyed");
+
+    /* The preedit lives in a library-owned child mapped over the caret. It is
+     * hidden from XQueryTree and generates no CreateNotify, so the pointer must
+     * not see it either: winning the hit test would hand the client crossing
+     * events and an xbutton.subwindow XID for a window it was never told
+     * exists, and steal clicks from the widget underneath. Every pointer
+     * descent funnels through getDirectChildContainingPoint.
+     */
+    SDL_Event composeAgain;
+    SDL_zero(composeAgain);
+    composeAgain.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(composeAgain, "ni");
+    convertEvent(display, &composeAgain, &ignored, True);
+    CHECK(!areaIsUniform(display, win, 2, 2, 40, 18),
+          "preedit-content: second compose did not draw");
+    CHECK(getDirectChildContainingPoint(win, 10, 10) == None,
+          "preedit-content: preedit window captured the pointer hit test");
+
+    /* Motif text widgets select SubstructureNotifyMask. The preedit window is
+     * hidden from XQueryTree and issues no CreateNotify, so its structure
+     * notifications have to be suppressed too: it remaps on every composition
+     * keystroke, and a client cannot resolve the child those events name.
+     */
+    int strays = 0;
+    while (XCheckWindowEvent(display, win, SubstructureNotifyMask, &ev)) {
+        Window subject = ev.type == MapNotify     ? ev.xmap.window
+                         : ev.type == UnmapNotify ? ev.xunmap.window
+                                                  : ev.xconfigure.window;
+        if (subject != win)
+            strays++;
+    }
+    CHECK(strays == 0,
+          "preedit-content: preedit leaked structure events to the client");
+
+    XFreeGC(display, gc);
+    XDestroyIC(ic);
+    XCloseIM(im);
+    XDestroyWindow(display, win);
+    return 1;
+}
+
+/* Every event a client sees must carry its own serial. Xt calls XPending before
+ * each XNextEvent, so the queue is drained and converted in
+ * drainSdlEventsToPutBack and XNextEvent then pops an already-converted event
+ * without reaching its own bump; leaving that path unbumped gave every event
+ * serial 1 for the whole session.
+ *
+ * IM commits are where that bites. Clients dedupe key events on the triple
+ * (serial, keycode, time), and a commit's synthetic KeyPress always carries
+ * keycode 0, so a constant serial leaves only the millisecond timestamp to tell
+ * two commits apart. NEdit's text widget caches its IM lookup on exactly that
+ * triple, so two commits in one millisecond would resolve to the same cached
+ * text.
+ */
+static int test_event_serials_advance(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window win = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(win != None, "serial: window creation failed");
+    XSelectInput(display, win, KeyPressMask);
+    CHECK(XMapWindow(display, win), "serial: map failed");
+
+    XIM im = XOpenIM(display, NULL, NULL, NULL);
+    CHECK(im, "serial: XOpenIM failed");
+    XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                       XNClientWindow, win, XNFocusWindow, win, NULL);
+    CHECK(ic, "serial: XCreateIC failed");
+    XSetICFocus(ic);
+    XEvent drain;
+    while (XPending(display))
+        XNextEvent(display, &drain);
+
+    /* Three commits with no delay between them, so they land in the same
+     * millisecond and the timestamp cannot be the discriminator.
+     */
+    static const char *const commits[] = {"a", "b", "c"};
+    unsigned long serials[3] = {0, 0, 0};
+    int got = 0;
+    for (size_t i = 0; i < ARRAY_LENGTH(commits); i++) {
+        SDL_Event commit;
+        set_text_input_event(&commit, commits[i]);
+        SDL_PushEvent(&commit);
+        for (int spin = 0; spin < 200 && got == (int) i; spin++) {
+            while (XPending(display)) {
+                XEvent ev;
+                XNextEvent(display, &ev);
+                if (ev.type == KeyPress && got < 3)
+                    serials[got++] = ev.xkey.serial;
+            }
+            SDL_PumpEvents();
+        }
+    }
+    CHECK(got == 3, "serial: not every IM commit produced a KeyPress");
+    CHECK(serials[1] > serials[0] && serials[2] > serials[1],
+          "serial: consecutive events reused a serial");
+
+    XDestroyIC(ic);
+    XCloseIM(im);
+    XDestroyWindow(display, win);
+    return 1;
+}
+
 static int test_input_methods(Display *display)
 {
     XIM im = XOpenIM(display, NULL, NULL, NULL);
@@ -10790,18 +11171,9 @@ static int test_input_methods(Display *display)
                   XNClientWindow, client, XNFocusWindow, focus, NULL);
     CHECK(switchIC, "XCreateIC failed for focus-switch IC");
     XSetICFocus(switchIC);
-    XImage *switched = XGetImage(display, client, area.x, area.y, area.width,
-                                 area.height, AllPlanes, ZPixmap);
-    CHECK(switched, "focus-switch preedit clear XGetImage failed");
-    int switchedNonWhite = 0;
-    for (int py = 0; py < area.height; py++) {
-        for (int px = 0; px < area.width; px++) {
-            if ((XGetPixel(switched, px, py) & 0x00ffffff) != 0x00ffffff)
-                switchedNonWhite++;
-        }
-    }
-    XDestroyImage(switched);
-    CHECK(switchedNonWhite == 0, "focus switch did not clear old preedit");
+    CHECK(
+        areaIsUniform(display, client, area.x, area.y, area.width, area.height),
+        "focus switch did not clear old preedit");
     CHECK(preeditDoneCount == 1, "focus switch did not finish old preedit");
     XDestroyIC(switchIC);
     XSetICFocus(ic);
@@ -10975,19 +11347,9 @@ static int test_input_methods(Display *display)
             next_typed_event(display, KeyPress, &out) && out.xkey.keycode == 0,
             "SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
         if (i == 0) {
-            XImage *cleared =
-                XGetImage(display, client, area.x, area.y, area.width,
-                          area.height, AllPlanes, ZPixmap);
-            CHECK(cleared, "preedit clear XGetImage failed");
-            int nonWhite = 0;
-            for (int py = 0; py < area.height; py++) {
-                for (int px = 0; px < area.width; px++) {
-                    if ((XGetPixel(cleared, px, py) & 0x00ffffff) != 0x00ffffff)
-                        nonWhite++;
-                }
-            }
-            XDestroyImage(cleared);
-            CHECK(nonWhite == 0, "commit did not clear visible preedit area");
+            CHECK(areaIsUniform(display, client, area.x, area.y, area.width,
+                                area.height),
+                  "commit did not clear visible preedit area");
         }
         Status lookupStatus = XLookupNone;
         KeySym keysym = NoSymbol;
@@ -11730,6 +12092,208 @@ static int test_icccm_wm_hints(Display *display)
     CHECK(XChangeProperty(display, window, netWmIcon, XA_CARDINAL, 32,
                           PropModeReplace, (unsigned char *) badIcon, 3),
           "truncated _NET_WM_ICON property failed");
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+/* The ICCCM name getters read the same property store the setters write, so
+ * every pair here has to round-trip. XGetWMName additionally prefers
+ * _NET_WM_NAME, and setting only _NET_WM_NAME must not synthesize a WM_NAME
+ * entry as a side effect of the SDL title update.
+ */
+static int test_icccm_window_names(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 16, 16, 0, 0, 0);
+    CHECK(window != None, "XCreateSimpleWindow for window name test failed");
+    Atom utf8Atom = XInternAtom(display, "UTF8_STRING", False);
+
+    char *fetchName = NULL;
+    CHECK(XStoreName(display, window, "fetch-name") &&
+              XFetchName(display, window, &fetchName),
+          "XFetchName failed after XStoreName");
+    CHECK(fetchName && !strcmp(fetchName, "fetch-name"),
+          "XFetchName did not round-trip WM_NAME");
+    XFree(fetchName);
+    CHECK(XChangeProperty(display, window, XA_WM_NAME, utf8Atom, 8,
+                          PropModeReplace, (unsigned char *) "utf8-fetch", 10),
+          "UTF8 WM_NAME setup failed");
+    fetchName = (char *) 1;
+    CHECK(!XFetchName(display, window, &fetchName) && fetchName == NULL,
+          "XFetchName should reject non-XA_STRING WM_NAME");
+
+    char *iconName = NULL;
+    CHECK(XSetIconName(display, window, "icon-name") &&
+              XGetIconName(display, window, &iconName),
+          "XGetIconName failed after XSetIconName");
+    CHECK(iconName && !strcmp(iconName, "icon-name"),
+          "XGetIconName did not round-trip WM_ICON_NAME");
+    XFree(iconName);
+
+    Xutf8SetWMProperties(display, window, "utf8-name", NULL, NULL, 0, NULL,
+                         NULL, NULL);
+    XTextProperty wmName;
+    CHECK(XGetWMName(display, window, &wmName), "XGetWMName failed");
+    CHECK(wmName.encoding == utf8Atom && wmName.format == 8 &&
+              !strcmp((char *) wmName.value, "utf8-name"),
+          "XGetWMName did not return UTF8_STRING WM_NAME");
+    XFree(wmName.value);
+
+    CHECK(XChangeProperty(display, window, XA_WM_NAME, XA_STRING, 8,
+                          PropModeReplace, (unsigned char *) "legacy", 6),
+          "WM_NAME setup failed");
+    CHECK(XChangeProperty(display, window, _NET_WM_NAME, utf8Atom, 8,
+                          PropModeReplace, (unsigned char *) "modern", 6),
+          "_NET_WM_NAME setup failed");
+    CHECK(XGetWMName(display, window, &wmName), "XGetWMName preference failed");
+    CHECK(
+        wmName.encoding == utf8Atom && !strcmp((char *) wmName.value, "modern"),
+        "XGetWMName did not prefer _NET_WM_NAME");
+    XFree(wmName.value);
+
+    XTextProperty clientMachine = {
+        .value = (unsigned char *) "client-machine",
+        .encoding = XA_STRING,
+        .format = 8,
+        .nitems = 14,
+    };
+    XSetWMClientMachine(display, window, &clientMachine);
+    XTextProperty readClientMachine;
+    CHECK(XGetWMClientMachine(display, window, &readClientMachine),
+          "XGetWMClientMachine failed");
+    CHECK(readClientMachine.encoding == XA_STRING &&
+              !strcmp((char *) readClientMachine.value, "client-machine"),
+          "XGetWMClientMachine did not round-trip");
+    XFree(readClientMachine.value);
+
+    CHECK(windowHasProperty(display, window, XA_WM_NAME) &&
+              windowHasProperty(display, window, _NET_WM_NAME) &&
+              windowHasProperty(display, window, XA_WM_CLIENT_MACHINE),
+          "XListProperties missed stored atoms");
+
+    Window bare = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
+    int bareCount = -1;
+    CHECK(!XListProperties(display, bare, &bareCount) && bareCount == 0,
+          "XListProperties on a property-free window should return NULL");
+    XDestroyWindow(display, bare);
+
+    Window netOnly = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
+    CHECK(XChangeProperty(display, netOnly, _NET_WM_NAME, utf8Atom, 8,
+                          PropModeReplace, (unsigned char *) "net-only", 8),
+          "_NET_WM_NAME-only setup failed");
+    CHECK(!windowHasProperty(display, netOnly, XA_WM_NAME) &&
+              windowHasProperty(display, netOnly, _NET_WM_NAME),
+          "_NET_WM_NAME title side effect synthesized WM_NAME");
+    XDestroyWindow(display, netOnly);
+
+    /* XTextPropertyToStringList is the conventional consumer of what the
+     * getters above return, so it has to invert XStringListToTextProperty
+     * exactly: n separators means n+1 strings, empty entries survive, and the
+     * array is NULL-terminated for XFreeStringList.
+     */
+    char *inList[] = {"first", "", "third"};
+    XTextProperty packed;
+    CHECK(XStringListToTextProperty(inList, 3, &packed),
+          "XStringListToTextProperty failed");
+    char **outList = NULL;
+    int outCount = 0;
+    CHECK(XTextPropertyToStringList(&packed, &outList, &outCount),
+          "XTextPropertyToStringList failed");
+    CHECK(outCount == 3, "XTextPropertyToStringList lost an entry");
+    CHECK(outList && !strcmp(outList[0], "first") && !strcmp(outList[1], "") &&
+              !strcmp(outList[2], "third"),
+          "XTextPropertyToStringList did not round-trip the list");
+    CHECK(!outList[3],
+          "XTextPropertyToStringList array is not NULL-terminated");
+    XFreeStringList(outList);
+    XFree(packed.value);
+
+    CHECK(XStringListToTextProperty(NULL, 0, &packed),
+          "empty XStringListToTextProperty failed");
+    outList = (char **) 1;
+    outCount = -1;
+    CHECK(XTextPropertyToStringList(&packed, &outList, &outCount) && !outList &&
+              outCount == 0,
+          "XTextPropertyToStringList should return zero strings for empty "
+          "properties");
+    XFree(packed.value);
+
+    XTextProperty emptyProp = {
+        .value = NULL,
+        .encoding = XA_STRING,
+        .format = 8,
+        .nitems = 0,
+    };
+    outList = (char **) 1;
+    outCount = -1;
+    CHECK(XTextPropertyToStringList(&emptyProp, &outList, &outCount) &&
+              !outList && outCount == 0,
+          "XTextPropertyToStringList should accept NULL empty properties");
+
+    /* A UTF8_STRING property is not a STRING list; libX11 rejects it rather
+     * than handing back mojibake.
+     */
+    XTextProperty utf8Prop = {
+        .value = (unsigned char *) "nope",
+        .encoding = utf8Atom,
+        .format = 8,
+        .nitems = 4,
+    };
+    outList = (char **) 1;
+    CHECK(!XTextPropertyToStringList(&utf8Prop, &outList, &outCount),
+          "XTextPropertyToStringList should reject non-XA_STRING encoding");
+
+    /* The single-string case has no separator at all. */
+    char *oneList[] = {"solo"};
+    CHECK(XStringListToTextProperty(oneList, 1, &packed),
+          "single-entry XStringListToTextProperty failed");
+    CHECK(XTextPropertyToStringList(&packed, &outList, &outCount) &&
+              outCount == 1 && !strcmp(outList[0], "solo"),
+          "XTextPropertyToStringList mishandled a single-entry property");
+    XFreeStringList(outList);
+    XFree(packed.value);
+
+    /* Pin the one asymmetry the trailing-NUL rule creates. A property that is a
+     * lone NUL is one terminated empty string, so it decodes to a single empty
+     * entry, while a zero-length property carries no entries at all. Both are
+     * defensible readings of the same encoding, and nothing else distinguishes
+     * them, so the choice has to be nailed down or it can flip unnoticed the
+     * next time the counting is touched.
+     */
+    XTextProperty nulOnly = {
+        .value = (unsigned char *) "",
+        .encoding = XA_STRING,
+        .format = 8,
+        .nitems = 1,
+    };
+    outList = NULL;
+    outCount = -1;
+    CHECK(XTextPropertyToStringList(&nulOnly, &outList, &outCount) &&
+              outCount == 1 && outList && !outList[0][0] && !outList[1],
+          "a lone NUL should decode as one empty string");
+    XFreeStringList(outList);
+
+    /* The two ICCCM writers here disagree about whether nitems counts the final
+     * NUL: XStringListToTextProperty excludes it, XSetCommand includes it (as
+     * libX11's does). Counting separators alone turns a WM_COMMAND this library
+     * wrote into argc + 1 entries with a bogus empty argument on the end, so
+     * round-trip the writer that terminates every element.
+     */
+    char *cmdArgv[] = {"xnedit", "-read", "notes.txt"};
+    CHECK(XSetCommand(display, window, cmdArgv, 3), "XSetCommand failed");
+    XTextProperty command;
+    CHECK(XGetTextProperty(display, window, &command, XA_WM_COMMAND),
+          "WM_COMMAND read failed");
+    CHECK(XTextPropertyToStringList(&command, &outList, &outCount),
+          "WM_COMMAND XTextPropertyToStringList failed");
+    CHECK(outCount == 3,
+          "XSetCommand round-trip invented a trailing empty argument");
+    CHECK(!strcmp(outList[0], "xnedit") && !strcmp(outList[1], "-read") &&
+              !strcmp(outList[2], "notes.txt"),
+          "XSetCommand round-trip corrupted the argument vector");
+    XFreeStringList(outList);
+    XFree(command.value);
 
     XDestroyWindow(display, window);
     return 1;
@@ -13655,6 +14219,8 @@ struct offThreadWinArgs {
     Atom netWmWindowType;
     Atom netWmWindowTypeMenu;
     Atom netWmIcon;
+    Atom netWmName;
+    Atom utf8String;
     SDL_atomic_t done;
 };
 
@@ -13663,6 +14229,16 @@ static void *offThreadWinWorker(void *p)
     struct offThreadWinArgs *a = (struct offThreadWinArgs *) p;
     XMapWindow(a->display, a->window);
     XStoreName(a->display, a->window, "worker-title");
+
+    /* A raw WM_NAME / _NET_WM_NAME write is the path Motif, GTK, and Qt take
+     * instead of XStoreName, and it reaches the SDL title update without going
+     * through XStoreName's entry point. The title updater has to self-route on
+     * its own or this aborts on the requireMainEventThread guard.
+     */
+    XChangeProperty(a->display, a->window, XA_WM_NAME, XA_STRING, 8,
+                    PropModeReplace, (unsigned char *) "worker-wm-name", 14);
+    XChangeProperty(a->display, a->window, a->netWmName, a->utf8String, 8,
+                    PropModeReplace, (unsigned char *) "worker-net-name", 15);
 
     /* WM-state property writes drive the self-routing appliers off-thread:
      * XSetWMNormalHints (size constraints + resizable), _NET_WM_STATE,
@@ -13715,6 +14291,28 @@ static void *offThreadWinWorker(void *p)
     XMoveWindow(a->display, a->window, 8, 8);
     XReparentWindow(a->display, a->window, DefaultRootWindow(a->display), 12,
                     12);
+
+    /* XDeleteProperty is a public entry point too, and its reverts read the
+     * property store and write SDL-facing state just like the write hooks
+     * above, so drive them from a worker as well. Every revert self-routes
+     * (reapplyWindowDecorations and reapplyWindowTitle in window-property.c,
+     * cacheResizeIncrementsFromNormalHintsProperty in display.c), so each
+     * delete blocks here while the pump loop below runs the revert on the main
+     * thread. That handoff, and the store access on both sides of it, is what
+     * the sanitizers get to see.
+     *
+     * Scope, measured rather than assumed: this exercises those paths but does
+     * not prove the routing is required. Removing the routing leaves TSan
+     * quiet, because nothing on the main thread touches the increment cache or
+     * the decoration state while the worker runs; and nothing aborts either,
+     * since the self-routing appliers carry no requireMainEventThread assertion
+     * (none of the family does, the assertion belongs to the non-self-routing
+     * Impl bodies). Pinning the routing would need a concurrent main-thread
+     * reader this test does not have.
+     */
+    XDeleteProperty(a->display, a->window, XA_WM_NORMAL_HINTS);
+    XDeleteProperty(a->display, a->window, a->netWmWindowType);
+    XDeleteProperty(a->display, a->window, XA_WM_NAME);
     SDL_AtomicSet(&a->done, 1);
     return NULL;
 }
@@ -13739,17 +14337,29 @@ static int test_off_thread_window_calls(Display *display)
         XInternAtom(display, "_NET_WM_WINDOW_TYPE", False),
         XInternAtom(display, "_NET_WM_WINDOW_TYPE_MENU", False),
         XInternAtom(display, "_NET_WM_ICON", False),
+        XInternAtom(display, "_NET_WM_NAME", False),
+        XInternAtom(display, "UTF8_STRING", False),
         {0},
     };
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, offThreadWinWorker, &a) == 0,
           "pthread_create failed");
 
-    /* Pump so the routed XMapWindow/XStoreName run on this (main) thread. Cap
-     * the spin so a broken router fails instead of hanging (see
-     * test_main_dispatch).
+    /* Pump so the routed calls run on this (main) thread. Bound the wait so a
+     * broken router fails instead of hanging (see test_main_dispatch). This
+     * worker makes over a dozen blocking handoffs, each waiting on this loop to
+     * drain it, so a fixed spin count is a latency bound rather than a hang
+     * check: a loaded machine trips it while the router is working fine. A
+     * wall-clock deadline stays a hang check no matter how many handoffs the
+     * worker adds or how slow the host is. Generous on purpose. This worker
+     * makes over a dozen blocking handoffs, each waiting on the loop below to
+     * drain it, and under TSan the whole gate already runs 26 to 43 seconds; a
+     * 30 second bound was tight enough to abort once. The bound exists to fail
+     * instead of hanging when the router is broken, so it only has to beat
+     * "never", not any particular latency.
      */
-    for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++)
+    Uint64 deadline = SDL_GetTicks() + 300000;
+    while (!SDL_AtomicGet(&a.done) && SDL_GetTicks() < deadline)
         XPending(display);
     CHECK_ABORT(SDL_AtomicGet(&a.done),
                 "off-thread window calls never completed");
@@ -14272,6 +14882,7 @@ int main(void)
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);
     run_test("events", test_events);
+    run_test("event_window_gravity", test_event_window_gravity);
     run_test("grab_release_on_unviewable", test_grab_release_on_unviewable);
     run_test("warp_pointer_target", test_warp_pointer_target);
     run_test("windows", test_windows);
@@ -14288,10 +14899,13 @@ int main(void)
      * so the suite output reads as a window-manager-convention pass.
      */
     run_test("icccm_wm_hints", test_icccm_wm_hints);
+    run_test("icccm_window_names", test_icccm_window_names);
     run_test("icccm_transient_for_modal", test_icccm_transient_for_modal);
     run_test("ewmh_wm_state_clientmessage", test_ewmh_wm_state_clientmessage);
     run_test("ewmh_wm_state_initial_property",
              test_ewmh_wm_state_initial_property);
+    run_test("property_side_effect_symmetry",
+             test_property_side_effect_symmetry);
     run_test("ewmh_active_window_clientmessage",
              test_ewmh_active_window_clientmessage);
     run_test("ewmh_close_window_clientmessage",
@@ -14302,6 +14916,9 @@ int main(void)
     run_test("normal_hints_resizable", test_normal_hints_resizable);
     run_test("snap_axis_to_increment", test_snap_axis_to_increment);
     run_test("xrm", test_xrm);
+    run_test("preedit_preserves_client_content",
+             test_preedit_preserves_client_content);
+    run_test("event_serials_advance", test_event_serials_advance);
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);
     run_test("shape_mask", test_shape_mask);

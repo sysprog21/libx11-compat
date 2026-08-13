@@ -54,9 +54,14 @@ typedef struct {
     Bool hasPreeditCaretCallback;
     Bool preeditActive;
     int preeditLength;
-    Bool hasPreeditDrawRect;
-    Window preeditDrawWindow;
-    SDL_Rect preeditDrawRect;
+
+    /* Library-owned child window the non-callback preedit styles draw into,
+     * plus the client window it currently hangs off. Never the client's own
+     * drawable: see drawInternalPreedit.
+     */
+    Window preeditWindow;
+    Window preeditParent;
+    SDL_Rect preeditRect;
     XFontStruct *preeditFont;
     Bool preeditFontResolved;
     Bool destroying;
@@ -65,6 +70,7 @@ typedef struct {
 
 #define XIMUndefined 0x0000L
 #define defaultLocaleModifierList "DEFAULT"
+
 /* The styles XCreateIC accepts and XGetIMValues advertises must be the same
  * set, otherwise a client that queries XNQueryInputStyle never selects a style
  * that actually works. Area and Position are served by the internal over-the-
@@ -88,6 +94,7 @@ Bool inputMethodHasActiveTextInput(void);
 Bool inputMethodHasActivePreedit(void);
 void inputMethodNoteTextInputStopped(void);
 void inputMethodUnsetFocus(XIC inputConnection);
+
 /* caret is the insertion index within the preedit, in UTF-8 characters, as
  * reported by SDL_TextEditingEvent.start. It is clamped to the preedit length.
  */

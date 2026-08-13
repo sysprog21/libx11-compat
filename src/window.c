@@ -1817,67 +1817,94 @@ Status XWithdrawWindow(Display *display, Window window, int screen_number)
     return 1;
 }
 
-static int storeNameImpl(Display *display,
-                         Window window,
-                         _Xconst char *window_name)
+static int updateWindowTitleImpl(Display *display,
+                                 Window window,
+                                 _Xconst char *window_name)
 {
-    // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XStoreName.html
-    TYPE_CHECK(window, WINDOW, display, 0);
     if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
-        /* SDL_SetWindowTitle is a main-thread-only call on macOS; the router
-         * below guarantees we are on the main thread by the time we get here.
+        /* SDL_SetWindowTitle is a main-thread-only call on macOS; the router in
+         * updateWindowTitle guarantees we are on the main thread here.
          */
-        requireMainEventThread("XStoreName");
+        requireMainEventThread("updateWindowTitle");
         SDL_SetWindowTitle(GET_WINDOW_STRUCT(window)->sdlWindow, window_name);
     } else {
         size_t len = strlen(window_name) + 1;
         char *windowName = malloc(len);
+
+        /* Drop the previous cache even when the allocation fails. This is a
+         * staging copy for realizeTopLevelWindow's SDL_CreateWindow, and by the
+         * time we get here WM_NAME already holds the new name, so keeping the
+         * old string would make a later map show a title the client has
+         * replaced. SDL_CreateWindow accepts NULL, so the failure shows as no
+         * title rather than a stale one, and the property store still has the
+         * right answer for anyone who asks.
+         */
+        free(GET_WINDOW_STRUCT(window)->windowName);
+        GET_WINDOW_STRUCT(window)->windowName = windowName;
         if (!windowName) {
             handleError(0, display, window, 0, BadAlloc, 0);
             return 0;
         }
         memcpy(windowName, window_name, len);
-        free(GET_WINDOW_STRUCT(window)->windowName);
-        GET_WINDOW_STRUCT(window)->windowName = windowName;
     }
     return 1;
 }
 
-/* Off-main-thread router: XStoreName touches SDL (SDL_SetWindowTitle) and reads
- * the window tree, so a client worker thread runs the whole body on the main
- * thread. On the main thread it is a direct call.
+/* Self-routing, like the applyXFromProperty family: XChangeProperty is a public
+ * entry point a client worker thread may call directly, so the title update
+ * cannot assume its caller routed. The unmapped branch also mutates
+ * windowStruct->windowName, which must not race the main thread's realize.
+ * runOnMainThread blocks, so window_name stays alive for the duration.
  */
-struct storeNameArgs {
+struct titleArgs {
     Display *display;
     Window window;
     _Xconst char *window_name;
     int rc;
 };
 
-static void storeNameOnMain(void *p)
+static void updateWindowTitleOnMain(void *p)
 {
-    struct storeNameArgs *a = (struct storeNameArgs *) p;
-    a->rc = storeNameImpl(a->display, a->window, a->window_name);
+    struct titleArgs *a = (struct titleArgs *) p;
+    a->rc = updateWindowTitleImpl(a->display, a->window, a->window_name);
+}
+
+int updateWindowTitle(Display *display,
+                      Window window,
+                      _Xconst char *window_name)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct titleArgs a = {display, window, window_name, 0};
+        runOnMainThread(updateWindowTitleOnMain, &a);
+        return a.rc;
+    }
+    return updateWindowTitleImpl(display, window, window_name);
 }
 
 int XStoreName(Display *display, Window window, _Xconst char *window_name)
 {
-    if (!libx11CompatOnMainEventThread()) {
-        struct storeNameArgs a = {display, window, window_name, 0};
-        runOnMainThread(storeNameOnMain, &a);
-        return a.rc;
-    }
-    return storeNameImpl(display, window, window_name);
+    // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XStoreName.html
+    /* The property store is the single source of truth: write WM_NAME and let
+     * XChangeProperty's title hook push the result to SDL. Updating the title
+     * here as well would set it twice per store. No router is needed: the hook
+     * self-routes, and everything else here is plain store mutation.
+     */
+    TYPE_CHECK(window, WINDOW, display, 0);
+    /* libX11 stores a zero-length name rather than dereferencing NULL. */
+    return XChangeProperty(
+        display, window, XA_WM_NAME, XA_STRING, 8, PropModeReplace,
+        (const unsigned char *) (window_name ? window_name : ""),
+        window_name ? (int) strlen(window_name) : 0);
 }
 
 int XSetIconName(Display *display, Window window, _Xconst char *icon_name)
 {
     // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XSetIconName.html
-    /* No icon-name display in SDL; accept and discard. */
-    (void) display;
-    (void) window;
-    (void) icon_name;
-    return 1;
+    /* libX11's SetIName.c passes icon_name ? strlen(icon_name) : 0. */
+    return XChangeProperty(display, window, XA_WM_ICON_NAME, XA_STRING, 8,
+                           PropModeReplace,
+                           (const unsigned char *) (icon_name ? icon_name : ""),
+                           icon_name ? (int) strlen(icon_name) : 0);
 }
 
 int XMoveWindow(Display *display, Window window, int x, int y)

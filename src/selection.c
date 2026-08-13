@@ -156,6 +156,7 @@ void freeSelectionStorage(Display *display)
 
     free(t->lastPushed);
     free(t->incrBuf);
+
     /* The hidden requestor window, if any, is a child of the root and gets torn
      * down by destroyScreenWindow later in XCloseDisplay, so it needs no
      * explicit destroy here.
@@ -169,7 +170,6 @@ void freeSelectionStorage(Display *display)
  * invoked from XCloseDisplay alongside freeAtomStorage() to keep these in sync.
  */
 static Atom cachedClipboardAtom = None;
-static Atom cachedUtf8StringAtom = None;
 static Atom cachedTargetsAtom = None;
 static Atom cachedIncrAtom = None;
 
@@ -193,11 +193,14 @@ static Atom clipboardAtom(Display *display)
     return cachedClipboardAtom;
 }
 
+/* UTF8_STRING is a pinned predefined atom (net-atoms.h), so unlike the
+ * CLIPBOARD / TARGETS / INCR caches around it there is nothing to resolve or
+ * invalidate. Kept as a function so the call sites stay uniform.
+ */
 static Atom utf8StringAtom(Display *display)
 {
-    if (cachedUtf8StringAtom == None && display)
-        cachedUtf8StringAtom = XInternAtom(display, "UTF8_STRING", False);
-    return cachedUtf8StringAtom;
+    (void) display;
+    return UTF8_STRING;
 }
 
 static Atom targetsAtom(Display *display)
@@ -232,7 +235,6 @@ static Atom fetchPropertyAtom(Display *display, unsigned index)
 void resetSelectionAtomCache(void)
 {
     cachedClipboardAtom = None;
-    cachedUtf8StringAtom = None;
     cachedTargetsAtom = None;
     cachedIncrAtom = None;
     for (unsigned i = 0; i < CLIPBOARD_FETCH_PROP_POOL; i++)
@@ -380,6 +382,7 @@ static void pushTextToSdlClipboard(DisplayTable *table,
     free(table->lastPushed);
     table->lastPushed = buf;
     table->everPushed = True;
+
     /* SDL_SetClipboardText's success value differs across SDL2 (0) and SDL3
      * (true), so its return is not checked here; the echo guard tolerates a
      * rejected write by simply comparing against what we last intended to set.
@@ -496,6 +499,7 @@ static void expireSelectionOwner(Display *display,
     if (e && e->owner != None && e->owner != table->clipboardRequestor) {
         postSelectionClear(display, e->owner, selection, CurrentTime);
         e->owner = None;
+
         /* An in-flight fetch or INCR transfer from this now-revoked owner would
          * only push stale data; abandon it.
          */
@@ -528,6 +532,7 @@ static void clipboardHandleFetchReply(Display *display,
             LOG("INCR size hint malformed; dropping.\n");
             return;
         }
+
         /* Start reassembly and ack by deleting the hint; the owner then streams
          * the payload as PropertyNotify(NewValue) chunks.
          */
@@ -557,6 +562,7 @@ static void clipboardHandleFetchReply(Display *display,
         XDeleteProperty(display, window, property);
         return;
     }
+
     /* A single-shot reply is bounded by the same cap as an INCR transfer so a
      * client cannot pin hundreds of MiB on the hidden requestor.
      */
@@ -568,6 +574,7 @@ static void clipboardHandleFetchReply(Display *display,
     }
     pushTextToSdlClipboard(table, prop->data, prop->dataLength,
                            prop->type == XA_STRING);
+
     /* Release the received bytes now that they are mirrored; otherwise the
      * reply lingers stored on the requestor, one copy per pool slot.
      */
@@ -582,6 +589,7 @@ Bool clipboardConsumeInternalEvent(Display *display,
     DisplayTable *table = findTable(display);
     if (!table || window == None || window != table->clipboardRequestor)
         return False;
+
     /* The requestor XID travels to the owner in SelectionRequest.requestor, so
      * a reply can still be queued after the window was torn down. Drop the
      * stale handle rather than dereference a freed WindowStruct.
@@ -644,6 +652,7 @@ Bool clipboardConsumeInternalEvent(Display *display,
             clipboardHandleIncrChunk(display, table, window, pe->atom);
             return True;
         }
+
         /* An INCR owner is waiting for our per-chunk XDeleteProperty ack (a
          * PropertyDelete on the requestor) to send the next chunk, so deliver
          * those while a transfer is active. Every other PropertyNotify on this
