@@ -1017,6 +1017,16 @@ Window getDirectChildContainingPoint(Window window, int x, int y)
             continue;
         WindowStruct *childStruct = GET_WINDOW_STRUCT(child);
 
+        /* Library plumbing is invisible to the tree walk, so it must be
+         * invisible to the pointer as well. The internal preedit window sits
+         * mapped over the client's caret while composing; letting it win the
+         * hit test would hand the client crossing events and a subwindow XID
+         * for a window XQueryTree denies exists, and steal the pointer from the
+         * widget underneath. Every pointer descent funnels through here.
+         */
+        if (childStruct->internal)
+            continue;
+
         int childX = 0, childY = 0;
         int childW = 0, childH = 0;
         GET_WINDOW_POS(child, childX, childY);

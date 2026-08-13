@@ -270,29 +270,46 @@ void inputMethodUnsetFocus(XIC inputConnection)
     SDL_StopTextInput();
 }
 
+/* Drop the preedit window entirely, used when the IC goes away or retargets. */
+static void destroyInternalPreeditWindow(_XIC *ic)
+{
+    if (ic->preeditWindow != None && IS_TYPE(ic->preeditWindow, WINDOW))
+        XDestroyWindow(ic->display, ic->preeditWindow);
+    ic->preeditWindow = None;
+    ic->preeditParent = None;
+    ic->preeditRect = (SDL_Rect) {0, 0, 0, 0};
+}
+
+/* Take the preedit off screen. Unmapping a child of a mapped parent already
+ * clears the uncovered region and posts the Expose that makes the client
+ * repaint it, so the common path needs nothing else and never touches pixels
+ * the client owns.
+ *
+ * A child of an unmapped parent takes neither step, because nothing is on
+ * screen to repair. Its pixels are still sitting in the parent's backing
+ * though, and would surface the moment the client maps, so clear that case
+ * here. Clients do compose into a window before mapping it.
+ */
 static void clearInternalPreedit(_XIC *ic)
 {
-    if (!ic->hasPreeditDrawRect)
+    if (ic->preeditWindow == None)
         return;
-    if (!IS_TYPE(ic->preeditDrawWindow, WINDOW)) {
-        /* The window we drew into was destroyed; drop the stale rect instead of
-         * allocating a GC against a dead resource.
-         */
-        ic->hasPreeditDrawRect = False;
+    if (!IS_TYPE(ic->preeditWindow, WINDOW)) {
+        /* The client destroyed its window and took our child with it. */
+        ic->preeditWindow = None;
+        ic->preeditParent = None;
         return;
     }
-    GC gc = XCreateGC(ic->display, ic->preeditDrawWindow, 0, NULL);
-    if (!gc)
-        return;
-    XSetForeground(
-        ic->display, gc,
-        ic->hasPreeditBackground ? ic->preeditBackground : 0xffffffff);
-    XFillRectangle(ic->display, ic->preeditDrawWindow, gc,
-                   ic->preeditDrawRect.x, ic->preeditDrawRect.y,
-                   (unsigned int) ic->preeditDrawRect.w,
-                   (unsigned int) ic->preeditDrawRect.h);
-    XFreeGC(ic->display, gc);
-    ic->hasPreeditDrawRect = False;
+
+    Window parent = ic->preeditParent;
+    Bool parentMapped = IS_TYPE(parent, WINDOW) &&
+                        GET_WINDOW_STRUCT(parent)->mapState != UnMapped;
+    XUnmapWindow(ic->display, ic->preeditWindow);
+    if (!parentMapped && IS_TYPE(parent, WINDOW)) {
+        XClearArea(ic->display, parent, ic->preeditRect.x, ic->preeditRect.y,
+                   (unsigned int) ic->preeditRect.w,
+                   (unsigned int) ic->preeditRect.h, False);
+    }
 }
 
 static void setInternalPreeditFont(_XIC *ic, GC gc)
@@ -356,25 +373,55 @@ static void drawInternalPreedit(_XIC *ic, const char *text, int len)
         rect.w = minWidth;
     if (rect.h < 18)
         rect.h = 18;
-    GC gc = XCreateGC(ic->display, target, 0, NULL);
+
+    /* Draw into a library-owned child of the target rather than onto the
+     * client's own drawable. Painting straight on the client destroys pixels it
+     * owns: the erase carries no Expose, so the text under the preedit stays
+     * blank until something unrelated repaints, and while composing the
+     * client's repaints and the preedit fight over the same pixels, which is
+     * the flicker. A child window keeps them separate and hands the repaint
+     * back through the normal expose path on unmap. It is also what a real XIM
+     * does for every non-callback style: the input method owns the preedit
+     * window, the client never sees it drawn on.
+     */
+    if (ic->preeditWindow != None &&
+        (!IS_TYPE(ic->preeditWindow, WINDOW) || ic->preeditParent != target))
+        destroyInternalPreeditWindow(ic);
+    if (ic->preeditWindow == None) {
+        ic->preeditWindow = createInternalWindow(
+            ic->display, target, rect.x, rect.y, (unsigned int) rect.w,
+            (unsigned int) rect.h, 0, CopyFromParent, InputOutput,
+            CopyFromParent, 0, NULL);
+        if (ic->preeditWindow == None)
+            return;
+        ic->preeditParent = target;
+        ic->preeditRect = rect;
+    } else {
+        /* Already unmapped, and its previous area already repaired, by the
+         * clearInternalPreedit above.
+         */
+        XMoveResizeWindow(ic->display, ic->preeditWindow, rect.x, rect.y,
+                          (unsigned int) rect.w, (unsigned int) rect.h);
+        ic->preeditRect = rect;
+    }
+
+    GC gc = XCreateGC(ic->display, ic->preeditWindow, 0, NULL);
     if (!gc)
         return;
     unsigned long bg =
         ic->hasPreeditBackground ? ic->preeditBackground : 0xffffffff;
     unsigned long fg =
         ic->preeditForeground ? ic->preeditForeground : 0xff000000;
+    XMapRaised(ic->display, ic->preeditWindow);
     XSetForeground(ic->display, gc, bg);
-    XFillRectangle(ic->display, target, gc, rect.x, rect.y,
+    XFillRectangle(ic->display, ic->preeditWindow, gc, 0, 0,
                    (unsigned int) rect.w, (unsigned int) rect.h);
     XSetForeground(ic->display, gc, fg);
     XSetBackground(ic->display, gc, bg);
     setInternalPreeditFont(ic, gc);
-    Xutf8DrawString(ic->display, target, NULL, gc, rect.x + 4,
-                    rect.y + rect.h - 5, text, len);
+    Xutf8DrawString(ic->display, ic->preeditWindow, NULL, gc, 4, rect.h - 5,
+                    text, len);
     XFreeGC(ic->display, gc);
-    ic->preeditDrawWindow = target;
-    ic->preeditDrawRect = rect;
-    ic->hasPreeditDrawRect = True;
 }
 
 static void applyTextInputRectForIC(_XIC *ic)
@@ -627,6 +674,7 @@ void XDestroyIC(XIC inputConnection)
     if (pendingFocusTarget == inputConnection)
         pendingFocusTarget = NULL;
     inputMethodUnsetFocus(inputConnection);
+    destroyInternalPreeditWindow(ic);
     free(ic->inputRect);
     if (ic->preeditFont)
         XFreeFont(ic->display, ic->preeditFont);
@@ -1053,9 +1101,9 @@ XIC XCreateIC(XIM inputMethod, ...)
     GET_XIC_STRUCT(inputConnection)->hasPreeditCaretCallback = False;
     GET_XIC_STRUCT(inputConnection)->preeditActive = False;
     GET_XIC_STRUCT(inputConnection)->preeditLength = 0;
-    GET_XIC_STRUCT(inputConnection)->hasPreeditDrawRect = False;
-    GET_XIC_STRUCT(inputConnection)->preeditDrawWindow = None;
-    GET_XIC_STRUCT(inputConnection)->preeditDrawRect = (SDL_Rect) {0, 0, 0, 0};
+    GET_XIC_STRUCT(inputConnection)->preeditWindow = None;
+    GET_XIC_STRUCT(inputConnection)->preeditParent = None;
+    GET_XIC_STRUCT(inputConnection)->preeditRect = (SDL_Rect) {0, 0, 0, 0};
     GET_XIC_STRUCT(inputConnection)->preeditStartCallback =
         (XIMCallback) {NULL, NULL};
     GET_XIC_STRUCT(inputConnection)->preeditDoneCallback =

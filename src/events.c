@@ -5311,6 +5311,30 @@ Bool postEvent(Display *display, Window eventWindow, unsigned int eventId, ...)
     Bool eventNeeded = True;
     va_list args;
     va_start(args, eventId);
+
+    /* An internal window is library plumbing the client was never told about:
+     * it gets no CreateNotify and XQueryTree denies it exists. Its structure
+     * notifications have to be suppressed on the same grounds, or a client
+     * selecting SubstructureNotifyMask on the parent, which Motif text widgets
+     * do, gets a stream of Map/Unmap/Configure naming a child it cannot
+     * resolve. A stream, not a one-off: the preedit window remaps on every
+     * composition keystroke.
+     */
+    if (IS_TYPE(eventWindow, WINDOW) &&
+        GET_WINDOW_STRUCT(eventWindow)->internal) {
+        switch (eventId) {
+        case MapNotify:
+        case UnmapNotify:
+        case ConfigureNotify:
+        case GravityNotify:
+        case ReparentNotify:
+        case CirculateNotify:
+            va_end(args);
+            return False;
+        default:
+            break;
+        }
+    }
     switch (eventId) {
     case CreateNotify: {
         if (!HAS_EVENT_MASK(GET_PARENT(eventWindow), SubstructureNotifyMask))

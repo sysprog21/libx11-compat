@@ -239,6 +239,42 @@ static Bool wait_window_flag(SDL_Window *w, Uint32 mask, Bool wantSet)
     return ((SDL_GetWindowFlags(w) & mask) != 0) == (wantSet != False);
 }
 
+/* True when a rectangle shows a single flat colour, meaning no preedit glyphs
+ * are on screen there. The preedit draws dark text on its own background, so a
+ * uniform area is the observable for "nothing is being composed".
+ *
+ * Deliberately not a check for white. The internal preedit lives in a
+ * library-owned child window, so taking it down uncovers the client's own
+ * background and hands the client an Expose; which colour surfaces is the
+ * client's business, not the input method's. Asserting white here would only
+ * re-encode the old behaviour of painting the preedit background straight onto
+ * the client's drawable.
+ */
+static Bool areaIsUniform(Display *display,
+                          Window window,
+                          int x,
+                          int y,
+                          int w,
+                          int h)
+{
+    XImage *img = XGetImage(display, window, x, y, (unsigned int) w,
+                            (unsigned int) h, AllPlanes, ZPixmap);
+    if (!img)
+        return False;
+    unsigned long first = XGetPixel(img, 0, 0);
+    Bool uniform = True;
+    for (int py = 0; py < h && uniform; py++) {
+        for (int px = 0; px < w; px++) {
+            if (XGetPixel(img, px, py) != first) {
+                uniform = False;
+                break;
+            }
+        }
+    }
+    XDestroyImage(img);
+    return uniform;
+}
+
 static Bool windowHasProperty(Display *display, Window window, Atom property)
 {
     int count = 0;
@@ -10723,6 +10759,129 @@ static int test_xrm(Display *display)
     return 1;
 }
 
+/* Composing over content the client has already drawn must leave that content
+ * intact. The internal preedit renderer used to paint the client's own drawable
+ * and erase it with a plain fill, so the text under the preedit was destroyed
+ * with no Expose behind it: XNEdit showed a blank strip at the caret for the
+ * rest of the session, and while composing, the client's repaints and the
+ * preedit fought over the same pixels. Compose and commit over a known colour,
+ * repainting on Expose the way a real client does, and require the colour back.
+ */
+static int test_preedit_preserves_client_content(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window win = XCreateSimpleWindow(display, root, 0, 0, 240, 60, 0, 0, 0);
+    CHECK(win != None, "preedit-content: window creation failed");
+    XSelectInput(display, win, ExposureMask | SubstructureNotifyMask);
+    CHECK(XMapWindow(display, win), "preedit-content: map failed");
+
+    GC gc = XCreateGC(display, win, 0, NULL);
+    CHECK(gc != NULL, "preedit-content: GC creation failed");
+    const unsigned long clientColor = 0xff0000ff;
+    XSetForeground(display, gc, clientColor);
+    XFillRectangle(display, win, gc, 0, 0, 240, 60);
+
+    XIM im = XOpenIM(display, NULL, NULL, NULL);
+    CHECK(im, "preedit-content: XOpenIM failed");
+    XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                       XNClientWindow, win, XNFocusWindow, win, NULL);
+    CHECK(ic, "preedit-content: XCreateIC failed");
+    XSetICFocus(ic);
+
+    XEvent ev;
+    while (XCheckWindowEvent(display, win, ExposureMask, &ev)) {
+    }
+
+    SDL_Event compose;
+    SDL_zero(compose);
+    compose.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(compose, "ni");
+    XEvent ignored;
+    CHECK(convertEvent(display, &compose, &ignored, True) == -1,
+          "preedit-content: compose produced a committed X event");
+
+    /* Reading the client drawable is the right way to observe the preedit even
+     * though it now lives in a child window: a child renders into its parent's
+     * backing here, so XGetImage on the parent returns the composited result.
+     * Verified directly, the same region reads back as the preedit's own
+     * background (0xffffffff) mid-compose rather than the client colour below.
+     * If children ever gain separate backing this assertion goes quiet rather
+     * than failing, so it would have to move to the preedit drawable.
+     */
+    CHECK(!areaIsUniform(display, win, 2, 2, 40, 18),
+          "preedit-content: preedit was not visibly drawn");
+
+    /* Commit clears the preedit. The client must be told to repaint what it
+     * covered, and repainting must restore its own pixels.
+     */
+    SDL_Event commit;
+    set_text_input_event(&commit, "\xe4\xbd\xa0");
+    convertEvent(display, &commit, &ignored, True);
+
+    int exposes = 0;
+    while (XCheckWindowEvent(display, win, ExposureMask, &ev)) {
+        exposes++;
+        XFillRectangle(display, win, gc, ev.xexpose.x, ev.xexpose.y,
+                       (unsigned int) ev.xexpose.width,
+                       (unsigned int) ev.xexpose.height);
+    }
+    CHECK(exposes > 0,
+          "preedit-content: clearing the preedit asked for no repaint");
+
+    XImage *img = XGetImage(display, win, 2, 2, 40, 18, AllPlanes, ZPixmap);
+    CHECK(img, "preedit-content: XGetImage failed");
+
+    /* RGB only: the alpha byte is not guaranteed to survive the render and
+     * readback round trip on a depth-24 visual or a backend that drops it, and
+     * the question here is whether the client's content came back, not how the
+     * top byte was encoded. Matches every other colour readback in this file.
+     */
+    Bool restored =
+        (XGetPixel(img, 20, 9) & 0x00ffffff) == (clientColor & 0x00ffffff);
+    XDestroyImage(img);
+    CHECK(restored,
+          "preedit-content: client content under the preedit was destroyed");
+
+    /* The preedit lives in a library-owned child mapped over the caret. It is
+     * hidden from XQueryTree and generates no CreateNotify, so the pointer must
+     * not see it either: winning the hit test would hand the client crossing
+     * events and an xbutton.subwindow XID for a window it was never told
+     * exists, and steal clicks from the widget underneath. Every pointer
+     * descent funnels through getDirectChildContainingPoint.
+     */
+    SDL_Event composeAgain;
+    SDL_zero(composeAgain);
+    composeAgain.type = SDL_TEXTEDITING;
+    XC_SET_EDITING_EVENT(composeAgain, "ni");
+    convertEvent(display, &composeAgain, &ignored, True);
+    CHECK(!areaIsUniform(display, win, 2, 2, 40, 18),
+          "preedit-content: second compose did not draw");
+    CHECK(getDirectChildContainingPoint(win, 10, 10) == None,
+          "preedit-content: preedit window captured the pointer hit test");
+
+    /* Motif text widgets select SubstructureNotifyMask. The preedit window is
+     * hidden from XQueryTree and issues no CreateNotify, so its structure
+     * notifications have to be suppressed too: it remaps on every composition
+     * keystroke, and a client cannot resolve the child those events name.
+     */
+    int strays = 0;
+    while (XCheckWindowEvent(display, win, SubstructureNotifyMask, &ev)) {
+        Window subject = ev.type == MapNotify     ? ev.xmap.window
+                         : ev.type == UnmapNotify ? ev.xunmap.window
+                                                  : ev.xconfigure.window;
+        if (subject != win)
+            strays++;
+    }
+    CHECK(strays == 0,
+          "preedit-content: preedit leaked structure events to the client");
+
+    XFreeGC(display, gc);
+    XDestroyIC(ic);
+    XCloseIM(im);
+    XDestroyWindow(display, win);
+    return 1;
+}
+
 static int test_input_methods(Display *display)
 {
     XIM im = XOpenIM(display, NULL, NULL, NULL);
@@ -10951,18 +11110,9 @@ static int test_input_methods(Display *display)
                   XNClientWindow, client, XNFocusWindow, focus, NULL);
     CHECK(switchIC, "XCreateIC failed for focus-switch IC");
     XSetICFocus(switchIC);
-    XImage *switched = XGetImage(display, client, area.x, area.y, area.width,
-                                 area.height, AllPlanes, ZPixmap);
-    CHECK(switched, "focus-switch preedit clear XGetImage failed");
-    int switchedNonWhite = 0;
-    for (int py = 0; py < area.height; py++) {
-        for (int px = 0; px < area.width; px++) {
-            if ((XGetPixel(switched, px, py) & 0x00ffffff) != 0x00ffffff)
-                switchedNonWhite++;
-        }
-    }
-    XDestroyImage(switched);
-    CHECK(switchedNonWhite == 0, "focus switch did not clear old preedit");
+    CHECK(
+        areaIsUniform(display, client, area.x, area.y, area.width, area.height),
+        "focus switch did not clear old preedit");
     CHECK(preeditDoneCount == 1, "focus switch did not finish old preedit");
     XDestroyIC(switchIC);
     XSetICFocus(ic);
@@ -11136,19 +11286,9 @@ static int test_input_methods(Display *display)
             next_typed_event(display, KeyPress, &out) && out.xkey.keycode == 0,
             "SDL_TEXTINPUT under IC focus did not produce IM KeyPress");
         if (i == 0) {
-            XImage *cleared =
-                XGetImage(display, client, area.x, area.y, area.width,
-                          area.height, AllPlanes, ZPixmap);
-            CHECK(cleared, "preedit clear XGetImage failed");
-            int nonWhite = 0;
-            for (int py = 0; py < area.height; py++) {
-                for (int px = 0; px < area.width; px++) {
-                    if ((XGetPixel(cleared, px, py) & 0x00ffffff) != 0x00ffffff)
-                        nonWhite++;
-                }
-            }
-            XDestroyImage(cleared);
-            CHECK(nonWhite == 0, "commit did not clear visible preedit area");
+            CHECK(areaIsUniform(display, client, area.x, area.y, area.width,
+                                area.height),
+                  "commit did not clear visible preedit area");
         }
         Status lookupStatus = XLookupNone;
         KeySym keysym = NoSymbol;
@@ -14693,6 +14833,8 @@ int main(void)
     run_test("normal_hints_resizable", test_normal_hints_resizable);
     run_test("snap_axis_to_increment", test_snap_axis_to_increment);
     run_test("xrm", test_xrm);
+    run_test("preedit_preserves_client_content",
+             test_preedit_preserves_client_content);
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);
     run_test("shape_mask", test_shape_mask);
