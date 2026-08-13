@@ -3211,6 +3211,785 @@ static Window resolveKeyboardFocusWindow(Display *display)
     return eventWindow;
 }
 
+/* Shared by convertEvent and the per-event handlers split out of it: stamp the
+ * fields every XEvent carries. Defined once at file scope so a handler and its
+ * caller cannot disagree about what "standard values" means.
+ */
+#define FILL_STANDARD_VALUES(eventStruct)       \
+    xEvent->eventStruct.type = type;            \
+    xEvent->eventStruct.serial = serial;        \
+    xEvent->eventStruct.send_event = sendEvent; \
+    xEvent->eventStruct.display = display
+
+/* MOVED, RESIZED and SIZE_CHANGED all land here: one ConfigureNotify dispatch
+ * keyed off XC_WINDOW_SUBEVENT to decide which fields to query. Split out of
+ * convertEvent because it was the single largest case body there and shares
+ * nothing with its neighbours but eventWindow.
+ */
+static void convertWindowConfigureEvent(Display *display,
+                                        SDL_Event *sdlEvent,
+                                        XEvent *xEvent,
+                                        Window eventWindow,
+                                        Bool sendEvent,
+                                        unsigned long serial,
+                                        int *typeOut)
+{
+    int type = ConfigureNotify;
+    if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_SIZE_CHANGED) {
+        LOG("Window %d size changed to %dx%d\n", sdlEvent->window.windowID,
+            sdlEvent->window.data1, sdlEvent->window.data2);
+    }
+    FILL_STANDARD_VALUES(xconfigure);
+    xEvent->xconfigure.event = eventWindow;
+    xEvent->xconfigure.window = xEvent->xconfigure.event;
+    if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_MOVED) {
+        xEvent->xconfigure.x = sdlEvent->window.data1;
+        xEvent->xconfigure.y = sdlEvent->window.data2;
+        if (eventWindow != None) {
+            sdlTopLevelOriginToX11(eventWindow, xEvent->xconfigure.x,
+                                   xEvent->xconfigure.y, &xEvent->xconfigure.x,
+                                   &xEvent->xconfigure.y);
+        }
+    } else {
+        SDL_GetWindowPosition(SDL_GetWindowFromID(sdlEvent->window.windowID),
+                              &xEvent->xconfigure.x, &xEvent->xconfigure.y);
+        if (eventWindow != None) {
+            sdlTopLevelOriginToX11(eventWindow, xEvent->xconfigure.x,
+                                   xEvent->xconfigure.y, &xEvent->xconfigure.x,
+                                   &xEvent->xconfigure.y);
+
+            /* A resize from the top/left edge moves the window origin. The
+             * size-only branch below never touches position, so persist the
+             * queried logical origin here (mirroring the MOVED branch) to keep
+             * ws->x/y from going stale.
+             */
+            GET_WINDOW_STRUCT(eventWindow)->x = xEvent->xconfigure.x;
+            GET_WINDOW_STRUCT(eventWindow)->y = xEvent->xconfigure.y;
+        }
+    }
+
+    /* Option 1b: the X11 window and its backing track physical pixels, so the
+     * present path is a 1:1 blit (no upscaling). A RESIZED event carries the
+     * new logical size in data1/data2 on both SDL2 and SDL3. Promote it to
+     * physical pixels only for windows whose X11 geometry opted into that space
+     * (effectiveHiDpiScale); Motif/Tk keep logical geometry so their
+     * widget/font layout does not shrink after a host resize. We deliberately
+     * do NOT re-query the live SDL surface/renderer here: resize events can be
+     * faked in tests where the SDL window is never actually resized
+     * (resizeWindowTexture documents the same constraint), and the cached scale
+     * is constant for a given display. On non-HiDPI hosts and under the CI
+     * dummy driver the scale is 1.0, so pixels equal points. SDL3 additionally
+     * fires SDL_WINDOWEVENT_SIZE_CHANGED as PIXEL_SIZE_CHANGED; it is still
+     * ignored for geometry, RESIZED remains the trigger.
+     */
+    Bool logicalResize =
+        XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED;
+#ifndef LIBX11_COMPAT_SDL3
+    /* SDL2 SIZE_CHANGED is also in logical units. */
+    logicalResize = logicalResize || XC_WINDOW_SUBEVENT(sdlEvent) ==
+                                         SDL_WINDOWEVENT_SIZE_CHANGED;
+#endif
+    if (logicalResize) {
+        int logicalW = sdlEvent->window.data1;
+        int logicalH = sdlEvent->window.data2;
+        double scaleX = 1.0, scaleY = 1.0;
+        if (eventWindow != None) {
+            WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
+            scaleX = effectiveHiDpiScaleX(ws);
+            scaleY = effectiveHiDpiScaleY(ws);
+        }
+        int pixelW = (int) lround((double) logicalW * scaleX);
+        int pixelH = (int) lround((double) logicalH * scaleY);
+        xEvent->xconfigure.width = pixelW;
+        xEvent->xconfigure.height = pixelH;
+        if (eventWindow != None) {
+            int oldWidth = 0, oldHeight = 0;
+            GET_WINDOW_DIMS(eventWindow, oldWidth, oldHeight);
+
+            /* On macOS the live-resize observer already adopts the final drag
+             * size (windowStruct->w/h + resizeWindowTexture), runs the client
+             * reflow and presents a correct frame before this SDL RESIZED event
+             * is delivered at drag end. When the event carries that same size,
+             * re-running the destructive path below (recreate the backing,
+             * clear the growth bands, re-expose the whole subtree, arm a fresh
+             * coalesce gate) would discard the freshly reflowed frame and hold
+             * its recovery behind a new gate until the client next idles -
+             * leaving the window showing the pre-reflow (stale) content. The
+             * ConfigureNotify is still emitted above so the client sees the
+             * size; only the redundant backing churn is skipped. A genuine size
+             * change (client XResizeWindow, or a host resize the observer never
+             * saw) still takes the full path.
+             */
+            Bool sizeChanged = (pixelW != oldWidth || pixelH != oldHeight);
+            GET_WINDOW_STRUCT(eventWindow)->w = (unsigned int) pixelW;
+            GET_WINDOW_STRUCT(eventWindow)->h = (unsigned int) pixelH;
+            if (sizeChanged) {
+                resizeWindowTexture(eventWindow);
+
+                /* The top-level's own cached visibleRegion is its (0,0,w,h)
+                 * frame; it goes stale on every resize driven by SDL outside of
+                 * configureWindow.
+                 */
+                invalidateVisibleRegionForTopLevel(eventWindow);
+
+                /* How much of the backing to wipe depends on the top-level's
+                 * bit gravity, and must match what resizeWindowTexture just
+                 * carried over. Only a top-left-anchored retaining gravity
+                 * (NorthWestGravity/StaticGravity, which xwpe sets on its
+                 * cells) keeps its old pixels pinned at (0,0): for those, clear
+                 * only the bands that newly appeared because a dimension grew
+                 * and leave the retained region
+                 * - already copied into the new backing by resizeWindowTexture
+                 * - untouched. Wiping that region would blank content the
+                 * client has not yet repainted; during the macOS modal resize
+                 * loop the repaint lags a few frames, so the blank shows as a
+                 * transient black flash. ForgetGravity and every unmodeled
+                 * gravity let the client discard contents on resize, so clear
+                 * the whole subtree here; any top-left copy resizeWindowTexture
+                 * kept for ForgetGravity is only a transient flash-avoidance
+                 * during the modal drag, superseded once this runs. The full
+                 * Expose below drives the repaint either way.
+                 */
+                if (!bitGravityIsTopLeftAnchored(
+                        GET_WINDOW_STRUCT(eventWindow)->bitGravity)) {
+                    clearWindowTreeWithoutExpose(display, eventWindow);
+                } else {
+                    if (pixelW > oldWidth) {
+                        XClearArea(display, eventWindow, oldWidth, 0,
+                                   (unsigned int) (pixelW - oldWidth),
+                                   (unsigned int) pixelH, False);
+                    }
+                    if (pixelH > oldHeight) {
+                        int bandW = pixelW < oldWidth ? pixelW : oldWidth;
+                        XClearArea(display, eventWindow, 0, oldHeight,
+                                   (unsigned int) bandW,
+                                   (unsigned int) (pixelH - oldHeight), False);
+                    }
+                }
+                postResizeConfigureForMappedChildren(
+                    display, eventWindow, oldWidth, oldHeight, pixelW, pixelH);
+
+                /* Re-expose the whole subtree so every mapped descendant
+                 * repaints at the new size (whether or not it was cleared).
+                 */
+                postFullWindowExpose(display, eventWindow);
+
+                /* The client is about to run its full repaint (clear the
+                 * window, then redraw every cell) in response to this
+                 * ConfigureNotify, issuing intermediate XFlush/XSync calls.
+                 * Hold those partial presents back so only the final frame
+                 * reaches the screen, avoiding a black flash during the redraw.
+                 * Released when the client next idles in XNextEvent.
+                 */
+                beginCoalesceClientRepaint();
+            }
+        }
+    } else if (eventWindow != None) {
+        /* Non-resize ConfigureNotify (e.g. MOVED): the size is unchanged, so
+         * report the window's current cached X11 geometry that the client
+         * already tracks (promoted physical pixels, or logical pixels for
+         * Motif/Tk). SDL_GetWindowSize returns logical points here, which on a
+         * HiDPI host is half a promoted window's physical size and would make
+         * the client shrink its cell grid on a mere move. Use the cached
+         * dimensions instead.
+         */
+        GET_WINDOW_DIMS(eventWindow, xEvent->xconfigure.width,
+                        xEvent->xconfigure.height);
+    } else {
+        SDL_GetWindowSize(SDL_GetWindowFromID(sdlEvent->window.windowID),
+                          &xEvent->xconfigure.width,
+                          &xEvent->xconfigure.height);
+    }
+
+    xEvent->xconfigure.above = None;
+
+    /* eventWindow came from getWindowFromId and can be None for an untracked
+     * SDL window. The caller's XEvent is not zeroed and FILL_STANDARD_VALUES
+     * does not touch these two fields, so set explicit defaults in that case
+     * rather than leaving stack garbage. One lookup otherwise feeds both the
+     * configure fields and the replay-target offer.
+     */
+    if (eventWindow != None) {
+        WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
+        xEvent->xconfigure.border_width = ws->borderWidth;
+        xEvent->xconfigure.override_redirect = ws->overrideRedirect;
+        replayTargetOfferWindow(sdlEvent->window.windowID, ws->x, ws->y,
+                                (int) ws->w, (int) ws->h);
+    } else {
+        xEvent->xconfigure.border_width = 0;
+        xEvent->xconfigure.override_redirect = False;
+    }
+    *typeOut = type;
+}
+
+/* SDL_MOUSEBUTTONDOWN and SDL_MOUSEBUTTONUP share one ButtonPress/ButtonRelease
+ * dispatch: grab routing, implicit passive-grab activation and pointer-window
+ * resolution are identical for both edges.
+ */
+static Bool convertMouseButtonEvent(Display *display,
+                                    SDL_Event *sdlEvent,
+                                    XEvent *xEvent,
+                                    Window *eventWindowOut,
+                                    Bool sendEvent,
+                                    unsigned long serial,
+                                    Bool freeInternalEvents,
+                                    int *typeOut)
+{
+    int type = *typeOut;
+    Window eventWindow = *eventWindowOut;
+    if (sdlEvent->type == SDL_MOUSEBUTTONUP) {
+        LOG("SDL_MOUSEBUTTONUP\n");
+        type = ButtonRelease;
+    }
+    FILL_STANDARD_VALUES(xbutton);
+    Window sdlButtonWindow = getWindowFromId(sdlEvent->button.windowID);
+    xEvent->xbutton.root = SCREEN_WINDOW;
+    xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->button.timestamp);
+    int sdlButtonX = sdlEvent->button.x, sdlButtonY = sdlEvent->button.y;
+
+    /* XTest tags synthetic buttons with which == SDL_TOUCH_MOUSEID and their
+     * coordinates are already X11 physical pixels; scaling again would double
+     * them on Retina. Real hardware events carry SDL points and still need the
+     * scale (mirrors the motion/wheel handling).
+     */
+    Bool usedHoverRoot = False;
+    Window grabbedPointerWindow = getGrabbedPointerWindow();
+
+    /* Use the hovered-window root coordinates only when the grab that
+     * redirected this button is the top-level SDL window the event arrived on,
+     * or a descendant widget of it (a Motif menu grabs the shell, but the grab
+     * window can also be a child). A grab elsewhere, or no grab, takes the
+     * ordinary scale/translate path.
+     */
+    if (sdlEvent->button.which != SDL_TOUCH_MOUSEID &&
+        grabbedPointerWindow != None &&
+        (grabbedPointerWindow == sdlButtonWindow ||
+         (IS_TYPE(grabbedPointerWindow, WINDOW) &&
+          isParent(sdlButtonWindow, grabbedPointerWindow))))
+        usedHoverRoot = pointerHoverRootOutsideWindow(
+            sdlButtonWindow, &xEvent->xbutton.x_root, &xEvent->xbutton.y_root);
+    if (!usedHoverRoot && sdlEvent->button.which != SDL_TOUCH_MOUSEID)
+        scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
+                              &sdlButtonX, &sdlButtonY);
+    if (!usedHoverRoot)
+        translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
+                                sdlButtonY, &xEvent->xbutton.x_root,
+                                &xEvent->xbutton.y_root);
+    xEvent->xbutton.button = convertSdlMouseButton(sdlEvent->button.button);
+    unsigned int buttonState = buttonMaskForXButton(xEvent->xbutton.button);
+
+    /* Snapshot the pointer state under a single critical section.
+     * pointerButtonState and activePointerWindow describe the same logical
+     * "pointer is held in window X with buttons B" tuple; updating them in
+     * separate unlocked phases could lose or duplicate the activePointerWindow
+     * transition when SDL and application threads race on rapid press/release
+     * sequences.
+     */
+    lockActivePointerWindow();
+    unsigned int previousButtonState = pointerButtonState;
+    Window activePointerSnapshot = activePointerWindow;
+    unlockActivePointerWindow();
+    xEvent->xbutton.state =
+        convertModifierState(SDL_GetModState()) | previousButtonState;
+    long buttonMask = type == ButtonPress ? ButtonPressMask : ButtonReleaseMask;
+    if (type == ButtonPress) {
+        activatePassiveButtonGrab(
+            display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+            xEvent->xbutton.y_root, xEvent->xbutton.button,
+            xEvent->xbutton.state);
+    }
+    PointerHit buttonHit = resolvePointerHit(
+        xEvent->xbutton.root, sdlButtonWindow, xEvent->xbutton.x_root,
+        xEvent->xbutton.y_root,
+        type == ButtonPress && getGrabbedPointerWindow() != None);
+
+    /* Explicit XGrabPointer routing owns the event when routePointerGrabEvent
+     * returns True; otherwise fall back to the normal pointer-window selection
+     * (with a sticky ButtonRelease delivery to the last button-press
+     * recipient).
+     */
+    if (!routePointerGrabEvent(display, xEvent->xbutton.root,
+                               xEvent->xbutton.x_root, xEvent->xbutton.y_root,
+                               buttonHit.deepest, buttonMask, &eventWindow,
+                               &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                               &xEvent->xbutton.y)) {
+        if (type == ButtonRelease && activePointerSnapshot != None &&
+            windowSelectsAny(activePointerSnapshot, buttonMask)) {
+            eventWindow = activePointerSnapshot;
+            translateRootPointToWindow(display, xEvent->xbutton.root,
+                                       eventWindow, xEvent->xbutton.x_root,
+                                       xEvent->xbutton.y_root,
+                                       &xEvent->xbutton.x, &xEvent->xbutton.y);
+            xEvent->xbutton.subwindow =
+                directChildFromDeepest(eventWindow, buttonHit.deepest);
+            if (xEvent->xbutton.subwindow == None)
+                xEvent->xbutton.subwindow = getDirectChildContainingPoint(
+                    eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
+        } else {
+            eventWindow = selectPointerEventWindow(
+                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root, buttonHit.deepest, buttonMask,
+                &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                &xEvent->xbutton.y);
+        }
+    }
+    Bool drainedActivePointer = False;
+    if (freeInternalEvents) {
+        /* Single critical section publishes both updates so a concurrent reader
+         * sees a consistent (button-state, active-window) pair.
+         */
+        lockActivePointerWindow();
+        if (type == ButtonPress)
+            pointerButtonState |= buttonState;
+        else
+            pointerButtonState &= ~buttonState;
+        if (type == ButtonPress && previousButtonState == 0 &&
+            eventWindow != None) {
+            activePointerWindow = eventWindow;
+        }
+        if (pointerButtonState == 0) {
+            activePointerWindow = None;
+            drainedActivePointer = True;
+        }
+        unlockActivePointerWindow();
+    }
+    if (eventWindow == None)
+        return False;
+    xEvent->xbutton.window = eventWindow;
+    xEvent->xbutton.same_screen = True;
+
+    /* Cache only a press frozen by a sync grab: that is the only press
+     * ReplayPointer can replay. An async grab already delivered the press, so
+     * caching it would let a later ReplayPointer replay a stale one. Both a
+     * passive GrabButton activation and an explicit XGrabPointer sync grab
+     * freeze a delivered press this way, and this layer intentionally lets
+     * ReplayPointer replay either (see the active-grab replay test in
+     * tests/check.c), so the gate is the frozen active grab, not passive only.
+     */
+    if (freeInternalEvents && type == ButtonPress && mouseFrozen &&
+        getGrabbedPointerWindow() != None)
+        rememberReplayPointerPress(xEvent);
+    if (freeInternalEvents && type == ButtonRelease && drainedActivePointer &&
+        pointerGrabIsPassive()) {
+        releasePassivePointerGrab(display);
+    }
+    *eventWindowOut = eventWindow;
+    *typeOut = type;
+    return True;
+}
+
+/* SDL_TEXTINPUT carries committed IM text. It becomes a synthetic KeyPress
+ * carrying the commit id so XmbLookupString can pair the text with the key
+ * event.
+ */
+static Bool convertTextInputEvent(Display *display,
+                                  SDL_Event *sdlEvent,
+                                  XEvent *xEvent,
+                                  Window *eventWindowOut,
+                                  Bool sendEvent,
+                                  unsigned long serial,
+                                  int *typeOut)
+{
+    int type = *typeOut;
+    Window eventWindow = *eventWindowOut;
+    LOG("SDL_TEXTINPUT\n");
+    {
+        if (!inputMethodHasActiveTextInput())
+            return False;
+        const char *incomingText = XC_TEXT_EVENT_TEXT(sdlEvent);
+#ifdef __EMSCRIPTEN__
+        if (!incomingText[1] &&
+            shouldSuppressDuplicateWasmTextInput(incomingText[0]))
+            return False;
+#endif
+        if (!incomingText[1] && popMatchingPendingAsciiChar(incomingText[0]))
+            return False;
+        clearPendingAsciiRing();
+        if (!incomingText[1])
+            pushCommittedAsciiChar(incomingText[0]);
+        else
+            clearCommittedAsciiRing();
+        type = KeyPress;
+        FILL_STANDARD_VALUES(xkey);
+
+        /* Route the commit like a real key: an active keyboard grab wins over
+         * the focus window so IM text composed during a modal grab still
+         * reaches the grab holder.
+         */
+        Window imGrabWindow = getGrabbedKeyboardWindow();
+        eventWindow = imGrabWindow != None ? imGrabWindow : getKeyboardFocus();
+        if (eventWindow == None)
+            eventWindow = SCREEN_WINDOW;
+        char *text = strdup(incomingText);
+        if (!text)
+            return False;
+        inputMethodHandlePreedit("", 0);
+        unsigned long commitId = inputMethodSetCurrentText(text);
+
+        /* No id means the commit was not queued (OOM, or a preedit-done
+         * callback above cleared focus), so do not deliver a phantom IM
+         * KeyPress that would look up as XLookupNone.
+         */
+        if (commitId == 0)
+            return False;
+
+        xEvent->xkey.root = SCREEN_WINDOW;
+        xEvent->xkey.window = eventWindow;
+
+        /* Carry the commit id so the lookup retrieves this exact commit
+         * regardless of delivery order; keycode stays 0 as the IM marker.
+         */
+        xEvent->xkey.subwindow = (Window) commitId;
+        xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->text.timestamp);
+        xEvent->xkey.x = xEvent->xkey.y = 0;
+        xEvent->xkey.x_root = xEvent->xkey.y_root = 0;
+        xEvent->xkey.state = 0;
+        xEvent->xkey.keycode = 0;
+        xEvent->xkey.same_screen = True;
+    }
+    *eventWindowOut = eventWindow;
+    *typeOut = type;
+    return True;
+}
+
+/* SDL_MOUSEMOTION maps to MotionNotify, resolving the pointer window through
+ * any active grab and deferring to a queued crossing event.
+ */
+static Bool convertMouseMotionEvent(Display *display,
+                                    SDL_Event *sdlEvent,
+                                    XEvent *xEvent,
+                                    Window *eventWindowOut,
+                                    Bool sendEvent,
+                                    unsigned long serial,
+                                    int *typeOut)
+{
+    int type = *typeOut;
+    Window eventWindow = *eventWindowOut;
+    LOG("SDL_MOUSEMOTION\n");
+    type = MotionNotify;
+    FILL_STANDARD_VALUES(xmotion);
+    Window sdlMotionWindow = getWindowFromId(sdlEvent->motion.windowID);
+    xEvent->xmotion.root = SCREEN_WINDOW;
+    xEvent->xmotion.time = XC_EVENT_TIME_MS(sdlEvent->motion.timestamp);
+    int sdlMotionX = sdlEvent->motion.x, sdlMotionY = sdlEvent->motion.y;
+
+    /* XTest tags synthetic motion with which == SDL_TOUCH_MOUSEID and its
+     * coordinates are already X11 physical pixels; scaling again would double
+     * them on Retina. Real hardware motion carries SDL points and still needs
+     * the scale.
+     */
+    if (sdlEvent->motion.which != SDL_TOUCH_MOUSEID)
+        scaleSdlPointToPixels(sdlMotionWindow, sdlMotionX, sdlMotionY,
+                              &sdlMotionX, &sdlMotionY);
+    translateSdlPointToRoot(display, sdlMotionWindow, sdlMotionX, sdlMotionY,
+                            &xEvent->xmotion.x_root, &xEvent->xmotion.y_root);
+    unsigned int motionButtonState = pointerButtonStateSnapshot();
+    PointerHit motionHit = resolvePointerHit(
+        xEvent->xmotion.root, sdlMotionWindow, xEvent->xmotion.x_root,
+        xEvent->xmotion.y_root,
+        motionButtonState != 0 || getGrabbedPointerWindow() != None);
+    unsigned int motionState =
+        convertModifierState(SDL_GetModState()) | motionButtonState;
+    Bool crossingQueued = postPointerCrossingEvents(
+        display, xEvent->xmotion.x_root, xEvent->xmotion.y_root,
+        motionHit.hoverDeepest, motionState,
+        XC_EVENT_TIME_MS(sdlEvent->motion.timestamp));
+    long motionMask = motionMaskForButtonState(motionButtonState);
+
+    /* Explicit XGrabPointer routing owns the event when routePointerGrabEvent
+     * returns True; otherwise the implicit button-press grab (snapshot != None)
+     * wins, falling back to regular pointer-window selection.
+     */
+    if (!routePointerGrabEvent(display, xEvent->xmotion.root,
+                               xEvent->xmotion.x_root, xEvent->xmotion.y_root,
+                               motionHit.deepest, motionMask, &eventWindow,
+                               &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
+                               &xEvent->xmotion.y)) {
+        lockActivePointerWindow();
+        Window snapshot = activePointerWindow;
+        unlockActivePointerWindow();
+        if (snapshot != None && windowSelectsAny(snapshot, motionMask)) {
+            eventWindow = snapshot;
+            translateRootPointToWindow(display, xEvent->xmotion.root,
+                                       eventWindow, xEvent->xmotion.x_root,
+                                       xEvent->xmotion.y_root,
+                                       &xEvent->xmotion.x, &xEvent->xmotion.y);
+            xEvent->xmotion.subwindow =
+                directChildFromDeepest(eventWindow, motionHit.deepest);
+            if (xEvent->xmotion.subwindow == None)
+                xEvent->xmotion.subwindow = getDirectChildContainingPoint(
+                    eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
+        } else {
+            eventWindow = selectPointerEventWindow(
+                display, xEvent->xmotion.root, xEvent->xmotion.x_root,
+                xEvent->xmotion.y_root, motionHit.deepest, motionMask,
+                &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
+                &xEvent->xmotion.y);
+        }
+    }
+    if (eventWindow == None)
+        return False;
+    xEvent->xmotion.window = eventWindow;
+    xEvent->xmotion.state = motionState;
+    xEvent->xmotion.is_hint = HAS_EVENT_MASK(eventWindow, PointerMotionHintMask)
+                                  ? NotifyHint
+                                  : NotifyNormal;
+    xEvent->xmotion.same_screen = True;
+    if (crossingQueued) {
+        appendPutBackEvent(display, xEvent);
+        return False;
+    }
+    *eventWindowOut = eventWindow;
+    *typeOut = type;
+    return True;
+}
+
+/* The window moved to another monitor, which may have a different HiDPI backing
+ * scale than the one cached at realize. Re-derive the per-window scale so the
+ * next resize and present use the new monitor's ratio. Never reaches the client
+ * as an X event.
+ */
+static void convertWindowDisplayChangedEvent(Display *display,
+                                             SDL_Event *sdlEvent,
+                                             Window eventWindow)
+{
+    /* The window moved to a different display, which may have a different HiDPI
+     * backing scale than the one cached at realize time. Re-derive the
+     * per-window scale from the live pixel/point ratio so the next resize's
+     * logical<->physical conversion and the present blit use the new monitor's
+     * scale instead of a stale one. This is event-driven and never runs on the
+     * resize fast path, so faked test resizes are unaffected.
+     */
+    if (eventWindow != None && compatSdlHasWindowSizeInPixels()) {
+        SDL_Window *movedWin = SDL_GetWindowFromID(sdlEvent->window.windowID);
+        if (movedWin) {
+            int lw = 0, lh = 0, pw = 0, ph = 0;
+            SDL_GetWindowSize(movedWin, &lw, &lh);
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+            SDL_GetWindowSizeInPixels(movedWin, &pw, &ph);
+#endif
+            WindowStruct *movedWs = GET_WINDOW_STRUCT(eventWindow);
+            double oldScaleX = movedWs->hiDpiScaleX;
+            double oldScaleY = movedWs->hiDpiScaleY;
+            if (lw > 0 && pw > 0)
+                movedWs->hiDpiScaleX = (double) pw / (double) lw;
+            if (lh > 0 && ph > 0)
+                movedWs->hiDpiScaleY = (double) ph / (double) lh;
+
+            /* The cached PResizeInc increments live in physical-pixel space
+             * (see WindowStruct), so a monitor move that changes the backing
+             * scale makes them stale: they still describe the previous
+             * monitor's cell size. A client that re-derives its font from the
+             * scale (xwpe re-publishes WM_NORMAL_HINTS after refitting) will
+             * overwrite these; but a client that does not leaves the drag-end
+             * snap quantising to the old cell, leaving a sub-cell remainder
+             * band. Rescale them by newScale/oldScale so the snap grid matches
+             * the destination monitor even without a re-publish.
+             */
+            if (movedWs->hiDpiPromoted && movedWs->hasResizeInc &&
+                oldScaleX > 0.0 && oldScaleY > 0.0) {
+                double rx = movedWs->hiDpiScaleX / oldScaleX;
+                double ry = movedWs->hiDpiScaleY / oldScaleY;
+                if (rx > 0.0 && rx != 1.0) {
+                    movedWs->widthInc = (int) (movedWs->widthInc * rx + 0.5);
+                    movedWs->baseWidth = (int) (movedWs->baseWidth * rx + 0.5);
+                    movedWs->minWidth = (int) (movedWs->minWidth * rx + 0.5);
+                }
+                if (ry > 0.0 && ry != 1.0) {
+                    movedWs->heightInc = (int) (movedWs->heightInc * ry + 0.5);
+                    movedWs->baseHeight =
+                        (int) (movedWs->baseHeight * ry + 0.5);
+                    movedWs->minHeight = (int) (movedWs->minHeight * ry + 0.5);
+                }
+                if (movedWs->widthInc <= 0 || movedWs->heightInc <= 0)
+                    movedWs->hasResizeInc = False;
+            }
+            compatTrace(
+                "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
+                "logical=(%dx%d) phys=(%dx%d) newScale=(%.3f,%.3f) "
+                "cachedPhys=(%ux%u)\n",
+                eventWindow, lw, lh, pw, ph, movedWs->hiDpiScaleX,
+                movedWs->hiDpiScaleY, movedWs->w, movedWs->h);
+
+            /* The global font scale tracks the same host backing as this
+             * window, so refresh it and republish the root property on both
+             * backends; a client re-deriving its font from
+             * _LIBX11_COMPAT_HIDPI_SCALE (xwpe) would otherwise read the source
+             * monitor's stale scale after the move. On a single-scale setup the
+             * value is unchanged.
+             */
+            if (movedWs->hiDpiPromoted && pw > 0 && ph > 0) {
+                if (lw > 0)
+                    compatSetGlobalHiDpiScale((double) pw / (double) lw);
+                else if (lh > 0)
+                    compatSetGlobalHiDpiScale((double) ph / (double) lh);
+                compatPublishHiDpiScaleProperty(display);
+#if defined(LIBX11_COMPAT_SDL3)
+
+                /* SDL2 follows a DISPLAY_CHANGED with a SIZE_CHANGED that
+                 * reflows geometry using the scale refreshed above. The SDL3
+                 * backend delivers no such geometry event for a bare monitor
+                 * move, so the window keeps the previous monitor's physical
+                 * pixel dimensions (over- or under-promoted) and the present
+                 * mis-scales. Re-promote to the new monitor's physical size and
+                 * reflow the client here.
+                 */
+                if (pw != (int) movedWs->w || ph != (int) movedWs->h) {
+                    compatTrace(
+                        "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
+                        "RE-PROMOTE (%ux%u)->(%dx%d) "
+                        "globalScale=%.3f\n",
+                        eventWindow, movedWs->w, movedWs->h, pw, ph,
+                        compatGlobalHiDpiScale());
+                    postSyntheticWindowResize(display, eventWindow, pw, ph);
+
+                    /* The cached visible region is the pre-move (0,0,w,h) rect;
+                     * the re-promote just grew the top-level, so invalidate it
+                     * as the RESIZED ConfigureNotify path does or the added
+                     * physical columns/rows stay clipped and black.
+                     */
+                    invalidateVisibleRegionForTopLevel(eventWindow);
+                }
+#endif
+            }
+        }
+    }
+}
+
+/* SDL_MOUSEWHEEL becomes an X11 button 4/5 (vertical) or 6/7 (horizontal) press
+ * plus release. Both are queued as put-back events rather than returned, so the
+ * caller always drops the SDL event.
+ */
+static void convertMouseWheelEvent(Display *display,
+                                   SDL_Event *sdlEvent,
+                                   XEvent *xEvent,
+                                   Bool sendEvent,
+                                   unsigned long serial)
+{
+    int type = -1;
+    Window eventWindow = None;
+    LOG("SDL_MOUSEWHEEL\n");
+    {
+#ifdef LIBX11_COMPAT_SDL3
+
+        /* SDL3 wheel deltas are floats carrying any sub-notch fraction directly
+         * in x/y, so accumulate them through the same notch filter the SDL2
+         * precise path used.
+         */
+        int wy = accumulateWheelNotch(0, sdlEvent->wheel.y, &wheelPreciseY);
+        int wx = accumulateWheelNotch(0, sdlEvent->wheel.x, &wheelPreciseX);
+#else
+        int wy = sdlEvent->wheel.y, wx = sdlEvent->wheel.x;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+
+        /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y while
+         * leaving x/y at 0. Accumulate those fractions so smooth wheels do not
+         * turn each partial delta into a full X11 wheel click.
+         */
+        wy = accumulateWheelNotch(wy, sdlEvent->wheel.preciseY, &wheelPreciseY);
+        wx = accumulateWheelNotch(wx, sdlEvent->wheel.preciseX, &wheelPreciseX);
+#endif
+#endif
+        if (sdlEvent->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+            wy = -wy;
+            wx = -wx;
+        }
+        unsigned int wheelButton = 0;
+        if (wy > 0)
+            wheelButton = Button4;
+        else if (wy < 0)
+            wheelButton = Button5;
+        else if (wx > 0)
+            wheelButton = 7; /* horizontal right */
+        else if (wx < 0)
+            wheelButton = 6; /* horizontal left */
+        if (wheelButton == 0)
+            return;
+        type = ButtonPress;
+        FILL_STANDARD_VALUES(xbutton);
+        Window sdlWheelWindow = getWindowFromId(sdlEvent->wheel.windowID);
+        xEvent->xbutton.root = SCREEN_WINDOW;
+        int mx = 0, my = 0;
+
+        /* SDL wheel events carry no coordinates. Use the injected position only
+         * for XTest-synthesized events (xtest.c tags them with wheel.which =
+         * SDL_TOUCH_MOUSEID); real hardware wheels keep the SDL_GetMouseState
+         * path so the user's physical cursor still wins after any XTest
+         * activity. The sentinel-based dispatch was a gemini-flagged fix to the
+         * earlier xtestHasInjectedPos-only check, which never reset and would
+         * have routed every later real wheel to the stale injected coords.
+         */
+        Bool wheelInjected = False;
+        if (sdlEvent->wheel.which == SDL_TOUCH_MOUSEID &&
+            replayTargetReadPointer(&mx, &my)) {
+            /* injected pos wins */
+            wheelInjected = True;
+        } else {
+            SDL_GetMouseState(&mx, &my);
+        }
+        xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->wheel.timestamp);
+
+        /* Injected pointer coordinates are already X11 physical pixels (from
+         * replayTargetReadPointer); only real SDL_GetMouseState points need
+         * scaling. Matches the motion/button synthetic handling.
+         */
+        if (!wheelInjected)
+            scaleSdlPointToPixels(sdlWheelWindow, mx, my, &mx, &my);
+        translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
+                                &xEvent->xbutton.x_root,
+                                &xEvent->xbutton.y_root);
+        PointerHit wheelHit = resolvePointerHit(
+            xEvent->xbutton.root, sdlWheelWindow, xEvent->xbutton.x_root,
+            xEvent->xbutton.y_root, False);
+        if (!routePointerGrabEvent(
+                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,
+                &eventWindow, &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                &xEvent->xbutton.y)) {
+            eventWindow = selectPointerEventWindow(
+                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
+                xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,
+                &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
+                &xEvent->xbutton.y);
+        }
+        if (eventWindow == None)
+            return;
+        xEvent->xbutton.window = eventWindow;
+        xEvent->xbutton.state = convertModifierState(SDL_GetModState()) |
+                                pointerButtonStateSnapshot();
+        xEvent->xbutton.button = wheelButton;
+        xEvent->xbutton.same_screen = True;
+
+        /* Real X11 always pairs a wheel ButtonPress with an immediate matching
+         * ButtonRelease, and Motif translations (XmScrollBar, XmText) only fire
+         * their scroll actions once they see the full press/release sequence.
+         * Synthesizing only the press leaves Btn4Down/Btn5Down translations
+         * latched mid-sequence and the scroll never lands, which is why wheel
+         * input through libx11- compat appears as a no-op while the same replay
+         * driven via xdotool against system X11 scrolls correctly.
+         *
+         * Queue both ends at the put-back queue head (last enqueue ends up on
+         * top, so push Release first and Press second) and bail out with -1 so
+         * all consumer paths -- XNextEvent's main pump and the
+         * drainSdlEventsToPutBack drains -- pull them in the right order
+         * without the caller redundantly appending the Press behind the Release
+         * we already queued.
+         */
+        XEvent pressEvent = *xEvent;
+        pressEvent.xbutton.type = ButtonPress;
+        pressEvent.xbutton.serial = serial;
+        pressEvent.xbutton.send_event = sendEvent;
+        pressEvent.xbutton.display = display;
+        pressEvent.xbutton.window = eventWindow;
+        timelineTapXEvent(&pressEvent);
+        XEvent releaseEvent = pressEvent;
+        releaseEvent.xbutton.type = ButtonRelease;
+        timelineTapXEvent(&releaseEvent);
+        enqueuePutBackEventWithTap(display, &releaseEvent, True);
+        enqueuePutBackEventWithTap(display, &pressEvent, True);
+    }
+}
+
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
                  XEvent *xEvent,
@@ -3220,11 +3999,6 @@ int convertEvent(Display *display,
     Window eventWindow = None;
     int type = -1;
     unsigned long serial = currentEventSerial();
-#define FILL_STANDARD_VALUES(eventStruct)       \
-    xEvent->eventStruct.type = type;            \
-    xEvent->eventStruct.serial = serial;        \
-    xEvent->eventStruct.send_event = sendEvent; \
-    xEvent->eventStruct.display = display
     switch (sdlEvent->type) {
     case SDL_KEYDOWN:
 #ifdef __EMSCRIPTEN__
@@ -3318,223 +4092,15 @@ int convertEvent(Display *display,
          * convertEvent below; let SDL handle it.
          */
     case SDL_MOUSEBUTTONUP:
-        if (sdlEvent->type == SDL_MOUSEBUTTONUP) {
-            LOG("SDL_MOUSEBUTTONUP\n");
-            type = ButtonRelease;
-        }
-        FILL_STANDARD_VALUES(xbutton);
-        Window sdlButtonWindow = getWindowFromId(sdlEvent->button.windowID);
-        xEvent->xbutton.root = SCREEN_WINDOW;
-        xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->button.timestamp);
-        int sdlButtonX = sdlEvent->button.x, sdlButtonY = sdlEvent->button.y;
-
-        /* XTest tags synthetic buttons with which == SDL_TOUCH_MOUSEID and
-         * their coordinates are already X11 physical pixels; scaling again
-         * would double them on Retina. Real hardware events carry SDL points
-         * and still need the scale (mirrors the motion/wheel handling).
-         */
-        Bool usedHoverRoot = False;
-        Window grabbedPointerWindow = getGrabbedPointerWindow();
-
-        /* Use the hovered-window root coordinates only when the grab that
-         * redirected this button is the top-level SDL window the event arrived
-         * on, or a descendant widget of it (a Motif menu grabs the shell, but
-         * the grab window can also be a child). A grab elsewhere, or no grab,
-         * takes the ordinary scale/translate path.
-         */
-        if (sdlEvent->button.which != SDL_TOUCH_MOUSEID &&
-            grabbedPointerWindow != None &&
-            (grabbedPointerWindow == sdlButtonWindow ||
-             (IS_TYPE(grabbedPointerWindow, WINDOW) &&
-              isParent(sdlButtonWindow, grabbedPointerWindow))))
-            usedHoverRoot = pointerHoverRootOutsideWindow(
-                sdlButtonWindow, &xEvent->xbutton.x_root,
-                &xEvent->xbutton.y_root);
-        if (!usedHoverRoot && sdlEvent->button.which != SDL_TOUCH_MOUSEID)
-            scaleSdlPointToPixels(sdlButtonWindow, sdlButtonX, sdlButtonY,
-                                  &sdlButtonX, &sdlButtonY);
-        if (!usedHoverRoot)
-            translateSdlPointToRoot(display, sdlButtonWindow, sdlButtonX,
-                                    sdlButtonY, &xEvent->xbutton.x_root,
-                                    &xEvent->xbutton.y_root);
-        xEvent->xbutton.button = convertSdlMouseButton(sdlEvent->button.button);
-        unsigned int buttonState = buttonMaskForXButton(xEvent->xbutton.button);
-
-        /* Snapshot the pointer state under a single critical section.
-         * pointerButtonState and activePointerWindow describe the same logical
-         * "pointer is held in window X with buttons B" tuple; updating them in
-         * separate unlocked phases could lose or duplicate the
-         * activePointerWindow transition when SDL and application threads race
-         * on rapid press/release sequences.
-         */
-        lockActivePointerWindow();
-        unsigned int previousButtonState = pointerButtonState;
-        Window activePointerSnapshot = activePointerWindow;
-        unlockActivePointerWindow();
-        xEvent->xbutton.state =
-            convertModifierState(SDL_GetModState()) | previousButtonState;
-        long buttonMask =
-            type == ButtonPress ? ButtonPressMask : ButtonReleaseMask;
-        if (type == ButtonPress) {
-            activatePassiveButtonGrab(
-                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                xEvent->xbutton.y_root, xEvent->xbutton.button,
-                xEvent->xbutton.state);
-        }
-        PointerHit buttonHit = resolvePointerHit(
-            xEvent->xbutton.root, sdlButtonWindow, xEvent->xbutton.x_root,
-            xEvent->xbutton.y_root,
-            type == ButtonPress && getGrabbedPointerWindow() != None);
-
-        /* Explicit XGrabPointer routing owns the event when
-         * routePointerGrabEvent returns True; otherwise fall back to the normal
-         * pointer-window selection (with a sticky ButtonRelease delivery to the
-         * last button-press recipient).
-         */
-        if (!routePointerGrabEvent(
-                display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                xEvent->xbutton.y_root, buttonHit.deepest, buttonMask,
-                &eventWindow, &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
-                &xEvent->xbutton.y)) {
-            if (type == ButtonRelease && activePointerSnapshot != None &&
-                windowSelectsAny(activePointerSnapshot, buttonMask)) {
-                eventWindow = activePointerSnapshot;
-                translateRootPointToWindow(
-                    display, xEvent->xbutton.root, eventWindow,
-                    xEvent->xbutton.x_root, xEvent->xbutton.y_root,
-                    &xEvent->xbutton.x, &xEvent->xbutton.y);
-                xEvent->xbutton.subwindow =
-                    directChildFromDeepest(eventWindow, buttonHit.deepest);
-                if (xEvent->xbutton.subwindow == None)
-                    xEvent->xbutton.subwindow = getDirectChildContainingPoint(
-                        eventWindow, xEvent->xbutton.x, xEvent->xbutton.y);
-            } else {
-                eventWindow = selectPointerEventWindow(
-                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                    xEvent->xbutton.y_root, buttonHit.deepest, buttonMask,
-                    &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
-                    &xEvent->xbutton.y);
-            }
-        }
-        Bool drainedActivePointer = False;
-        if (freeInternalEvents) {
-            /* Single critical section publishes both updates so a concurrent
-             * reader sees a consistent (button-state, active-window) pair.
-             */
-            lockActivePointerWindow();
-            if (type == ButtonPress)
-                pointerButtonState |= buttonState;
-            else
-                pointerButtonState &= ~buttonState;
-            if (type == ButtonPress && previousButtonState == 0 &&
-                eventWindow != None) {
-                activePointerWindow = eventWindow;
-            }
-            if (pointerButtonState == 0) {
-                activePointerWindow = None;
-                drainedActivePointer = True;
-            }
-            unlockActivePointerWindow();
-        }
-        if (eventWindow == None)
+        if (!convertMouseButtonEvent(display, sdlEvent, xEvent, &eventWindow,
+                                     sendEvent, serial, freeInternalEvents,
+                                     &type))
             return -1;
-        xEvent->xbutton.window = eventWindow;
-        xEvent->xbutton.same_screen = True;
-
-        /* Cache only a press frozen by a sync grab: that is the only press
-         * ReplayPointer can replay. An async grab already delivered the press,
-         * so caching it would let a later ReplayPointer replay a stale one.
-         * Both a passive GrabButton activation and an explicit XGrabPointer
-         * sync grab freeze a delivered press this way, and this layer
-         * intentionally lets ReplayPointer replay either (see the active-grab
-         * replay test in tests/check.c), so the gate is the frozen active grab,
-         * not passive only.
-         */
-        if (freeInternalEvents && type == ButtonPress && mouseFrozen &&
-            getGrabbedPointerWindow() != None)
-            rememberReplayPointerPress(xEvent);
-        if (freeInternalEvents && type == ButtonRelease &&
-            drainedActivePointer && pointerGrabIsPassive()) {
-            releasePassivePointerGrab(display);
-        }
         break;
     case SDL_MOUSEMOTION:
-        LOG("SDL_MOUSEMOTION\n");
-        type = MotionNotify;
-        FILL_STANDARD_VALUES(xmotion);
-        Window sdlMotionWindow = getWindowFromId(sdlEvent->motion.windowID);
-        xEvent->xmotion.root = SCREEN_WINDOW;
-        xEvent->xmotion.time = XC_EVENT_TIME_MS(sdlEvent->motion.timestamp);
-        int sdlMotionX = sdlEvent->motion.x, sdlMotionY = sdlEvent->motion.y;
-
-        /* XTest tags synthetic motion with which == SDL_TOUCH_MOUSEID and its
-         * coordinates are already X11 physical pixels; scaling again would
-         * double them on Retina. Real hardware motion carries SDL points and
-         * still needs the scale.
-         */
-        if (sdlEvent->motion.which != SDL_TOUCH_MOUSEID)
-            scaleSdlPointToPixels(sdlMotionWindow, sdlMotionX, sdlMotionY,
-                                  &sdlMotionX, &sdlMotionY);
-        translateSdlPointToRoot(display, sdlMotionWindow, sdlMotionX,
-                                sdlMotionY, &xEvent->xmotion.x_root,
-                                &xEvent->xmotion.y_root);
-        unsigned int motionButtonState = pointerButtonStateSnapshot();
-        PointerHit motionHit = resolvePointerHit(
-            xEvent->xmotion.root, sdlMotionWindow, xEvent->xmotion.x_root,
-            xEvent->xmotion.y_root,
-            motionButtonState != 0 || getGrabbedPointerWindow() != None);
-        unsigned int motionState =
-            convertModifierState(SDL_GetModState()) | motionButtonState;
-        Bool crossingQueued = postPointerCrossingEvents(
-            display, xEvent->xmotion.x_root, xEvent->xmotion.y_root,
-            motionHit.hoverDeepest, motionState,
-            XC_EVENT_TIME_MS(sdlEvent->motion.timestamp));
-        long motionMask = motionMaskForButtonState(motionButtonState);
-
-        /* Explicit XGrabPointer routing owns the event when
-         * routePointerGrabEvent returns True; otherwise the implicit
-         * button-press grab (snapshot != None) wins, falling back to regular
-         * pointer-window selection.
-         */
-        if (!routePointerGrabEvent(
-                display, xEvent->xmotion.root, xEvent->xmotion.x_root,
-                xEvent->xmotion.y_root, motionHit.deepest, motionMask,
-                &eventWindow, &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
-                &xEvent->xmotion.y)) {
-            lockActivePointerWindow();
-            Window snapshot = activePointerWindow;
-            unlockActivePointerWindow();
-            if (snapshot != None && windowSelectsAny(snapshot, motionMask)) {
-                eventWindow = snapshot;
-                translateRootPointToWindow(
-                    display, xEvent->xmotion.root, eventWindow,
-                    xEvent->xmotion.x_root, xEvent->xmotion.y_root,
-                    &xEvent->xmotion.x, &xEvent->xmotion.y);
-                xEvent->xmotion.subwindow =
-                    directChildFromDeepest(eventWindow, motionHit.deepest);
-                if (xEvent->xmotion.subwindow == None)
-                    xEvent->xmotion.subwindow = getDirectChildContainingPoint(
-                        eventWindow, xEvent->xmotion.x, xEvent->xmotion.y);
-            } else {
-                eventWindow = selectPointerEventWindow(
-                    display, xEvent->xmotion.root, xEvent->xmotion.x_root,
-                    xEvent->xmotion.y_root, motionHit.deepest, motionMask,
-                    &xEvent->xmotion.subwindow, &xEvent->xmotion.x,
-                    &xEvent->xmotion.y);
-            }
-        }
-        if (eventWindow == None)
+        if (!convertMouseMotionEvent(display, sdlEvent, xEvent, &eventWindow,
+                                     sendEvent, serial, &type))
             return -1;
-        xEvent->xmotion.window = eventWindow;
-        xEvent->xmotion.state = motionState;
-        xEvent->xmotion.is_hint =
-            HAS_EVENT_MASK(eventWindow, PointerMotionHintMask) ? NotifyHint
-                                                               : NotifyNormal;
-        xEvent->xmotion.same_screen = True;
-        if (crossingQueued) {
-            appendPutBackEvent(display, xEvent);
-            return -1;
-        }
         break;
     XC_CASE_WINDOWEVENT:
         eventWindow = getWindowFromId(sdlEvent->window.windowID);
@@ -3633,326 +4199,12 @@ int convertEvent(Display *display,
             }
             /* fall through */
         case SDL_WINDOWEVENT_SIZE_CHANGED:
-            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_SIZE_CHANGED) {
-                LOG("Window %d size changed to %dx%d\n",
-                    sdlEvent->window.windowID, sdlEvent->window.data1,
-                    sdlEvent->window.data2);
-            }
-            type = ConfigureNotify;
-            FILL_STANDARD_VALUES(xconfigure);
-            xEvent->xconfigure.event = eventWindow;
-            xEvent->xconfigure.window = xEvent->xconfigure.event;
-            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_MOVED) {
-                xEvent->xconfigure.x = sdlEvent->window.data1;
-                xEvent->xconfigure.y = sdlEvent->window.data2;
-                if (eventWindow != None) {
-                    sdlTopLevelOriginToX11(
-                        eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
-                        &xEvent->xconfigure.x, &xEvent->xconfigure.y);
-                }
-            } else {
-                SDL_GetWindowPosition(
-                    SDL_GetWindowFromID(sdlEvent->window.windowID),
-                    &xEvent->xconfigure.x, &xEvent->xconfigure.y);
-                if (eventWindow != None) {
-                    sdlTopLevelOriginToX11(
-                        eventWindow, xEvent->xconfigure.x, xEvent->xconfigure.y,
-                        &xEvent->xconfigure.x, &xEvent->xconfigure.y);
-
-                    /* A resize from the top/left edge moves the window origin.
-                     * The size-only branch below never touches position, so
-                     * persist the queried logical origin here (mirroring the
-                     * MOVED branch) to keep ws->x/y from going stale.
-                     */
-                    GET_WINDOW_STRUCT(eventWindow)->x = xEvent->xconfigure.x;
-                    GET_WINDOW_STRUCT(eventWindow)->y = xEvent->xconfigure.y;
-                }
-            }
-
-            /* Option 1b: the X11 window and its backing track physical pixels,
-             * so the present path is a 1:1 blit (no upscaling). A RESIZED event
-             * carries the new logical size in data1/data2 on both SDL2 and
-             * SDL3. Promote it to physical pixels only for windows whose X11
-             * geometry opted into that space (effectiveHiDpiScale); Motif/Tk
-             * keep logical geometry so their widget/font layout does not shrink
-             * after a host resize. We deliberately do NOT re-query the live SDL
-             * surface/renderer here: resize events can be faked in tests where
-             * the SDL window is never actually resized (resizeWindowTexture
-             * documents the same constraint), and the cached scale is constant
-             * for a given display. On non-HiDPI hosts and under the CI dummy
-             * driver the scale is 1.0, so pixels equal points. SDL3
-             * additionally fires SDL_WINDOWEVENT_SIZE_CHANGED as
-             * PIXEL_SIZE_CHANGED; it is still ignored for geometry, RESIZED
-             * remains the trigger.
-             */
-            Bool logicalResize =
-                XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED;
-#ifndef LIBX11_COMPAT_SDL3
-            /* SDL2 SIZE_CHANGED is also in logical units. */
-            logicalResize = logicalResize || XC_WINDOW_SUBEVENT(sdlEvent) ==
-                                                 SDL_WINDOWEVENT_SIZE_CHANGED;
-#endif
-            if (logicalResize) {
-                int logicalW = sdlEvent->window.data1;
-                int logicalH = sdlEvent->window.data2;
-                double scaleX = 1.0, scaleY = 1.0;
-                if (eventWindow != None) {
-                    WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
-                    scaleX = effectiveHiDpiScaleX(ws);
-                    scaleY = effectiveHiDpiScaleY(ws);
-                }
-                int pixelW = (int) lround((double) logicalW * scaleX);
-                int pixelH = (int) lround((double) logicalH * scaleY);
-                xEvent->xconfigure.width = pixelW;
-                xEvent->xconfigure.height = pixelH;
-                if (eventWindow != None) {
-                    int oldWidth = 0, oldHeight = 0;
-                    GET_WINDOW_DIMS(eventWindow, oldWidth, oldHeight);
-
-                    /* On macOS the live-resize observer already adopts the
-                     * final drag size (windowStruct->w/h +
-                     * resizeWindowTexture), runs the client reflow and presents
-                     * a correct frame before this SDL RESIZED event is
-                     * delivered at drag end. When the event carries that same
-                     * size, re-running the destructive path below (recreate the
-                     * backing, clear the growth bands, re-expose the whole
-                     * subtree, arm a fresh coalesce gate) would discard the
-                     * freshly reflowed frame and hold its recovery behind a new
-                     * gate until the client next idles - leaving the window
-                     * showing the pre-reflow (stale) content. The
-                     * ConfigureNotify is still emitted above so the client sees
-                     * the size; only the redundant backing churn is skipped. A
-                     * genuine size change (client XResizeWindow, or a host
-                     * resize the observer never saw) still takes the full path.
-                     */
-                    Bool sizeChanged =
-                        (pixelW != oldWidth || pixelH != oldHeight);
-                    GET_WINDOW_STRUCT(eventWindow)->w = (unsigned int) pixelW;
-                    GET_WINDOW_STRUCT(eventWindow)->h = (unsigned int) pixelH;
-                    if (sizeChanged) {
-                        resizeWindowTexture(eventWindow);
-
-                        /* The top-level's own cached visibleRegion is its
-                         * (0,0,w,h) frame; it goes stale on every resize driven
-                         * by SDL outside of configureWindow.
-                         */
-                        invalidateVisibleRegionForTopLevel(eventWindow);
-
-                        /* How much of the backing to wipe depends on the
-                         * top-level's bit gravity, and must match what
-                         * resizeWindowTexture just carried over. Only a
-                         * top-left-anchored retaining gravity
-                         * (NorthWestGravity/StaticGravity, which xwpe sets on
-                         * its cells) keeps its old pixels pinned at (0,0): for
-                         * those, clear only the bands that newly appeared
-                         * because a dimension grew and leave the retained
-                         * region
-                         * - already copied into the new backing by
-                         * resizeWindowTexture - untouched. Wiping that region
-                         * would blank content the client has not yet repainted;
-                         * during the macOS modal resize loop the repaint lags a
-                         * few frames, so the blank shows as a transient black
-                         * flash. ForgetGravity and every unmodeled gravity let
-                         * the client discard contents on resize, so clear the
-                         * whole subtree here; any top-left copy
-                         * resizeWindowTexture kept for ForgetGravity is only a
-                         * transient flash-avoidance during the modal drag,
-                         * superseded once this runs. The full Expose below
-                         * drives the repaint either way.
-                         */
-                        if (!bitGravityIsTopLeftAnchored(
-                                GET_WINDOW_STRUCT(eventWindow)->bitGravity)) {
-                            clearWindowTreeWithoutExpose(display, eventWindow);
-                        } else {
-                            if (pixelW > oldWidth) {
-                                XClearArea(display, eventWindow, oldWidth, 0,
-                                           (unsigned int) (pixelW - oldWidth),
-                                           (unsigned int) pixelH, False);
-                            }
-                            if (pixelH > oldHeight) {
-                                int bandW =
-                                    pixelW < oldWidth ? pixelW : oldWidth;
-                                XClearArea(display, eventWindow, 0, oldHeight,
-                                           (unsigned int) bandW,
-                                           (unsigned int) (pixelH - oldHeight),
-                                           False);
-                            }
-                        }
-                        postResizeConfigureForMappedChildren(
-                            display, eventWindow, oldWidth, oldHeight, pixelW,
-                            pixelH);
-
-                        /* Re-expose the whole subtree so every mapped
-                         * descendant repaints at the new size (whether or not
-                         * it was cleared).
-                         */
-                        postFullWindowExpose(display, eventWindow);
-
-                        /* The client is about to run its full repaint (clear
-                         * the window, then redraw every cell) in response to
-                         * this ConfigureNotify, issuing intermediate
-                         * XFlush/XSync calls. Hold those partial presents back
-                         * so only the final frame reaches the screen, avoiding
-                         * a black flash during the redraw. Released when the
-                         * client next idles in XNextEvent.
-                         */
-                        beginCoalesceClientRepaint();
-                    }
-                }
-            } else if (eventWindow != None) {
-                /* Non-resize ConfigureNotify (e.g. MOVED): the size is
-                 * unchanged, so report the window's current cached X11 geometry
-                 * that the client already tracks (promoted physical pixels, or
-                 * logical pixels for Motif/Tk). SDL_GetWindowSize returns
-                 * logical points here, which on a HiDPI host is half a promoted
-                 * window's physical size and would make the client shrink its
-                 * cell grid on a mere move. Use the cached dimensions instead.
-                 */
-                GET_WINDOW_DIMS(eventWindow, xEvent->xconfigure.width,
-                                xEvent->xconfigure.height);
-            } else {
-                SDL_GetWindowSize(
-                    SDL_GetWindowFromID(sdlEvent->window.windowID),
-                    &xEvent->xconfigure.width, &xEvent->xconfigure.height);
-            }
-
-            xEvent->xconfigure.above = None;
-
-            /* eventWindow came from getWindowFromId and can be None for an
-             * untracked SDL window. The caller's XEvent is not zeroed and
-             * FILL_STANDARD_VALUES does not touch these two fields, so set
-             * explicit defaults in that case rather than leaving stack garbage.
-             * One lookup otherwise feeds both the configure fields and the
-             * replay-target offer.
-             */
-            if (eventWindow != None) {
-                WindowStruct *ws = GET_WINDOW_STRUCT(eventWindow);
-                xEvent->xconfigure.border_width = ws->borderWidth;
-                xEvent->xconfigure.override_redirect = ws->overrideRedirect;
-                replayTargetOfferWindow(sdlEvent->window.windowID, ws->x, ws->y,
-                                        (int) ws->w, (int) ws->h);
-            } else {
-                xEvent->xconfigure.border_width = 0;
-                xEvent->xconfigure.override_redirect = False;
-            }
+            convertWindowConfigureEvent(display, sdlEvent, xEvent, eventWindow,
+                                        sendEvent, serial, &type);
             break;
 #if SDL_VERSION_ATLEAST(2, 0, 18)
         case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
-            /* The window moved to a different display, which may have a
-             * different HiDPI backing scale than the one cached at realize
-             * time. Re-derive the per-window scale from the live pixel/point
-             * ratio so the next resize's logical<->physical conversion and the
-             * present blit use the new monitor's scale instead of a stale one.
-             * This is event-driven and never runs on the resize fast path, so
-             * faked test resizes are unaffected.
-             */
-            if (eventWindow != None && compatSdlHasWindowSizeInPixels()) {
-                SDL_Window *movedWin =
-                    SDL_GetWindowFromID(sdlEvent->window.windowID);
-                if (movedWin) {
-                    int lw = 0, lh = 0, pw = 0, ph = 0;
-                    SDL_GetWindowSize(movedWin, &lw, &lh);
-#if SDL_VERSION_ATLEAST(2, 26, 0)
-                    SDL_GetWindowSizeInPixels(movedWin, &pw, &ph);
-#endif
-                    WindowStruct *movedWs = GET_WINDOW_STRUCT(eventWindow);
-                    double oldScaleX = movedWs->hiDpiScaleX;
-                    double oldScaleY = movedWs->hiDpiScaleY;
-                    if (lw > 0 && pw > 0)
-                        movedWs->hiDpiScaleX = (double) pw / (double) lw;
-                    if (lh > 0 && ph > 0)
-                        movedWs->hiDpiScaleY = (double) ph / (double) lh;
-
-                    /* The cached PResizeInc increments live in physical-pixel
-                     * space (see WindowStruct), so a monitor move that changes
-                     * the backing scale makes them stale: they still describe
-                     * the previous monitor's cell size. A client that
-                     * re-derives its font from the scale (xwpe re-publishes
-                     * WM_NORMAL_HINTS after refitting) will overwrite these;
-                     * but a client that does not leaves the drag-end snap
-                     * quantising to the old cell, leaving a sub-cell remainder
-                     * band. Rescale them by newScale/oldScale so the snap grid
-                     * matches the destination monitor even without a
-                     * re-publish.
-                     */
-                    if (movedWs->hiDpiPromoted && movedWs->hasResizeInc &&
-                        oldScaleX > 0.0 && oldScaleY > 0.0) {
-                        double rx = movedWs->hiDpiScaleX / oldScaleX;
-                        double ry = movedWs->hiDpiScaleY / oldScaleY;
-                        if (rx > 0.0 && rx != 1.0) {
-                            movedWs->widthInc =
-                                (int) (movedWs->widthInc * rx + 0.5);
-                            movedWs->baseWidth =
-                                (int) (movedWs->baseWidth * rx + 0.5);
-                            movedWs->minWidth =
-                                (int) (movedWs->minWidth * rx + 0.5);
-                        }
-                        if (ry > 0.0 && ry != 1.0) {
-                            movedWs->heightInc =
-                                (int) (movedWs->heightInc * ry + 0.5);
-                            movedWs->baseHeight =
-                                (int) (movedWs->baseHeight * ry + 0.5);
-                            movedWs->minHeight =
-                                (int) (movedWs->minHeight * ry + 0.5);
-                        }
-                        if (movedWs->widthInc <= 0 || movedWs->heightInc <= 0)
-                            movedWs->hasResizeInc = False;
-                    }
-                    compatTrace(
-                        "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
-                        "logical=(%dx%d) phys=(%dx%d) newScale=(%.3f,%.3f) "
-                        "cachedPhys=(%ux%u)\n",
-                        eventWindow, lw, lh, pw, ph, movedWs->hiDpiScaleX,
-                        movedWs->hiDpiScaleY, movedWs->w, movedWs->h);
-
-                    /* The global font scale tracks the same host backing as
-                     * this window, so refresh it and republish the root
-                     * property on both backends; a client re-deriving its font
-                     * from _LIBX11_COMPAT_HIDPI_SCALE (xwpe) would otherwise
-                     * read the source monitor's stale scale after the move. On
-                     * a single-scale setup the value is unchanged.
-                     */
-                    if (movedWs->hiDpiPromoted && pw > 0 && ph > 0) {
-                        if (lw > 0)
-                            compatSetGlobalHiDpiScale((double) pw /
-                                                      (double) lw);
-                        else if (lh > 0)
-                            compatSetGlobalHiDpiScale((double) ph /
-                                                      (double) lh);
-                        compatPublishHiDpiScaleProperty(display);
-#if defined(LIBX11_COMPAT_SDL3)
-
-                        /* SDL2 follows a DISPLAY_CHANGED with a SIZE_CHANGED
-                         * that reflows geometry using the scale refreshed
-                         * above. The SDL3 backend delivers no such geometry
-                         * event for a bare monitor move, so the window keeps
-                         * the previous monitor's physical pixel dimensions
-                         * (over- or under-promoted) and the present mis-scales.
-                         * Re-promote to the new monitor's physical size and
-                         * reflow the client here.
-                         */
-                        if (pw != (int) movedWs->w || ph != (int) movedWs->h) {
-                            compatTrace(
-                                "SDL_WINDOWEVENT_DISPLAY_CHANGED: window=%lu "
-                                "RE-PROMOTE (%ux%u)->(%dx%d) "
-                                "globalScale=%.3f\n",
-                                eventWindow, movedWs->w, movedWs->h, pw, ph,
-                                compatGlobalHiDpiScale());
-                            postSyntheticWindowResize(display, eventWindow, pw,
-                                                      ph);
-
-                            /* The cached visible region is the pre-move
-                             * (0,0,w,h) rect; the re-promote just grew the
-                             * top-level, so invalidate it as the RESIZED
-                             * ConfigureNotify path does or the added physical
-                             * columns/rows stay clipped and black.
-                             */
-                            invalidateVisibleRegionForTopLevel(eventWindow);
-                        }
-#endif
-                    }
-                }
-            }
+            convertWindowDisplayChangedEvent(display, sdlEvent, eventWindow);
             return -1;
         }
 #endif
@@ -4171,191 +4423,13 @@ int convertEvent(Display *display,
         return -1;
 #endif
     case SDL_TEXTINPUT: /**< Keyboard text input */
-        LOG("SDL_TEXTINPUT\n");
-        {
-            if (!inputMethodHasActiveTextInput())
-                return -1;
-            const char *incomingText = XC_TEXT_EVENT_TEXT(sdlEvent);
-#ifdef __EMSCRIPTEN__
-            if (!incomingText[1] &&
-                shouldSuppressDuplicateWasmTextInput(incomingText[0]))
-                return -1;
-#endif
-            if (!incomingText[1] &&
-                popMatchingPendingAsciiChar(incomingText[0]))
-                return -1;
-            clearPendingAsciiRing();
-            if (!incomingText[1])
-                pushCommittedAsciiChar(incomingText[0]);
-            else
-                clearCommittedAsciiRing();
-            type = KeyPress;
-            FILL_STANDARD_VALUES(xkey);
-
-            /* Route the commit like a real key: an active keyboard grab wins
-             * over the focus window so IM text composed during a modal grab
-             * still reaches the grab holder.
-             */
-            Window imGrabWindow = getGrabbedKeyboardWindow();
-            eventWindow =
-                imGrabWindow != None ? imGrabWindow : getKeyboardFocus();
-            if (eventWindow == None)
-                eventWindow = SCREEN_WINDOW;
-            char *text = strdup(incomingText);
-            if (!text)
-                return -1;
-            inputMethodHandlePreedit("", 0);
-            unsigned long commitId = inputMethodSetCurrentText(text);
-
-            /* No id means the commit was not queued (OOM, or a preedit-done
-             * callback above cleared focus), so do not deliver a phantom IM
-             * KeyPress that would look up as XLookupNone.
-             */
-            if (commitId == 0)
-                return -1;
-
-            xEvent->xkey.root = SCREEN_WINDOW;
-            xEvent->xkey.window = eventWindow;
-
-            /* Carry the commit id so the lookup retrieves this exact commit
-             * regardless of delivery order; keycode stays 0 as the IM marker.
-             */
-            xEvent->xkey.subwindow = (Window) commitId;
-            xEvent->xkey.time = XC_EVENT_TIME_MS(sdlEvent->text.timestamp);
-            xEvent->xkey.x = xEvent->xkey.y = 0;
-            xEvent->xkey.x_root = xEvent->xkey.y_root = 0;
-            xEvent->xkey.state = 0;
-            xEvent->xkey.keycode = 0;
-            xEvent->xkey.same_screen = True;
-        }
+        if (!convertTextInputEvent(display, sdlEvent, xEvent, &eventWindow,
+                                   sendEvent, serial, &type))
+            return -1;
         break;
     case SDL_MOUSEWHEEL: /**< Mouse wheel motion */
-        LOG("SDL_MOUSEWHEEL\n");
-        {
-#ifdef LIBX11_COMPAT_SDL3
-
-            /* SDL3 wheel deltas are floats carrying any sub-notch fraction
-             * directly in x/y, so accumulate them through the same notch filter
-             * the SDL2 precise path used.
-             */
-            int wy = accumulateWheelNotch(0, sdlEvent->wheel.y, &wheelPreciseY);
-            int wx = accumulateWheelNotch(0, sdlEvent->wheel.x, &wheelPreciseX);
-#else
-            int wy = sdlEvent->wheel.y, wx = sdlEvent->wheel.x;
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-
-            /* sdl2-compat can report sub-notch wheel deltas in preciseX/Y while
-             * leaving x/y at 0. Accumulate those fractions so smooth wheels do
-             * not turn each partial delta into a full X11 wheel click.
-             */
-            wy = accumulateWheelNotch(wy, sdlEvent->wheel.preciseY,
-                                      &wheelPreciseY);
-            wx = accumulateWheelNotch(wx, sdlEvent->wheel.preciseX,
-                                      &wheelPreciseX);
-#endif
-#endif
-            if (sdlEvent->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-                wy = -wy;
-                wx = -wx;
-            }
-            unsigned int wheelButton = 0;
-            if (wy > 0)
-                wheelButton = Button4;
-            else if (wy < 0)
-                wheelButton = Button5;
-            else if (wx > 0)
-                wheelButton = 7; /* horizontal right */
-            else if (wx < 0)
-                wheelButton = 6; /* horizontal left */
-            if (wheelButton == 0)
-                return -1;
-            type = ButtonPress;
-            FILL_STANDARD_VALUES(xbutton);
-            Window sdlWheelWindow = getWindowFromId(sdlEvent->wheel.windowID);
-            xEvent->xbutton.root = SCREEN_WINDOW;
-            int mx = 0, my = 0;
-
-            /* SDL wheel events carry no coordinates. Use the injected position
-             * only for XTest-synthesized events (xtest.c tags them with
-             * wheel.which = SDL_TOUCH_MOUSEID); real hardware wheels keep the
-             * SDL_GetMouseState path so the user's physical cursor still wins
-             * after any XTest activity. The sentinel-based dispatch was a
-             * gemini-flagged fix to the earlier xtestHasInjectedPos-only check,
-             * which never reset and would have routed every later real wheel to
-             * the stale injected coords.
-             */
-            Bool wheelInjected = False;
-            if (sdlEvent->wheel.which == SDL_TOUCH_MOUSEID &&
-                replayTargetReadPointer(&mx, &my)) {
-                /* injected pos wins */
-                wheelInjected = True;
-            } else {
-                SDL_GetMouseState(&mx, &my);
-            }
-            xEvent->xbutton.time = XC_EVENT_TIME_MS(sdlEvent->wheel.timestamp);
-
-            /* Injected pointer coordinates are already X11 physical pixels
-             * (from replayTargetReadPointer); only real SDL_GetMouseState
-             * points need scaling. Matches the motion/button synthetic
-             * handling.
-             */
-            if (!wheelInjected)
-                scaleSdlPointToPixels(sdlWheelWindow, mx, my, &mx, &my);
-            translateSdlPointToRoot(display, sdlWheelWindow, mx, my,
-                                    &xEvent->xbutton.x_root,
-                                    &xEvent->xbutton.y_root);
-            PointerHit wheelHit = resolvePointerHit(
-                xEvent->xbutton.root, sdlWheelWindow, xEvent->xbutton.x_root,
-                xEvent->xbutton.y_root, False);
-            if (!routePointerGrabEvent(
-                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                    xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,
-                    &eventWindow, &xEvent->xbutton.subwindow,
-                    &xEvent->xbutton.x, &xEvent->xbutton.y)) {
-                eventWindow = selectPointerEventWindow(
-                    display, xEvent->xbutton.root, xEvent->xbutton.x_root,
-                    xEvent->xbutton.y_root, wheelHit.deepest, ButtonPressMask,
-                    &xEvent->xbutton.subwindow, &xEvent->xbutton.x,
-                    &xEvent->xbutton.y);
-            }
-            if (eventWindow == None)
-                return -1;
-            xEvent->xbutton.window = eventWindow;
-            xEvent->xbutton.state = convertModifierState(SDL_GetModState()) |
-                                    pointerButtonStateSnapshot();
-            xEvent->xbutton.button = wheelButton;
-            xEvent->xbutton.same_screen = True;
-
-            /* Real X11 always pairs a wheel ButtonPress with an immediate
-             * matching ButtonRelease, and Motif translations (XmScrollBar,
-             * XmText) only fire their scroll actions once they see the full
-             * press/release sequence. Synthesizing only the press leaves
-             * Btn4Down/Btn5Down translations latched mid-sequence and the
-             * scroll never lands, which is why wheel input through libx11-
-             * compat appears as a no-op while the same replay driven via
-             * xdotool against system X11 scrolls correctly.
-             *
-             * Queue both ends at the put-back queue head (last enqueue ends up
-             * on top, so push Release first and Press second) and bail out with
-             * -1 so all consumer paths -- XNextEvent's main pump and the
-             * drainSdlEventsToPutBack drains -- pull them in the right order
-             * without the caller redundantly appending the Press behind the
-             * Release we already queued.
-             */
-            XEvent pressEvent = *xEvent;
-            pressEvent.xbutton.type = ButtonPress;
-            pressEvent.xbutton.serial = serial;
-            pressEvent.xbutton.send_event = sendEvent;
-            pressEvent.xbutton.display = display;
-            pressEvent.xbutton.window = eventWindow;
-            timelineTapXEvent(&pressEvent);
-            XEvent releaseEvent = pressEvent;
-            releaseEvent.xbutton.type = ButtonRelease;
-            timelineTapXEvent(&releaseEvent);
-            enqueuePutBackEventWithTap(display, &releaseEvent, True);
-            enqueuePutBackEventWithTap(display, &pressEvent, True);
-            return -1;
-        }
+        convertMouseWheelEvent(display, sdlEvent, xEvent, sendEvent, serial);
+        return -1;
     case SDL_JOYAXISMOTION: /**< Joystick axis motion */
         LOG("SDL_JOYAXISMOTION\n");
         return -1;
@@ -4715,7 +4789,6 @@ int convertEvent(Display *display,
     xEvent->type = type;
     timelineTapXEvent(xEvent);
     return 0;
-#undef FILL_STANDARD_VALUES
 }
 
 static void updateWindowRenderTargets(Display *display)
