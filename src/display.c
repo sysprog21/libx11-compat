@@ -1281,6 +1281,18 @@ void applyNormalHintsResizableFromProperty(Window window)
 
 void cacheResizeIncrementsFromNormalHintsProperty(Window window)
 {
+    /* Self-routing like applyNormalHintsResizableFromProperty, which the
+     * XChangeProperty hook calls alongside this one. Both reachable call sites
+     * are public entry points a client worker thread may use (XChangeProperty
+     * on WM_NORMAL_HINTS, and XDeleteProperty's revert), and this reads the
+     * property store and writes the increment cache that the main thread's
+     * live-resize snap reads. Routing keeps that whole read-modify-write on the
+     * main thread instead of racing it.
+     */
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(cacheResizeIncrementsFromNormalHintsProperty, window);
+        return;
+    }
     if (!IS_TYPE(window, WINDOW))
         return;
 

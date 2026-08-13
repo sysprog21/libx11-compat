@@ -14230,6 +14230,28 @@ static void *offThreadWinWorker(void *p)
     XMoveWindow(a->display, a->window, 8, 8);
     XReparentWindow(a->display, a->window, DefaultRootWindow(a->display), 12,
                     12);
+
+    /* XDeleteProperty is a public entry point too, and its reverts read the
+     * property store and write SDL-facing state just like the write hooks
+     * above, so drive them from a worker as well. Every revert self-routes
+     * (reapplyWindowDecorations and reapplyWindowTitle in window-property.c,
+     * cacheResizeIncrementsFromNormalHintsProperty in display.c), so each
+     * delete blocks here while the pump loop below runs the revert on the main
+     * thread. That handoff, and the store access on both sides of it, is what
+     * the sanitizers get to see.
+     *
+     * Scope, measured rather than assumed: this exercises those paths but does
+     * not prove the routing is required. Removing the routing leaves TSan
+     * quiet, because nothing on the main thread touches the increment cache or
+     * the decoration state while the worker runs; and nothing aborts either,
+     * since the self-routing appliers carry no requireMainEventThread assertion
+     * (none of the family does, the assertion belongs to the non-self-routing
+     * Impl bodies). Pinning the routing would need a concurrent main-thread
+     * reader this test does not have.
+     */
+    XDeleteProperty(a->display, a->window, XA_WM_NORMAL_HINTS);
+    XDeleteProperty(a->display, a->window, a->netWmWindowType);
+    XDeleteProperty(a->display, a->window, XA_WM_NAME);
     SDL_AtomicSet(&a->done, 1);
     return NULL;
 }
