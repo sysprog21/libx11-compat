@@ -239,6 +239,17 @@ static Bool wait_window_flag(SDL_Window *w, Uint32 mask, Bool wantSet)
     return ((SDL_GetWindowFlags(w) & mask) != 0) == (wantSet != False);
 }
 
+static Bool windowHasProperty(Display *display, Window window, Atom property)
+{
+    int count = 0;
+    Atom *props = XListProperties(display, window, &count);
+    Bool found = False;
+    for (int i = 0; i < count; i++)
+        found |= props[i] == property;
+    XFree(props);
+    return found;
+}
+
 static XEvent make_event(int type, Window window)
 {
     XEvent event;
@@ -11771,6 +11782,208 @@ static int test_icccm_wm_hints(Display *display)
     return 1;
 }
 
+/* The ICCCM name getters read the same property store the setters write, so
+ * every pair here has to round-trip. XGetWMName additionally prefers
+ * _NET_WM_NAME, and setting only _NET_WM_NAME must not synthesize a WM_NAME
+ * entry as a side effect of the SDL title update.
+ */
+static int test_icccm_window_names(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 16, 16, 0, 0, 0);
+    CHECK(window != None, "XCreateSimpleWindow for window name test failed");
+    Atom utf8Atom = XInternAtom(display, "UTF8_STRING", False);
+
+    char *fetchName = NULL;
+    CHECK(XStoreName(display, window, "fetch-name") &&
+              XFetchName(display, window, &fetchName),
+          "XFetchName failed after XStoreName");
+    CHECK(fetchName && !strcmp(fetchName, "fetch-name"),
+          "XFetchName did not round-trip WM_NAME");
+    XFree(fetchName);
+    CHECK(XChangeProperty(display, window, XA_WM_NAME, utf8Atom, 8,
+                          PropModeReplace, (unsigned char *) "utf8-fetch", 10),
+          "UTF8 WM_NAME setup failed");
+    fetchName = (char *) 1;
+    CHECK(!XFetchName(display, window, &fetchName) && fetchName == NULL,
+          "XFetchName should reject non-XA_STRING WM_NAME");
+
+    char *iconName = NULL;
+    CHECK(XSetIconName(display, window, "icon-name") &&
+              XGetIconName(display, window, &iconName),
+          "XGetIconName failed after XSetIconName");
+    CHECK(iconName && !strcmp(iconName, "icon-name"),
+          "XGetIconName did not round-trip WM_ICON_NAME");
+    XFree(iconName);
+
+    Xutf8SetWMProperties(display, window, "utf8-name", NULL, NULL, 0, NULL,
+                         NULL, NULL);
+    XTextProperty wmName;
+    CHECK(XGetWMName(display, window, &wmName), "XGetWMName failed");
+    CHECK(wmName.encoding == utf8Atom && wmName.format == 8 &&
+              !strcmp((char *) wmName.value, "utf8-name"),
+          "XGetWMName did not return UTF8_STRING WM_NAME");
+    XFree(wmName.value);
+
+    CHECK(XChangeProperty(display, window, XA_WM_NAME, XA_STRING, 8,
+                          PropModeReplace, (unsigned char *) "legacy", 6),
+          "WM_NAME setup failed");
+    CHECK(XChangeProperty(display, window, _NET_WM_NAME, utf8Atom, 8,
+                          PropModeReplace, (unsigned char *) "modern", 6),
+          "_NET_WM_NAME setup failed");
+    CHECK(XGetWMName(display, window, &wmName), "XGetWMName preference failed");
+    CHECK(
+        wmName.encoding == utf8Atom && !strcmp((char *) wmName.value, "modern"),
+        "XGetWMName did not prefer _NET_WM_NAME");
+    XFree(wmName.value);
+
+    XTextProperty clientMachine = {
+        .value = (unsigned char *) "client-machine",
+        .encoding = XA_STRING,
+        .format = 8,
+        .nitems = 14,
+    };
+    XSetWMClientMachine(display, window, &clientMachine);
+    XTextProperty readClientMachine;
+    CHECK(XGetWMClientMachine(display, window, &readClientMachine),
+          "XGetWMClientMachine failed");
+    CHECK(readClientMachine.encoding == XA_STRING &&
+              !strcmp((char *) readClientMachine.value, "client-machine"),
+          "XGetWMClientMachine did not round-trip");
+    XFree(readClientMachine.value);
+
+    CHECK(windowHasProperty(display, window, XA_WM_NAME) &&
+              windowHasProperty(display, window, _NET_WM_NAME) &&
+              windowHasProperty(display, window, XA_WM_CLIENT_MACHINE),
+          "XListProperties missed stored atoms");
+
+    Window bare = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
+    int bareCount = -1;
+    CHECK(!XListProperties(display, bare, &bareCount) && bareCount == 0,
+          "XListProperties on a property-free window should return NULL");
+    XDestroyWindow(display, bare);
+
+    Window netOnly = XCreateSimpleWindow(display, root, 0, 0, 8, 8, 0, 0, 0);
+    CHECK(XChangeProperty(display, netOnly, _NET_WM_NAME, utf8Atom, 8,
+                          PropModeReplace, (unsigned char *) "net-only", 8),
+          "_NET_WM_NAME-only setup failed");
+    CHECK(!windowHasProperty(display, netOnly, XA_WM_NAME) &&
+              windowHasProperty(display, netOnly, _NET_WM_NAME),
+          "_NET_WM_NAME title side effect synthesized WM_NAME");
+    XDestroyWindow(display, netOnly);
+
+    /* XTextPropertyToStringList is the conventional consumer of what the
+     * getters above return, so it has to invert XStringListToTextProperty
+     * exactly: n separators means n+1 strings, empty entries survive, and the
+     * array is NULL-terminated for XFreeStringList.
+     */
+    char *inList[] = {"first", "", "third"};
+    XTextProperty packed;
+    CHECK(XStringListToTextProperty(inList, 3, &packed),
+          "XStringListToTextProperty failed");
+    char **outList = NULL;
+    int outCount = 0;
+    CHECK(XTextPropertyToStringList(&packed, &outList, &outCount),
+          "XTextPropertyToStringList failed");
+    CHECK(outCount == 3, "XTextPropertyToStringList lost an entry");
+    CHECK(outList && !strcmp(outList[0], "first") && !strcmp(outList[1], "") &&
+              !strcmp(outList[2], "third"),
+          "XTextPropertyToStringList did not round-trip the list");
+    CHECK(!outList[3],
+          "XTextPropertyToStringList array is not NULL-terminated");
+    XFreeStringList(outList);
+    XFree(packed.value);
+
+    CHECK(XStringListToTextProperty(NULL, 0, &packed),
+          "empty XStringListToTextProperty failed");
+    outList = (char **) 1;
+    outCount = -1;
+    CHECK(XTextPropertyToStringList(&packed, &outList, &outCount) && !outList &&
+              outCount == 0,
+          "XTextPropertyToStringList should return zero strings for empty "
+          "properties");
+    XFree(packed.value);
+
+    XTextProperty emptyProp = {
+        .value = NULL,
+        .encoding = XA_STRING,
+        .format = 8,
+        .nitems = 0,
+    };
+    outList = (char **) 1;
+    outCount = -1;
+    CHECK(XTextPropertyToStringList(&emptyProp, &outList, &outCount) &&
+              !outList && outCount == 0,
+          "XTextPropertyToStringList should accept NULL empty properties");
+
+    /* A UTF8_STRING property is not a STRING list; libX11 rejects it rather
+     * than handing back mojibake.
+     */
+    XTextProperty utf8Prop = {
+        .value = (unsigned char *) "nope",
+        .encoding = utf8Atom,
+        .format = 8,
+        .nitems = 4,
+    };
+    outList = (char **) 1;
+    CHECK(!XTextPropertyToStringList(&utf8Prop, &outList, &outCount),
+          "XTextPropertyToStringList should reject non-XA_STRING encoding");
+
+    /* The single-string case has no separator at all. */
+    char *oneList[] = {"solo"};
+    CHECK(XStringListToTextProperty(oneList, 1, &packed),
+          "single-entry XStringListToTextProperty failed");
+    CHECK(XTextPropertyToStringList(&packed, &outList, &outCount) &&
+              outCount == 1 && !strcmp(outList[0], "solo"),
+          "XTextPropertyToStringList mishandled a single-entry property");
+    XFreeStringList(outList);
+    XFree(packed.value);
+
+    /* Pin the one asymmetry the trailing-NUL rule creates. A property that is a
+     * lone NUL is one terminated empty string, so it decodes to a single empty
+     * entry, while a zero-length property carries no entries at all. Both are
+     * defensible readings of the same encoding, and nothing else distinguishes
+     * them, so the choice has to be nailed down or it can flip unnoticed the
+     * next time the counting is touched.
+     */
+    XTextProperty nulOnly = {
+        .value = (unsigned char *) "",
+        .encoding = XA_STRING,
+        .format = 8,
+        .nitems = 1,
+    };
+    outList = NULL;
+    outCount = -1;
+    CHECK(XTextPropertyToStringList(&nulOnly, &outList, &outCount) &&
+              outCount == 1 && outList && !outList[0][0] && !outList[1],
+          "a lone NUL should decode as one empty string");
+    XFreeStringList(outList);
+
+    /* The two ICCCM writers here disagree about whether nitems counts the final
+     * NUL: XStringListToTextProperty excludes it, XSetCommand includes it (as
+     * libX11's does). Counting separators alone turns a WM_COMMAND this library
+     * wrote into argc + 1 entries with a bogus empty argument on the end, so
+     * round-trip the writer that terminates every element.
+     */
+    char *cmdArgv[] = {"xnedit", "-read", "notes.txt"};
+    CHECK(XSetCommand(display, window, cmdArgv, 3), "XSetCommand failed");
+    XTextProperty command;
+    CHECK(XGetTextProperty(display, window, &command, XA_WM_COMMAND),
+          "WM_COMMAND read failed");
+    CHECK(XTextPropertyToStringList(&command, &outList, &outCount),
+          "WM_COMMAND XTextPropertyToStringList failed");
+    CHECK(outCount == 3,
+          "XSetCommand round-trip invented a trailing empty argument");
+    CHECK(!strcmp(outList[0], "xnedit") && !strcmp(outList[1], "-read") &&
+              !strcmp(outList[2], "notes.txt"),
+          "XSetCommand round-trip corrupted the argument vector");
+    XFreeStringList(outList);
+    XFree(command.value);
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
 /* An active grab is released when its grab window becomes unviewable. Without
  * this a Motif menu's pointer grab outlives the unmapped menu shell and
  * swallows all later input (the Help-menu freeze). Exercise unmap, destroy, the
@@ -14349,6 +14562,7 @@ int main(void)
      * so the suite output reads as a window-manager-convention pass.
      */
     run_test("icccm_wm_hints", test_icccm_wm_hints);
+    run_test("icccm_window_names", test_icccm_window_names);
     run_test("icccm_transient_for_modal", test_icccm_transient_for_modal);
     run_test("ewmh_wm_state_clientmessage", test_ewmh_wm_state_clientmessage);
     run_test("ewmh_wm_state_initial_property",

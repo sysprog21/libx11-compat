@@ -450,6 +450,44 @@ int XChangeProperty(Display *display,
     return 1;
 }
 
+Atom *XListProperties(register Display *display,
+                      Window window,
+                      int *n_props) /* RETURN */
+{
+    // https://tronche.com/gui/x/xlib/window-information/XListProperties.html
+    SET_X_SERVER_REQUEST(display, X_ListProperties);
+    *n_props = 0;
+    TYPE_CHECK(window, WINDOW, display, NULL);
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+
+    /* n_props is an int, so the count is narrowed here rather than guarded the
+     * way XTextPropertyToStringList guards its own. The difference is who
+     * supplies the number: that one decodes a caller-supplied XTextProperty and
+     * has to assume nothing, while this one counts entries in a store the
+     * library owns. Reaching INT_MAX properties on one window would mean
+     * exhausting memory on the WindowProperty records long before the cast
+     * mattered.
+     */
+    int count = (int) windowStruct->properties.length;
+
+    /* A property-free window returns NULL with a zero count, not an empty
+     * allocation, matching libX11.
+     */
+    if (!count)
+        return NULL;
+    Atom *props = malloc(sizeof(Atom) * (size_t) count);
+    if (!props) {
+        handleOutOfMemory(0, display, 0, 0);
+        return NULL;
+    }
+    for (int i = 0; i < count; i++) {
+        props[i] =
+            ((WindowProperty *) windowStruct->properties.array[i])->property;
+    }
+    *n_props = count;
+    return props;
+}
+
 /* Push the title the window should show now. Mirrors XGetWMName's preference so
  * the SDL titlebar and the ICCCM getter cannot disagree, and falls back to the
  * empty string once the client has deleted both name properties.

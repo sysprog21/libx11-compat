@@ -2600,16 +2600,61 @@ int XFontsOfFontSet(XFontSet font_set,
 
 /* Xrm database APIs live in src/xrm.c. */
 
+/* Read a text property, treating "absent" and "present but empty" alike. On a 0
+ * return the caller gets a zeroed XTextProperty with nothing to free, so no
+ * cleanup is needed on the failure path. XGetTextProperty already zeroes tp
+ * when the property is missing; only the empty-value case needs a free here,
+ * since XGetWindowProperty allocates even for a zero-length property.
+ */
+static Status getNonEmptyTextProperty(Display *dpy,
+                                      Window w,
+                                      XTextProperty *tp,
+                                      Atom property)
+{
+    if (!XGetTextProperty(dpy, w, tp, property))
+        return 0;
+    if (tp->nitems)
+        return 1;
+    XFree(tp->value);
+    tp->value = NULL;
+    tp->encoding = None;
+    tp->format = 0;
+    return 0;
+}
+
+/* Shared body of XFetchName and XGetIconName: both hand back a NUL-terminated
+ * Latin-1 string that the caller frees, and both reject anything that is not
+ * XA_STRING. XGetWindowProperty over-allocates by one byte and NUL-terminates,
+ * so the property buffer is already the string to return; ownership just moves
+ * to the caller, exactly as libX11 does it.
+ */
+static Status fetchLatin1NameProperty(Display *dpy,
+                                      Window w,
+                                      Atom property,
+                                      char **out)
+{
+    if (!out)
+        return 0;
+    *out = NULL;
+    XTextProperty tp;
+    if (!getNonEmptyTextProperty(dpy, w, &tp, property))
+        return 0;
+    if (tp.encoding != XA_STRING || tp.format != 8) {
+        XFree(tp.value);
+        return 0;
+    }
+    *out = (char *) tp.value;
+    return 1;
+}
+
 Status XFetchName(register Display *dpy, Window w, char **name)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    return fetchLatin1NameProperty(dpy, w, XA_WM_NAME, name);
 }
 
 Status XGetIconName(register Display *dpy, Window w, char **icon_name)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    return fetchLatin1NameProperty(dpy, w, XA_WM_ICON_NAME, icon_name);
 }
 
 int XStoreBuffer(register Display *dpy,
@@ -3374,8 +3419,76 @@ Status XTextPropertyToStringList(XTextProperty *tp,
                                  char ***list_return,
                                  int *count_return)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    // https://tronche.com/gui/x/xlib/ICC/client-to-window-manager/XTextPropertyToStringList.html
+    /* Inverse of XStringListToTextProperty: value holds NUL-separated strings.
+     * STRING/format-8 only, matching libX11; UTF8_STRING callers want
+     * XmbTextPropertyToTextList instead.
+     *
+     * The two ICCCM writers in this library disagree about whether nitems
+     * counts the final NUL: XStringListToTextProperty excludes it, XSetCommand
+     * (like libX11's) includes it. Counting separators alone would turn the
+     * latter into an extra empty trailing entry, so treat a NUL in the last
+     * byte as a terminator and drop it before counting. The cost is that a list
+     * whose last entry is empty reads back one element short, which is inherent
+     * to the encoding and is how libX11 resolves the same ambiguity.
+     *
+     * Unlike libX11, which packs every string into one block and has
+     * XFreeStringList free only list[0], this library's XFreeStringList walks
+     * the array freeing each element, so each string is its own allocation. The
+     * array is NULL-terminated because that is the loop's stop condition.
+     */
+    if (!tp || !list_return || !count_return)
+        return 0;
+    if (tp->encoding != XA_STRING || tp->format != 8)
+        return 0;
+    if (tp->nitems == 0) {
+        *list_return = NULL;
+        *count_return = 0;
+        return 1;
+    }
+    if (!tp->value)
+        return 0;
+
+    const char *data = (const char *) tp->value;
+    size_t datalen = tp->nitems;
+    if (!data[datalen - 1])
+        datalen--;
+    size_t count = 1;
+    for (size_t i = 0; i < datalen; i++) {
+        if (!data[i])
+            count++;
+    }
+
+    /* count_return is an int, so a property carrying more entries than that
+     * would wrap it after the allocation succeeded and hand the caller a
+     * negative or truncated count for a list it cannot walk safely.
+     */
+    if (count > (size_t) INT_MAX)
+        return 0;
+
+    char **list = calloc(count + 1, sizeof(char *));
+    if (!list)
+        return 0;
+
+    size_t start = 0, slot = 0;
+    for (size_t i = 0; i <= datalen; i++) {
+        if (i != datalen && data[i])
+            continue;
+        size_t len = i - start;
+        list[slot] = malloc(len + 1);
+        if (!list[slot]) {
+            XFreeStringList(list);
+            return 0;
+        }
+        memcpy(list[slot], data + start, len);
+        list[slot][len] = '\0';
+        slot++;
+        start = i + 1;
+    }
+
+    *list_return = list;
+    *count_return = (int) count;
+    return 1;
 }
 
 Status XGetRGBColormaps(Display *dpy,
@@ -3436,29 +3549,42 @@ int XStoreBytes(register Display *dpy, _Xconst char *bytes, int nbytes)
 
 Status XGetWMName(Display *dpy, Window w, XTextProperty *tp)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    /* Deliberately wider than libX11, which reads XA_WM_NAME only: this library
+     * is also the window manager, and modern toolkits put the real title in
+     * _NET_WM_NAME while leaving WM_NAME as a Latin-1 approximation.
+     *
+     * The preference only holds for a _NET_WM_NAME that actually carries text.
+     * The SDL title path skips a format-8 payload stored under some private
+     * type and falls back to WM_NAME; returning that payload here instead would
+     * make the getter and the titlebar disagree about the window's name.
+     */
+    if (getNonEmptyTextProperty(dpy, w, tp, _NET_WM_NAME)) {
+        if (tp->format == 8 &&
+            (tp->encoding == XA_STRING || tp->encoding == UTF8_STRING ||
+             tp->encoding == COMPOUND_TEXT))
+            return 1;
+        XFree(tp->value);
+        tp->value = NULL;
+        tp->encoding = None;
+        tp->format = 0;
+        tp->nitems = 0;
+    }
+    return getNonEmptyTextProperty(dpy, w, tp, XA_WM_NAME);
 }
 
 Status XGetWMIconName(Display *dpy, Window w, XTextProperty *tp)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    return getNonEmptyTextProperty(dpy, w, tp, XA_WM_ICON_NAME);
 }
 
 Status XGetWMClientMachine(Display *dpy, Window w, XTextProperty *tp)
 {
-    WARN_UNIMPLEMENTED;
-    return 0;
+    return getNonEmptyTextProperty(dpy, w, tp, XA_WM_CLIENT_MACHINE);
 }
 
-Atom *XListProperties(register Display *dpy,
-                      Window window,
-                      int *n_props) /* RETURN */
-{
-    WARN_UNIMPLEMENTED;
-    return NULL;
-}
+/* XListProperties lives in src/window-property.c, next to the property store it
+ * enumerates.
+ */
 
 char *XScreenResourceString(Screen *screen)
 {
