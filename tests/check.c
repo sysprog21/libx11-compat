@@ -6220,7 +6220,11 @@ static int test_properties(Display *display)
         CHECK(sdlTitle && !strcmp(sdlTitle, desired),
               "_NET_WM_NAME XChangeProperty did not update SDL title");
 
-        /* Plain XA_WM_NAME with XA_STRING should detour identically. */
+        /* Plain XA_WM_NAME with XA_STRING should detour when it is the
+         * preferred title source.
+         */
+        CHECK(XDeleteProperty(display, titleWin, netWmName),
+              "title detour _NET_WM_NAME delete failed");
         const char *wmDesired = "compat-wm-name-detour";
         CHECK(XChangeProperty(display, titleWin, XA_WM_NAME, XA_STRING, 8,
                               PropModeReplace, (unsigned char *) wmDesired,
@@ -6229,6 +6233,17 @@ static int test_properties(Display *display)
         sdlTitle = SDL_GetWindowTitle(sdlw);
         CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
               "WM_NAME XChangeProperty did not update SDL title");
+        CHECK(XChangeProperty(display, titleWin, netWmName, utf8, 8,
+                              PropModeReplace, (unsigned char *) desired,
+                              (int) strlen(desired)),
+              "XChangeProperty(_NET_WM_NAME restore) failed");
+        CHECK(XChangeProperty(display, titleWin, XA_WM_NAME, XA_STRING, 8,
+                              PropModeReplace, (unsigned char *) wmDesired,
+                              (int) strlen(wmDesired)),
+              "XChangeProperty(WM_NAME under _NET_WM_NAME) failed");
+        sdlTitle = SDL_GetWindowTitle(sdlw);
+        CHECK(sdlTitle && !strcmp(sdlTitle, desired),
+              "WM_NAME write incorrectly overrode _NET_WM_NAME title");
 
         /* Non-text property writes to WM_NAME (atom payload) must NOT touch the
          * title: detour only triggers on XA_STRING / UTF8_STRING /
@@ -6240,7 +6255,7 @@ static int test_properties(Display *display)
                             PropModeReplace, (unsigned char *) &atomPayload, 1),
             "XChangeProperty(WM_NAME, ATOM) failed");
         sdlTitle = SDL_GetWindowTitle(sdlw);
-        CHECK(sdlTitle && !strcmp(sdlTitle, wmDesired),
+        CHECK(sdlTitle && !strcmp(sdlTitle, desired),
               "non-text WM_NAME write should not change SDL title");
         XDestroyWindow(display, titleWin);
     }
@@ -13676,6 +13691,8 @@ struct offThreadWinArgs {
     Atom netWmWindowType;
     Atom netWmWindowTypeMenu;
     Atom netWmIcon;
+    Atom netWmName;
+    Atom utf8String;
     SDL_atomic_t done;
 };
 
@@ -13684,6 +13701,16 @@ static void *offThreadWinWorker(void *p)
     struct offThreadWinArgs *a = (struct offThreadWinArgs *) p;
     XMapWindow(a->display, a->window);
     XStoreName(a->display, a->window, "worker-title");
+
+    /* A raw WM_NAME / _NET_WM_NAME write is the path Motif, GTK, and Qt take
+     * instead of XStoreName, and it reaches the SDL title update without going
+     * through XStoreName's entry point. The title updater has to self-route on
+     * its own or this aborts on the requireMainEventThread guard.
+     */
+    XChangeProperty(a->display, a->window, XA_WM_NAME, XA_STRING, 8,
+                    PropModeReplace, (unsigned char *) "worker-wm-name", 14);
+    XChangeProperty(a->display, a->window, a->netWmName, a->utf8String, 8,
+                    PropModeReplace, (unsigned char *) "worker-net-name", 15);
 
     /* WM-state property writes drive the self-routing appliers off-thread:
      * XSetWMNormalHints (size constraints + resizable), _NET_WM_STATE,
@@ -13760,17 +13787,29 @@ static int test_off_thread_window_calls(Display *display)
         XInternAtom(display, "_NET_WM_WINDOW_TYPE", False),
         XInternAtom(display, "_NET_WM_WINDOW_TYPE_MENU", False),
         XInternAtom(display, "_NET_WM_ICON", False),
+        XInternAtom(display, "_NET_WM_NAME", False),
+        XInternAtom(display, "UTF8_STRING", False),
         {0},
     };
     pthread_t worker;
     CHECK(pthread_create(&worker, NULL, offThreadWinWorker, &a) == 0,
           "pthread_create failed");
 
-    /* Pump so the routed XMapWindow/XStoreName run on this (main) thread. Cap
-     * the spin so a broken router fails instead of hanging (see
-     * test_main_dispatch).
+    /* Pump so the routed calls run on this (main) thread. Bound the wait so a
+     * broken router fails instead of hanging (see test_main_dispatch). This
+     * worker makes over a dozen blocking handoffs, each waiting on this loop to
+     * drain it, so a fixed spin count is a latency bound rather than a hang
+     * check: a loaded machine trips it while the router is working fine. A
+     * wall-clock deadline stays a hang check no matter how many handoffs the
+     * worker adds or how slow the host is. Generous on purpose. This worker
+     * makes over a dozen blocking handoffs, each waiting on the loop below to
+     * drain it, and under TSan the whole gate already runs 26 to 43 seconds; a
+     * 30 second bound was tight enough to abort once. The bound exists to fail
+     * instead of hanging when the router is broken, so it only has to beat
+     * "never", not any particular latency.
      */
-    for (int i = 0; i < 100000 && !SDL_AtomicGet(&a.done); i++)
+    Uint64 deadline = SDL_GetTicks() + 300000;
+    while (!SDL_AtomicGet(&a.done) && SDL_GetTicks() < deadline)
         XPending(display);
     CHECK_ABORT(SDL_AtomicGet(&a.done),
                 "off-thread window calls never completed");

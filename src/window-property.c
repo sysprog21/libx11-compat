@@ -23,6 +23,7 @@
 #include "display.h"
 #include "errors.h"
 #include "events.h"
+#include "main-dispatch.h"
 #include "net-atoms.h"
 #include "window.h"
 
@@ -78,6 +79,26 @@ static void applyWindowIconToSdl(Window window)
  * event thread when a client worker sets _NET_WM_WINDOW_TYPE. Called only after
  * the caller has decided the type wants no border.
  */
+/* WM_NAME / _NET_WM_NAME hold a title only under one of the text encodings.
+ * Anything else stored at format 8 (an atom list, a client's own payload) is
+ * not a string and must never reach SDL_SetWindowTitle. The write hook and the
+ * delete revert share this predicate because they have to agree: if the revert
+ * were laxer, deleting the preferred name would promote a payload the write
+ * path deliberately ignored.
+ */
+static Bool isTitleTextType(Atom type)
+{
+    return type == XA_STRING || type == UTF8_STRING || type == COMPOUND_TEXT;
+}
+
+static void reapplyWindowTitle(Display *display, Window window);
+
+/* Drop SDL's border for menu / popup / dock window types, routed to the main
+ * event thread when a client worker sets _NET_WM_WINDOW_TYPE. Called only after
+ * the caller has decided the type wants no border.
+ */
+static void reapplyWindowTitle(Display *display, Window window);
+
 static void applyWindowBorderlessToSdl(Window window)
 {
     if (!libx11CompatOnMainEventThread()) {
@@ -417,28 +438,67 @@ int XChangeProperty(Display *display,
     }
 
     /* Motif, GTK, and Qt set their window titles via XChangeProperty on WM_NAME
-     * / _NET_WM_NAME rather than calling XStoreName. The handler routes any
-     * format-8 string-encoded write through XStoreName so SDL's window title
-     * reflects what the client just asked for. Non-string property types (e.g.
+     * / _NET_WM_NAME rather than calling XStoreName. Re-resolve the preferred
+     * stored title so SDL follows the same _NET_WM_NAME-over-WM_NAME precedence
+     * as XGetWMName and the delete-side revert. Non-string property types (e.g.
      * atom lists) pass through untouched.
      */
-    if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME)) {
-        if (type == XA_STRING || type == UTF8_STRING ||
-            type == COMPOUND_TEXT) {
-            /* Property bytes are not required to be NUL-terminated. */
-            size_t copyLen = (size_t) numberOfElements;
-            char *titleBuf = malloc(copyLen + 1);
-            if (titleBuf) {
-                if (copyLen > 0 && windowProperty->data)
-                    memcpy(titleBuf, windowProperty->data, copyLen);
-                titleBuf[copyLen] = '\0';
-                XStoreName(display, window, titleBuf);
-                free(titleBuf);
-            }
-        }
-    }
+    if (format == 8 && (property == XA_WM_NAME || property == _NET_WM_NAME) &&
+        isTitleTextType(type))
+        reapplyWindowTitle(display, window);
     postEvent(display, window, PropertyNotify, property, PropertyNewValue);
     return 1;
+}
+
+/* Push the title the window should show now. Mirrors XGetWMName's preference so
+ * the SDL titlebar and the ICCCM getter cannot disagree, and falls back to the
+ * empty string once the client has deleted both name properties.
+ *
+ * Self-routing like reapplyWindowDecorations above, and for the same reason:
+ * XDeleteProperty is a public entry point a client worker thread may call, and
+ * the whole store read (the findProperty scan plus the copy of the stored
+ * bytes) has to run on the main thread. Routing only the final SDL call would
+ * leave the scan racing concurrent main-thread writes to the same store.
+ */
+struct titleRevertArgs {
+    Display *display;
+    Window window;
+};
+
+static void reapplyWindowTitleOnMain(void *p)
+{
+    struct titleRevertArgs *a = (struct titleRevertArgs *) p;
+    reapplyWindowTitle(a->display, a->window);
+}
+
+static void reapplyWindowTitle(Display *display, Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        struct titleRevertArgs a = {display, window};
+        runOnMainThread(reapplyWindowTitleOnMain, &a);
+        return;
+    }
+
+    static const Atom titleSources[] = {_NET_WM_NAME, XA_WM_NAME};
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+
+    for (size_t i = 0; i < ARRAY_LENGTH(titleSources); i++) {
+        WindowProperty *prop =
+            findProperty(&windowStruct->properties, titleSources[i], NULL);
+        if (!prop || prop->dataFormat != 8 || !isTitleTextType(prop->type) ||
+            !prop->dataLength || !prop->data)
+            continue;
+        /* Property bytes are not required to be NUL-terminated. */
+        char *titleBuf = malloc(prop->dataLength + 1);
+        if (!titleBuf)
+            return;
+        memcpy(titleBuf, prop->data, prop->dataLength);
+        titleBuf[prop->dataLength] = '\0';
+        updateWindowTitle(display, window, titleBuf);
+        free(titleBuf);
+        return;
+    }
+    updateWindowTitle(display, window, "");
 }
 
 int XDeleteProperty(Display *display, Window window, Atom property)
