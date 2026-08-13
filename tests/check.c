@@ -5764,6 +5764,34 @@ static int test_events(Display *display)
     CHECK(focusKeepResult == (Window) PointerRoot,
           "host focus gain on top-level clobbered PointerRoot focus");
 
+
+    XDestroyWindow(display, window);
+    XDestroyWindow(display, resetWindow);
+    SDL_zero(resetEvent);
+    resetEvent.type = SDL_RENDER_TARGETS_RESET;
+    SDL_PushEvent(&resetEvent);
+    CHECK(!XCheckTypedEvent(display, Expose, &out),
+          "render reset with no top-level children posted Expose");
+    XFreePixmap(display, backgroundPixmap);
+    return 1;
+}
+
+/* Window-gravity moves and host-driven parent resizes. Split out of
+ * test_events: CHECK returns on the first failure, so keeping these behind 1500
+ * lines of unrelated assertions meant any earlier failure silently skipped
+ * every one of them.
+ */
+static int test_event_window_gravity(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 32, 32, 0, 0, 0);
+    CHECK(window != None, "gravity: parent window creation failed");
+    XSelectInput(display, window, ExposureMask | StructureNotifyMask);
+    CHECK(XMapWindow(display, window), "gravity: parent map failed");
+    XEvent out;
+    while (XCheckWindowEvent(display, window, ExposureMask, &out)) {
+    }
+
     Window gravityChild =
         XCreateSimpleWindow(display, window, 2, 3, 8, 8, 0, 0, 0);
     CHECK(gravityChild != None, "gravity child creation failed");
@@ -5982,13 +6010,6 @@ static int test_events(Display *display)
     XDestroyWindow(display, hostResizeWin);
 
     XDestroyWindow(display, window);
-    XDestroyWindow(display, resetWindow);
-    SDL_zero(resetEvent);
-    resetEvent.type = SDL_RENDER_TARGETS_RESET;
-    SDL_PushEvent(&resetEvent);
-    CHECK(!XCheckTypedEvent(display, Expose, &out),
-          "render reset with no top-level children posted Expose");
-    XFreePixmap(display, backgroundPixmap);
     return 1;
 }
 
@@ -14272,6 +14293,7 @@ int main(void)
     run_test("path_accelerator", test_path_accelerator);
     run_test("regions", test_regions);
     run_test("events", test_events);
+    run_test("event_window_gravity", test_event_window_gravity);
     run_test("grab_release_on_unviewable", test_grab_release_on_unviewable);
     run_test("warp_pointer_target", test_warp_pointer_target);
     run_test("windows", test_windows);
