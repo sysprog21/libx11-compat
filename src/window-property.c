@@ -75,10 +75,6 @@ static void applyWindowIconToSdl(Window window)
     SDL_SetWindowIcon(windowStruct->sdlWindow, windowStruct->icon);
 }
 
-/* Drop SDL's border for menu / popup / dock window types, routed to the main
- * event thread when a client worker sets _NET_WM_WINDOW_TYPE. Called only after
- * the caller has decided the type wants no border.
- */
 /* WM_NAME / _NET_WM_NAME hold a title only under one of the text encodings.
  * Anything else stored at format 8 (an atom list, a client's own payload) is
  * not a string and must never reach SDL_SetWindowTitle. The write hook and the
@@ -97,8 +93,6 @@ static void reapplyWindowTitle(Display *display, Window window);
  * event thread when a client worker sets _NET_WM_WINDOW_TYPE. Called only after
  * the caller has decided the type wants no border.
  */
-static void reapplyWindowTitle(Display *display, Window window);
-
 static void applyWindowBorderlessToSdl(Window window)
 {
     if (!libx11CompatOnMainEventThread()) {
@@ -488,6 +482,35 @@ Atom *XListProperties(register Display *display,
     return props;
 }
 
+/* _NET_WM_WINDOW_TYPE, _MOTIF_WM_HINTS and WM_NORMAL_HINTS each drive an SDL
+ * decoration knob on write, but every applier returns without touching SDL when
+ * its property is absent, so a delete would otherwise leave the window wearing
+ * state the client just removed. Reset both knobs to what realizeTopLevelWindow
+ * would have created the window with, then let whichever sources remain
+ * re-assert. Routing the revert back through the appliers keeps them the only
+ * place decoration policy lives, so the revert cannot drift from the apply.
+ */
+static void reapplyWindowDecorations(Window window)
+{
+    if (!libx11CompatOnMainEventThread()) {
+        runWindowOpOnMain(reapplyWindowDecorations, window);
+        return;
+    }
+    if (!IS_MAPPED_TOP_LEVEL_WINDOW(window))
+        return;
+
+    WindowStruct *windowStruct = GET_WINDOW_STRUCT(window);
+    SDL_SetWindowBordered(
+        windowStruct->sdlWindow,
+        windowStruct->overrideRedirect ? SDL_FALSE : SDL_TRUE);
+#if SDL_VERSION_ATLEAST(2, 0, 5)
+    SDL_SetWindowResizable(windowStruct->sdlWindow, SDL_FALSE);
+#endif
+    applyNetWmWindowTypeFromProperty(window);
+    applyMotifWmHintsFromProperty(window);
+    applyNormalHintsResizableFromProperty(window);
+}
+
 /* Push the title the window should show now. Mirrors XGetWMName's preference so
  * the SDL titlebar and the ICCCM getter cannot disagree, and falls back to the
  * empty string once the client has deleted both name properties.
@@ -568,15 +591,29 @@ int XDeleteProperty(Display *display, Window window, Atom property)
         postEvent(display, window, PropertyNotify, property, PropertyDelete);
     }
 
-    /* Re-resolve SDL flag mirror and modal pairing after the property is
-     * actually gone: applyNetWmStateFromProperty and
-     * applyTransientForRelationship both read _NET_WM_STATE via findProperty,
-     * so the read must see the post-delete state.
+    /* Every revert below re-reads the store, so all of them must run after the
+     * property is actually gone. The set handled here has to match the set
+     * XChangeProperty applies on write; test_property_side_effect_symmetry
+     * asserts that by round-tripping each atom.
      */
     if (property == _NET_WM_STATE) {
         applyNetWmStateFromProperty(window);
         applyTransientForRelationship(window);
     }
+    if (property == _NET_WM_WINDOW_TYPE || property == _MOTIF_WM_HINTS ||
+        property == XA_WM_NORMAL_HINTS)
+        reapplyWindowDecorations(window);
+
+    /* The WM_NORMAL_HINTS write hook caches PResizeInc alongside the resizable
+     * mirror, and the cache is what the live-resize drag-end snap quantises to.
+     * Re-run the decode so a delete clears it; leaving it set would keep
+     * snapping to a cell size the client just withdrew. The decoder itself
+     * handles the now-absent property by dropping hasResizeInc.
+     */
+    if (property == XA_WM_NORMAL_HINTS)
+        cacheResizeIncrementsFromNormalHintsProperty(window);
+    if (property == XA_WM_NAME || property == _NET_WM_NAME)
+        reapplyWindowTitle(display, window);
     return 1;
 }
 

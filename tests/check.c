@@ -6679,6 +6679,120 @@ static int test_ewmh_wm_state_initial_property(Display *display)
     return 1;
 }
 
+/* Every property XChangeProperty applies SDL state from must revert that state
+ * on XDeleteProperty. Applying on write and never reverting leaves the window
+ * wearing decorations, a title, or a mode the client has removed, and the
+ * asymmetry stays invisible until a toolkit deletes a property mid-session.
+ * Round-tripping each atom through write-then-delete beats comparing two
+ * hand-listed tables, since it cannot drift from the handlers.
+ *
+ * Coverage is uneven because of what the dummy video driver surfaces. The SDL
+ * title round-trips fully. SDL_SetWindowBordered and SDL_SetWindowResizable do
+ * not move SDL_GetWindowFlags headless (the write path is equally unobservable,
+ * which is why test_ewmh_window_type_borderless checks only the decoder), so
+ * for those three atoms this pins the store-level revert and that the delete
+ * path runs its appliers without faulting. A real video driver is needed to
+ * assert the knob itself.
+ */
+static int test_property_side_effect_symmetry(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(window != None, "symmetry: window creation failed");
+    CHECK(XMapWindow(display, window), "symmetry: window map failed");
+    SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
+    CHECK(sdlWindow != NULL, "symmetry: window has no SDL backing");
+
+    Atom netWmWindowType = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    Atom netWmWindowTypeMenu =
+        XInternAtom(display, "_NET_WM_WINDOW_TYPE_MENU", False);
+    Atom motifWmHints = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    Atom netWmName = XInternAtom(display, "_NET_WM_NAME", False);
+    Atom utf8String = XInternAtom(display, "UTF8_STRING", False);
+
+    /* Each decoration atom: write it, delete it, and confirm the store no
+     * longer holds it. The delete drives reapplyWindowDecorations, so a revert
+     * that faults or recurses fails here even though the knob is invisible.
+     */
+    Atom typeData = netWmWindowTypeMenu;
+    CHECK(XChangeProperty(display, window, netWmWindowType, XA_ATOM, 32,
+                          PropModeReplace, (unsigned char *) &typeData, 1),
+          "symmetry: _NET_WM_WINDOW_TYPE write failed");
+    CHECK(XDeleteProperty(display, window, netWmWindowType),
+          "symmetry: _NET_WM_WINDOW_TYPE delete failed");
+    CHECK(!windowHasProperty(display, window, netWmWindowType),
+          "symmetry: _NET_WM_WINDOW_TYPE survived its delete");
+
+    long motifData[5] = {2 /* MWM_HINTS_DECORATIONS */, 0, 0 /* no decor */, 0,
+                         0};
+    CHECK(XChangeProperty(display, window, motifWmHints, motifWmHints, 32,
+                          PropModeReplace, (unsigned char *) motifData, 5),
+          "symmetry: _MOTIF_WM_HINTS write failed");
+    CHECK(XDeleteProperty(display, window, motifWmHints),
+          "symmetry: _MOTIF_WM_HINTS delete failed");
+    CHECK(!windowHasProperty(display, window, motifWmHints),
+          "symmetry: _MOTIF_WM_HINTS survived its delete");
+
+    XSizeHints sizeHints = {0};
+    sizeHints.flags = PMinSize | PMaxSize;
+    sizeHints.min_width = 40;
+    sizeHints.min_height = 30;
+    sizeHints.max_width = 400;
+    sizeHints.max_height = 300;
+    XSetWMNormalHints(display, window, &sizeHints);
+    CHECK(XDeleteProperty(display, window, XA_WM_NORMAL_HINTS),
+          "symmetry: WM_NORMAL_HINTS delete failed");
+    CHECK(!windowHasProperty(display, window, XA_WM_NORMAL_HINTS),
+          "symmetry: WM_NORMAL_HINTS survived its delete");
+
+    /* WM_NAME / _NET_WM_NAME: deleting the preferred source falls back to the
+     * other, and deleting both leaves an empty title rather than a stale one.
+     */
+    CHECK(XStoreName(display, window, "legacy-title"),
+          "symmetry: WM_NAME write failed");
+    CHECK(
+        XChangeProperty(display, window, netWmName, utf8String, 8,
+                        PropModeReplace, (unsigned char *) "modern-title", 12),
+        "symmetry: _NET_WM_NAME write failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "modern-title"),
+          "symmetry: _NET_WM_NAME write did not reach the SDL title");
+    CHECK(XDeleteProperty(display, window, netWmName),
+          "symmetry: _NET_WM_NAME delete failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "legacy-title"),
+          "symmetry: deleting _NET_WM_NAME did not fall back to WM_NAME");
+    CHECK(XDeleteProperty(display, window, XA_WM_NAME),
+          "symmetry: WM_NAME delete failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), ""),
+          "symmetry: deleting both name properties left a stale SDL title");
+
+    /* The write hook only treats WM_NAME as a title under a text encoding, so
+     * the delete revert has to apply the same filter. A format-8 WM_NAME stored
+     * under some other type is not a string: the write must leave the title
+     * alone, and deleting the preferred _NET_WM_NAME must not promote that
+     * payload to the titlebar.
+     */
+    CHECK(XStoreName(display, window, "text-title"),
+          "symmetry: WM_NAME text write failed");
+    Atom privateType = XInternAtom(display, "LIBX11_COMPAT_TEST_BLOB", False);
+    CHECK(XChangeProperty(display, window, XA_WM_NAME, privateType, 8,
+                          PropModeReplace, (unsigned char *) "\x01\x02blob", 6),
+          "symmetry: non-text WM_NAME write failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "text-title"),
+          "symmetry: non-text WM_NAME write reached the SDL title");
+    CHECK(XChangeProperty(display, window, netWmName, utf8String, 8,
+                          PropModeReplace, (unsigned char *) "preferred", 9),
+          "symmetry: _NET_WM_NAME write over non-text WM_NAME failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), "preferred"),
+          "symmetry: _NET_WM_NAME did not take the title");
+    CHECK(XDeleteProperty(display, window, netWmName),
+          "symmetry: _NET_WM_NAME delete over non-text WM_NAME failed");
+    CHECK(!strcmp(SDL_GetWindowTitle(sdlWindow), ""),
+          "symmetry: delete revert promoted a non-text WM_NAME to the title");
+
+    XDestroyWindow(display, window);
+    return 1;
+}
+
 /* EWMH _NET_ACTIVE_WINDOW ClientMessage routing: a request sent to root is
  * consumed by the in-process WM dispatch and never leaks into the client event
  * queue. Skip target inspection for unmapped or invalid windows.
@@ -14567,6 +14681,8 @@ int main(void)
     run_test("ewmh_wm_state_clientmessage", test_ewmh_wm_state_clientmessage);
     run_test("ewmh_wm_state_initial_property",
              test_ewmh_wm_state_initial_property);
+    run_test("property_side_effect_symmetry",
+             test_property_side_effect_symmetry);
     run_test("ewmh_active_window_clientmessage",
              test_ewmh_active_window_clientmessage);
     run_test("ewmh_close_window_clientmessage",
