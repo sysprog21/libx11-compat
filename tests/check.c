@@ -10882,6 +10882,67 @@ static int test_preedit_preserves_client_content(Display *display)
     return 1;
 }
 
+/* Every event a client sees must carry its own serial. Xt calls XPending before
+ * each XNextEvent, so the queue is drained and converted in
+ * drainSdlEventsToPutBack and XNextEvent then pops an already-converted event
+ * without reaching its own bump; leaving that path unbumped gave every event
+ * serial 1 for the whole session.
+ *
+ * IM commits are where that bites. Clients dedupe key events on the triple
+ * (serial, keycode, time), and a commit's synthetic KeyPress always carries
+ * keycode 0, so a constant serial leaves only the millisecond timestamp to tell
+ * two commits apart. NEdit's text widget caches its IM lookup on exactly that
+ * triple, so two commits in one millisecond would resolve to the same cached
+ * text.
+ */
+static int test_event_serials_advance(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window win = XCreateSimpleWindow(display, root, 0, 0, 64, 64, 0, 0, 0);
+    CHECK(win != None, "serial: window creation failed");
+    XSelectInput(display, win, KeyPressMask);
+    CHECK(XMapWindow(display, win), "serial: map failed");
+
+    XIM im = XOpenIM(display, NULL, NULL, NULL);
+    CHECK(im, "serial: XOpenIM failed");
+    XIC ic = XCreateIC(im, XNInputStyle, XIMPreeditNothing | XIMStatusNothing,
+                       XNClientWindow, win, XNFocusWindow, win, NULL);
+    CHECK(ic, "serial: XCreateIC failed");
+    XSetICFocus(ic);
+    XEvent drain;
+    while (XPending(display))
+        XNextEvent(display, &drain);
+
+    /* Three commits with no delay between them, so they land in the same
+     * millisecond and the timestamp cannot be the discriminator.
+     */
+    static const char *const commits[] = {"a", "b", "c"};
+    unsigned long serials[3] = {0, 0, 0};
+    int got = 0;
+    for (size_t i = 0; i < ARRAY_LENGTH(commits); i++) {
+        SDL_Event commit;
+        set_text_input_event(&commit, commits[i]);
+        SDL_PushEvent(&commit);
+        for (int spin = 0; spin < 200 && got == (int) i; spin++) {
+            while (XPending(display)) {
+                XEvent ev;
+                XNextEvent(display, &ev);
+                if (ev.type == KeyPress && got < 3)
+                    serials[got++] = ev.xkey.serial;
+            }
+            SDL_PumpEvents();
+        }
+    }
+    CHECK(got == 3, "serial: not every IM commit produced a KeyPress");
+    CHECK(serials[1] > serials[0] && serials[2] > serials[1],
+          "serial: consecutive events reused a serial");
+
+    XDestroyIC(ic);
+    XCloseIM(im);
+    XDestroyWindow(display, win);
+    return 1;
+}
+
 static int test_input_methods(Display *display)
 {
     XIM im = XOpenIM(display, NULL, NULL, NULL);
@@ -14857,6 +14918,7 @@ int main(void)
     run_test("xrm", test_xrm);
     run_test("preedit_preserves_client_content",
              test_preedit_preserves_client_content);
+    run_test("event_serials_advance", test_event_serials_advance);
     run_test("input_methods", test_input_methods);
     run_test("defaults", test_defaults);
     run_test("shape_mask", test_shape_mask);

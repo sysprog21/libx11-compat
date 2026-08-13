@@ -1450,6 +1450,16 @@ static int drainSdlEventsToPutBack(Display *display)
              * when they are eventually consumed.
              */
             appendPutBackEventWithTap(display, &converted, True);
+
+        /* Advance the serial per SDL event, exactly as the XNextEvent loop
+         * does, including for events convertEvent swallowed. This is the path
+         * that actually runs for a toolkit client: Xt calls XPending before
+         * every XNextEvent, so the queue is drained here and XNextEvent then
+         * pops an already-converted event without reaching its own bump. Left
+         * unbumped, every event a Motif or Xt client ever sees carries serial
+         * 1, and clients that key on the serial cannot tell two events apart.
+         */
+        bumpEventSerial();
     }
     int remainingSdlEvents = 0;
     if (getEventQueueLength(&remainingSdlEvents)) {
