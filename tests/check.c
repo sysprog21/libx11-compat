@@ -12542,6 +12542,91 @@ static int test_present_software_fallback(Display *display)
     return 1;
 }
 
+/* showTopLevelWindow posts its own MapNotify and arms a one-shot so the SDL
+ * SHOWN echo does not deliver a second one. Swallowing that echo must report no
+ * event: convertEvent returning 0 promises a filled XEvent, and XNextEvent
+ * hands the caller's buffer straight back to the client.
+ */
+static int test_suppressed_show_echo_reports_no_event(Display *display)
+{
+    Window root = RootWindow(display, DefaultScreen(display));
+    Window window = XCreateSimpleWindow(display, root, 0, 0, 40, 30, 0, 0, 0);
+    CHECK(window != None, "suppressed show echo: window create failed");
+    XMapWindow(display, window);
+    XSync(display, False);
+    CHECK(GET_WINDOW_STRUCT(window)->sdlWindow != NULL,
+          "suppressed show echo: window was never realized");
+
+    SDL_AtomicSet(&GET_WINDOW_STRUCT(window)->suppressSdlShowMap, 1);
+    SDL_Event shownEvent;
+    SDL_zero(shownEvent);
+    XC_INIT_WINDOW_EVENT(&shownEvent);
+    XC_SET_WINDOW_SUBEVENT(&shownEvent, SDL_WINDOWEVENT_SHOWN);
+    shownEvent.window.windowID =
+        SDL_GetWindowID(GET_WINDOW_STRUCT(window)->sdlWindow);
+
+    /* Fill the caller's event with a sentinel and require it back untouched.
+     * The return code alone would still pass if a future swallow path filled
+     * part of the event before bailing, which is the half of the contract that
+     * actually reaches the client.
+     */
+    XEvent out, sentinel;
+    memset(&out, 0xAB, sizeof(out));
+    memset(&sentinel, 0xAB, sizeof(sentinel));
+    int rc = convertEvent(display, &shownEvent, &out, True);
+    CHECK(rc == -1,
+          "suppressed SDL show echo reported an event it never filled in");
+    CHECK(memcmp(&out, &sentinel, sizeof(out)) == 0,
+          "suppressed SDL show echo wrote the caller's event buffer");
+    XDestroyWindow(display, window);
+    return 1;
+}
+
+static int test_present_dirty_rect_coalescing(Display *display)
+{
+    (void) display;
+
+    /* Test data, not production tuning: these cases assert what the cost model
+     * decides at one call/pixel exchange rate, so retuning the present path
+     * must not move them.
+     */
+    const uint64_t OVERHEAD = 64u * 1024u;
+
+    SDL_Rect clustered[] = {
+        {0, 0, 8, 8},
+        {10, 0, 8, 8},
+        {0, 10, 8, 8},
+        {10, 10, 8, 8},
+    };
+    int nclustered = coalescePresentDirtyRects(clustered, 4, OVERHEAD);
+    CHECK(nclustered == 1, "clustered present dirty rects were not coalesced");
+    CHECK(clustered[0].x == 0 && clustered[0].y == 0 && clustered[0].w == 18 &&
+              clustered[0].h == 18,
+          "clustered present dirty rects coalesced to the wrong bounds");
+
+    SDL_Rect scattered[] = {
+        {0, 0, 8, 8},
+        {500, 500, 8, 8},
+    };
+    CHECK(coalescePresentDirtyRects(scattered, 2, OVERHEAD) == 2,
+          "far-apart present dirty rects coalesced into an over-read");
+
+    /* Many tiny rects drop many readback calls, but the pixels they cost must
+     * stay inside the over-read budget: twice the damaged area (16 rects of 64
+     * pixels) plus one call's worth of slack.
+     */
+    SDL_Rect spread[16];
+    for (int i = 0; i < 16; i++)
+        spread[i] = (SDL_Rect) {i * 100, 0, 8, 8};
+    CHECK(coalescePresentDirtyRects(spread, 16, OVERHEAD) == 1,
+          "cheap present dirty rect merge was not taken");
+    unsigned long long spreadPixels =
+        (unsigned long long) spread[0].w * spread[0].h;
+    CHECK(spreadPixels <= 16 * 64 * 2 + OVERHEAD / 4,
+          "present dirty rect coalescing exceeded the over-read budget");
+    return 1;
+}
+
 /* Child windows share the top-level backing, so a child's pixels linger there
  * after it moves. When the old and new footprints overlap, clearing the vacated
  * area must not be clipped by the child at its new position, or stale pixels in
@@ -14886,6 +14971,10 @@ int main(void)
     run_test("grab_release_on_unviewable", test_grab_release_on_unviewable);
     run_test("warp_pointer_target", test_warp_pointer_target);
     run_test("windows", test_windows);
+    run_test("present_dirty_rect_coalescing",
+             test_present_dirty_rect_coalescing);
+    run_test("suppressed_show_echo_reports_no_event",
+             test_suppressed_show_echo_reports_no_event);
     run_test("fonts", test_fonts);
     run_test("contexts", test_contexts);
     run_test("extensions", test_extensions);

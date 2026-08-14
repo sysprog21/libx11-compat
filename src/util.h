@@ -131,4 +131,15 @@ void swapArray(Array *a, size_t index1, size_t index2);
 void freeArray(Array *a);
 Bool matchWildcard(const char *wildcard, const char *string);
 
+/* Read a numeric env knob, clamped. A value below "lo" is a typo rather than an
+ * intent, so it falls back to "def"; one above "hi" asks for more than the code
+ * can honor, so it saturates. Trailing junk or an out-of-range parse leaves the
+ * default. One parser so the knobs cannot disagree on what they accept.
+ */
+long long compatEnvClamped(const char *name,
+                           long long def,
+                           long long lo,
+                           long long hi);
+
+
 #endif /* UTIL_H */

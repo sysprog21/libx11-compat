@@ -2089,6 +2089,11 @@ int x11compat_wasm_fixed_font_property_selftest(void)
         return 1;
     }
     resource->name = strdup("fixed");
+    if (!resource->name) {
+        free(resource);
+        FREE_XID(font);
+        return 1;
+    }
     resource->useFixedBitmap = True;
     SET_XID_TYPE(font, FONT);
     SET_XID_VALUE(font, resource);

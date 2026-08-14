@@ -41,6 +41,19 @@ static inline unsigned long colorWithOpaqueDefault(unsigned long color)
     return color | (alpha & -(unsigned long) ((color & alpha) == 0));
 }
 
+/* Map a logical ARGB pixel onto an SDL surface or texture format, promoting an
+ * unset alpha the way colorWithOpaqueDefault describes. Every writer of X pixel
+ * values into SDL storage goes through here so the promotion cannot be
+ * forgotten at one site and applied at another.
+ */
+static inline Uint32 mapColorToPixel(XcPixelFormat format, unsigned long color)
+{
+    color = colorWithOpaqueDefault(color);
+    return SDL_MapRGBA(format, GET_RED_FROM_COLOR(color),
+                       GET_GREEN_FROM_COLOR(color), GET_BLUE_FROM_COLOR(color),
+                       GET_ALPHA_FROM_COLOR(color));
+}
+
 extern Colormap GREY_SCALE_COLORMAP;
 extern Colormap REAL_COLOR_COLORMAP;
 
