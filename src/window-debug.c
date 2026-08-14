@@ -13,6 +13,8 @@ void printWindowHierarchyOfChild(Window window, char *prepend, int prependLen)
     Window *children = GET_CHILDREN(window);
     /* +2: one byte for the per-depth indent character, one for the NUL. */
     char *childPrepend = malloc((size_t) prependLen + 2);
+    if (!childPrepend)
+        return;
     size_t numChildren = GET_WINDOW_STRUCT(window)->children.length;
     memcpy(childPrepend, prepend, (size_t) prependLen);
     char *charPointer = childPrepend + prependLen;

@@ -531,6 +531,7 @@ $(UI_SMOKE_OUT_ROOT)/motif-wsm-labels/.stamp: FORCE $(MOTIF_DEMOS_BUILD_STAMP)
 	    --display $(UI_REPLAY_DISPLAY) \
 	    --geometry $(UI_REPLAY_GEOMETRY) \
 	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
+	    --in-process-snapshots \
 	    --render-stats $(abspath $(UI_SMOKE_OUT_ROOT))/motif-wsm-labels/render-stats.tsv \
 	    $(UI_REPLAY_XVFB) \
 	    $(motif_ui_replay_env) \

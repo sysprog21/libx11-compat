@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
@@ -85,7 +86,6 @@ static SDL_atomic_t coalesceDeadlineLoNs = {0};
  */
 #define COALESCE_CLIENT_REPAINT_MAX_MS 150
 
-static unsigned long opaqueColorIfAlphaUnset(unsigned long color);
 static Bool getDrawableSize(Drawable drawable, int *width, int *height);
 static void resolveWindowBackground(Window window,
                                     Pixmap *backgroundPixmap,
@@ -306,6 +306,11 @@ static double nsToMs(uint64_t ns)
     return (double) ns / 1000000.0;
 }
 
+/* Rects a single present may carry, and the hard ceiling on dirtyRectCap below:
+ * past it the region collapses to fullyDirty instead.
+ */
+enum { DIRTY_RECT_BUDGET = 256 };
+
 /* Maximum number of independent dirty rects to track on a single window before
  * collapsing to fullyDirty. Keeps SDL_UpdateWindowSurfaceRects in its per-rect
  * path on every backend that has been measured; once the region exceeds this
@@ -317,17 +322,10 @@ static double nsToMs(uint64_t ns)
 static int dirtyRectCap(void)
 {
     static int cached = 0;
-    if (cached != 0)
-        return cached;
-    int value = DIRTY_RECT_CAP_DEFAULT;
-    const char *env = getenv("LIBX11_COMPAT_DIRTY_MAX_RECTS");
-    if (env && *env) {
-        char *end = NULL;
-        long parsed = strtol(env, &end, 10);
-        if (end != env && parsed >= 1 && parsed <= 256)
-            value = (int) parsed;
-    }
-    cached = value;
+    if (cached == 0)
+        cached = (int) compatEnvClamped("LIBX11_COMPAT_DIRTY_MAX_RECTS",
+                                        DIRTY_RECT_CAP_DEFAULT, 1,
+                                        DIRTY_RECT_BUDGET);
     return cached;
 }
 
@@ -341,26 +339,169 @@ static int dirtyRectCap(void)
  * buffer never exceeds the cap (its only larger-than-cap case is a single
  * scanline wider than the cap, which must fit whole - 32 KiB even at 8K width,
  * far under this cap). 8 MiB holds a 2048-wide rect in one band and any
- * narrower rect in correspondingly more rows per band. Hard-clamped to at least
- * one MiB when read from the env.
+ * narrower rect in correspondingly more rows per band. Clamped to [1 MiB, 256
+ * MiB] when read from the env: the ceiling matters as much as the floor, since
+ * this value both sizes the retained per-window buffer (a huge one turns a typo
+ * into a failed realloc and a failed present) and divides the pitch when the
+ * band split is computed.
  */
 #define PRESENT_READBACK_CAP_DEFAULT (8u * 1024u * 1024u)
+#define PRESENT_READBACK_CAP_MIN (1u * 1024u * 1024u)
+#define PRESENT_READBACK_CAP_MAX (256u * 1024u * 1024u)
 
 static size_t presentReadbackCapLimit(void)
 {
     static size_t cached = 0;
-    if (cached != 0)
-        return cached;
-    size_t value = PRESENT_READBACK_CAP_DEFAULT;
-    const char *env = getenv("LIBX11_COMPAT_PRESENT_READBACK_CAP");
-    if (env && *env) {
-        char *end = NULL;
-        long long parsed = strtoll(env, &end, 10);
-        if (end != env && parsed >= (long long) (1u * 1024u * 1024u))
-            value = (size_t) parsed;
-    }
-    cached = value;
+    if (cached == 0)
+        cached = (size_t) compatEnvClamped(
+            "LIBX11_COMPAT_PRESENT_READBACK_CAP", PRESENT_READBACK_CAP_DEFAULT,
+            PRESENT_READBACK_CAP_MIN, PRESENT_READBACK_CAP_MAX);
     return cached;
+}
+
+/* What one fewer readback is worth, in bytes of extra contiguous pixels.
+ *
+ * Every present-path readback runs on the SCREEN renderer, which is a software
+ * renderer over a CPU surface (see initScreenWindow), so this prices a CPU-side
+ * blit, not a GPU pipeline sync. Measured against that shape: a call costs ~1.0
+ * us and a pixel 0.45 ns on the SDL3 backend, where the read allocates and
+ * converts a surface per call, and ~0.1 us per call on SDL2, where it fills
+ * caller memory directly. So a call is worth somewhere between 230 and 2200
+ * pixels. 4 KiB sits between the two: enough that clustered damage still
+ * merges, little enough that the worst case wastes a few microseconds.
+ */
+#define PRESENT_READBACK_CALL_OVERHEAD_BYTES (4u * 1024u)
+
+/* Rows of one rect that fit a readback scratch of "cap" bytes at this pitch.
+ * The read loop below and the coalescing cost model must split rects the same
+ * way, or a union that widens the pitch (fewer rows per band, so more bands)
+ * gets priced as if it saved a call.
+ *
+ * Clamp the narrowed result, not the wide quotient: a large cap over a narrow
+ * pitch yields a quotient that does not fit an int, and truncating first can
+ * land on zero, which the callers divide by and step a loop with.
+ */
+static int presentBandRows(int pitchBytes, size_t cap)
+{
+    if (pitchBytes <= 0)
+        return 1;
+    size_t rows = cap / (size_t) pitchBytes;
+    if (rows > (size_t) INT_MAX)
+        return INT_MAX;
+    return rows < 1 ? 1 : (int) rows;
+}
+
+static uint64_t rectPixels(const SDL_Rect *rect)
+{
+    return (uint64_t) rect->w * (uint64_t) rect->h;
+}
+
+/* Bytes one readback of "rect" moves, plus the per-call overhead of each band
+ * it splits into. Prices against the cap rather than the window's current
+ * scratch: the scratch is sized from this frame's rects after coalescing, so it
+ * only ever bands a rect the cap would band anyway.
+ */
+static uint64_t rectReadbackCost(const SDL_Rect *rect, uint64_t callOverhead)
+{
+    uint64_t rows =
+        (uint64_t) presentBandRows(rect->w * 4, presentReadbackCapLimit());
+    uint64_t bands = ((uint64_t) rect->h + rows - 1) / rows;
+    return rectPixels(rect) * 4u + bands * callOverhead;
+}
+
+
+/* Fill "out" with the window's pending damage clipped to "bounds", newest
+ * geometry first: the dirty region when it is usable, otherwise the previous
+ * present extent, otherwise the whole of "bounds".
+ *
+ * Returns the rect count, or 0 when nothing survives the clip and the caller
+ * should skip this window.
+ *
+ * Shared by both present paths so they cannot drift; only the accelerated
+ * caller coalesces the result.
+ */
+static int buildPresentDirtyRects(WindowStruct *child,
+                                  const SDL_Rect *bounds,
+                                  SDL_Rect *out)
+{
+    int nrects = 0;
+    Bool useRegion = !child->fullyDirty && child->hasPresented &&
+                     child->hasPresentRect &&
+                     pixman_region32_n_rects(&child->dirty) > 0;
+    if (useRegion) {
+        int rn = pixman_region32_n_rects(&child->dirty);
+        if (rn > DIRTY_RECT_BUDGET) {
+            /* Should never trip: unionPresentRect collapses to fullyDirty once
+             * the dirtyRectCap is exceeded. Fall back to the bounding extent so
+             * a future cap bump does not silently truncate.
+             */
+            useRegion = False;
+        } else {
+            pixman_box32_t *boxes =
+                pixman_region32_rectangles(&child->dirty, NULL);
+            for (int b = 0; b < rn; b++) {
+                SDL_Rect r = {
+                    .x = boxes[b].x1,
+                    .y = boxes[b].y1,
+                    .w = boxes[b].x2 - boxes[b].x1,
+                    .h = boxes[b].y2 - boxes[b].y1,
+                };
+                if (!SDL_IntersectRect(&r, bounds, &r))
+                    continue;
+                out[nrects++] = r;
+            }
+        }
+    }
+    if (!useRegion || nrects == 0) {
+        /* When fullyDirty is set, always read back the entire clamped window.
+         * presentRect may carry over a smaller bounding extent from prior
+         * partial marks in the same pending cycle; using it here would
+         * under-cover the actual damage. The region walk above already gated on
+         * !fullyDirty, so this fallback handles fullyDirty + no-region +
+         * no-prior-present together.
+         */
+        SDL_Rect r = *bounds;
+        if (!child->fullyDirty && child->hasPresented && child->hasPresentRect)
+            r = child->presentRect;
+        if (!SDL_IntersectRect(&r, bounds, &r))
+            return 0;
+        out[0] = r;
+        nrects = 1;
+    }
+    return nrects;
+}
+
+int coalescePresentDirtyRects(SDL_Rect *rects,
+                              int nrects,
+                              uint64_t callOverhead)
+{
+    if (nrects <= 1)
+        return nrects;
+
+    SDL_Rect bbox = rects[0];
+    uint64_t pixels = 0, separateCost = 0;
+    for (int i = 0; i < nrects; i++) {
+        unionRect(&bbox, &rects[i], &bbox);
+        pixels += rectPixels(&rects[i]);
+        separateCost += rectReadbackCost(&rects[i], callOverhead);
+    }
+
+    /* All or nothing: one far rect leaves the whole frame per-rect. Splitting
+     * the near ones off would need a real clustering pass, and the dirty count
+     * is capped at 16 by default (LIBX11_COMPAT_DIRTY_MAX_RECTS; past it the
+     * region collapses to fullyDirty), so there is little left to win.
+     *
+     * The byte comparison alone would approve a union of far-apart rects
+     * whenever the calls it drops outweigh the pixels it adds, so cap the
+     * over-read too: twice the damaged area plus one call's worth of slack, the
+     * latter so a handful of tiny clustered rects still merge.
+     */
+    if (rectReadbackCost(&bbox, callOverhead) >= separateCost ||
+        rectPixels(&bbox) > pixels * 2u + callOverhead / 4u)
+        return nrects;
+
+    rects[0] = bbox;
+    return 1;
 }
 
 static void unionPresentRect(WindowStruct *windowStruct, const SDL_Rect *rect)
@@ -835,42 +976,20 @@ static Bool presentWindowAccelerated(Window win,
         child->fullyDirty = True;
     }
 
-    /* Build the dirty-rect list exactly like the software path. */
-    enum { DIRTY_RECT_BUDGET = 256 };
+    /* Build the dirty-rect list like the software path, then coalesce it. Both
+     * paths pay a renderer readback per rect, but only this one stages through
+     * a capped scratch and re-uploads each rect into a streaming texture, so a
+     * merge here drops a whole read/upload pair. The software path reads
+     * straight into the window surface at the rect's own offset, where the
+     * bounding box would also enlarge the SDL_UpdateWindowSurfaceRects payload;
+     * leave it alone until that trade is measured.
+     */
     SDL_Rect rects[DIRTY_RECT_BUDGET];
-    int nrects = 0;
-    Bool useRegion = !child->fullyDirty && child->hasPresented &&
-                     child->hasPresentRect &&
-                     pixman_region32_n_rects(&child->dirty) > 0;
-    if (useRegion) {
-        int rn = pixman_region32_n_rects(&child->dirty);
-        if (rn > DIRTY_RECT_BUDGET) {
-            useRegion = False;
-        } else {
-            pixman_box32_t *boxes =
-                pixman_region32_rectangles(&child->dirty, NULL);
-            for (int b = 0; b < rn; b++) {
-                SDL_Rect r = {
-                    .x = boxes[b].x1,
-                    .y = boxes[b].y1,
-                    .w = boxes[b].x2 - boxes[b].x1,
-                    .h = boxes[b].y2 - boxes[b].y1,
-                };
-                if (!SDL_IntersectRect(&r, &bounds, &r))
-                    continue;
-                rects[nrects++] = r;
-            }
-        }
-    }
-    if (!useRegion || nrects == 0) {
-        SDL_Rect r = {0, 0, bw, bh};
-        if (!child->fullyDirty && child->hasPresented && child->hasPresentRect)
-            r = child->presentRect;
-        if (!SDL_IntersectRect(&r, &bounds, &r))
-            return False;
-        rects[0] = r;
-        nrects = 1;
-    }
+    int nrects = buildPresentDirtyRects(child, &bounds, rects);
+    if (nrects == 0)
+        return False;
+    nrects = coalescePresentDirtyRects(rects, nrects,
+                                       PRESENT_READBACK_CALL_OVERHEAD_BYTES);
 
     /* Read each dirty rect from the SCREEN backing into the CPU scratch, then
      * upload just that rect into the persistent streaming texture. The scratch
@@ -941,13 +1060,10 @@ static Bool presentWindowAccelerated(Window win,
         int pitch = rects[r].w * 4;
 
         /* Rows that fit the scratch in one band (>=1: guaranteed by the
-         * maxRowBytes floor above). Tall rects are read in successive bands.
+         * maxRowBytes floor above). Tall rects are read in successive bands;
+         * coalescePresentDirtyRects prices its merges through the same split.
          */
-        int bandRows = pitch > 0
-                           ? (int) (child->presentReadbackCap / (size_t) pitch)
-                           : rects[r].h;
-        if (bandRows < 1)
-            bandRows = 1;
+        int bandRows = presentBandRows(pitch, child->presentReadbackCap);
         for (int y = 0; y < rects[r].h; y += bandRows) {
             int rows = rects[r].h - y;
             if (rows > bandRows)
@@ -970,7 +1086,7 @@ static Bool presentWindowAccelerated(Window win,
                 goto fail;
             }
         }
-        framePixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
+        framePixels += rectPixels(&rects[r]);
     }
     *readbackNs += monotonicNowNs() - readStart;
 
@@ -1069,6 +1185,60 @@ fail:
      */
     SDL_SetRenderTarget(screen, NULL);
     return False;
+}
+
+/* During a live host resize the window surface grows before the backing is
+ * recreated, so a band of surface to the right of and below the presented
+ * backing has no source pixels. On macOS the client's reflow only lands once
+ * the drag settles (the modal loop delivers no intermediate ConfigureNotify and
+ * the observer path coalesces reflows while the drag keeps moving), so this
+ * band is visible for the whole grow drag. Fill it with the window's real
+ * background colour, exactly as real X11 paints a freshly exposed region and as
+ * resizeWindowTexture / XClearArea clear the backing.
+ *
+ * An earlier version scanned inward from the content edge to guess a "field
+ * colour" to extend. That is unsound: the edge row/column is content, not
+ * background - the bottom function-key bar, a dialog border, or leftover File
+ * Manager pixels - so the scan propagated that content into the new band as a
+ * visible reflection, worst of all after shrinking then re-growing (the lagging
+ * backing still holds the old, taller frame at its edge). A flat background
+ * fill cannot reflect content and matches the surrounding cleared area.
+ *
+ * This runs whenever the surface is larger than the presented backing, whether
+ * or not a client reflow hook is registered: a client hook only repaints the
+ * whole new area on ticks where its reflow actually ran, and on the intervening
+ * moving ticks the backing lags the live surface (clampW/clampH are the smaller
+ * backing extent). On any tick where the reflow caught up (or no resize is in
+ * flight) clampW/clampH equal the surface, the condition is false, and nothing
+ * runs - a no-op in steady state.
+ */
+static void fillPresentMargin(Window window,
+                              SDL_Window *sdlWindow,
+                              SDL_Surface *winSurface,
+                              int clampW,
+                              int clampH)
+{
+    if (winSurface->w <= clampW && winSurface->h <= clampH)
+        return;
+
+    unsigned long bg = resolvedWindowBackgroundColor(window);
+    Uint32 fill = mapColorToPixel(XC_SURFACE_FORMAT(winSurface), bg);
+    SDL_Rect marginRects[2];
+    int marginCount = 0;
+    if (winSurface->w > clampW) {
+        SDL_Rect right = {clampW, 0, winSurface->w - clampW, clampH};
+        SDL_FillRect(winSurface, &right, fill);
+        marginRects[marginCount++] = right;
+    }
+    if (winSurface->h > clampH) {
+        /* Full width so the bottom-right corner (below and right of the
+         * content) is covered by this pass too.
+         */
+        SDL_Rect bottom = {0, clampH, winSurface->w, winSurface->h - clampH};
+        SDL_FillRect(winSurface, &bottom, fill);
+        marginRects[marginCount++] = bottom;
+    }
+    SDL_UpdateWindowSurfaceRects(sdlWindow, marginRects, marginCount);
 }
 
 void drawWindowDataToScreen()
@@ -1261,10 +1431,8 @@ void drawWindowDataToScreen()
             if (readRc == 0) {
                 uint64_t updateStart = monotonicNowNs();
                 unsigned long bg = resolvedWindowBackgroundColor(children[i]);
-                Uint32 bgPixel = SDL_MapRGBA(
-                    XC_SURFACE_FORMAT(winSurface), GET_RED_FROM_COLOR(bg),
-                    GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
-                    GET_ALPHA_FROM_COLOR(bg));
+                Uint32 bgPixel =
+                    mapColorToPixel(XC_SURFACE_FORMAT(winSurface), bg);
                 SDL_FillRect(winSurface, NULL, bgPixel);
                 double sx = child->hiDpiScaleX > 0.0 ? child->hiDpiScaleX : 1.0;
                 double sy = child->hiDpiScaleY > 0.0 ? child->hiDpiScaleY : 1.0;
@@ -1348,54 +1516,10 @@ void drawWindowDataToScreen()
             child->loggedPresentScale = True;
         }
 
-        enum { DIRTY_RECT_BUDGET = 256 };
         SDL_Rect rects[DIRTY_RECT_BUDGET];
-        int nrects = 0;
-        Bool useRegion = !child->fullyDirty && child->hasPresented &&
-                         child->hasPresentRect &&
-                         pixman_region32_n_rects(&child->dirty) > 0;
-        if (useRegion) {
-            int rn = pixman_region32_n_rects(&child->dirty);
-            if (rn > DIRTY_RECT_BUDGET) {
-                /* Should never trip: unionPresentRect collapses to fullyDirty
-                 * once the dirtyRectCap is exceeded. Fall back to the bounding
-                 * extent so a future cap bump does not silently truncate.
-                 */
-                useRegion = False;
-            } else {
-                pixman_box32_t *boxes =
-                    pixman_region32_rectangles(&child->dirty, NULL);
-                for (int b = 0; b < rn; b++) {
-                    SDL_Rect r = {
-                        .x = boxes[b].x1,
-                        .y = boxes[b].y1,
-                        .w = boxes[b].x2 - boxes[b].x1,
-                        .h = boxes[b].y2 - boxes[b].y1,
-                    };
-                    if (!SDL_IntersectRect(&r, &bounds, &r))
-                        continue;
-                    rects[nrects++] = r;
-                }
-            }
-        }
-        if (!useRegion || nrects == 0) {
-            SDL_Rect r = {0, 0, clampW, clampH};
-
-            /* When fullyDirty is set, always read back the entire clamped
-             * window. presentRect may carry over a smaller bounding extent from
-             * prior partial marks in the same pending cycle; using it here
-             * would under-cover the actual damage. The region-walk path above
-             * already gated on !fullyDirty, so this fallback handles fullyDirty
-             * + no-region + no-prior-present together.
-             */
-            if (!child->fullyDirty && child->hasPresented &&
-                child->hasPresentRect)
-                r = child->presentRect;
-            if (!SDL_IntersectRect(&r, &bounds, &r))
-                continue;
-            rects[0] = r;
-            nrects = 1;
-        }
+        int nrects = buildPresentDirtyRects(child, &bounds, rects);
+        if (nrects == 0)
+            continue;
         if (SDL_SetRenderTarget(screen, child->sdlTexture) != 0) {
             LOG("SDL_SetRenderTarget(backing) failed in %s: %s\n", __func__,
                 SDL_GetError());
@@ -1415,7 +1539,14 @@ void drawWindowDataToScreen()
         Uint32 winFmt = XC_SURFACE_FMT_ENUM(winSurface);
         Uint32 readFmt = SDL_PIXELFORMAT_RGBA8888;
         int readRc = 0;
-        SDL_Rect surfaceRects[DIRTY_RECT_BUDGET];
+
+        /* The surface-update list is built in rects[] itself: the direct branch
+         * submits exactly what it read, and the staging branch submits the blit
+         * destination, which SDL may have clipped. Nothing reads the original
+         * rect after its own iteration, so the pixel count is taken as each is
+         * read rather than from a second pass over the overwritten array.
+         */
+        uint64_t windowPixels = 0;
         uint64_t readStart = monotonicNowNs();
         if (winFmt == readFmt) {
             /* Direct readback into the window's framebuffer. Saves one
@@ -1437,7 +1568,7 @@ void drawWindowDataToScreen()
                         readRc = rc;
                         break;
                     }
-                    surfaceRects[r] = rects[r];
+                    windowPixels += rectPixels(&rects[r]);
                 }
                 SDL_UnlockSurface(winSurface);
             } else {
@@ -1455,8 +1586,9 @@ void drawWindowDataToScreen()
                                               staging->pixels, staging->pitch);
                 if (rc == 0) {
                     SDL_Rect dst = rects[r];
+                    windowPixels += rectPixels(&rects[r]);
                     SDL_BlitSurface(staging, NULL, winSurface, &dst);
-                    surfaceRects[r] = dst;
+                    rects[r] = dst;
                 } else {
                     readRc = rc;
                 }
@@ -1487,69 +1619,13 @@ void drawWindowDataToScreen()
                 if (nsWindow)
                     libx11CompatConfigureLiveResizeLayer(nsWindow);
             }
-            SDL_UpdateWindowSurfaceRects(child->sdlWindow, surfaceRects,
-                                         nrects);
+            SDL_UpdateWindowSurfaceRects(child->sdlWindow, rects, nrects);
 #else
-            SDL_UpdateWindowSurfaceRects(child->sdlWindow, surfaceRects,
-                                         nrects);
+            SDL_UpdateWindowSurfaceRects(child->sdlWindow, rects, nrects);
 #endif
 
-            /* During a live host resize the window surface grows before the
-             * backing is recreated, so a band of surface to the right of and
-             * below the presented backing has no source pixels. On macOS the
-             * client's reflow only lands once the drag settles (the modal loop
-             * delivers no intermediate ConfigureNotify and the observer path
-             * coalesces reflows while the drag keeps moving), so this band is
-             * visible for the whole grow drag. Fill it with the window's real
-             * background colour, exactly as real X11 paints a freshly exposed
-             * region and as resizeWindowTexture / XClearArea clear the backing.
-             *
-             * An earlier version scanned inward from the content edge to guess
-             * a "field colour" to extend. That is unsound: the edge row/column
-             * is content, not background - the bottom function-key bar, a
-             * dialog border, or leftover File Manager pixels - so the scan
-             * propagated that content into the new band as a visible
-             * reflection, worst of all after shrinking then re-growing (the
-             * lagging backing still holds the old, taller frame at its edge). A
-             * flat background fill cannot reflect content and matches the
-             * surrounding cleared area.
-             *
-             * This runs whenever the surface is larger than the presented
-             * backing, whether or not a client reflow hook is registered: a
-             * client hook only repaints the whole new area on ticks where its
-             * reflow actually ran, and on the intervening moving ticks the
-             * backing lags the live surface (clampW/clampH are the smaller
-             * backing extent). On any tick where the reflow caught up (or no
-             * resize is in flight) clampW/clampH equal the surface, the
-             * condition is false, and nothing runs - a no-op in steady state.
-             */
-            if (winSurface->w > clampW || winSurface->h > clampH) {
-                unsigned long bg = resolvedWindowBackgroundColor(children[i]);
-                Uint32 fill = SDL_MapRGBA(
-                    XC_SURFACE_FORMAT(winSurface), GET_RED_FROM_COLOR(bg),
-                    GET_GREEN_FROM_COLOR(bg), GET_BLUE_FROM_COLOR(bg),
-                    GET_ALPHA_FROM_COLOR(bg));
-                SDL_Rect marginRects[2];
-                int marginCount = 0;
-                if (winSurface->w > clampW) {
-                    SDL_Rect right = {clampW, 0, winSurface->w - clampW,
-                                      clampH};
-                    SDL_FillRect(winSurface, &right, fill);
-                    marginRects[marginCount++] = right;
-                }
-                if (winSurface->h > clampH) {
-                    /* Full width so the bottom-right corner (below and right of
-                     * the content) is covered by this pass too.
-                     */
-                    SDL_Rect bottom = {0, clampH, winSurface->w,
-                                       winSurface->h - clampH};
-                    SDL_FillRect(winSurface, &bottom, fill);
-                    marginRects[marginCount++] = bottom;
-                }
-                if (marginCount > 0)
-                    SDL_UpdateWindowSurfaceRects(child->sdlWindow, marginRects,
-                                                 marginCount);
-            }
+            fillPresentMargin(children[i], child->sdlWindow, winSurface, clampW,
+                              clampH);
             updateNs += monotonicNowNs() - updateStart;
             child->needsPresent = False;
             child->hasPresentRect = False;
@@ -1557,10 +1633,6 @@ void drawWindowDataToScreen()
             child->fullyDirty = False;
             child->hasPresented = True;
             presentedWindows++;
-            uint64_t windowPixels = 0;
-            for (int r = 0; r < nrects; r++) {
-                windowPixels += (uint64_t) rects[r].w * (uint64_t) rects[r].h;
-            }
             presentedPixels += windowPixels;
             timelineTapPresent(children[i], (size_t) nrects, windowPixels);
         } else {
@@ -3408,13 +3480,6 @@ static SDL_Rect segmentsUnionBbox(const XSegment *segments,
     return bbox;
 }
 
-static unsigned long opaqueColorIfAlphaUnset(unsigned long color)
-{
-    if ((color & (0xFFul << ALPHA_SHIFT)) == 0)
-        return color | (0xFFul << ALPHA_SHIFT);
-    return color;
-}
-
 static void resolveWindowBackground(Window window,
                                     Pixmap *backgroundPixmap,
                                     unsigned long *backgroundColor)
@@ -3433,7 +3498,7 @@ static void resolveWindowBackground(Window window,
     if (backgroundPixmap)
         *backgroundPixmap = pixmap;
     if (backgroundColor)
-        *backgroundColor = opaqueColorIfAlphaUnset(color);
+        *backgroundColor = colorWithOpaqueDefault(color);
 }
 
 /* X Shape semantics intersect the two masks: a pixel is "inside" the window iff
@@ -4587,24 +4652,14 @@ int XCopyPlane(Display *display,
     }
 
     GraphicContext *gContext = GET_GC(gc);
-    unsigned long foregroundColor =
-        opaqueColorIfAlphaUnset(gContext->foreground);
-    unsigned long backgroundColor =
-        opaqueColorIfAlphaUnset(gContext->background);
     XcPixelFormat format = xcAllocFormat(SDL_PIXELFORMAT_RGBA8888);
     if (!format) {
         SDL_FreeSurface(srcSurface);
         handleOutOfMemory(0, display, 0, 0);
         return 0;
     }
-    Uint32 foreground = SDL_MapRGBA(format, GET_RED_FROM_COLOR(foregroundColor),
-                                    GET_GREEN_FROM_COLOR(foregroundColor),
-                                    GET_BLUE_FROM_COLOR(foregroundColor),
-                                    GET_ALPHA_FROM_COLOR(foregroundColor));
-    Uint32 background = SDL_MapRGBA(format, GET_RED_FROM_COLOR(backgroundColor),
-                                    GET_GREEN_FROM_COLOR(backgroundColor),
-                                    GET_BLUE_FROM_COLOR(backgroundColor),
-                                    GET_ALPHA_FROM_COLOR(backgroundColor));
+    Uint32 foreground = mapColorToPixel(format, gContext->foreground);
+    Uint32 background = mapColorToPixel(format, gContext->background);
     SDL_Rect destRect = {
         .x = dest_x,
         .y = dest_y,
@@ -6159,8 +6214,8 @@ static Bool renderStippleRects(SDL_Renderer *renderer,
         sp->height > 4096)
         return False;
     int sw = (int) sp->width, sh = (int) sp->height;
-    unsigned long fgc = opaqueColorIfAlphaUnset(gContext->foreground);
-    unsigned long bgc = opaqueColorIfAlphaUnset(gContext->background);
+    unsigned long fgc = colorWithOpaqueDefault(gContext->foreground);
+    unsigned long bgc = colorWithOpaqueDefault(gContext->background);
     SDL_Texture *tex =
         stippleStamp(renderer, sp, gContext->stipple, fgc, bgc, opaque);
     if (!tex)

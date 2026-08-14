@@ -1388,6 +1388,17 @@ XFontSet XCreateFontSet(Display *display,
     set->baseName = pattern;
     const char *locale = setlocale(LC_CTYPE, NULL);
     set->locale = strdup(locale ? locale : "C");
+
+    /* XLocaleOfFontSet hands this straight back to the client, which is within
+     * its rights to strcmp it, so a failed copy is a failed font set rather
+     * than a set that returns NULL from an accessor Xlib documents as a string.
+     */
+    if (!set->locale) {
+        free(set);
+        XFreeFont(display, font);
+        free(pattern);
+        return NULL;
+    }
     set->extents.max_ink_extent.x = 0;
     set->extents.max_ink_extent.y = (short) -font->ascent;
     set->extents.max_ink_extent.width = font->max_bounds.width;

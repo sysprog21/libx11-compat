@@ -22,14 +22,6 @@ static Bool isSupportedPixmapDepth(unsigned int depth)
     return depth == 1 || depth == 16 || depth == 24 || depth == 32;
 }
 
-static Uint32 mapPixel(XcPixelFormat format, unsigned long pixel)
-{
-    pixel = colorWithOpaqueDefault(pixel);
-    return SDL_MapRGBA(format, GET_RED_FROM_COLOR(pixel),
-                       GET_GREEN_FROM_COLOR(pixel), GET_BLUE_FROM_COLOR(pixel),
-                       GET_ALPHA_FROM_COLOR(pixel));
-}
-
 static Bool bitmapBitIsSet(const char *data,
                            unsigned int x,
                            unsigned int y,
@@ -51,6 +43,7 @@ static Pixmap createPixmapFromPixels(Display *display,
     if (pixmap == None)
         return None;
     SDL_Texture *texture = GET_PIXMAP_TEXTURE(pixmap);
+
     /* SDL_UpdateTexture takes pitch as int; reject widths whose RGBA8888 row
      * size would not fit, before the implicit cast truncates it.
      */
@@ -228,8 +221,8 @@ Pixmap XCreatePixmapFromBitmapData(Display *display,
         handleOutOfMemory(0, display, 0, 0);
         return None;
     }
-    Uint32 foreground = mapPixel(format, fg);
-    Uint32 background = mapPixel(format, bg);
+    Uint32 foreground = mapColorToPixel(format, fg);
+    Uint32 background = mapColorToPixel(format, bg);
     Uint32 *pixels = malloc(sizeof(Uint32) * (size_t) width * (size_t) height);
     if (!pixels) {
         xcFreeFormat(format);

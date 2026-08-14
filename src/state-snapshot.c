@@ -68,18 +68,9 @@ static uint64_t stateGeneration = 0;
 
 static long stateSnapshotTimeoutSec(void)
 {
-    const char *env = getenv("LIBX11_COMPAT_STATE_SNAPSHOT_TIMEOUT_SEC");
-    if (env && *env) {
-        char *end = NULL;
-        errno = 0;
-        long value = strtol(env, &end, 10);
-        if (end != env && *end == '\0' && errno != ERANGE && value > 0) {
-            if (value > STATE_SNAPSHOT_MAX_TIMEOUT_SEC)
-                return STATE_SNAPSHOT_MAX_TIMEOUT_SEC;
-            return value;
-        }
-    }
-    return STATE_SNAPSHOT_TIMEOUT_SEC;
+    return (long) compatEnvClamped("LIBX11_COMPAT_STATE_SNAPSHOT_TIMEOUT_SEC",
+                                   STATE_SNAPSHOT_TIMEOUT_SEC, 1,
+                                   STATE_SNAPSHOT_MAX_TIMEOUT_SEC);
 }
 
 /* Tracked atoms. Index here is just the position in the windows[].properties

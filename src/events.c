@@ -4000,6 +4000,258 @@ static void convertMouseWheelEvent(Display *display,
     }
 }
 
+/* SDL window events: a nested switch over the sub-event, split out of
+ * convertEvent because it was the largest remaining case body there, following
+ * convertConfigureEvent and the mouse/text helpers above.
+ *
+ * Returns False when the SDL event produces no X event.
+ */
+static Bool convertWindowEvent(Display *display,
+                               SDL_Event *sdlEvent,
+                               XEvent *xEvent,
+                               Window *eventWindowOut,
+                               Bool sendEvent,
+                               unsigned long serial,
+                               int *typeOut)
+{
+    Window eventWindow = getWindowFromId(sdlEvent->window.windowID);
+
+    /* typeOut and eventWindowOut are write-only here: every case that reaches
+     * the write-back below sets type, and the rest return False. Seeded anyway
+     * so a future case that forgets cannot publish an indeterminate type.
+     */
+    int type = -1;
+    switch (XC_WINDOW_SUBEVENT(sdlEvent)) {
+    case SDL_WINDOWEVENT_SHOWN:
+        LOG("Window %d shown\n", sdlEvent->window.windowID);
+        if (eventWindow != None) {
+            WindowStruct *shownStruct = GET_WINDOW_STRUCT(eventWindow);
+            shownStruct->mapState = Mapped;
+            markWindowNeedsPresent(eventWindow);
+
+            /* Drop the echo when showTopLevelWindow already posted an explicit
+             * MapNotify for this show; delivering both runs Xt/Tk map handlers
+             * twice. One-shot: clear as it is consumed.
+             */
+            if (SDL_AtomicGet(&shownStruct->suppressSdlShowMap)) {
+                SDL_AtomicSet(&shownStruct->suppressSdlShowMap, 0);
+
+                /* Swallow it. Returning 0 here would claim an event was
+                 * produced while xEvent is still whatever the caller had:
+                 * XNextEvent hands that buffer straight back to the client.
+                 */
+                return False;
+            }
+        }
+        type = MapNotify;
+        FILL_STANDARD_VALUES(xmap);
+        xEvent->xmap.window = eventWindow;
+        xEvent->xmap.event = xEvent->xmap.window;
+        xEvent->xmap.override_redirect =
+            eventWindow != None
+                ? GET_WINDOW_STRUCT(eventWindow)->overrideRedirect
+                : False;
+        break;
+    case SDL_WINDOWEVENT_HIDDEN:
+        LOG("Window %d hidden\n", sdlEvent->window.windowID);
+        if (eventWindow != None) {
+            WindowStruct *hiddenStruct = GET_WINDOW_STRUCT(eventWindow);
+            hiddenStruct->mapState = UnMapped;
+
+            /* The pending show echo can no longer arrive, so disarm the
+             * one-shot. Left armed it would outlive its own show and swallow
+             * the MapNotify of whatever shows this window next.
+             */
+            SDL_AtomicSet(&hiddenStruct->suppressSdlShowMap, 0);
+        }
+        type = UnmapNotify;
+        FILL_STANDARD_VALUES(xunmap);
+        xEvent->xunmap.window = eventWindow;
+        xEvent->xunmap.event = xEvent->xunmap.window;
+        xEvent->xunmap.from_configure = False;
+        break;
+    case SDL_WINDOWEVENT_EXPOSED:
+        LOG("Window %d exposed\n", sdlEvent->window.windowID);
+        if (eventWindow != None)
+            markWindowNeedsPresent(eventWindow);
+        return False;
+    case SDL_WINDOWEVENT_MOVED:
+        LOG("Window %d moved to %d,%d\n", sdlEvent->window.windowID,
+            sdlEvent->window.data1, sdlEvent->window.data2);
+        if (eventWindow != None) {
+            WindowStruct *movedStruct = GET_WINDOW_STRUCT(eventWindow);
+#ifndef LIBX11_COMPAT_SDL3
+            /* Old on-screen rect (before ws->x/y is updated below) is the
+             * region a window-manager move vacates on the top-levels under it.
+             * Captured for the SDL2 repaint further down.
+             */
+            SDL_Rect vacated = {movedStruct->x, movedStruct->y,
+                                clampToIntRange((int64_t) movedStruct->w),
+                                clampToIntRange((int64_t) movedStruct->h)};
+#endif
+            int logicalX, logicalY;
+            sdlTopLevelOriginToX11(eventWindow, sdlEvent->window.data1,
+                                   sdlEvent->window.data2, &logicalX,
+                                   &logicalY);
+            movedStruct->x = logicalX;
+            movedStruct->y = logicalY;
+
+            /* An anchored popup's MOVED arrives because the compositor slid or
+             * flipped it, not because the client asked. Update ws->x/y so
+             * pointer translation tracks the real position, but emit no
+             * ConfigureNotify: the toolkit still believes it placed the menu
+             * where it requested, and a configure it never asked for would
+             * fight its own menu tracking.
+             */
+            if (movedStruct->popupParent != None)
+                return False;
+#ifndef LIBX11_COMPAT_SDL3
+            /* SDL2/X11 window-manager move: repaint the top-levels this window
+             * uncovered at its old position, since Xvnc delivers them no
+             * Expose, so the drag trail clears. Then fall through to the
+             * ConfigureNotify below: a move-only configure carries no size
+             * change, so the client just learns its new position with no
+             * reflow.
+             */
+            repaintTopLevelsOverlappingRect(eventWindow, vacated);
+#endif
+        }
+
+        /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
+         * ConfigureNotify dispatch below; the unified handler keys off
+         * XC_WINDOW_SUBEVENT(sdlEvent) to decide which fields to query.
+         */
+    case SDL_WINDOWEVENT_RESIZED:
+        if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED) {
+            LOG("Window %d resized to %dx%d\n", sdlEvent->window.windowID,
+                sdlEvent->window.data1, sdlEvent->window.data2);
+        }
+        /* fall through */
+    case SDL_WINDOWEVENT_SIZE_CHANGED:
+        convertWindowConfigureEvent(display, sdlEvent, xEvent, eventWindow,
+                                    sendEvent, serial, &type);
+        break;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
+        convertWindowDisplayChangedEvent(display, sdlEvent, eventWindow);
+        return False;
+    }
+#endif
+    case SDL_WINDOWEVENT_MINIMIZED:
+        LOG("Window %d minimized\n", sdlEvent->window.windowID);
+        if (eventWindow != None)
+            GET_WINDOW_STRUCT(eventWindow)->mapState = UnMapped;
+        return False;
+    case SDL_WINDOWEVENT_MAXIMIZED:
+        LOG("Window %d maximized\n", sdlEvent->window.windowID);
+        return False;
+    case SDL_WINDOWEVENT_RESTORED:
+        LOG("Window %d restored\n", sdlEvent->window.windowID);
+        if (eventWindow != None) {
+            GET_WINDOW_STRUCT(eventWindow)->mapState = Mapped;
+            markWindowNeedsPresent(eventWindow);
+            SDL_Rect windowArea = {0, 0, 0, 0};
+            GET_WINDOW_DIMS(eventWindow, windowArea.w, windowArea.h);
+            postExposeEvent(display, eventWindow, &windowArea, 1);
+        }
+        return False;
+    case SDL_WINDOWEVENT_ENTER:
+        LOG("Mouse entered window %d\n", sdlEvent->window.windowID);
+        type = EnterNotify;
+    case SDL_WINDOWEVENT_LEAVE:
+        if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_LEAVE) {
+            LOG("Mouse left window %d\n", sdlEvent->window.windowID);
+            type = LeaveNotify;
+        }
+        fillCrossingEvent(display, &xEvent->xcrossing, eventWindow, type,
+                          NotifyNormal, NotifyAncestor,
+                          convertModifierState(SDL_GetModState()));
+        xEvent->xcrossing.time = XC_EVENT_TIME_MS(sdlEvent->window.timestamp);
+        Bool queuedNestedLeaves = False;
+        if (type == LeaveNotify) {
+            queuedNestedLeaves = queueNestedPointerLeaves(
+                display, eventWindow, xEvent->xcrossing.state,
+                XC_EVENT_TIME_MS(sdlEvent->window.timestamp));
+        }
+
+        /* Keep pointerHoverWindow in sync with the SDL-level crossing that was
+         * just emitted; otherwise the next motion event's
+         * postPointerCrossingEvents would either fire a duplicate EnterNotify
+         * (state was None) or suppress a legitimate Enter after a
+         * leave/re-enter (state still pointed at the previous hover child).
+         */
+        lockActivePointerWindow();
+        pointerHoverWindow = type == EnterNotify ? eventWindow : None;
+        unlockActivePointerWindow();
+        if (queuedNestedLeaves) {
+            appendPutBackEvent(display, xEvent);
+            return False;
+        }
+        break;
+    case SDL_WINDOWEVENT_FOCUS_GAINED:
+        LOG("Window %d gained keyboard focus\n", sdlEvent->window.windowID);
+        type = FocusIn;
+        if (eventWindow != None) {
+            /* Do not clobber a client XSetInputFocus target. Adopt the host
+             * top-level only while focus is still host/default-owned, and never
+             * when it already points at this window or a descendant of it.
+             */
+            Window currentFocus = getKeyboardFocus();
+            FocusKind currentFocusKind = getKeyboardFocusKind();
+            if (currentFocusKind != FocusKindPointerRoot &&
+                !isKeyboardFocusFromClient() && currentFocus != eventWindow &&
+                (currentFocus == None || !IS_TYPE(currentFocus, WINDOW) ||
+                 !isParent(eventWindow, currentFocus)))
+                syncKeyboardFocusFromHost(eventWindow);
+        }
+        /* fallthrough */
+    case SDL_WINDOWEVENT_FOCUS_LOST:
+        if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_FOCUS_LOST) {
+            LOG("Window %d lost keyboard focus\n", sdlEvent->window.windowID);
+            type = FocusOut;
+#ifdef __EMSCRIPTEN__
+            /* Focus left this window, so a keyup for the currently tracked
+             * keydown may never arrive; retire the wasm dedup tokens so a later
+             * same-key press is not suppressed by a stranded token.
+             */
+            wasmKeydownPending = False;
+            wasmTextInputPending = False;
+#endif
+            if (eventWindow != None && getKeyboardFocus() == eventWindow &&
+                isKeyboardFocusFromHost())
+                syncKeyboardFocusFromHost(None);
+        }
+        FILL_STANDARD_VALUES(xfocus);
+        xEvent->xfocus.window = eventWindow;
+        xEvent->xfocus.mode = NotifyNormal;
+        xEvent->xfocus.detail = NotifyAncestor;
+        break;
+    case SDL_WINDOWEVENT_CLOSE:
+        LOG("Window %d closed\n", sdlEvent->window.windowID);
+        Bool handledClose =
+            eventWindow != None
+                ? postWmDeleteIfHandled(
+                      display, eventWindow,
+                      (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp))
+                : False;
+
+        /* Real X11 kills the client connection here. Route through the IO error
+         * hook so a client that installed one can intercept; otherwise it
+         * terminates.
+         */
+        if (!handledClose)
+            triggerIOError(display);
+        return False;
+    default:
+        LOG("Window %d got unknown event %d\n", sdlEvent->window.windowID,
+            XC_WINDOW_SUBEVENT(sdlEvent));
+        return False;
+    }
+    *typeOut = type;
+    *eventWindowOut = eventWindow;
+    return True;
+}
+
 int convertEvent(Display *display,
                  SDL_Event *sdlEvent,
                  XEvent *xEvent,
@@ -4113,230 +4365,9 @@ int convertEvent(Display *display,
             return -1;
         break;
     XC_CASE_WINDOWEVENT:
-        eventWindow = getWindowFromId(sdlEvent->window.windowID);
-        switch (XC_WINDOW_SUBEVENT(sdlEvent)) {
-        case SDL_WINDOWEVENT_SHOWN:
-            LOG("Window %d shown\n", sdlEvent->window.windowID);
-            if (eventWindow != None) {
-                WindowStruct *shownStruct = GET_WINDOW_STRUCT(eventWindow);
-                shownStruct->mapState = Mapped;
-                markWindowNeedsPresent(eventWindow);
-
-                /* Drop the echo when showTopLevelWindow already posted an
-                 * explicit MapNotify for this show; delivering both runs Xt/Tk
-                 * map handlers twice. One-shot: clear as it is consumed.
-                 */
-                if (SDL_AtomicGet(&shownStruct->suppressSdlShowMap)) {
-                    SDL_AtomicSet(&shownStruct->suppressSdlShowMap, 0);
-                    return 0;
-                }
-            }
-            type = MapNotify;
-            FILL_STANDARD_VALUES(xmap);
-            xEvent->xmap.window = eventWindow;
-            xEvent->xmap.event = xEvent->xmap.window;
-            xEvent->xmap.override_redirect =
-                eventWindow != None
-                    ? GET_WINDOW_STRUCT(eventWindow)->overrideRedirect
-                    : False;
-            break;
-        case SDL_WINDOWEVENT_HIDDEN:
-            LOG("Window %d hidden\n", sdlEvent->window.windowID);
-            if (eventWindow != None)
-                GET_WINDOW_STRUCT(eventWindow)->mapState = UnMapped;
-            type = UnmapNotify;
-            FILL_STANDARD_VALUES(xunmap);
-            xEvent->xunmap.window = eventWindow;
-            xEvent->xunmap.event = xEvent->xunmap.window;
-            xEvent->xunmap.from_configure = False;
-            break;
-        case SDL_WINDOWEVENT_EXPOSED:
-            LOG("Window %d exposed\n", sdlEvent->window.windowID);
-            if (eventWindow != None)
-                markWindowNeedsPresent(eventWindow);
+        if (!convertWindowEvent(display, sdlEvent, xEvent, &eventWindow,
+                                sendEvent, serial, &type))
             return -1;
-            break;
-        case SDL_WINDOWEVENT_MOVED:
-            LOG("Window %d moved to %d,%d\n", sdlEvent->window.windowID,
-                sdlEvent->window.data1, sdlEvent->window.data2);
-            if (eventWindow != None) {
-                WindowStruct *movedStruct = GET_WINDOW_STRUCT(eventWindow);
-#ifndef LIBX11_COMPAT_SDL3
-                /* Old on-screen rect (before ws->x/y is updated below) is the
-                 * region a window-manager move vacates on the top-levels under
-                 * it. Captured for the SDL2 repaint further down.
-                 */
-                SDL_Rect vacated = {movedStruct->x, movedStruct->y,
-                                    clampToIntRange((int64_t) movedStruct->w),
-                                    clampToIntRange((int64_t) movedStruct->h)};
-#endif
-                int logicalX, logicalY;
-                sdlTopLevelOriginToX11(eventWindow, sdlEvent->window.data1,
-                                       sdlEvent->window.data2, &logicalX,
-                                       &logicalY);
-                movedStruct->x = logicalX;
-                movedStruct->y = logicalY;
-
-                /* An anchored popup's MOVED arrives because the compositor slid
-                 * or flipped it, not because the client asked. Update ws->x/y
-                 * so pointer translation tracks the real position, but emit no
-                 * ConfigureNotify: the toolkit still believes it placed the
-                 * menu where it requested, and a configure it never asked for
-                 * would fight its own menu tracking.
-                 */
-                if (movedStruct->popupParent != None)
-                    return -1;
-#ifndef LIBX11_COMPAT_SDL3
-                /* SDL2/X11 window-manager move: repaint the top-levels this
-                 * window uncovered at its old position, since Xvnc delivers
-                 * them no Expose, so the drag trail clears. Then fall through
-                 * to the ConfigureNotify below: a move-only configure carries
-                 * no size change, so the client just learns its new position
-                 * with no reflow.
-                 */
-                repaintTopLevelsOverlappingRect(eventWindow, vacated);
-#endif
-            }
-
-            /* fall through: MOVED, RESIZED and SIZE_CHANGED share a single
-             * ConfigureNotify dispatch below; the unified handler keys off
-             * XC_WINDOW_SUBEVENT(sdlEvent) to decide which fields to query.
-             */
-        case SDL_WINDOWEVENT_RESIZED:
-            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_RESIZED) {
-                LOG("Window %d resized to %dx%d\n", sdlEvent->window.windowID,
-                    sdlEvent->window.data1, sdlEvent->window.data2);
-            }
-            /* fall through */
-        case SDL_WINDOWEVENT_SIZE_CHANGED:
-            convertWindowConfigureEvent(display, sdlEvent, xEvent, eventWindow,
-                                        sendEvent, serial, &type);
-            break;
-#if SDL_VERSION_ATLEAST(2, 0, 18)
-        case SDL_WINDOWEVENT_DISPLAY_CHANGED: {
-            convertWindowDisplayChangedEvent(display, sdlEvent, eventWindow);
-            return -1;
-        }
-#endif
-        case SDL_WINDOWEVENT_MINIMIZED:
-            LOG("Window %d minimized\n", sdlEvent->window.windowID);
-            if (eventWindow != None)
-                GET_WINDOW_STRUCT(eventWindow)->mapState = UnMapped;
-            return -1;
-            break;
-        case SDL_WINDOWEVENT_MAXIMIZED:
-            LOG("Window %d maximized\n", sdlEvent->window.windowID);
-            return -1;
-            break;
-        case SDL_WINDOWEVENT_RESTORED:
-            LOG("Window %d restored\n", sdlEvent->window.windowID);
-            if (eventWindow != None) {
-                GET_WINDOW_STRUCT(eventWindow)->mapState = Mapped;
-                markWindowNeedsPresent(eventWindow);
-                SDL_Rect windowArea = {0, 0, 0, 0};
-                GET_WINDOW_DIMS(eventWindow, windowArea.w, windowArea.h);
-                postExposeEvent(display, eventWindow, &windowArea, 1);
-            }
-            return -1;
-            break;
-        case SDL_WINDOWEVENT_ENTER:
-            LOG("Mouse entered window %d\n", sdlEvent->window.windowID);
-            type = EnterNotify;
-        case SDL_WINDOWEVENT_LEAVE:
-            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_LEAVE) {
-                LOG("Mouse left window %d\n", sdlEvent->window.windowID);
-                type = LeaveNotify;
-            }
-            fillCrossingEvent(display, &xEvent->xcrossing, eventWindow, type,
-                              NotifyNormal, NotifyAncestor,
-                              convertModifierState(SDL_GetModState()));
-            xEvent->xcrossing.time =
-                XC_EVENT_TIME_MS(sdlEvent->window.timestamp);
-            Bool queuedNestedLeaves = False;
-            if (type == LeaveNotify) {
-                queuedNestedLeaves = queueNestedPointerLeaves(
-                    display, eventWindow, xEvent->xcrossing.state,
-                    XC_EVENT_TIME_MS(sdlEvent->window.timestamp));
-            }
-
-            /* Keep pointerHoverWindow in sync with the SDL-level crossing that
-             * was just emitted; otherwise the next motion event's
-             * postPointerCrossingEvents would either fire a duplicate
-             * EnterNotify (state was None) or suppress a legitimate Enter after
-             * a leave/re-enter (state still pointed at the previous hover
-             * child).
-             */
-            lockActivePointerWindow();
-            pointerHoverWindow = type == EnterNotify ? eventWindow : None;
-            unlockActivePointerWindow();
-            if (queuedNestedLeaves) {
-                appendPutBackEvent(display, xEvent);
-                return -1;
-            }
-            break;
-        case SDL_WINDOWEVENT_FOCUS_GAINED:
-            LOG("Window %d gained keyboard focus\n", sdlEvent->window.windowID);
-            type = FocusIn;
-            if (eventWindow != None) {
-                /* Do not clobber a client XSetInputFocus target. Adopt the host
-                 * top-level only while focus is still host/default-owned, and
-                 * never when it already points at this window or a descendant
-                 * of it.
-                 */
-                Window currentFocus = getKeyboardFocus();
-                FocusKind currentFocusKind = getKeyboardFocusKind();
-                if (currentFocusKind != FocusKindPointerRoot &&
-                    !isKeyboardFocusFromClient() &&
-                    currentFocus != eventWindow &&
-                    (currentFocus == None || !IS_TYPE(currentFocus, WINDOW) ||
-                     !isParent(eventWindow, currentFocus)))
-                    syncKeyboardFocusFromHost(eventWindow);
-            }
-            /* fallthrough */
-        case SDL_WINDOWEVENT_FOCUS_LOST:
-            if (XC_WINDOW_SUBEVENT(sdlEvent) == SDL_WINDOWEVENT_FOCUS_LOST) {
-                LOG("Window %d lost keyboard focus\n",
-                    sdlEvent->window.windowID);
-                type = FocusOut;
-#ifdef __EMSCRIPTEN__
-                /* Focus left this window, so a keyup for the currently tracked
-                 * keydown may never arrive; retire the wasm dedup tokens so a
-                 * later same-key press is not suppressed by a stranded token.
-                 */
-                wasmKeydownPending = False;
-                wasmTextInputPending = False;
-#endif
-                if (eventWindow != None && getKeyboardFocus() == eventWindow &&
-                    isKeyboardFocusFromHost())
-                    syncKeyboardFocusFromHost(None);
-            }
-            FILL_STANDARD_VALUES(xfocus);
-            xEvent->xfocus.window = eventWindow;
-            xEvent->xfocus.mode = NotifyNormal;
-            xEvent->xfocus.detail = NotifyAncestor;
-            break;
-        case SDL_WINDOWEVENT_CLOSE:
-            LOG("Window %d closed\n", sdlEvent->window.windowID);
-            Bool handledClose =
-                eventWindow != None
-                    ? postWmDeleteIfHandled(
-                          display, eventWindow,
-                          (Time) XC_EVENT_TIME_MS(sdlEvent->window.timestamp))
-                    : False;
-
-            /* Real X11 kills the client connection here. Route through the IO
-             * error hook so a client that installed one can intercept;
-             * otherwise it terminates.
-             */
-            if (!handledClose)
-                triggerIOError(display);
-            return -1;
-            break;
-        default:
-            LOG("Window %d got unknown event %d\n", sdlEvent->window.windowID,
-                XC_WINDOW_SUBEVENT(sdlEvent));
-            return -1;
-        }
         break;
     case SDL_QUIT: /**< User-requested quit */
         LOG("SDL_QUIT\n");

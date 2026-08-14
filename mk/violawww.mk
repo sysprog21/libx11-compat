@@ -224,6 +224,7 @@ $(UI_SMOKE_OUT_ROOT)/violawww-help/.stamp: FORCE $(VIOLAWWW_SMOKE_DEPS)
 	    --geometry $(UI_REPLAY_GEOMETRY) \
 	    --screenshot-command $(UI_REPLAY_SCREENSHOT_COMMAND) \
 	    --screenshot-region $(VIOLAWWW_HELP_SMOKE_REGION) \
+	    --in-process-snapshots \
 	    --render-stats $(abspath $(UI_SMOKE_OUT_ROOT))/violawww-help/render-stats.tsv \
 	    $(UI_REPLAY_XVFB) \
 	    --env DYLD_LIBRARY_PATH=$(abspath $(OUT))$${DYLD_LIBRARY_PATH:+:$$DYLD_LIBRARY_PATH} \

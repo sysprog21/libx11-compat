@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include "display.h"
@@ -315,4 +316,20 @@ XClassHint *XAllocClassHint()
         classHint->res_class = NULL;
     }
     return classHint;
+}
+
+long long compatEnvClamped(const char *name,
+                           long long def,
+                           long long lo,
+                           long long hi)
+{
+    const char *env = getenv(name);
+    if (!env || !*env)
+        return def;
+    char *end = NULL;
+    errno = 0;
+    long long parsed = strtoll(env, &end, 10);
+    if (end == env || *end != '\0' || errno == ERANGE || parsed < lo)
+        return def;
+    return parsed > hi ? hi : parsed;
 }

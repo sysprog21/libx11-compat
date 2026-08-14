@@ -134,6 +134,23 @@ void invalidateStippleStampsForRenderer(SDL_Renderer *renderer);
 /* Test hook: count of SDL_RenderReadPixels issued to refresh pixmap caches. */
 extern unsigned long x11compat_pixmap_readback_reads;
 
+/* Replace the present dirty rects with their bounding box when that costs fewer
+ * readback bytes, returning the new count. The rects must already be clipped to
+ * the drawable, so the box stays inside it.
+ *
+ * callOverhead is what one saved readback call is worth in bytes of extra
+ * contiguous pixels. It is a parameter rather than a constant read inside, so a
+ * test can pin a rate without inheriting production tuning. The one input not
+ * passed in is the readback scratch cap, which decides how many calls a rect
+ * bands into: that is read from the same place the read loop reads it, on
+ * purpose, since a model that banded differently from the loop would price
+ * merges that do not exist. Only rects larger than the cap (8 MiB by default)
+ * are affected by it at all.
+ */
+int coalescePresentDirtyRects(SDL_Rect *rects,
+                              int nrects,
+                              uint64_t callOverhead);
+
 /* Number of clip iterations to perform when drawing into "d" through "gc". Each
  * iteration is one (gc clip rect) x (visible-region rect) pair.
  *
