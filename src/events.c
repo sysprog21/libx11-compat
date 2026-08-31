@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -4922,11 +4923,64 @@ static Bool isInteractiveSdlEvent(const SDL_Event *event)
     }
 }
 
+typedef int (*DisplayPredicateHook)(Display *display);
+static _Atomic DisplayPredicateHook eventQueueOwnerHook;
+static _Atomic DisplayPredicateHook eventWaitCancelledHook;
+static _Thread_local unsigned int xcbEventAccessDepth;
+
+void libx11CompatSetEventQueueOwnerHook(int (*hook)(Display *display))
+{
+    atomic_store_explicit(&eventQueueOwnerHook, hook, memory_order_release);
+}
+
+void libx11CompatSetEventWaitCancelledHook(int (*hook)(Display *display))
+{
+    atomic_store_explicit(&eventWaitCancelledHook, hook, memory_order_release);
+}
+
+void libx11CompatBeginXcbEventAccess(void)
+{
+    xcbEventAccessDepth++;
+}
+
+void libx11CompatEndXcbEventAccess(void)
+{
+    if (xcbEventAccessDepth)
+        xcbEventAccessDepth--;
+}
+
+static Bool xlibMayConsumeEvents(Display *display)
+{
+    DisplayPredicateHook owner =
+        atomic_load_explicit(&eventQueueOwnerHook, memory_order_acquire);
+    return xcbEventAccessDepth || !owner || owner(display) == 0;
+}
+
 int XNextEvent(Display *display, XEvent *event_return)
 {
     // https://tronche.com/gui/x/xlib/event-handling/manipulating-event-queue/XNextEvent.html
+    if (!xlibMayConsumeEvents(display)) {
+        memset(event_return, 0, sizeof(*event_return));
+        return 0;
+    }
     SDL_Event event;
     while (1) {
+        DisplayPredicateHook cancelled =
+            atomic_load_explicit(&eventWaitCancelledHook, memory_order_acquire);
+        if (cancelled && cancelled(display)) {
+            memset(event_return, 0, sizeof(*event_return));
+            return 0;
+        }
+
+        /* Ownership can change while this call is already waiting, so it is
+         * re-checked per iteration rather than only on entry. Otherwise a
+         * client that hands the queue to XCB mid-wait would still have this
+         * call consume the next event out from under it.
+         */
+        if (!xlibMayConsumeEvents(display)) {
+            memset(event_return, 0, sizeof(*event_return));
+            return 0;
+        }
         if (popPutBackEvent(display, event_return)) {
             printEventInfo(event_return);
             return 0;
@@ -5169,6 +5223,8 @@ int XEventsQueued(Display *display, int mode)
 {
     // https://tronche.com/gui/x/xlib/event-handling/XEventsQueued.html
     //    SET_X_SERVER_REQUEST(display, XCB_);
+    if (!xlibMayConsumeEvents(display))
+        return 0;
     if (mode == QueuedAlready)
         return displayEventQueueLength(display);
     if (mode == QueuedAfterFlush) {

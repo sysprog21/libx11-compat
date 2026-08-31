@@ -3,6 +3,14 @@
 
 #include "X11/Xlib.h"
 
+/* Resource ids handed to clients. The X protocol has a client derive its own
+ * ids as base | (n & mask), so the two must not share a bit, and base | mask
+ * has to stay inside the 29 bits the protocol gives a resource id. The XCB
+ * setup record advertises exactly these values.
+ */
+#define XID_RESOURCE_BASE UINT32_C(0x10000000)
+#define XID_RESOURCE_MASK UINT32_C(0x0fffffff)
+
 typedef enum {
     WINDOW = 1,
     DRAWABLE = 2,
@@ -23,8 +31,10 @@ typedef struct {
 } XID_Struct;
 
 XID allocXidResource(void);
+Bool reserveXidResource(XID id);
 void freeXidResource(XID id);
 XID_Struct *getXidStruct(XID id);
+Bool isXidAllocated(XID id);
 
 /* Visit the data pointer of every live resource of a given type. Used to reach
  * per-resource caches (such as a pixmap's stipple stamp) that must be dropped

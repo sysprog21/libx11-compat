@@ -1,0 +1,3 @@
+xcbCompatConnectionForDisplay
+xcbCompatEventWaiters
+xcbCompatSetQueueOwner

@@ -97,4 +97,10 @@ Bool compatSdlHasWindowSizeInPixels(void);
 #define atomicLoadRequest(display) \
     __atomic_load_n(&GET_DISPLAY(display)->request, __ATOMIC_RELAXED)
 
+
+/* Called when a Display is about to be torn down, so a sibling shim holding a
+ * handle on it (libxcb-compat) can invalidate that handle first.
+ */
+void libx11CompatSetDisplayCloseHook(void (*hook)(Display *display));
+
 #endif  //_DISPLAY_H

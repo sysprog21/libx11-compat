@@ -466,12 +466,9 @@ XCB_SOURCES = {
     "libxcb": {
         "version": "libxcb-1.15",
         "url": (
-            "https://xorg.freedesktop.org/archive/individual/lib/"
-            "libxcb-1.15.tar.xz"
+            "https://xorg.freedesktop.org/archive/individual/lib/" "libxcb-1.15.tar.xz"
         ),
-        "sha256": (
-            "cc38744f817cf6814c847e2df37fcb8997357d72fa4bcbc228ae0fe47219a059"
-        ),
+        "sha256": ("cc38744f817cf6814c847e2df37fcb8997357d72fa4bcbc228ae0fe47219a059"),
     },
     "xcb-proto": {
         "version": "xcb-proto-1.15.2",
@@ -479,9 +476,7 @@ XCB_SOURCES = {
             "https://xorg.freedesktop.org/archive/individual/proto/"
             "xcb-proto-1.15.2.tar.xz"
         ),
-        "sha256": (
-            "7072beb1f680a2fe3f9e535b797c146d22528990c72f63ddb49d2f350a3653ed"
-        ),
+        "sha256": ("7072beb1f680a2fe3f9e535b797c146d22528990c72f63ddb49d2f350a3653ed"),
     },
 }
 

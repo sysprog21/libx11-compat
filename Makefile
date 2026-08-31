@@ -25,6 +25,7 @@ include mk/common.mk
 include mk/font-data.mk
 include mk/sdl-wrapper.mk
 include mk/library.mk
+include mk/libxcb.mk
 include mk/libxt.mk
 include mk/libxpm.mk
 include mk/xcompat-libs.mk

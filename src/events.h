@@ -152,4 +152,14 @@ Bool libx11CompatWarpTargetGlobal(Window window,
  */
 int libx11CompatSnapAxisToIncrement(int current, int inc, int base, int min);
 
+/* Event-queue hooks for a sibling shim that shares this Display. The owner hook
+ * reports whether Xlib may still consume events; the cancel hook lets a pending
+ * wait be interrupted. The access counter marks the window in which the shim is
+ * itself draining the queue, so the owner hook does not lock it out.
+ */
+void libx11CompatSetEventQueueOwnerHook(int (*hook)(Display *display));
+void libx11CompatSetEventWaitCancelledHook(int (*hook)(Display *display));
+void libx11CompatBeginXcbEventAccess(void);
+void libx11CompatEndXcbEventAccess(void);
+
 #endif /* _EVENTS_H_ */

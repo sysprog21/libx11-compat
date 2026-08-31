@@ -35,6 +35,10 @@ HOST_CC ?= cc
 # missing EGL headers) back into the wasm build.
 override GLX := 0
 
+# The XCB shim links the native shared libraries the wasm build does not
+# produce, so keep it out regardless of a command-line XCB=1.
+override XCB := 0
+
 # Define OUT/TARGET here (config.mk uses ?= and defers to these) so the
 # archive path is a static library, not the native .so, from parse time on.
 OUT ?= build

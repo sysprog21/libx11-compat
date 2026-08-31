@@ -13,15 +13,22 @@ PKGCONFIG_FILES := \
     $(PKGCONFIG_DIR)/fontconfig.pc \
     $(PKGCONFIG_DIR)/xrender.pc \
     $(PKGCONFIG_DIR)/xft.pc
+ifeq ($(XCB),1)
+PKGCONFIG_FILES += $(PKGCONFIG_DIR)/xcb.pc $(PKGCONFIG_DIR)/x11-xcb.pc
+endif
 
 $(PKGCONFIG_DIR):
 	@mkdir -p $@
 
+# Libs and Cflags refer to the variables above rather than repeating absolute
+# paths, so `make install` can relocate a file by rewriting the variable lines
+# alone (mk/install.mk). pkg-config expands them, so an in-tree consumer reading
+# build/pkgconfig/ sees exactly the paths it saw before.
 define write_pc
 	@{ \
 	    echo "prefix=$(abspath $(OUT))"; \
-	    echo "exec_prefix=$(abspath $(OUT))"; \
-	    echo "libdir=$(abspath $(OUT))"; \
+	    echo "exec_prefix=\$${prefix}"; \
+	    echo "libdir=\$${prefix}"; \
 	    echo "includedir=$$(pwd)/include"; \
 	    echo "upstreamincludedir=$$(pwd)/$(OUT)/upstream/include"; \
 	    echo "libxtbuildincludedir=$$(pwd)/include/libxt-build"; \
@@ -29,8 +36,9 @@ define write_pc
 	    echo "Name: $(1)"; \
 	    echo "Description: libx11-compat $(1) shim"; \
 	    echo "Version: $(2)"; \
-	    echo "Libs: -L$(abspath $(OUT)) $(3)"; \
-	    echo "Cflags: -I$$(pwd)/include -I$$(pwd)/$(OUT)/upstream/include $(4)"; \
+	    $(if $(5),echo "Requires: $(5)";) \
+	    echo "Libs: -L\$${libdir} $(3)"; \
+	    echo "Cflags: -I\$${includedir} -I\$${upstreamincludedir} $(4)"; \
 	} > $@
 endef
 
@@ -38,17 +46,25 @@ $(PKGCONFIG_DIR)/x11.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG
 	@echo "  PC      $@"
 	$(call write_pc,x11,1.8.13,-lX11-compat,)
 
+$(PKGCONFIG_DIR)/xcb.pc: mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,xcb,1.15,-lxcb-compat,)
+
+$(PKGCONFIG_DIR)/x11-xcb.pc: mk/pkgconfig.mk | $(PKGCONFIG_DIR)
+	@echo "  PC      $@"
+	$(call write_pc,x11-xcb,1.8.0,-lX11-xcb-compat,,x11 xcb)
+
 $(PKGCONFIG_DIR)/xpm.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
 	$(call write_pc,xpm,3.5.19,-lXpm-compat -lX11-compat,)
 
 $(PKGCONFIG_DIR)/xt.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
-	$(call write_pc,xt,1.3.1,-lXt-compat -lX11-compat,-I$$(pwd)/include/libxt-build)
+	$(call write_pc,xt,1.3.1,-lXt-compat -lX11-compat,-I\$${libxtbuildincludedir})
 
 $(PKGCONFIG_DIR)/xmu.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
-	$(call write_pc,xmu,1.0,-lXmu-compat -lXt-compat -lX11-compat,-I$$(pwd)/include/libxt-build)
+	$(call write_pc,xmu,1.0,-lXmu-compat -lXt-compat -lX11-compat,-I\$${libxtbuildincludedir})
 
 $(PKGCONFIG_DIR)/xext.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
@@ -68,7 +84,7 @@ $(PKGCONFIG_DIR)/sm.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_
 
 $(PKGCONFIG_DIR)/xaw7.pc: $(UPSTREAM_HEADERS_STAMP) mk/pkgconfig.mk | $(PKGCONFIG_DIR)
 	@echo "  PC      $@"
-	$(call write_pc,xaw7,1.0.16,-lXaw-compat -lXt-compat -lXmu-compat -lXpm-compat -lX11-compat,-I$$(pwd)/include/libxt-build)
+	$(call write_pc,xaw7,1.0.16,-lXaw-compat -lXt-compat -lXmu-compat -lXpm-compat -lX11-compat,-I\$${libxtbuildincludedir})
 
 # xproto.pc covers protocol-only headers. Apps like xclock pkg-config it
 # to get the X11/Xproto.h include path; the upstream-headers stamp already

@@ -3,13 +3,18 @@
 # exposes them as a link contract. src/xft.c is compiled twice: once into the
 # core .so and once into the standalone libXft-compat.so. The standalone copy
 # calls these core-internal helpers, so hiding them would break the libXft
-# link. Keep this list in sync with the core helpers src/xft.c reaches for. A
+# link. The XCB compatibility libraries are the second such consumer:
+# compat/xcb-compat.c and compat/xcb-requests.c call the XID table and atom
+# helpers listed here across the same boundary. Keep this list in sync with the
+# core helpers those two link contracts reach for. A
 # missing entry fails the libXft-compat link loudly on both platforms: macOS via
 # the two-level namespace, Linux via the -Wl,--no-undefined added to that link
 # (mk/xcompat-libs.mk). The libX11 underscore
 # ABI (_Xdebug, _XGetHostname, _XDefaultError, ...) is deliberately NOT listed
 # here: the export generator matches every core-defined _X* symbol by pattern,
 # so that surface is covered without hand-listing (see scripts/gen-export-list.sh).
+SCREEN_WINDOW
+allocXidResource
 applyShapeMaskOverDrawnRect
 captureShapeMaskBaseline
 clearRendererClip
@@ -18,8 +23,9 @@ compatFontOpenFamilyFallbackForChar
 getGcClipIterationCount
 getWindowRenderer
 getXidStruct
+isXidAllocated
 markPixmapReadbackDirty
 presentDrawableRectIfVisible
-SCREEN_WINDOW
+reserveXidResource
 setGcClipForIteration
 setRendererDrawableClip

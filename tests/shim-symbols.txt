@@ -1,14 +1,18 @@
 # Non-Xlib shim hooks exported by libX11-compat (all prefixed libx11Compat).
-# These are the live-resize / accelerated-present integration points, resolved
-# at runtime by clients such as the xwpe live-resize harness. They are not part
-# of the Xlib ABI but are still an exported surface, so this manifest is enforced
-# by `make symbol-coverage` (via tests/check-api-symbols.py) to catch accidental
-# additions or removals. Only exported on builds that compile the live-resize
-# layer (macOS); on other platforms the exported set is empty and the check is a
-# no-op. Keep this list sorted and in sync with intentional shim API changes.
+# These are the live-resize / accelerated-present integration points and the
+# hooks the XCB shim installs, resolved at runtime by clients such as the xwpe
+# live-resize harness and by libxcb-compat. They are not part of the Xlib ABI
+# but are still an exported surface, so this manifest is enforced by
+# `make symbol-coverage` (via tests/check-api-symbols.py) to catch accidental
+# additions or removals. The live-resize entries only exist on builds that
+# compile that layer (macOS); the XCB hooks are unconditional, so the check is
+# live on every platform. Keep this list sorted and in sync with intentional
+# shim API changes.
 libx11CompatAcceleratedPresentForcedForTest
 libx11CompatAcceleratedPresentUsable
+libx11CompatBeginXcbEventAccess
 libx11CompatConfigureLiveResizeLayer
+libx11CompatEndXcbEventAccess
 libx11CompatFailAcceleratedPresentOnceForTest
 libx11CompatForceAcceleratedPresentForTest
 libx11CompatForceSoftwarePresent
@@ -23,6 +27,9 @@ libx11CompatRegisterLiveResizeReflow
 libx11CompatResetLiveResizeCoalesce
 libx11CompatRunDeferredDisplayClose
 libx11CompatSdlPeepEventsIsXlibDrain
+libx11CompatSetDisplayCloseHook
+libx11CompatSetEventQueueOwnerHook
+libx11CompatSetEventWaitCancelledHook
 libx11CompatSideQueueEventRemoved
 libx11CompatSnapAxisToIncrement
 libx11CompatSoftwareDemotionCountForTest

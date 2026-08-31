@@ -105,9 +105,10 @@ def main() -> int:
 
     failed = _diff_manifest(exported, covered, "API")
 
-    # The libx11Compat* shim hooks are only exported on builds that compile the
-    # live-resize/present layer (macOS). When none are present (e.g. a Linux CI
-    # build), the shim manifest is expected to be empty and the check is a no-op.
+    # The libx11Compat* shim hooks cover the live-resize/present layer, which
+    # only builds on macOS, and the XCB integration hooks, which build
+    # everywhere. When neither is present the manifest is expected to be empty
+    # and the check is a no-op.
     shim_exported = exported_symbols(library, SHIM_API_RE)
     shim_manifest_path = manifest.with_name("shim-symbols.txt")
     shim_covered: set[str] = set()
