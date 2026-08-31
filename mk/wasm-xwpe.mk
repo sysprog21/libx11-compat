@@ -173,12 +173,5 @@ check-wasm-xwpe:
 	done; \
 	case `file -b $(OUT)/xwpe.wasm` in *WebAssembly*) ;; \
 	    *) echo "check-wasm-xwpe: not a wasm module" >&2; exit 1;; esac; \
-	if command -v node >/dev/null 2>&1; then \
-	    node scripts/wasm-node-smoke.mjs $(OUT)/xwpe.wasm || exit 1; \
-	    node scripts/wasm-paint-check.mjs $(OUT) xwpe || exit 1; \
-	else \
-	    if [ "$${WASM_PAINT_REQUIRED:-0}" = 1 ]; then \
-	        echo "check-wasm-xwpe: node missing for required paint check" >&2; exit 1; fi; \
-	    echo "  WARN    check-wasm-xwpe: node missing, skipped module smoke" >&2; \
-	fi; \
+	$(call wasm_paint_check,xwpe,smoke) \
 	echo "  OK      check-wasm-xwpe (xwpe cross-compiled to a wasm module)"

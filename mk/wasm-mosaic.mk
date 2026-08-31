@@ -182,12 +182,5 @@ check-wasm-mosaic:
 	done; \
 	case `file -b $(OUT)/mosaic.wasm` in *WebAssembly*) ;; \
 	    *) echo "check-wasm-mosaic: not a wasm module" >&2; exit 1;; esac; \
-	if command -v node >/dev/null 2>&1; then \
-	    node scripts/wasm-node-smoke.mjs $(OUT)/mosaic.wasm || exit 1; \
-	    node scripts/wasm-paint-check.mjs $(OUT) mosaic || exit 1; \
-	else \
-	    if [ "$${WASM_PAINT_REQUIRED:-0}" = 1 ]; then \
-	        echo "check-wasm-mosaic: node missing for required paint check" >&2; exit 1; fi; \
-	    echo "  WARN    check-wasm-mosaic: node missing, skipped module smoke" >&2; \
-	fi; \
+	$(call wasm_paint_check,mosaic,smoke) \
 	echo "  OK      check-wasm-mosaic (Mosaic cross-compiled to a wasm module)"

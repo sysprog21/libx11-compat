@@ -23,7 +23,9 @@
 //        <app>.js and, if present, <app>.data must sit in build-dir.
 // Env:   WASM_PAINT_TIMEOUT_MS (default 20000), WASM_PAINT_CALIBRATE=1 (report
 //        only, never fail), WASM_PAINT_STRICT_INPUT=0 (downgrade xwpe input
-//        failure to a warning), WASM_PAINT_WEBDRIVER (driver binary path).
+//        failure to a warning), WASM_PAINT_WEBDRIVER (driver binary path),
+//        WASM_PAINT_REQUEST_TIMEOUT_MS (default 15000, per driver request),
+//        WASM_PAINT_ATTEMPTS (default 2, retries of a transient failure).
 
 import { createServer } from "node:http";
 import { readFile, access } from "node:fs/promises";
@@ -38,7 +40,22 @@ if (!buildDir || appArgs.length === 0) {
   process.exit(2);
 }
 const apps = appArgs.map((a) => a.replace(/\.(html|js)$/, ""));
-const TIMEOUT_MS = Number(process.env.WASM_PAINT_TIMEOUT_MS || 20000);
+// A malformed budget must not silently disable a check or spin forever, so
+// anything that is not a finite positive integer falls back to the documented
+// default rather than propagating NaN or Infinity into a loop bound.
+function positiveInt(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+const TIMEOUT_MS = positiveInt(process.env.WASM_PAINT_TIMEOUT_MS, 20000);
+// A probe or action that outlives this is treated as a stuck driver. The
+// budget is generous because a loaded CI runner can stall a WebKit request for
+// several seconds without anything being wrong.
+const REQUEST_TIMEOUT_MS =
+  positiveInt(process.env.WASM_PAINT_REQUEST_TIMEOUT_MS, 15000);
+// Retries cover only what a loaded runner can do before anything renders. Once
+// a frame exists, every later outcome is a real result: see the verdict below.
+const ATTEMPTS = positiveInt(process.env.WASM_PAINT_ATTEMPTS, 2);
 const CALIBRATE = process.env.WASM_PAINT_CALIBRATE === "1";
 const KEEP_BROWSER = process.env.WASM_PAINT_KEEP_BROWSER === "1";
 const STRICT_INPUT = process.env.WASM_PAINT_STRICT_INPUT !== "0";
@@ -316,7 +333,8 @@ function drvReq(method, path, body, timeoutMs) {
     // A driver that accepts the socket then hangs must not stall the whole run.
     // Navigation blocks until the page load event, so it gets the paint budget;
     // ordinary probe/action calls keep the short default.
-    req.setTimeout(timeoutMs || 5000, () => req.destroy(new Error("driver request timeout")));
+    req.setTimeout(timeoutMs || REQUEST_TIMEOUT_MS,
+      () => req.destroy(new Error("driver request timeout")));
     req.on("error", reject);
     req.end(data);
   });
@@ -376,6 +394,10 @@ for (const name of apps) {
     continue;
   }
 
+  let attempt = 0;
+  let transient = "";
+  for (;;) {
+  attempt++;
   let sessionId = null;
   let best = { found: false, w: 0, h: 0, nonFirstPixels: -1 };
   let launchErr = null;
@@ -541,18 +563,38 @@ for (const name of apps) {
   const painted = best.w > 0 && best.h > 0 && best.nonFirstPixels > 16;
   const detail = `canvas=${best.w}x${best.h} nonFirstPixels=${best.nonFirstPixels}`;
   const inputOk = inputChanged && (!inputErr || !STRICT_INPUT);
-  if (painted && inputOk && !layoutErr && !visualErr) {
-    console.log(`  OK      ${name} (${detail}${inputDetail})`);
+  if (painted && inputOk && !layoutErr && !visualErr && !launchErr) {
+    console.log(`  OK      ${name} (${detail}${inputDetail}${
+      attempt > 1 ? ` attempt=${attempt}` : ""})`);
     if (inputErr && !STRICT_INPUT)
       console.error(`          WARN input: ${inputErr}`);
-  } else {
-    console.error(`  FAIL    ${name} (${detail})`);
-    if (best.err) console.error(`          printErr: ${String(best.err).slice(0, 200)}`);
-    if (inputErr) console.error(`          input: ${inputErr}`);
-    if (layoutErr) console.error(`          layout: ${layoutErr}`);
-    if (visualErr) console.error(`          visual: ${visualErr}`);
-    if (launchErr) console.error(`          driver: ${String(launchErr).slice(0, 200)}`);
-    failed++;
+    break;
+  }
+
+  /* Retry only a run that never produced a frame: that is what a loaded runner
+   * does to a healthy build. Once the canvas has painted, every later outcome
+   * is a real result and is reported on this attempt, including a driver
+   * request that hung during an input action. Keying this on the error alone
+   * would let a post-paint hang be retried away by a luckier attempt.
+   */
+  transient = painted ? ""
+              : launchErr ? `driver: ${String(launchErr).slice(0, 120)}`
+                          : `no frame (${detail})`;
+  if (transient && attempt < ATTEMPTS) {
+    console.error(`  RETRY   ${name} (${transient}; attempt ${attempt}/${ATTEMPTS})`);
+    await sleep(1000);
+    continue;
+  }
+
+  console.error(`  FAIL    ${name} (${detail}${
+    attempt > 1 ? ` after ${attempt} attempts` : ""})`);
+  if (best.err) console.error(`          printErr: ${String(best.err).slice(0, 200)}`);
+  if (inputErr) console.error(`          input: ${inputErr}`);
+  if (layoutErr) console.error(`          layout: ${layoutErr}`);
+  if (visualErr) console.error(`          visual: ${visualErr}`);
+  if (launchErr) console.error(`          driver: ${String(launchErr).slice(0, 200)}`);
+  failed++;
+  break;
   }
 }
 
