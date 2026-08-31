@@ -29,8 +29,9 @@ restages. `make install` ships the built copies.
 
 ## Implemented surface
 
-No core request is implemented yet: this is the connection, setup and event
-layer only. Every core opcode is deferred and deliberately absent from the
+Requests 1-4, 7-8, 10, 12 and 14-24: window lifecycle and configuration,
+geometry and tree queries, properties and selections. Every other core opcode is
+deferred and deliberately absent from the
 export manifest, so a client fails at link time instead of receiving a cookie
 that silently never completes.
 

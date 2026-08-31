@@ -1016,7 +1016,16 @@ Window XCreateSimpleWindow(Display *display,
                          CWBackPixel | CWBorderPixel, &attributes);
 }
 
+static void releaseReservedWindowId(Window requestedID)
+{
+    if (requestedID != None && isXidAllocated(requestedID) &&
+        getXidStruct(requestedID)->type == 0 &&
+        getXidStruct(requestedID)->dataPointer == NULL)
+        FREE_XID(requestedID);
+}
+
 static Window createWindowImpl(Display *display,
+                               Window requestedID,
                                Window parent,
                                int x,
                                int y,
@@ -1032,9 +1041,14 @@ static Window createWindowImpl(Display *display,
 {
     // https://tronche.com/gui/x/xlib/window/XCreateWindow.html
     SET_X_SERVER_REQUEST(display, X_CreateWindow);
-    TYPE_CHECK(parent, WINDOW, display, None);
+    if (!isXidAllocated(parent) || !IS_TYPE(parent, WINDOW)) {
+        handleError(0, display, parent, 0, BadWindow, 0);
+        releaseReservedWindowId(requestedID);
+        return None;
+    }
     if (valueMask != 0 && !attributes) {
         handleError(0, display, None, 0, BadValue, 0);
+        releaseReservedWindowId(requestedID);
         return None;
     }
 
@@ -1044,14 +1058,28 @@ static Window createWindowImpl(Display *display,
         LOG("Bad argument: Given class is InputOnly but border_with is not 0 "
             "in XCreateWindow!\n");
         handleError(0, display, None, 0, BadMatch, 0);
+        releaseReservedWindowId(requestedID);
+        return None;
+    }
+    if (visual == CopyFromParent)
+        visual = getDefaultVisual(0);
+    if (!visual) {
+        handleError(0, display, None, 0, BadMatch, 0);
+        releaseReservedWindowId(requestedID);
         return None;
     }
 
-    Window windowID = ALLOC_XID();
+    Window windowID = requestedID != None ? requestedID : ALLOC_XID();
     if (windowID == None) {
         LOG("Out of memory: Could not allocate the window id in "
             "XCreateWindow!\n");
         handleOutOfMemory(0, display, 0, 0);
+        return None;
+    }
+    if (requestedID != None &&
+        (!isXidAllocated(requestedID) || getXidStruct(requestedID)->type != 0 ||
+         getXidStruct(requestedID)->dataPointer != NULL)) {
+        handleError(0, display, requestedID, 0, BadIDChoice, 0);
         return None;
     }
 
@@ -1084,16 +1112,6 @@ static Window createWindowImpl(Display *display,
         FREE_XID(windowID);
         return None;
     }
-    if (visual == CopyFromParent)
-        visual = getDefaultVisual(0);
-    if (!visual) {
-        handleError(0, display, None, 0, BadMatch, 0);
-        removeChildFromParent(windowID);
-        free(windowStruct);
-        FREE_XID(windowID);
-        return None;
-    }
-
     int visualClass = visual->CLASS_ATTRIBUTE;
     windowStruct->colormap = (Colormap) XCreateColormap(
         display, windowID, visual,
@@ -1137,8 +1155,28 @@ Window XCreateWindow(Display *display,
                      unsigned long valueMask,
                      XSetWindowAttributes *attributes)
 {
-    return createWindowImpl(display, parent, x, y, width, height, border_width,
-                            depth, clazz, visual, valueMask, attributes, False);
+    return createWindowImpl(display, None, parent, x, y, width, height,
+                            border_width, depth, clazz, visual, valueMask,
+                            attributes, False);
+}
+
+Window libx11CompatCreateWindowWithId(Display *display,
+                                      Window window,
+                                      Window parent,
+                                      int x,
+                                      int y,
+                                      unsigned int width,
+                                      unsigned int height,
+                                      unsigned int borderWidth,
+                                      int depth,
+                                      unsigned int clazz,
+                                      Visual *visual,
+                                      unsigned long valueMask,
+                                      XSetWindowAttributes *attributes)
+{
+    return createWindowImpl(display, window, parent, x, y, width, height,
+                            borderWidth, depth, clazz, visual, valueMask,
+                            attributes, False);
 }
 
 Window createInternalWindow(Display *display,
@@ -1154,8 +1192,9 @@ Window createInternalWindow(Display *display,
                             unsigned long valueMask,
                             XSetWindowAttributes *attributes)
 {
-    return createWindowImpl(display, parent, x, y, width, height, border_width,
-                            depth, clazz, visual, valueMask, attributes, True);
+    return createWindowImpl(display, None, parent, x, y, width, height,
+                            border_width, depth, clazz, visual, valueMask,
+                            attributes, True);
 }
 
 static int destroySubwindowsImpl(Display *display, Window window)
@@ -2203,6 +2242,15 @@ Status XGetWindowAttributes(Display *display,
     window_attributes_return->y = windowStruct->y;
     window_attributes_return->width = windowStruct->w;
     window_attributes_return->height = windowStruct->h;
+    window_attributes_return->border_width = windowStruct->borderWidth;
+    window_attributes_return->class =
+        windowStruct->inputOnly ? InputOnly : InputOutput;
+    window_attributes_return->bit_gravity = windowStruct->bitGravity;
+    window_attributes_return->win_gravity = windowStruct->winGravity;
+    window_attributes_return->backing_store = NotUseful;
+    window_attributes_return->backing_planes = AllPlanes;
+    window_attributes_return->backing_pixel = 0;
+    window_attributes_return->save_under = False;
     if (IS_MAPPED_TOP_LEVEL_WINDOW(window)) {
         SDL_Window *sdlWindow = GET_WINDOW_STRUCT(window)->sdlWindow;
         Uint32 flags = SDL_GetWindowFlags(sdlWindow);
@@ -2233,6 +2281,10 @@ Status XGetWindowAttributes(Display *display,
         GET_WINDOW_STRUCT(window)->overrideRedirect;
     window_attributes_return->your_event_mask =
         GET_WINDOW_STRUCT(window)->eventMask;
+    window_attributes_return->all_event_masks = windowStruct->eventMask;
+    window_attributes_return->do_not_propagate_mask = NoEventMask;
+    window_attributes_return->map_installed = True;
+    window_attributes_return->screen = DefaultScreenOfDisplay(display);
     return 1;
 }
 

@@ -284,6 +284,26 @@ int main(void)
           "circulate-request conversion");
     free(circulateRequest);
 
+    XSelectInput(display, window, StructureNotifyMask);
+    CHECK(!xcb_request_check(connection,
+                             xcb_map_window_checked(connection, window)),
+          "checked map request");
+    map = (xcb_map_notify_event_t *) pollForType(connection, XCB_MAP_NOTIFY);
+    CHECK(map && map->response_type == XCB_MAP_NOTIFY && map->event == window &&
+              map->window == window,
+          "map request event");
+    free(map);
+    CHECK(!xcb_request_check(connection,
+                             xcb_unmap_window_checked(connection, window)),
+          "checked unmap request");
+    unmap =
+        (xcb_unmap_notify_event_t *) pollForType(connection, XCB_UNMAP_NOTIFY);
+    CHECK(unmap && unmap->response_type == XCB_UNMAP_NOTIFY &&
+              unmap->event == window && unmap->window == window &&
+              !unmap->from_configure,
+          "unmap request event");
+    free(unmap);
+
     memset(&x, 0, sizeof(x));
     x.xproperty.type = PropertyNotify;
     x.xproperty.window = window;
@@ -541,6 +561,9 @@ int main(void)
     XNextEvent(display, &consumed);
     CHECK(consumed.type == FocusOut, "Xlib consumes after owner switch");
     XSelectInput(display, window, NoEventMask);
+    CHECK(!xcb_request_check(connection,
+                             xcb_destroy_window_checked(connection, window)),
+          "checked destroy request");
     xcb_disconnect(connection);
     XCloseDisplay(display);
 
@@ -563,6 +586,21 @@ int main(void)
     connection = xcb_connect(NULL, NULL);
     CHECK(connection && !xcb_connection_has_error(connection),
           "open disconnect test");
+    EventWaiter errorWaiter = {.connection = connection};
+    pthread_t errorThread;
+    CHECK(!pthread_create(&errorThread, NULL, waitForEvent, &errorWaiter),
+          "unchecked-error waiter creation");
+    waitForWaiters(connection, 1);
+    xcb_void_cookie_t unchecked =
+        xcb_destroy_window(connection, UINT32_C(0xdeadbeef));
+    CHECK(!pthread_join(errorThread, NULL), "unchecked-error waiter join");
+    xcb_generic_error_t *uncheckedError =
+        (xcb_generic_error_t *) errorWaiter.result;
+    CHECK(uncheckedError && uncheckedError->response_type == 0 &&
+              uncheckedError->error_code == XCB_WINDOW &&
+              uncheckedError->full_sequence == unchecked.sequence,
+          "unchecked error wakes XCB waiter");
+    free(uncheckedError);
     enum { DISCONNECT_WAITER_COUNT = 4 };
     EventWaiter disconnectWaiters[DISCONNECT_WAITER_COUNT] = {0};
     pthread_t disconnectThreads[DISCONNECT_WAITER_COUNT];

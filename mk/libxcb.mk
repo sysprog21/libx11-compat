@@ -10,7 +10,7 @@ UPSTREAM_HEADERS_STAMP ?= $(UPSTREAM_HEADERS_DIR)/.upstream-stamp
 
 ifeq ($(XCB),1)
 XCB_COMPAT_TARGET := $(OUT)/libxcb-compat.so
-XCB_COMPAT_OBJS := $(OUT)/xcb-compat.o
+XCB_COMPAT_OBJS := $(OUT)/xcb-compat.o $(OUT)/xcb-requests.o
 XCB_DEFINED := $(OUT)/libxcb-compat.defined-syms
 XCB_EXPORT_LIST := $(OUT)/libxcb-compat.$(if $(filter Darwin,$(UNAME_S)),exports,map)
 XCB_EXPORT_FORMAT := $(if $(filter Darwin,$(UNAME_S)),macho,elf)
@@ -21,6 +21,10 @@ X11_XCB_EXPORT_LIST := $(OUT)/libX11-xcb-compat.$(if $(filter Darwin,$(UNAME_S))
 XCB_RPATH_FLAGS := $(call shared_lib_rpath_ldflags,$(notdir $(XCB_COMPAT_TARGET)))
 
 $(OUT)/xcb-compat.o: compat/xcb-compat.c $(UPSTREAM_HEADERS_STAMP) \
+    $(SDL_BACKEND_STAMP) | $(OUT)
+	$(cc_object)
+
+$(OUT)/xcb-requests.o: compat/xcb-requests.c $(UPSTREAM_HEADERS_STAMP) \
     $(SDL_BACKEND_STAMP) | $(OUT)
 	$(cc_object)
 

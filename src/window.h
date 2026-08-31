@@ -7,6 +7,20 @@
 #include "resource-types.h"
 #include "util.h"
 
+Window libx11CompatCreateWindowWithId(Display *display,
+                                      Window window,
+                                      Window parent,
+                                      int x,
+                                      int y,
+                                      unsigned int width,
+                                      unsigned int height,
+                                      unsigned int borderWidth,
+                                      int depth,
+                                      unsigned int clazz,
+                                      Visual *visual,
+                                      unsigned long valueMask,
+                                      XSetWindowAttributes *attributes);
+
 typedef struct {
     Atom property;
     int dataFormat;

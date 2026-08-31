@@ -1,3 +1,4 @@
 xcbCompatConnectionForDisplay
 xcbCompatEventWaiters
+xcbCompatFailNextReplyAllocationForTest
 xcbCompatSetQueueOwner

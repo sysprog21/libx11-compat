@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <xcb/xcb.h>
 #include "../compat/xcb-compat-private.h"
 
@@ -35,8 +37,62 @@ static int compareIds(const void *left, const void *right)
     return (a > b) - (a < b);
 }
 
+static int failedConnectionChecks(void)
+{
+    CHECK(!setenv("SDL_VIDEODRIVER", "libx11-compat-invalid-driver", 1),
+          "failed to select invalid video driver");
+
+    xcb_connection_t *connection = xcb_connect(NULL, NULL);
+    CHECK(connection && xcb_connection_has_error(connection) == XCB_CONN_ERROR,
+          "failed connection was not reported");
+    CHECK(xcb_generate_id(connection) == UINT32_MAX,
+          "failed connection generated an XID");
+    CHECK(xcb_intern_atom(connection, 0, 1, "A").sequence == 0,
+          "failed atom request returned a sequence");
+    xcb_get_geometry_cookie_t geometry = xcb_get_geometry(connection, XCB_NONE);
+    CHECK(geometry.sequence == 0,
+          "failed geometry request returned a sequence");
+    xcb_generic_error_t *error = (xcb_generic_error_t *) (uintptr_t) 1;
+    CHECK(!xcb_get_geometry_reply(connection, geometry, &error) && !error,
+          "failed geometry request returned pending state");
+    CHECK(xcb_create_window_checked(
+              connection, XCB_COPY_FROM_PARENT, 1, XCB_NONE, 0, 0, 1, 1, 0,
+              XCB_WINDOW_CLASS_COPY_FROM_PARENT, XCB_COPY_FROM_PARENT, 0, NULL)
+                  .sequence == 0,
+          "failed window request returned a sequence");
+    CHECK(xcb_change_property_checked(connection, XCB_PROP_MODE_REPLACE, 1, 1,
+                                      XCB_ATOM_STRING, 8, 0, NULL)
+                  .sequence == 0,
+          "failed property request returned a sequence");
+    CHECK(!xcb_request_check(connection, (xcb_void_cookie_t) {.sequence = 0}),
+          "failed connection stored a checked request");
+    CHECK(xcb_connection_has_error(connection) == XCB_CONN_ERROR,
+          "failed connection error changed");
+    xcb_disconnect(connection);
+    return 0;
+}
+
+/* SDL caches the video-driver environment when it first initializes, so an
+ * invalid driver selected in this process would also break every connection
+ * attempted after it. Drive the failed-connection checks from a child so the
+ * poisoned environment dies with it.
+ */
+static int checkFailedConnection(void)
+{
+    pid_t child = fork();
+    CHECK(child >= 0, "fork failed");
+    if (!child)
+        _exit(failedConnectionChecks() ? 1 : 0);
+    int status = 0;
+    CHECK(waitpid(child, &status, 0) == child, "failed-connection wait failed");
+    CHECK(WIFEXITED(status) && !WEXITSTATUS(status),
+          "failed-connection child failed");
+    return 0;
+}
+
 int main(void)
 {
+    CHECK(!checkFailedConnection(), "failed-connection checks failed");
     int screenNumber = -1;
     xcb_connection_t *connection =
         xcb_connect_to_display_with_auth_info(NULL, NULL, &screenNumber);

@@ -20,9 +20,11 @@ captureShapeMaskBaseline
 clearRendererClip
 compatFontOpenFamilyFallback
 compatFontOpenFamilyFallbackForChar
+freeXidResource
 getGcClipIterationCount
 getWindowRenderer
 getXidStruct
+isValidAtom
 isXidAllocated
 markPixmapReadbackDirty
 presentDrawableRectIfVisible

@@ -11,6 +11,7 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
 ifeq ($(XCB),1)
 CHECK_BINS += $(OUT)/tests/test-xcb-link
 CHECK_BINS += $(OUT)/tests/test-xcb-setup
+CHECK_BINS += $(OUT)/tests/test-xcb-window $(OUT)/tests/test-xcb-property
 CHECK_BINS += $(OUT)/tests/test-xcb-events
 endif
 # The GLX tests only exist when the optional GLX layer is built (GLX=1).
@@ -313,7 +314,14 @@ $(OUT)/tests/test-xcb-setup: tests/test-xcb-setup.c $(XCB_COMPAT_OBJS) $(TARGET)
 	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(XCB_COMPAT_OBJS) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
+XCB_TESTS := test-xcb-window test-xcb-property
 XLIB_XCB_TESTS := test-xcb-events
+
+$(addprefix $(OUT)/tests/,$(XCB_TESTS)): $(OUT)/tests/%: tests/%.c $(XCB_COMPAT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
+	    -L$(OUT) -lxcb-compat -lX11-compat $(TEST_LDFLAGS) -o $@
 
 $(addprefix $(OUT)/tests/,$(XLIB_XCB_TESTS)): $(OUT)/tests/%: tests/%.c $(X11_XCB_COMPAT_TARGET) $(XCB_COMPAT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
