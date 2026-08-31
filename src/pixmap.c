@@ -98,30 +98,25 @@ static Pixmap createPixmapFromPixels(Display *display,
     return pixmap;
 }
 
-Pixmap XCreatePixmap(Display *display,
-                     Drawable drawable,
-                     unsigned int width,
-                     unsigned int height,
-                     unsigned int depth)
+Pixmap libx11CompatCreatePixmapWithId(Display *display,
+                                      Pixmap pixmap,
+                                      Drawable drawable,
+                                      unsigned int width,
+                                      unsigned int height,
+                                      unsigned int depth)
 {
-    // https://tronche.com/gui/x/xlib/pixmap-and-cursor/XCreatePixmap.html
-    SET_X_SERVER_REQUEST(display, X_CreatePixmap);
     (void) drawable;
     if (width == 0 || height == 0) {
         LOG("Width and/or height are 0 in XCreatePixmap: w = %u, h = %u\n",
             width, height);
         handleError(0, display, None, 0, BadValue, 0);
+        FREE_XID(pixmap);
         return None;
     }
     if (!isSupportedPixmapDepth(depth)) {
         LOG("Got unsupported depth (%u) in XCreatePixmap\n", depth);
         handleError(0, display, None, 0, BadValue, 0);
-        return None;
-    }
-    XID pixmap = ALLOC_XID();
-    if (pixmap == None) {
-        LOG("Out of memory: Could not allocate XID in XCreatePixmap!\n");
-        handleOutOfMemory(0, display, 0, 0);
+        FREE_XID(pixmap);
         return None;
     }
     PixmapStruct *pixmapStruct = malloc(sizeof(PixmapStruct));
@@ -160,6 +155,24 @@ Pixmap XCreatePixmap(Display *display,
     applySdlDrawState(renderer, NULL, SDL_BLENDMODE_NONE, 0);
     SDL_RenderClear(renderer);
     return pixmap;
+}
+
+Pixmap XCreatePixmap(Display *display,
+                     Drawable drawable,
+                     unsigned int width,
+                     unsigned int height,
+                     unsigned int depth)
+{
+    // https://tronche.com/gui/x/xlib/pixmap-and-cursor/XCreatePixmap.html
+    SET_X_SERVER_REQUEST(display, X_CreatePixmap);
+    XID pixmap = ALLOC_XID();
+    if (pixmap == None) {
+        LOG("Out of memory: Could not allocate XID in XCreatePixmap!\n");
+        handleOutOfMemory(0, display, 0, 0);
+        return None;
+    }
+    return libx11CompatCreatePixmapWithId(display, pixmap, drawable, width,
+                                          height, depth);
 }
 
 int XFreePixmap(Display *display, Pixmap pixmap)

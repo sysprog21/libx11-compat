@@ -11,6 +11,7 @@ pass on everything. Run: python3 tests/check-host-link-audit.py
 import importlib.util
 import os
 import platform
+import sys
 import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,10 +67,14 @@ def test_alias_farm_exemption(audit):
     # Same host soname sitting elsewhere under --out (not the farm) -> host.
     stray = os.path.join(out, "libX11.so.6")
     open(stray, "w").close()
-    assert audit.is_host_x11(stray, out) is True, "a stray host lib under --out is not exempt"
+    assert (
+        audit.is_host_x11(stray, out) is True
+    ), "a stray host lib under --out is not exempt"
     # The exemption must not depend on out_dir being passed: without it, the
     # farm path is classified purely on its basename -> host.
-    assert audit.is_host_x11(alias) is True, "no out_dir: farm path falls back to basename"
+    assert (
+        audit.is_host_x11(alias) is True
+    ), "no out_dir: farm path falls back to basename"
 
 
 def test_uninspectable_is_reported_not_raised(audit):
@@ -122,4 +127,16 @@ if __name__ == "__main__":
     test_alias_farm_exemption(audit)
     test_uninspectable_is_reported_not_raised(audit)
     test_otool_fails_closed_on_non_object(audit)
+    artifacts = sys.argv[1:]
+    if artifacts:
+        # The alias-farm exemption is keyed on the output directory, so derive
+        # it from all the artifacts rather than the first one: a caller passing
+        # paths from several directories, or a bare filename whose dirname is
+        # empty, would otherwise have the exemption silently disabled.
+        out_dir = os.path.commonpath(
+            [os.path.dirname(os.path.abspath(a)) for a in artifacts]
+        )
+        bad = audit.audit_no_host_x11(artifacts, out_dir)
+        assert not bad, "host X11 dependencies found:\n" + "\n".join(bad)
+        print(f"OK: no host X11 dependency in {len(artifacts)} artifact(s)")
     print("OK: host-link audit classifier tests passed")

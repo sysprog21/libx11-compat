@@ -8,6 +8,14 @@ TARGET ?= $(OUT)/libX11-compat.so
 # either way, so GLX=0 is only for builds that want the smaller symbol surface.
 GLX ?= 1
 
+# XCB ?= 0 builds the core XCB shim (libxcb-compat.so) and the Xlib/XCB bridge
+# (libX11-xcb-compat.so) alongside the Xlib library, together with their tests,
+# example clients, pkg-config files and install entries. It is off by default
+# because no in-tree workload needs it yet: an XCB client has to opt in with
+# XCB=1, and a build that does not stays free of the extra libraries and of the
+# xcb/x11-xcb .pc files a downstream configure might otherwise pick up.
+XCB ?= 0
+
 # PYTHON is set in mk/toolchain.mk; do not redefine here.
 # SDL detection lives in mk/sdl.mk; this file consumes SDL_CPPFLAGS and
 # SDL_COMPAT_LIBS from it.

@@ -174,7 +174,5 @@ check-wasm-xnedit:
 	    *WebAssembly*) ;; \
 	    *) echo "check-wasm-xnedit: not a wasm module" >&2; exit 1;; \
 	esac; \
-	if command -v node >/dev/null 2>&1; then \
-	    node scripts/wasm-paint-check.mjs $(OUT) xnedit || exit 1; \
-	fi; \
+	$(call wasm_paint_check,xnedit) \
 	echo "  OK      check-wasm-xnedit (xnedit cross-compiled to a wasm module)"

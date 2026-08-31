@@ -439,6 +439,27 @@ check-wasm:
 # the result is a symbol-complete wasm module. Separate from check-wasm so the
 # cheap example smoke does not pull in the libXt build. Skips without emcc.
 .PHONY: check-wasm-libxt
+
+# The four wasm app checks all end the same way: smoke the module under node,
+# then drive it through scripts/wasm-paint-check.mjs. Keeping that in one place
+# stops the four copies drifting; xnedit had already lost the
+# WASM_PAINT_REQUIRED gate, so a CI host without node skipped its paint check
+# silently while the others failed.
+#   $(1) app basename, $(2) non-empty to also run the node module smoke
+# The body ends without a continuation so endef stays visible to make; call
+# sites that continue a shell line add their own trailing backslash.
+define wasm_paint_check
+	if command -v node >/dev/null 2>&1; then \
+	    $(if $(2),node scripts/wasm-node-smoke.mjs $(OUT)/$(1).wasm || exit 1; \
+	    ,)node scripts/wasm-paint-check.mjs $(OUT) $(1) || exit 1; \
+	elif [ "$${WASM_PAINT_REQUIRED:-0}" = 1 ]; then \
+	    echo "check-wasm-$(1): node missing for required paint check" >&2; \
+	    exit 1; \
+	else \
+	    echo "  WARN    check-wasm-$(1): node missing, skipped paint check" >&2; \
+	fi;
+endef
+
 ## Link-smoke the wasm libXt archive (skips when emcc is unavailable)
 check-wasm-libxt:
 	$(Q)if ! command -v emcc >/dev/null 2>&1; then \

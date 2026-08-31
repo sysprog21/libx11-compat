@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
@@ -408,6 +409,13 @@ static size_t pendingCloseCapacity = 0;
 #define PENDING_CLOSE_FALLBACK_SLOTS 8
 static Display *pendingCloseFallback[PENDING_CLOSE_FALLBACK_SLOTS];
 static size_t pendingCloseFallbackCount = 0;
+typedef void (*DisplayCloseHook)(Display *display);
+static _Atomic DisplayCloseHook displayCloseHook;
+
+void libx11CompatSetDisplayCloseHook(void (*hook)(Display *display))
+{
+    atomic_store_explicit(&displayCloseHook, hook, memory_order_release);
+}
 
 int XCloseDisplay(Display *display)
 {
@@ -446,6 +454,10 @@ int XCloseDisplay(Display *display)
         }
         return 0;
     }
+    DisplayCloseHook closeHook =
+        atomic_load_explicit(&displayCloseHook, memory_order_acquire);
+    if (closeHook)
+        closeHook(display);
     freeExtensionStorage(display);
     freeSelectionStorage(display);
     int screenIndex;

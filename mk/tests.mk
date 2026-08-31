@@ -8,6 +8,14 @@ CHECK_BINS := $(OUT)/tests/check $(OUT)/tests/symbol-coverage \
               $(OUT)/tests/test-xft-link \
               $(OUT)/tests/test-xlibint-link \
               $(OUT)/tests/test-xtest
+ifeq ($(XCB),1)
+CHECK_BINS += $(OUT)/tests/test-xcb-link
+CHECK_BINS += $(OUT)/tests/test-xcb-setup
+CHECK_BINS += $(OUT)/tests/test-xcb-window $(OUT)/tests/test-xcb-property
+CHECK_BINS += $(OUT)/tests/test-xlib-xcb
+CHECK_BINS += $(OUT)/tests/test-xcb-events
+CHECK_BINS += $(OUT)/tests/test-xcb-drawing
+endif
 # The GLX tests only exist when the optional GLX layer is built (GLX=1).
 # test-glx-link covers the no-provider degrade path; test-glx-provider drives the
 # full GLX->EGL translation against the in-tree fake EGL provider.
@@ -48,7 +56,31 @@ else
   endif
 endif
 
-.PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths
+.PHONY: check check-unit check-differential check-link-xaw symbol-coverage api-symbol-coverage bench bench-paths check-xcb-reference update-xcb-reference
+
+XCB_REFERENCE_BIN := $(OUT)/tests/probe-system-xcb
+XCB_REFERENCE_OUT := tests/data/xcb-reference.txt
+
+$(XCB_REFERENCE_BIN): tests/probe-system-xcb.c | $(OUT)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $< (system XCB)"
+	$(Q)$(CC) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $$($(PKG_CONFIG) --cflags --libs xcb) -o $@
+
+## Regenerate the deterministic system-XCB oracle under an isolated Xvfb.
+update-xcb-reference: $(XCB_REFERENCE_BIN)
+	@command -v xvfb-run >/dev/null || { echo "Error: xvfb-run is required" >&2; exit 1; }
+	$(Q)xvfb-run -a -s '-screen 0 320x240x24 -nolisten tcp' \
+	    $(XCB_REFERENCE_BIN) > $(XCB_REFERENCE_OUT).tmp; \
+	    mv $(XCB_REFERENCE_OUT).tmp $(XCB_REFERENCE_OUT)
+
+## Compare the core-XCB probe with the checked-in system-XCB oracle.
+check-xcb-reference: $(XCB_REFERENCE_BIN) $(XCB_REFERENCE_OUT)
+	@command -v xvfb-run >/dev/null || { echo "Error: xvfb-run is required" >&2; exit 1; }
+	$(Q)tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
+	    xvfb-run -a -s '-screen 0 320x240x24 -nolisten tcp' \
+	        $(XCB_REFERENCE_BIN) >"$$tmp/actual"; \
+	    diff -u $(XCB_REFERENCE_OUT) "$$tmp/actual"
 
 DIFFERENTIAL_TARGETS := check-differential-motif check-differential-violawww \
                         check-differential-xmms
@@ -71,7 +103,14 @@ check-unit: $(CHECK_BINS)
 	@printf "$(BLUE)RUN$(RESET) tests/check-api-symbols.py\n"
 	$(Q)LIBX11_COMPAT_GLX=$(GLX) $(PYTHON) tests/check-api-symbols.py $(TARGET) tests/api-symbols.txt
 	@printf "$(BLUE)RUN$(RESET) tests/check-host-link-audit.py\n"
-	$(Q)$(PYTHON) tests/check-host-link-audit.py
+	$(Q)$(PYTHON) tests/check-host-link-audit.py $(wildcard $(OUT)/lib*-compat.so)
+ifeq ($(XCB),1)
+	@printf "$(BLUE)RUN$(RESET) tests/test-check-xcb-symbols.py\n"
+	$(Q)$(PYTHON) tests/test-check-xcb-symbols.py
+	@printf "$(BLUE)RUN$(RESET) scripts/check-xcb-symbols.py\n"
+	$(Q)$(PYTHON) scripts/check-xcb-symbols.py $(XCB_COMPAT_TARGET) \
+	    tests/xcb-symbols.txt
+endif
 
 ## Full local regression suite: unit tests, motif link/demos gates, the
 ## replay smoke tier, and the SSH-backed differential screenshots. The
@@ -263,3 +302,29 @@ $(OUT)/tests/%: tests/%.c $(TARGET)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
 	    $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+ifeq ($(XCB),1)
+$(OUT)/tests/test-xcb-setup: tests/test-xcb-setup.c $(XCB_COMPAT_OBJS) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(XCB_COMPAT_OBJS) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
+
+XCB_TESTS := test-xcb-link test-xcb-window test-xcb-property test-xcb-drawing \
+             test-xlib-xcb test-xcb-events
+
+# One recipe; each test names the libraries it needs and nothing more, so the
+# link test keeps proving that libxcb-compat resolves on its own.
+$(OUT)/tests/test-xcb-link: XCB_TEST_LIBS := -lxcb-compat
+$(OUT)/tests/test-xcb-window $(OUT)/tests/test-xcb-property \
+$(OUT)/tests/test-xcb-drawing: XCB_TEST_LIBS := -lxcb-compat -lX11-compat
+$(OUT)/tests/test-xlib-xcb $(OUT)/tests/test-xcb-events: \
+    XCB_TEST_LIBS := -lX11-xcb-compat -lxcb-compat -lX11-compat
+
+$(addprefix $(OUT)/tests/,$(XCB_TESTS)): $(OUT)/tests/%: tests/%.c \
+    $(X11_XCB_COMPAT_TARGET) $(XCB_COMPAT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
+	    -L$(OUT) $(XCB_TEST_LIBS) $(TEST_LDFLAGS) -o $@
+endif

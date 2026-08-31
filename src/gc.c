@@ -33,21 +33,20 @@ int XFreeGC(Display *display, GC gc)
     return 1;
 }
 
-GC XCreateGC(Display *display,
-             Drawable d,
-             unsigned long valuemask,
-             XGCValues *values)
+GC libx11CompatCreateGCWithId(Display *display,
+                              GContext contextId,
+                              Drawable d,
+                              unsigned long valuemask,
+                              XGCValues *values)
 {
-    // https://tronche.com/gui/x/xlib/GC/XCreateGC.html
-    SET_X_SERVER_REQUEST(display, X_CreateGC);
-    TYPE_CHECK(d, DRAWABLE, display, NULL);
-    if (IS_TYPE(d, WINDOW) && IS_INPUT_ONLY(d)) {
-        handleError(0, display, d, 0, BadMatch, 0);
+    if (!IS_TYPE(d, DRAWABLE)) {
+        handleError(0, display, d, 0, BadDrawable, 0);
+        FREE_XID(contextId);
         return NULL;
     }
-    XID contextId = ALLOC_XID();
-    if (contextId == None) {
-        handleOutOfMemory(0, display, 0, 0);
+    if (IS_TYPE(d, WINDOW) && IS_INPUT_ONLY(d)) {
+        handleError(0, display, d, 0, BadMatch, 0);
+        FREE_XID(contextId);
         return NULL;
     }
     GraphicContext *gc = malloc(sizeof(GraphicContext));
@@ -124,6 +123,21 @@ GC XCreateGC(Display *display,
         return NULL;
     }
     return graphicContextStruct;
+}
+
+GC XCreateGC(Display *display,
+             Drawable d,
+             unsigned long valuemask,
+             XGCValues *values)
+{
+    // https://tronche.com/gui/x/xlib/GC/XCreateGC.html
+    SET_X_SERVER_REQUEST(display, X_CreateGC);
+    XID contextId = ALLOC_XID();
+    if (contextId == None) {
+        handleOutOfMemory(0, display, 0, 0);
+        return NULL;
+    }
+    return libx11CompatCreateGCWithId(display, contextId, d, valuemask, values);
 }
 
 GContext XGContextFromGC(GC gc)

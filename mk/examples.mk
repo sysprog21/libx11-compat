@@ -1,6 +1,11 @@
 EXAMPLE_NAMES := 2048 paint life clock mandel processing clipboard catclock \
     moire
 EXAMPLE_BINS := $(addprefix $(OUT)/examples/,$(EXAMPLE_NAMES))
+ifeq ($(XCB),1)
+  XCB_SHOWCASE_NAMES := xcb-kaleidoscope xcb-mandelbrot
+  XCB_SHOWCASE_BINS := $(addprefix $(OUT)/examples/,$(XCB_SHOWCASE_NAMES))
+  EXAMPLE_BINS += $(XCB_SHOWCASE_BINS)
+endif
 X11PERF_DIR := examples/x11perf
 X11PERF_SRCS := \
     $(X11PERF_DIR)/bitmaps.c \
@@ -30,10 +35,19 @@ ifeq ($(UNAME_S),Darwin)
   EXAMPLE_LDFLAGS += -Wl,-rpath,$(abspath $(OUT))
 endif
 
-.PHONY: examples bench-x11perf
+.PHONY: examples check-xcb-showcases bench-x11perf
 
-## Build the bundled Xlib client examples (linked against libX11-compat.so)
+## Build the bundled example clients (add XCB=1 for the native XCB ones)
 examples: $(EXAMPLE_BINS) $(X11PERF_BIN)
+
+## Run the XCB showcases headless under SDL's dummy driver (needs XCB=1)
+check-xcb-showcases: $(XCB_SHOWCASE_BINS)
+	@test "$(XCB)" = 1 || \
+	    { echo "Error: check-xcb-showcases needs XCB=1" >&2; exit 1; }
+	@set -e; for showcase in $(XCB_SHOWCASE_BINS); do \
+	    echo "  RUN     $$showcase --smoke"; \
+	    SDL_VIDEODRIVER=dummy $$showcase --smoke; \
+	done
 
 ## Run the bundled x11perf benchmark in short regression mode
 bench-x11perf: $(X11PERF_BIN)
@@ -44,6 +58,14 @@ $(OUT)/examples/%: examples/%.c $(TARGET)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< $(TARGET) \
 	    $(LDLIBS) $(EXAMPLE_LDFLAGS) -o $@
+
+ifeq ($(XCB),1)
+$(XCB_SHOWCASE_BINS): $(OUT)/examples/%: examples/%.c $(XCB_COMPAT_TARGET) $(TARGET)
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(CFLAGS_EXTRA) $< \
+	    $(XCB_COMPAT_TARGET) $(TARGET) $(LDLIBS) $(EXAMPLE_LDFLAGS) -o $@
+endif
 
 $(X11PERF_BIN): $(X11PERF_SRCS) $(TARGET)
 	@mkdir -p $(dir $@)

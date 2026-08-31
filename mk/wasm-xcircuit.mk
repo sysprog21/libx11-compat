@@ -244,13 +244,5 @@ check-wasm-xcircuit:
 	    *WebAssembly*) ;; \
 	    *) echo "check-wasm-xcircuit: not a wasm module" >&2; exit 1;; \
 	esac; \
-	if command -v node >/dev/null 2>&1; then \
-	    node scripts/wasm-node-smoke.mjs $(OUT)/xcircuit.wasm || exit 1; \
-	    node scripts/wasm-paint-check.mjs $(OUT) xcircuit || exit 1; \
-	else \
-	    if [ "$${WASM_PAINT_REQUIRED:-0}" = 1 ]; then \
-	        echo "check-wasm-xcircuit: node missing for required paint check" >&2; exit 1; \
-	    fi; \
-	    echo "  WARN    check-wasm-xcircuit: node missing, skipped module smoke" >&2; \
-	fi; \
+	$(call wasm_paint_check,xcircuit,smoke) \
 	echo "  OK      check-wasm-xcircuit (xcircuit cross-compiled to a wasm module)"

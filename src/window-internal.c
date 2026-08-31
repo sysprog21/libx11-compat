@@ -1924,15 +1924,27 @@ static Bool restackWindow(Display *display,
         if (siblingIndex < 0)
             return False;
         size_t target = (size_t) siblingIndex;
-        if (mode == Above) {
+        if (mode == Above)
             target++;
-        } else if (mode != Below) {
-            handleError(0, display, window, 0, BadValue, 0);
-            return False;
+        if (mode == Above || mode == Below) {
+            if ((size_t) index < target)
+                target--;
+            return moveChildToIndexAndExpose(display, window, target);
         }
-        if ((size_t) index < target)
-            target--;
-        return moveChildToIndexAndExpose(display, window, target);
+        Bool overlap = windowsOverlap(window, values->sibling);
+        Bool siblingAbove = siblingIndex > index;
+        if (mode == TopIf && overlap && siblingAbove)
+            return moveChildToIndexAndExpose(display, window,
+                                             children->length - 1);
+        if (mode == BottomIf && overlap && !siblingAbove)
+            return moveChildToIndexAndExpose(display, window, 0);
+        if (mode == Opposite && overlap)
+            return moveChildToIndexAndExpose(
+                display, window, siblingAbove ? children->length - 1 : 0);
+        if (mode == TopIf || mode == BottomIf || mode == Opposite)
+            return True;
+        handleError(0, display, window, 0, BadValue, 0);
+        return False;
     }
 
     size_t idx = (size_t) index;
@@ -2449,6 +2461,11 @@ Bool configureWindow(Display *display,
         return False;
     if (HAS_VALUE(value_mask, CWStackMode))
         hasChanged = True;
+    if (HAS_VALUE(value_mask, CWBorderWidth) &&
+        windowStruct->borderWidth != (unsigned int) values->border_width) {
+        windowStruct->borderWidth = values->border_width;
+        hasChanged = True;
+    }
     if (HAS_VALUE(value_mask, CWX) || HAS_VALUE(value_mask, CWY)) {
         int x = oldX, y = oldY;
         if (HAS_VALUE(value_mask, CWX))

@@ -1,0 +1,9 @@
+setup status=1 byte_order=0 screens=1 roots=1
+screen root_depth=24 width=320 height=240
+atom name=LIBX11_COMPAT_XCB_PROBE length=23
+attributes class=1 gravity=1 map_state=0 override=0
+geometry x=10 y=20 width=160 height=90 border=0 depth=24
+tree parent_is_root=1 children=0
+property format=8 length=9 after=0 value=xcb-probe
+event index=0 type=28 synthetic=0
+event index=1 type=19 synthetic=0

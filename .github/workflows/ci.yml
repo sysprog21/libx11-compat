@@ -245,7 +245,9 @@ jobs:
           UI_REPLAY_XVFB: --xvfb
           UI_REPLAY_SCREENSHOT_COMMAND: import
           UI_REPLAY_DISPLAY: 121
-        run: make check-unit
+        # XCB=1: the XCB shim is off by default (mk/config.mk), so ask for it
+        # explicitly or its libraries, tests and ABI gate never build here.
+        run: make XCB=1 check-unit
 
       - name: Build bundled examples
         run: make examples -j"$(nproc)"
@@ -323,7 +325,7 @@ jobs:
           UI_REPLAY_XVFB: --xvfb
           UI_REPLAY_SCREENSHOT_COMMAND: import
           UI_REPLAY_DISPLAY: 121
-        run: make OPTFLAGS=-O0 CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT check-unit
+        run: make XCB=1 OPTFLAGS=-O0 CFLAGS_EXTRA=-DDEBUG_LIBX11_COMPAT check-unit
 
       - name: ccache stats
         run: ccache --show-stats
@@ -413,7 +415,7 @@ jobs:
           # autoconf which probes for Xutf8TextExtents via a link test
           # that fails when SAN_FLAGS leak into the upstream configure
           # ("Motif requires a UTF-8 capable libX11").
-          make CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" check-unit
+          make XCB=1 CFLAGS_EXTRA="$SAN_FLAGS" LDFLAGS="$SAN_FLAGS" check-unit
 
       - name: ccache stats
         run: ccache --show-stats
@@ -2138,7 +2140,7 @@ jobs:
         # dummy, software renderer) plus symbol coverage; it does not need
         # Xvfb. The make test runner also folds SDL_RUNTIME_LIBDIR (the sdl3
         # pkg-config libdir) onto LD_LIBRARY_PATH so libSDL3 resolves.
-        run: make SDL_BACKEND=sdl3 check-unit
+        run: make XCB=1 SDL_BACKEND=sdl3 check-unit
 
       - name: Build bundled examples (SDL_BACKEND=sdl3)
         run: make SDL_BACKEND=sdl3 examples -j"$(nproc)"

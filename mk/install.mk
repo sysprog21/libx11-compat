@@ -29,6 +29,9 @@ CODESIGN_RESIGN := $(if $(filter Darwin,$(UNAME_S)),codesign --force --sign - ,:
 # Libraries a downstream links by their standard X11 SONAME (each gets a
 # libNAME.so -> libNAME-compat.so alias).
 XCOMPAT_INSTALL_ALIASED := X11 Xft Xext Xt Xmu Xaw Xpm Xinerama ICE SM
+ifeq ($(XCB),1)
+XCOMPAT_INSTALL_ALIASED += X11-xcb xcb
+endif
 # Runtime-only wrappers libX11-compat dlopens; installed without an alias. Only
 # built for the SDL2 backend -- under SDL_BACKEND=sdl3 the stack links libSDL3
 # directly (SDL_USE_WRAPPER=0), so there is nothing to install.
@@ -44,9 +47,17 @@ XCOMPAT_INSTALL_LIB_FILES := \
     $(foreach w,$(XCOMPAT_INSTALL_WRAPPERS),$(OUT)/lib$(w).so)
 
 .PHONY: install
-install: $(XCOMPAT_INSTALL_LIB_FILES) $(UPSTREAM_HEADERS_STAMP)
+# x11.pc describes libX11-compat, which every install ships, so it is not an
+# XCB decision. It also has to travel with x11-xcb.pc, whose "Requires: x11"
+# would otherwise resolve against whatever real libX11 the host has and quietly
+# link the system library next to the shim.
+XCOMPAT_INSTALL_PC := x11$(if $(filter 1,$(XCB)), xcb x11-xcb)
+
+install: $(XCOMPAT_INSTALL_LIB_FILES) $(UPSTREAM_HEADERS_STAMP) \
+    $(addprefix $(PKGCONFIG_DIR)/,$(addsuffix .pc,$(XCOMPAT_INSTALL_PC)))
 	@echo "  INSTALL $(DESTDIR)$(PREFIX)"
-	$(Q)mkdir -p "$(DESTDIR)$(PREFIX)/lib" "$(DESTDIR)$(PREFIX)/include"
+	$(Q)mkdir -p "$(DESTDIR)$(PREFIX)/lib" "$(DESTDIR)$(PREFIX)/include" \
+	    $(if $(XCOMPAT_INSTALL_PC),"$(DESTDIR)$(PREFIX)/lib/pkgconfig")
 	$(Q)for l in $(XCOMPAT_INSTALL_ALIASED); do \
 	    cp "$(OUT)/lib$$l-compat.so" "$(DESTDIR)$(PREFIX)/lib/" && \
 	    $(STRIP) -x "$(DESTDIR)$(PREFIX)/lib/lib$$l-compat.so" && \
@@ -64,4 +75,15 @@ install: $(XCOMPAT_INSTALL_LIB_FILES) $(UPSTREAM_HEADERS_STAMP)
 	        mkdir -p "$(DESTDIR)$(PREFIX)/include/$$d"; \
 	        cp -R "include/$$d/." "$(DESTDIR)$(PREFIX)/include/$$d/"; \
 	    fi; \
+	done
+	$(Q)prefix_escaped=$$(printf '%s' "$(PREFIX)" | sed -e 's/[&|\\]/\\&/g'); \
+	for pc in $(XCOMPAT_INSTALL_PC); do \
+	    sed -e "s|^prefix=.*|prefix=$$prefix_escaped|" \
+	        -e 's|^exec_prefix=.*|exec_prefix=$${prefix}|' \
+	        -e 's|^libdir=.*|libdir=$${prefix}/lib|' \
+	        -e 's|^includedir=.*|includedir=$${prefix}/include|' \
+	        -e 's|^upstreamincludedir=.*|upstreamincludedir=$${includedir}|' \
+	        -e 's|^libxtbuildincludedir=.*|libxtbuildincludedir=$${includedir}|' \
+	        "$(PKGCONFIG_DIR)/$$pc.pc" \
+	        > "$(DESTDIR)$(PREFIX)/lib/pkgconfig/$$pc.pc" || exit 1; \
 	done
