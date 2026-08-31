@@ -64,14 +64,20 @@ Clients link against it the same way they would link against the system `libX11.
 
 ## Examples
 
-`examples/` bundles real Xlib clients built against the local `libX11-compat.so`:
+`examples/` bundles real Xlib and XCB clients built against the local
+compatibility libraries:
 
 ```sh
 make examples
 build/examples/2048
+make XCB=1 examples
+build/examples/xcb-kaleidoscope
 ```
 
 The bundle covers a 2048 game, a paint demo, Conway's Game of Life, an analog clock, an interactive Mandelbrot viewer, a single-runner Processing-style showcase, an SDL-backed clipboard probe, and the upstream X.Org `x11perf` benchmark.
+The XCB shim is off by default, so `XCB=1` adds the two native XCB clients: a
+geometric image/primitives demo and a CPU-rendered Mandelbrot client; see
+[`examples/README-xcb.md`](examples/README-xcb.md).
 See [`docs/EXAMPLES.md`](docs/EXAMPLES.md) for the API each example exercises.
 The screenshot above is from the larger ViolaWWW port described in [Larger Workloads Under Investigation](#larger-workloads-under-investigation).
 
