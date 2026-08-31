@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -457,6 +458,38 @@ for _src in SOURCES:
         )
 
 
+# The XCB headers are built, not shipped: libxcb's release carries xcb.h and
+# xcbext.h by hand but generates xproto.h from xcb-proto's XML through
+# c_client.py. Both releases are pinned here and the generator runs at stage
+# time, so nothing generated is tracked in the repository.
+XCB_SOURCES = {
+    "libxcb": {
+        "version": "libxcb-1.15",
+        "url": (
+            "https://xorg.freedesktop.org/archive/individual/lib/"
+            "libxcb-1.15.tar.xz"
+        ),
+        "sha256": (
+            "cc38744f817cf6814c847e2df37fcb8997357d72fa4bcbc228ae0fe47219a059"
+        ),
+    },
+    "xcb-proto": {
+        "version": "xcb-proto-1.15.2",
+        "url": (
+            "https://xorg.freedesktop.org/archive/individual/proto/"
+            "xcb-proto-1.15.2.tar.xz"
+        ),
+        "sha256": (
+            "7072beb1f680a2fe3f9e535b797c146d22528990c72f63ddb49d2f350a3653ed"
+        ),
+    },
+}
+
+# Handed to c_client.py the way libxcb's own src/Makefile.am does.
+XCB_MAN_PAGE = "X Version 11"
+XCB_MAN_SUFFIX = "3"
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -635,6 +668,71 @@ def relevant_util_member(
     return base
 
 
+def _extract_tarball(tarball: Path, dest: Path) -> Path:
+    """Unpack tarball under dest and return its single top-level directory."""
+    with tarfile.open(tarball, "r:*") as tar:
+        members = [m for m in tar.getmembers() if _is_safe(PurePosixPath(m.name).parts)]
+        roots = {PurePosixPath(m.name).parts[0] for m in members if m.name != "."}
+        if len(roots) != 1:
+            raise SystemExit(f"{tarball.name} has no single top-level directory")
+        for member in members:
+            tar.extract(member, dest, filter="data")
+    return dest / roots.pop()
+
+
+def xcb_index() -> dict[str, tuple[str, bytes]]:
+    """Build the public XCB headers and return them keyed by staged path.
+
+    xcb.h and xcbext.h ship in libxcb's source release; xproto.h does not
+    exist there and is generated from xcb-proto's XML by libxcb's c_client.py,
+    which is what libxcb itself does at build time.
+    """
+    tarballs = {
+        name: download(source["url"], source["sha256"])
+        for name, source in XCB_SOURCES.items()
+    }
+    index: dict[str, tuple[str, bytes]] = {}
+    with tempfile.TemporaryDirectory() as work_name:
+        work = Path(work_name)
+        libxcb = _extract_tarball(tarballs["libxcb"], work / "libxcb")
+        proto = _extract_tarball(tarballs["xcb-proto"], work / "xcb-proto")
+        for name in ("xcb.h", "xcbext.h"):
+            index[f"xcb/{name}"] = (
+                XCB_SOURCES["libxcb"]["version"],
+                (libxcb / "src" / name).read_bytes(),
+            )
+        generated = work / "generated"
+        generated.mkdir()
+        command = [
+            sys.executable,
+            str(libxcb / "src" / "c_client.py"),
+            "-c",
+            XCB_SOURCES["libxcb"]["version"].replace("-", " "),
+            "-l",
+            XCB_MAN_PAGE,
+            "-s",
+            XCB_MAN_SUFFIX,
+            "-p",
+            str(proto),
+            str(proto / "src" / "xproto.xml"),
+        ]
+        result = subprocess.run(
+            command, cwd=generated, capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise SystemExit(
+                "c_client.py failed to generate xproto.h:\n" + result.stderr.strip()
+            )
+        header = generated / "xproto.h"
+        if not header.exists():
+            raise SystemExit("c_client.py produced no xproto.h")
+        index["xcb/xproto.h"] = (
+            XCB_SOURCES["xcb-proto"]["version"],
+            header.read_bytes(),
+        )
+    return index
+
+
 def upstream_index() -> dict[str, tuple[str, bytes]]:
     """Return ``{rel_path: (source_name, content)}`` merged across sources."""
     index: dict[str, tuple[str, bytes]] = {}
@@ -741,12 +839,19 @@ def _apply_patch(rel: str, content: bytes) -> bytes:
     return text.encode("utf-8")
 
 
-def stamp_token() -> str:
+def stamp_token(with_xcb: bool) -> str:
     lines = [
-        "stamp-format=5",
+        "stamp-format=6",
         f"sync-script-sha256={sha256_of(Path(__file__).resolve())}",
     ]
     lines.extend(f"{src['name']}={src['version']}#{src['sha256']}" for src in SOURCES)
+    lines.append(f"xcb-staged={int(with_xcb)}")
+    if with_xcb:
+        lines.extend(
+            f"{name}={source['version']}#{source['sha256']}"
+            for name, source in sorted(XCB_SOURCES.items())
+        )
+        lines.append(f"xcb-c-client-args={XCB_MAN_PAGE}#{XCB_MAN_SUFFIX}")
     for src_name, basenames in sorted(SRC_WHITELIST.items()):
         lines.append(f"{src_name}-src={','.join(sorted(basenames))}")
     for src in SOURCES:
@@ -877,7 +982,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if getattr(args, "subdir", None):
         return _restage_subdir(staging_root, args.subdir)
     stamp = dest / STAMP_NAME
-    token = stamp_token()
+    with_xcb = bool(getattr(args, "with_xcb", False))
+    token = stamp_token(with_xcb)
     if (
         not args.force
         and stamp.exists()
@@ -888,9 +994,11 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         # otherwise Make would re-run this recipe on every invocation.
         os.utime(stamp, None)
         return 0
-    x11_root = dest / "X11"
-    if x11_root.exists():
-        shutil.rmtree(x11_root)
+    for root_name in ("X11", "xcb"):
+        root = dest / root_name
+        if root.exists():
+            shutil.rmtree(root)
+
     for sub in _collect_staging_subdirs():
         sub_dir = staging_root / sub
         if sub_dir.exists():
@@ -899,6 +1007,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         stamp.unlink()
     dest.mkdir(parents=True, exist_ok=True)
     index = upstream_index()
+    if with_xcb:
+        index.update(xcb_index())
     for rel, (_source, content) in index.items():
         out_path = dest / rel
         # Defense in depth: even if relevant_member missed a traversal
@@ -1014,6 +1124,11 @@ def main(argv: list[str]) -> int:
     p_fetch.add_argument("dest", nargs="?", default=str(DEFAULT_DEST))
     p_fetch.add_argument(
         "--force", action="store_true", help="ignore the stamp and re-extract"
+    )
+    p_fetch.add_argument(
+        "--with-xcb",
+        action="store_true",
+        help="also build and stage the public xcb/ headers (XCB=1 builds only)",
     )
     p_fetch.add_argument(
         "--subdir",

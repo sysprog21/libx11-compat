@@ -6,10 +6,27 @@ UPSTREAM_HEADERS_DIR := $(OUT)/upstream/include
 UPSTREAM_SRC_DIR := $(OUT)/upstream/src
 UPSTREAM_HEADERS_STAMP := $(UPSTREAM_HEADERS_DIR)/.upstream-stamp
 UPSTREAM_SYNC := scripts/sync-upstream-headers.py
+# The public xcb/ headers are downloaded and generated, so only ask for them
+# when something will compile against them. A default or wasm build then needs
+# no network access for them at all.
+XCB_STAGE_FLAG := $(if $(filter 1,$(XCB)),--with-xcb)
 
-$(UPSTREAM_HEADERS_STAMP): $(UPSTREAM_SYNC) | $(OUT)
+# Toggling XCB changes what the sync stages, but nothing on disk that Make
+# compares mtimes against, so record the flag in a file that only changes when
+# the value does. mk/library.mk pins GLX the same way.
+UPSTREAM_STAGE_CONFIG := $(OUT)/upstream.stage-config
+.PHONY: FORCE
+$(UPSTREAM_STAGE_CONFIG): FORCE | $(OUT)
+	$(Q)printf 'XCB=%s\n' '$(XCB)' > $@.tmp
+	$(Q)if test -r $@ && cmp -s $@.tmp $@; then \
+	    rm -f $@.tmp; \
+	else \
+	    mv $@.tmp $@; \
+	fi
+
+$(UPSTREAM_HEADERS_STAMP): $(UPSTREAM_SYNC) $(UPSTREAM_STAGE_CONFIG) | $(OUT)
 	@echo "  SYNC    upstream tree -> $(OUT)/upstream"
-	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch $(UPSTREAM_HEADERS_DIR)
+	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch $(XCB_STAGE_FLAG) $(UPSTREAM_HEADERS_DIR)
 
 # The staged .c files are created as a side effect of the stamp recipe.
 # Declaring them here lets dependent .o rules use them as prerequisites
@@ -30,7 +47,8 @@ $(EXAMPLE_BINS): | $(UPSTREAM_HEADERS_STAMP)
 
 ## Re-download and re-extract upstream headers
 upstream-sync: | $(OUT)
-	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch --force $(UPSTREAM_HEADERS_DIR)
+	$(Q)$(PYTHON) $(UPSTREAM_SYNC) fetch --force $(XCB_STAGE_FLAG) \
+	    $(UPSTREAM_HEADERS_DIR)
 
 ## Compare local include/X11/ against the pinned upstream snapshot
 upstream-diff:
