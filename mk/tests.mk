@@ -12,7 +12,9 @@ ifeq ($(XCB),1)
 CHECK_BINS += $(OUT)/tests/test-xcb-link
 CHECK_BINS += $(OUT)/tests/test-xcb-setup
 CHECK_BINS += $(OUT)/tests/test-xcb-window $(OUT)/tests/test-xcb-property
+CHECK_BINS += $(OUT)/tests/test-xlib-xcb
 CHECK_BINS += $(OUT)/tests/test-xcb-events
+CHECK_BINS += $(OUT)/tests/test-xcb-drawing
 endif
 # The GLX tests only exist when the optional GLX layer is built (GLX=1).
 # test-glx-link covers the no-provider degrade path; test-glx-provider drives the
@@ -302,31 +304,27 @@ $(OUT)/tests/%: tests/%.c $(TARGET)
 	    $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
 ifeq ($(XCB),1)
-$(OUT)/tests/test-xcb-link: tests/test-xcb-link.c $(XCB_COMPAT_TARGET) $(TARGET)
-	@mkdir -p $(dir $@)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
-	    -L$(OUT) -lxcb-compat $(TEST_LDFLAGS) -o $@
-
 $(OUT)/tests/test-xcb-setup: tests/test-xcb-setup.c $(XCB_COMPAT_OBJS) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
 	    $(XCB_COMPAT_OBJS) $(TARGET) $(LDLIBS) $(TEST_LDFLAGS) -o $@
 
-XCB_TESTS := test-xcb-window test-xcb-property
-XLIB_XCB_TESTS := test-xcb-events
+XCB_TESTS := test-xcb-link test-xcb-window test-xcb-property test-xcb-drawing \
+             test-xlib-xcb test-xcb-events
 
-$(addprefix $(OUT)/tests/,$(XCB_TESTS)): $(OUT)/tests/%: tests/%.c $(XCB_COMPAT_TARGET) $(TARGET)
+# One recipe; each test names the libraries it needs and nothing more, so the
+# link test keeps proving that libxcb-compat resolves on its own.
+$(OUT)/tests/test-xcb-link: XCB_TEST_LIBS := -lxcb-compat
+$(OUT)/tests/test-xcb-window $(OUT)/tests/test-xcb-property \
+$(OUT)/tests/test-xcb-drawing: XCB_TEST_LIBS := -lxcb-compat -lX11-compat
+$(OUT)/tests/test-xlib-xcb $(OUT)/tests/test-xcb-events: \
+    XCB_TEST_LIBS := -lX11-xcb-compat -lxcb-compat -lX11-compat
+
+$(addprefix $(OUT)/tests/,$(XCB_TESTS)): $(OUT)/tests/%: tests/%.c \
+    $(X11_XCB_COMPAT_TARGET) $(XCB_COMPAT_TARGET) $(TARGET)
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
-	    -L$(OUT) -lxcb-compat -lX11-compat $(TEST_LDFLAGS) -o $@
-
-$(addprefix $(OUT)/tests/,$(XLIB_XCB_TESTS)): $(OUT)/tests/%: tests/%.c $(X11_XCB_COMPAT_TARGET) $(XCB_COMPAT_TARGET) $(TARGET)
-	@mkdir -p $(dir $@)
-	@echo "  CC      $<"
-	$(Q)$(CC) $(CPPFLAGS) $(FP_CFLAGS) $(STRICT_CFLAGS) $(CFLAGS_EXTRA) $< \
-	    -L$(OUT) -lX11-xcb-compat -lxcb-compat -lX11-compat \
-	    $(TEST_LDFLAGS) -o $@
+	    -L$(OUT) $(XCB_TEST_LIBS) $(TEST_LDFLAGS) -o $@
 endif

@@ -25,6 +25,7 @@ typedef struct _GraphicContext {
     int clipOriginX;
     int clipOriginY;
     Pixmap clipMask;
+
     /* Stored clip rectangles from XSetClipRectangles / XSetRegion.
      * clipRectanglesSet distinguishes an empty clip region from no rectangle
      * clip region.
@@ -37,6 +38,7 @@ typedef struct _GraphicContext {
                    // concatenated with itself.
     size_t numDashes;
     int arcMode;
+
     /* Bumped on every mutation. Lets the draw path skip re-applying unchanged
      * SDL state by caching the (gc, generation) pair per drawable / renderer.
      */
@@ -67,5 +69,15 @@ typedef struct _GraphicContext {
 #else
 #define GET_GC(gc) GET_GC_FROM_XID(((struct _XGC *) (gc))->gid)
 #endif
+
+/* Create a GC bound to a caller-chosen resource id. The XCB shim needs this
+ * because an XCB client names every resource itself; the id is released here if
+ * creation fails.
+ */
+GC libx11CompatCreateGCWithId(Display *display,
+                              GContext contextId,
+                              Drawable drawable,
+                              unsigned long valueMask,
+                              XGCValues *values);
 
 #endif /* GC_H */

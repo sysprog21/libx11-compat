@@ -418,4 +418,15 @@ static inline void unionRect(const SDL_Rect *a,
     out->h = clampToInt(y2 > y1 ? y2 - y1 : 0);
 }
 
+
+/* Create a pixmap bound to a caller-chosen resource id, for the XCB shim. The
+ * id is released here if creation fails.
+ */
+Pixmap libx11CompatCreatePixmapWithId(Display *display,
+                                      Pixmap pixmap,
+                                      Drawable drawable,
+                                      unsigned int width,
+                                      unsigned int height,
+                                      unsigned int depth);
+
 #endif /* _DRAWING_H_ */

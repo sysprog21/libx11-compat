@@ -64,6 +64,20 @@ static int failedConnectionChecks(void)
                                       XCB_ATOM_STRING, 8, 0, NULL)
                   .sequence == 0,
           "failed property request returned a sequence");
+    CHECK(
+        xcb_create_pixmap_checked(connection, 1, 1, XCB_NONE, 1, 1).sequence ==
+            0,
+        "failed pixmap request returned a sequence");
+    CHECK(xcb_create_gc_checked(connection, 1, XCB_NONE, 0, NULL).sequence == 0,
+          "failed GC request returned a sequence");
+    CHECK(xcb_poly_point_checked(connection, XCB_COORD_MODE_ORIGIN, XCB_NONE, 1,
+                                 0, NULL)
+                  .sequence == 0,
+          "failed drawing request returned a sequence");
+    CHECK(xcb_get_image(connection, XCB_IMAGE_FORMAT_Z_PIXMAP, XCB_NONE, 0, 0,
+                        1, 1, UINT32_MAX)
+                  .sequence == 0,
+          "failed image request returned a sequence");
     CHECK(!xcb_request_check(connection, (xcb_void_cookie_t) {.sequence = 0}),
           "failed connection stored a checked request");
     CHECK(xcb_connection_has_error(connection) == XCB_CONN_ERROR,
@@ -144,6 +158,28 @@ int main(void)
     }
     CHECK(!formats.rem && xcb_format_end(formats).data == formats.data,
           "pixmap format iterator termination failed");
+    /* The setup advertises the depths a client may ask for, so every one of
+     * them has to be creatable and anything else has to be refused. Without
+     * this the advertised set and the set src/pixmap.c accepts could drift.
+     */
+    xcb_screen_t *formatScreen = xcb_setup_roots_iterator(setup).data;
+    for (xcb_format_iterator_t f = xcb_setup_pixmap_formats_iterator(setup);
+         f.rem > 0; xcb_format_next(&f)) {
+        xcb_pixmap_t pixmap = xcb_generate_id(connection);
+        CHECK(!xcb_request_check(
+                  connection,
+                  xcb_create_pixmap_checked(connection, f.data->depth, pixmap,
+                                            formatScreen->root, 2, 2)),
+              "advertised pixmap depth was refused");
+        xcb_free_pixmap(connection, pixmap);
+    }
+    xcb_generic_error_t *depthError = xcb_request_check(
+        connection,
+        xcb_create_pixmap_checked(connection, 7, xcb_generate_id(connection),
+                                  formatScreen->root, 2, 2));
+    CHECK(depthError && depthError->error_code == XCB_VALUE,
+          "unadvertised pixmap depth was accepted");
+    free(depthError);
 
     xcb_screen_iterator_t screens = xcb_setup_roots_iterator(setup);
     CHECK(screens.rem == 1 && screens.data && screens.data->root,

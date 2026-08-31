@@ -29,17 +29,31 @@ restages. `make install` ships the built copies.
 
 ## Implemented surface
 
-Requests 1-4, 7-8, 10, 12 and 14-24: window lifecycle and configuration,
-geometry and tree queries, properties and selections. Every other core opcode is
-deferred and deliberately absent from the
+Requests 1-4, 7-8, 10, 12, 14-24, 53-57, 60-68, 72-73, and 76-77: window
+lifecycle and configuration, geometry and tree queries, properties, selections,
+pixmaps, graphics contexts, drawing primitives, text and image transfer. The
+exact callable ABI is `tests/xcb-symbols.txt`, enforced against the built
+library by `scripts/check-xcb-symbols.py` on every `make XCB=1 check-unit`.
+
+Every other core opcode is deferred and deliberately absent from the
 export manifest, so a client fails at link time instead of receiving a cookie
 that silently never completes.
+
+The staged headers are upstream's own and so declare the whole core protocol:
+645 entry points against the 143 this layer exports. That gap is the deferral
+made visible. A client that calls a deferred request fails to link, which is the
+intended outcome.
 
 ## Deliberate limits
 
 `xcb_get_file_descriptor()` returns -1: this backend has no transport socket, so
 callers must use the wait and poll entry points rather than integrating a
 connection FD into an external `poll(2)` set.
+
+PutImage and GetImage accept `ZPixmap` only. XYBitmap and XYPixmap have a
+different payload geometry and left-pad meaning, and the backing store keeps
+pixels in Z order, so the other two formats answer `BadValue` rather than
+guessing at a conversion.
 
 RENDER, SHM, SHAPE, XFIXES and RANDR are separate extension libraries and are
 not part of this layer. DRI, Present, FD passing and authorization transport

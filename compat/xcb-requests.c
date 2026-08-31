@@ -9,9 +9,20 @@
 #include "xcb-compat-private.h"
 #include "../src/atoms.h"
 #include "../src/drawing.h"
+#include "../src/gc.h"
 #include "../src/resource-types.h"
 #include "../src/window.h"
 
+typedef struct GcEntry {
+    xcb_gcontext_t id;
+    GC gc;
+    Display *display;
+    xcb_connection_t *owner;
+    unsigned int depth;
+    struct GcEntry *next;
+} GcEntry;
+static GcEntry *gcEntries;
+static pthread_mutex_t gcMutex = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int failNextReplyAllocation;
 
 void xcbCompatFailNextReplyAllocationForTest(void)
@@ -19,9 +30,43 @@ void xcbCompatFailNextReplyAllocationForTest(void)
     atomic_store_explicit(&failNextReplyAllocation, 1, memory_order_release);
 }
 
+static GcEntry *findGcLocked(xcb_gcontext_t id)
+{
+    for (GcEntry *entry = gcEntries; entry; entry = entry->next)
+        if (entry->id == id)
+            return entry;
+    return NULL;
+}
+
+void xcbCompatReleaseRequestResources(xcb_connection_t *connection)
+{
+    pthread_mutex_lock(&gcMutex);
+    GcEntry **link = &gcEntries;
+    while (*link) {
+        GcEntry *entry = *link;
+        if (entry->owner != connection) {
+            link = &entry->next;
+            continue;
+        }
+        *link = entry->next;
+        XFreeGC(entry->display, entry->gc);
+        free(entry);
+    }
+    pthread_mutex_unlock(&gcMutex);
+}
+
 static int isDrawable(xcb_drawable_t drawable)
 {
     return IS_TYPE(drawable, DRAWABLE);
+}
+
+/* InputOnly windows are drawables the protocol refuses to render into, read
+ * from or copy between: they carry no pixels. Xlib reports that as BadMatch,
+ * and so must every request that reaches a drawing path.
+ */
+static int isInputOnlyDrawable(xcb_drawable_t drawable)
+{
+    return IS_TYPE(drawable, WINDOW) && IS_INPUT_ONLY(drawable);
 }
 
 static unsigned int drawableDepth(xcb_connection_t *c, xcb_drawable_t drawable)
@@ -112,6 +157,16 @@ static int isWindow(xcb_window_t window)
     (XCB_CONFIG_WINDOW_X | XCB_CONFIG_WINDOW_Y | XCB_CONFIG_WINDOW_WIDTH | \
      XCB_CONFIG_WINDOW_HEIGHT | XCB_CONFIG_WINDOW_BORDER_WIDTH |           \
      XCB_CONFIG_WINDOW_SIBLING | XCB_CONFIG_WINDOW_STACK_MODE)
+
+#define XCB_GC_VALID_MASK                                              \
+    (XCB_GC_FUNCTION | XCB_GC_PLANE_MASK | XCB_GC_FOREGROUND |         \
+     XCB_GC_BACKGROUND | XCB_GC_LINE_WIDTH | XCB_GC_LINE_STYLE |       \
+     XCB_GC_CAP_STYLE | XCB_GC_JOIN_STYLE | XCB_GC_FILL_STYLE |        \
+     XCB_GC_FILL_RULE | XCB_GC_TILE | XCB_GC_STIPPLE |                 \
+     XCB_GC_TILE_STIPPLE_ORIGIN_X | XCB_GC_TILE_STIPPLE_ORIGIN_Y |     \
+     XCB_GC_FONT | XCB_GC_SUBWINDOW_MODE | XCB_GC_GRAPHICS_EXPOSURES | \
+     XCB_GC_CLIP_ORIGIN_X | XCB_GC_CLIP_ORIGIN_Y | XCB_GC_CLIP_MASK |  \
+     XCB_GC_DASH_OFFSET | XCB_GC_DASH_LIST | XCB_GC_ARC_MODE)
 
 xcb_intern_atom_cookie_t xcb_intern_atom(xcb_connection_t *c,
                                          uint8_t onlyIfExists,
@@ -1311,4 +1366,948 @@ xcb_void_cookie_t xcb_reparent_window_checked(xcb_connection_t *c,
                                               int16_t y)
 {
     return reparentWindow(c, window, parent, x, y, 1);
+}
+
+/* Accept exactly the depths the setup record advertises, rather than repeating
+ * the list src/pixmap.c keeps: a client picks its depth from those formats, so
+ * anything else is a BadValue and the two sets cannot drift apart.
+ */
+static int supportedPixmapDepth(xcb_connection_t *c, uint8_t depth)
+{
+    const xcb_setup_t *setup = xcb_get_setup(c);
+    if (!setup)
+        return 0;
+    const xcb_format_t *formats = xcb_setup_pixmap_formats(setup);
+    int count = xcb_setup_pixmap_formats_length(setup);
+    for (int i = 0; i < count; i++)
+        if (formats[i].depth == depth)
+            return 1;
+    return 0;
+}
+
+static xcb_void_cookie_t createPixmap(xcb_connection_t *c,
+                                      uint8_t depth,
+                                      xcb_pixmap_t pid,
+                                      xcb_drawable_t drawable,
+                                      uint16_t width,
+                                      uint16_t height,
+                                      int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    uint8_t error = !isDrawable(drawable) ? XCB_DRAWABLE : 0;
+    uint32_t errorValue = drawable;
+    if (!error && getXidStruct(pid)->type != 0) {
+        error = XCB_ID_CHOICE;
+        errorValue = pid;
+    }
+    if (!error && !width) {
+        error = XCB_VALUE;
+        errorValue = width;
+    }
+    if (!error && !height) {
+        error = XCB_VALUE;
+        errorValue = height;
+    }
+    if (!error && !supportedPixmapDepth(c, depth)) {
+        error = XCB_VALUE;
+        errorValue = depth;
+    }
+
+    /* Past the argument checks the only way the shared path still fails is a
+     * failed allocation, which the protocol reports as BadAlloc rather than
+     * blaming one of the arguments. Claim a client-chosen id last, once nothing
+     * else can reject the request; the creator owns it from here and releases
+     * it itself if it fails.
+     */
+    if (!error && !isXidAllocated(pid) && !reserveXidResource(pid)) {
+        error = XCB_ID_CHOICE;
+        errorValue = pid;
+    }
+    if (!error &&
+        libx11CompatCreatePixmapWithId(xcbCompatDisplay(c), pid, drawable,
+                                       width, height, depth) == XCB_NONE) {
+        error = XCB_ALLOC;
+        errorValue = pid;
+    }
+    return xcbCompatVoidCookie(c, error, errorValue, XCB_CREATE_PIXMAP,
+                               checked);
+}
+
+xcb_void_cookie_t xcb_create_pixmap(xcb_connection_t *c,
+                                    uint8_t depth,
+                                    xcb_pixmap_t pid,
+                                    xcb_drawable_t drawable,
+                                    uint16_t width,
+                                    uint16_t height)
+{
+    return createPixmap(c, depth, pid, drawable, width, height, 0);
+}
+xcb_void_cookie_t xcb_create_pixmap_checked(xcb_connection_t *c,
+                                            uint8_t depth,
+                                            xcb_pixmap_t pid,
+                                            xcb_drawable_t drawable,
+                                            uint16_t width,
+                                            uint16_t height)
+{
+    return createPixmap(c, depth, pid, drawable, width, height, 1);
+}
+
+static xcb_void_cookie_t freePixmap(xcb_connection_t *c,
+                                    xcb_pixmap_t pixmap,
+                                    int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    uint8_t error = IS_TYPE(pixmap, PIXMAP) ? 0 : XCB_PIXMAP;
+    if (!error)
+        XFreePixmap(xcbCompatDisplay(c), pixmap);
+    return xcbCompatVoidCookie(c, error, pixmap, XCB_FREE_PIXMAP, checked);
+}
+xcb_void_cookie_t xcb_free_pixmap(xcb_connection_t *c, xcb_pixmap_t pixmap)
+{
+    return freePixmap(c, pixmap, 0);
+}
+xcb_void_cookie_t xcb_free_pixmap_checked(xcb_connection_t *c,
+                                          xcb_pixmap_t pixmap)
+{
+    return freePixmap(c, pixmap, 1);
+}
+
+static void decodeGcValues(uint32_t mask,
+                           const uint32_t *list,
+                           XGCValues *values)
+{
+    memset(values, 0, sizeof(*values));
+    unsigned int n = 0;
+#define TAKE(bit, field, type)                \
+    do {                                      \
+        if (mask & (bit))                     \
+            values->field = (type) list[n++]; \
+    } while (0)
+    TAKE(XCB_GC_FUNCTION, function, int);
+    TAKE(XCB_GC_PLANE_MASK, plane_mask, unsigned long);
+    TAKE(XCB_GC_FOREGROUND, foreground, unsigned long);
+    TAKE(XCB_GC_BACKGROUND, background, unsigned long);
+    TAKE(XCB_GC_LINE_WIDTH, line_width, int);
+    TAKE(XCB_GC_LINE_STYLE, line_style, int);
+    TAKE(XCB_GC_CAP_STYLE, cap_style, int);
+    TAKE(XCB_GC_JOIN_STYLE, join_style, int);
+    TAKE(XCB_GC_FILL_STYLE, fill_style, int);
+    TAKE(XCB_GC_FILL_RULE, fill_rule, int);
+    TAKE(XCB_GC_TILE, tile, Pixmap);
+    TAKE(XCB_GC_STIPPLE, stipple, Pixmap);
+    TAKE(XCB_GC_TILE_STIPPLE_ORIGIN_X, ts_x_origin, int);
+    TAKE(XCB_GC_TILE_STIPPLE_ORIGIN_Y, ts_y_origin, int);
+    TAKE(XCB_GC_FONT, font, Font);
+    TAKE(XCB_GC_SUBWINDOW_MODE, subwindow_mode, int);
+    TAKE(XCB_GC_GRAPHICS_EXPOSURES, graphics_exposures, Bool);
+    TAKE(XCB_GC_CLIP_ORIGIN_X, clip_x_origin, int);
+    TAKE(XCB_GC_CLIP_ORIGIN_Y, clip_y_origin, int);
+    TAKE(XCB_GC_CLIP_MASK, clip_mask, Pixmap);
+    TAKE(XCB_GC_DASH_OFFSET, dash_offset, int);
+    TAKE(XCB_GC_DASH_LIST, dashes, char);
+    TAKE(XCB_GC_ARC_MODE, arc_mode, int);
+#undef TAKE
+}
+
+static uint8_t validateGcValues(uint32_t mask,
+                                const XGCValues *values,
+                                unsigned int gcDepth,
+                                uint32_t *errorValue)
+{
+#define BAD_VALUE(bit, field, limit)                          \
+    do {                                                      \
+        if ((mask & (bit)) &&                                 \
+            (values->field < 0 || values->field > (limit))) { \
+            *errorValue = (uint32_t) values->field;           \
+            return XCB_VALUE;                                 \
+        }                                                     \
+    } while (0)
+    BAD_VALUE(XCB_GC_FUNCTION, function, XCB_GX_SET);
+    BAD_VALUE(XCB_GC_LINE_STYLE, line_style, XCB_LINE_STYLE_DOUBLE_DASH);
+    BAD_VALUE(XCB_GC_CAP_STYLE, cap_style, XCB_CAP_STYLE_PROJECTING);
+    BAD_VALUE(XCB_GC_JOIN_STYLE, join_style, XCB_JOIN_STYLE_BEVEL);
+    BAD_VALUE(XCB_GC_FILL_STYLE, fill_style, XCB_FILL_STYLE_OPAQUE_STIPPLED);
+    BAD_VALUE(XCB_GC_FILL_RULE, fill_rule, XCB_FILL_RULE_WINDING);
+    BAD_VALUE(XCB_GC_SUBWINDOW_MODE, subwindow_mode,
+              XCB_SUBWINDOW_MODE_INCLUDE_INFERIORS);
+    BAD_VALUE(XCB_GC_ARC_MODE, arc_mode, XCB_ARC_MODE_PIE_SLICE);
+#undef BAD_VALUE
+    if ((mask & XCB_GC_GRAPHICS_EXPOSURES) &&
+        values->graphics_exposures != False &&
+        values->graphics_exposures != True) {
+        *errorValue = (uint32_t) values->graphics_exposures;
+        return XCB_VALUE;
+    }
+    if ((mask & XCB_GC_DASH_LIST) && values->dashes == 0) {
+        *errorValue = 0;
+        return XCB_VALUE;
+    }
+    const struct {
+        uint32_t bit;
+        Pixmap pixmap;
+        unsigned int requiredDepth;
+        int noneAllowed;
+    } pixmaps[] = {
+        {XCB_GC_TILE, values->tile, gcDepth, 0},
+        {XCB_GC_STIPPLE, values->stipple, 1, 0},
+        {XCB_GC_CLIP_MASK, values->clip_mask, 1, 1},
+    };
+    for (size_t i = 0; i < sizeof(pixmaps) / sizeof(pixmaps[0]); i++) {
+        if (!(mask & pixmaps[i].bit) ||
+            (pixmaps[i].noneAllowed && pixmaps[i].pixmap == XCB_NONE))
+            continue;
+        *errorValue = pixmaps[i].pixmap;
+        if (!IS_TYPE(pixmaps[i].pixmap, PIXMAP))
+            return XCB_PIXMAP;
+        if (GET_PIXMAP_STRUCT(pixmaps[i].pixmap)->depth !=
+            pixmaps[i].requiredDepth)
+            return XCB_MATCH;
+    }
+    if (mask & XCB_GC_FONT) {
+        *errorValue = values->font;
+        if (!IS_TYPE(values->font, FONT))
+            return XCB_FONT;
+    }
+    return 0;
+}
+
+static xcb_void_cookie_t createGc(xcb_connection_t *c,
+                                  xcb_gcontext_t cid,
+                                  xcb_drawable_t drawable,
+                                  uint32_t mask,
+                                  const uint32_t *list,
+                                  int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    uint8_t error = !isDrawable(drawable) ? XCB_DRAWABLE : 0;
+    uint32_t errorValue = drawable;
+    if (!error && isInputOnlyDrawable(drawable))
+        error = XCB_MATCH;
+    if (!error && getXidStruct(cid)->type != 0) {
+        error = XCB_ID_CHOICE;
+        errorValue = cid;
+    }
+    if (!error && (mask & ~XCB_GC_VALID_MASK)) {
+        error = XCB_VALUE;
+        errorValue = mask;
+    }
+    if (!error && mask && !list) {
+        error = XCB_VALUE;
+        errorValue = mask;
+    }
+    XGCValues values;
+    unsigned int gcDepth = 0;
+    if (!error) {
+        gcDepth = drawableDepth(c, drawable);
+        decodeGcValues(mask, list, &values);
+        error = validateGcValues(mask, &values, gcDepth, &errorValue);
+    }
+
+    /* Claim a client-chosen id last, once nothing else can reject the request;
+     * the creator owns it from here and releases it itself if it fails.
+     */
+    if (!error && !isXidAllocated(cid) && !reserveXidResource(cid)) {
+        error = XCB_ID_CHOICE;
+        errorValue = cid;
+    }
+    if (!error) {
+        GC gc = libx11CompatCreateGCWithId(xcbCompatDisplay(c), cid, drawable,
+                                           mask, &values);
+        GcEntry *entry = gc ? calloc(1, sizeof(*entry)) : NULL;
+        if (!entry) {
+            if (gc)
+                XFreeGC(xcbCompatDisplay(c), gc);
+            error = XCB_ALLOC;
+        } else {
+            entry->id = cid;
+            entry->gc = gc;
+            entry->display = xcbCompatDisplay(c);
+            entry->owner = c;
+            entry->depth = gcDepth;
+            pthread_mutex_lock(&gcMutex);
+            entry->next = gcEntries;
+            gcEntries = entry;
+            pthread_mutex_unlock(&gcMutex);
+        }
+    }
+    return xcbCompatVoidCookie(c, error, errorValue, XCB_CREATE_GC, checked);
+}
+
+#define GC_CREATE_WRAPPER(name, checkedValue)                        \
+    xcb_void_cookie_t name(xcb_connection_t *c, xcb_gcontext_t cid,  \
+                           xcb_drawable_t drawable, uint32_t mask,   \
+                           const void *list)                         \
+    {                                                                \
+        return createGc(c, cid, drawable, mask, list, checkedValue); \
+    }
+GC_CREATE_WRAPPER(xcb_create_gc, 0)
+GC_CREATE_WRAPPER(xcb_create_gc_checked, 1)
+
+static xcb_void_cookie_t changeGc(xcb_connection_t *c,
+                                  xcb_gcontext_t id,
+                                  uint32_t mask,
+                                  const uint32_t *list,
+                                  int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    pthread_mutex_lock(&gcMutex);
+    GcEntry *entry = findGcLocked(id);
+    GC gc = entry ? entry->gc : NULL;
+    uint8_t error = entry ? 0 : XCB_G_CONTEXT;
+    uint32_t errorValue = id;
+    if (!error && (mask & ~XCB_GC_VALID_MASK)) {
+        error = XCB_VALUE;
+        errorValue = mask;
+    }
+    if (!error && mask && !list) {
+        error = XCB_VALUE;
+        errorValue = mask;
+    }
+    if (!error) {
+        XGCValues values;
+        decodeGcValues(mask, list, &values);
+        error = validateGcValues(mask, &values, entry->depth, &errorValue);
+        if (!error && !XChangeGC(xcbCompatDisplay(c), gc, mask, &values))
+            error = XCB_VALUE;
+    }
+    pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, errorValue, XCB_CHANGE_GC, checked);
+}
+#define GC_CHANGE_WRAPPER(name, checkedValue)                      \
+    xcb_void_cookie_t name(xcb_connection_t *c, xcb_gcontext_t gc, \
+                           uint32_t mask, const void *list)        \
+    {                                                              \
+        return changeGc(c, gc, mask, list, checkedValue);          \
+    }
+GC_CHANGE_WRAPPER(xcb_change_gc, 0)
+GC_CHANGE_WRAPPER(xcb_change_gc_checked, 1)
+
+static xcb_void_cookie_t copyGc(xcb_connection_t *c,
+                                xcb_gcontext_t source,
+                                xcb_gcontext_t destination,
+                                uint32_t mask,
+                                int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    pthread_mutex_lock(&gcMutex);
+    GcEntry *srcEntry = findGcLocked(source);
+    GcEntry *dstEntry = findGcLocked(destination);
+    GC src = srcEntry ? srcEntry->gc : NULL;
+    GC dst = dstEntry ? dstEntry->gc : NULL;
+    uint8_t error = !srcEntry || !dstEntry ? XCB_G_CONTEXT : 0;
+    uint32_t errorValue = !srcEntry ? source : destination;
+    if (!error && srcEntry->depth != dstEntry->depth)
+        error = XCB_MATCH;
+    if (!error && (mask & ~XCB_GC_VALID_MASK)) {
+        error = XCB_VALUE;
+        errorValue = mask;
+    }
+    if (!error && !XCopyGC(xcbCompatDisplay(c), src, mask, dst))
+        error = XCB_VALUE;
+    pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, errorValue, XCB_COPY_GC, checked);
+}
+xcb_void_cookie_t xcb_copy_gc(xcb_connection_t *c,
+                              xcb_gcontext_t src,
+                              xcb_gcontext_t dst,
+                              uint32_t mask)
+{
+    return copyGc(c, src, dst, mask, 0);
+}
+xcb_void_cookie_t xcb_copy_gc_checked(xcb_connection_t *c,
+                                      xcb_gcontext_t src,
+                                      xcb_gcontext_t dst,
+                                      uint32_t mask)
+{
+    return copyGc(c, src, dst, mask, 1);
+}
+
+static xcb_void_cookie_t freeGc(xcb_connection_t *c,
+                                xcb_gcontext_t id,
+                                int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    pthread_mutex_lock(&gcMutex);
+    GcEntry **link = &gcEntries;
+    while (*link && (*link)->id != id)
+        link = &(*link)->next;
+    uint8_t error = *link ? 0 : XCB_G_CONTEXT;
+    if (!error) {
+        GcEntry *entry = *link;
+        *link = entry->next;
+        XFreeGC(entry->display, entry->gc);
+        free(entry);
+    }
+    pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, id, XCB_FREE_GC, checked);
+}
+xcb_void_cookie_t xcb_free_gc(xcb_connection_t *c, xcb_gcontext_t gc)
+{
+    return freeGc(c, gc, 0);
+}
+xcb_void_cookie_t xcb_free_gc_checked(xcb_connection_t *c, xcb_gcontext_t gc)
+{
+    return freeGc(c, gc, 1);
+}
+
+static uint8_t lockDrawingResources(xcb_connection_t *c,
+                                    xcb_drawable_t drawable,
+                                    xcb_gcontext_t gc,
+                                    GC *xgc)
+{
+    *xgc = NULL;
+    if (!isDrawable(drawable))
+        return XCB_DRAWABLE;
+    if (isInputOnlyDrawable(drawable))
+        return XCB_MATCH;
+    pthread_mutex_lock(&gcMutex);
+    GcEntry *entry = findGcLocked(gc);
+    *xgc = entry ? entry->gc : NULL;
+    if (entry && entry->depth == drawableDepth(c, drawable))
+        return 0;
+    if (entry) {
+        pthread_mutex_unlock(&gcMutex);
+        *xgc = NULL;
+        return XCB_MATCH;
+    }
+    pthread_mutex_unlock(&gcMutex);
+    return XCB_G_CONTEXT;
+}
+
+static xcb_void_cookie_t clearArea(xcb_connection_t *c,
+                                   uint8_t exposures,
+                                   xcb_window_t window,
+                                   int16_t x,
+                                   int16_t y,
+                                   uint16_t width,
+                                   uint16_t height,
+                                   int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    uint8_t error = isWindow(window) ? 0 : XCB_WINDOW;
+    if (!error)
+        XClearArea(xcbCompatDisplay(c), window, x, y, width, height, exposures);
+    return xcbCompatVoidCookie(c, error, window, XCB_CLEAR_AREA, checked);
+}
+#define CLEAR_WRAPPER(name, checkedValue)                             \
+    xcb_void_cookie_t name(xcb_connection_t *c, uint8_t exposures,    \
+                           xcb_window_t window, int16_t x, int16_t y, \
+                           uint16_t width, uint16_t height)           \
+    {                                                                 \
+        return clearArea(c, exposures, window, x, y, width, height,   \
+                         checkedValue);                               \
+    }
+CLEAR_WRAPPER(xcb_clear_area, 0)
+CLEAR_WRAPPER(xcb_clear_area_checked, 1)
+
+static xcb_void_cookie_t copyArea(xcb_connection_t *c,
+                                  xcb_drawable_t source,
+                                  xcb_drawable_t destination,
+                                  xcb_gcontext_t gc,
+                                  int16_t sourceX,
+                                  int16_t sourceY,
+                                  int16_t destinationX,
+                                  int16_t destinationY,
+                                  uint16_t width,
+                                  uint16_t height,
+                                  int checked,
+                                  int copyPlane,
+                                  uint32_t plane)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    GC xgc = NULL;
+    int sourceValid = isDrawable(source);
+    int destinationValid = isDrawable(destination);
+    uint8_t error = !sourceValid || !destinationValid
+                        ? XCB_DRAWABLE
+                        : lockDrawingResources(c, destination, gc, &xgc);
+    if (!error && isInputOnlyDrawable(source))
+        error = XCB_MATCH;
+    uint32_t errorValue = !sourceValid             ? source
+                          : !destinationValid      ? destination
+                          : error == XCB_G_CONTEXT ? gc
+                                                   : source;
+    if (!error && !copyPlane &&
+        drawableDepth(c, source) != drawableDepth(c, destination)) {
+        error = XCB_MATCH;
+        errorValue = destination;
+    }
+
+    /* CopyPlane names a single bit, and that bit has to exist in the source: a
+     * plane above the source depth selects nothing at all. A depth of 32 or
+     * more admits every bit, and shifting by the width of the type would be
+     * undefined, so that case skips the range test.
+     */
+    if (!error && copyPlane) {
+        unsigned int sourceDepth = drawableDepth(c, source);
+        if (!plane || (plane & (plane - 1)) ||
+            (sourceDepth < 32 && plane >= (UINT32_C(1) << sourceDepth))) {
+            error = XCB_VALUE;
+            errorValue = plane;
+        }
+    }
+    if (!error) {
+        if (copyPlane)
+            XCopyPlane(xcbCompatDisplay(c), source, destination, xgc, sourceX,
+                       sourceY, width, height, destinationX, destinationY,
+                       plane);
+        else
+            XCopyArea(xcbCompatDisplay(c), source, destination, xgc, sourceX,
+                      sourceY, width, height, destinationX, destinationY);
+    }
+    if (xgc)
+        pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, errorValue,
+                               copyPlane ? XCB_COPY_PLANE : XCB_COPY_AREA,
+                               checked);
+}
+#define COPY_AREA_WRAPPER(name, checkedValue)                                  \
+    xcb_void_cookie_t name(xcb_connection_t *c, xcb_drawable_t src,            \
+                           xcb_drawable_t dst, xcb_gcontext_t gc, int16_t sx,  \
+                           int16_t sy, int16_t dx, int16_t dy, uint16_t width, \
+                           uint16_t height)                                    \
+    {                                                                          \
+        return copyArea(c, src, dst, gc, sx, sy, dx, dy, width, height,        \
+                        checkedValue, 0, 0);                                   \
+    }
+COPY_AREA_WRAPPER(xcb_copy_area, 0)
+COPY_AREA_WRAPPER(xcb_copy_area_checked, 1)
+
+#define COPY_PLANE_WRAPPER(name, checkedValue)                                 \
+    xcb_void_cookie_t name(xcb_connection_t *c, xcb_drawable_t src,            \
+                           xcb_drawable_t dst, xcb_gcontext_t gc, int16_t sx,  \
+                           int16_t sy, int16_t dx, int16_t dy, uint16_t width, \
+                           uint16_t height, uint32_t plane)                    \
+    {                                                                          \
+        return copyArea(c, src, dst, gc, sx, sy, dx, dy, width, height,        \
+                        checkedValue, 1, plane);                               \
+    }
+COPY_PLANE_WRAPPER(xcb_copy_plane, 0)
+COPY_PLANE_WRAPPER(xcb_copy_plane_checked, 1)
+
+typedef enum {
+    DRAW_POINTS,
+    DRAW_LINES,
+    DRAW_SEGMENTS,
+    DRAW_RECTANGLES,
+    DRAW_ARCS
+} DrawKind;
+
+static xcb_void_cookie_t drawPrimitives(xcb_connection_t *c,
+                                        xcb_drawable_t drawable,
+                                        xcb_gcontext_t gc,
+                                        uint8_t mode,
+                                        uint32_t count,
+                                        const void *items,
+                                        DrawKind kind,
+                                        uint8_t opcode,
+                                        int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    _Static_assert(sizeof(xcb_point_t) == sizeof(XPoint), "point ABI");
+    _Static_assert(sizeof(xcb_segment_t) == sizeof(XSegment), "segment ABI");
+    _Static_assert(sizeof(xcb_rectangle_t) == sizeof(XRectangle),
+                   "rectangle ABI");
+    _Static_assert(sizeof(xcb_arc_t) == sizeof(XArc), "arc ABI");
+    size_t itemSize = kind == DRAW_POINTS || kind == DRAW_LINES
+                          ? sizeof(xcb_point_t)
+                      : kind == DRAW_SEGMENTS   ? sizeof(xcb_segment_t)
+                      : kind == DRAW_RECTANGLES ? sizeof(xcb_rectangle_t)
+                                                : sizeof(xcb_arc_t);
+    GC xgc = NULL;
+    uint8_t error =
+        requestPayloadFits(c, sizeof(xcb_poly_point_request_t), count, itemSize)
+            ? lockDrawingResources(c, drawable, gc, &xgc)
+            : XCB_LENGTH;
+    uint32_t errorValue = error == XCB_G_CONTEXT ? gc
+                          : error == XCB_LENGTH  ? count
+                                                 : drawable;
+    if (!error && count && !items) {
+        error = XCB_VALUE;
+        errorValue = count;
+    }
+    if (!error && (kind == DRAW_POINTS || kind == DRAW_LINES) &&
+        mode > XCB_COORD_MODE_PREVIOUS) {
+        error = XCB_VALUE;
+        errorValue = mode;
+    }
+    if (!error) {
+        switch (kind) {
+        case DRAW_POINTS:
+            XDrawPoints(xcbCompatDisplay(c), drawable, xgc, (XPoint *) items,
+                        count, mode);
+            break;
+        case DRAW_LINES:
+            XDrawLines(xcbCompatDisplay(c), drawable, xgc, (XPoint *) items,
+                       count, mode);
+            break;
+        case DRAW_SEGMENTS:
+            XDrawSegments(xcbCompatDisplay(c), drawable, xgc,
+                          (XSegment *) items, count);
+            break;
+        case DRAW_RECTANGLES:
+            XDrawRectangles(xcbCompatDisplay(c), drawable, xgc,
+                            (XRectangle *) items, count);
+            break;
+        case DRAW_ARCS:
+            XDrawArcs(xcbCompatDisplay(c), drawable, xgc, (XArc *) items,
+                      count);
+            break;
+        }
+    }
+    if (xgc)
+        pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, errorValue, opcode, checked);
+}
+
+#define POINTS_WRAPPER(name, kindValue, opcodeValue, checkedValue)            \
+    xcb_void_cookie_t name(xcb_connection_t *c, uint8_t mode,                 \
+                           xcb_drawable_t drawable, xcb_gcontext_t gc,        \
+                           uint32_t count, const xcb_point_t *items)          \
+    {                                                                         \
+        return drawPrimitives(c, drawable, gc, mode, count, items, kindValue, \
+                              opcodeValue, checkedValue);                     \
+    }
+POINTS_WRAPPER(xcb_poly_point, DRAW_POINTS, XCB_POLY_POINT, 0)
+POINTS_WRAPPER(xcb_poly_point_checked, DRAW_POINTS, XCB_POLY_POINT, 1)
+POINTS_WRAPPER(xcb_poly_line, DRAW_LINES, XCB_POLY_LINE, 0)
+POINTS_WRAPPER(xcb_poly_line_checked, DRAW_LINES, XCB_POLY_LINE, 1)
+
+#define FIXED_WRAPPER(name, itemType, kindValue, opcodeValue, checkedValue) \
+    xcb_void_cookie_t name(xcb_connection_t *c, xcb_drawable_t drawable,    \
+                           xcb_gcontext_t gc, uint32_t count,               \
+                           const itemType *items)                           \
+    {                                                                       \
+        return drawPrimitives(c, drawable, gc, 0, count, items, kindValue,  \
+                              opcodeValue, checkedValue);                   \
+    }
+FIXED_WRAPPER(xcb_poly_segment,
+              xcb_segment_t,
+              DRAW_SEGMENTS,
+              XCB_POLY_SEGMENT,
+              0)
+FIXED_WRAPPER(xcb_poly_segment_checked,
+              xcb_segment_t,
+              DRAW_SEGMENTS,
+              XCB_POLY_SEGMENT,
+              1)
+FIXED_WRAPPER(xcb_poly_rectangle,
+              xcb_rectangle_t,
+              DRAW_RECTANGLES,
+              XCB_POLY_RECTANGLE,
+              0)
+FIXED_WRAPPER(xcb_poly_rectangle_checked,
+              xcb_rectangle_t,
+              DRAW_RECTANGLES,
+              XCB_POLY_RECTANGLE,
+              1)
+FIXED_WRAPPER(xcb_poly_arc, xcb_arc_t, DRAW_ARCS, XCB_POLY_ARC, 0)
+FIXED_WRAPPER(xcb_poly_arc_checked, xcb_arc_t, DRAW_ARCS, XCB_POLY_ARC, 1)
+
+/* ImageText8 and ImageText16 differ only in the character width, so one body
+ * takes both: wide selects the Xlib entry point, the string type and the
+ * opcode, the same way copyArea covers CopyPlane.
+ */
+static xcb_void_cookie_t imageText(xcb_connection_t *c,
+                                   uint8_t length,
+                                   xcb_drawable_t drawable,
+                                   xcb_gcontext_t gc,
+                                   int16_t x,
+                                   int16_t y,
+                                   const void *string,
+                                   int wide,
+                                   int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    _Static_assert(sizeof(xcb_char2b_t) == sizeof(XChar2b), "char2b ABI");
+    GC xgc;
+    uint8_t error = lockDrawingResources(c, drawable, gc, &xgc);
+    if (!error && length && !string)
+        error = XCB_VALUE;
+    if (!error && wide)
+        XDrawImageString16(xcbCompatDisplay(c), drawable, xgc, x, y,
+                           (XChar2b *) string, length);
+    else if (!error)
+        XDrawImageString(xcbCompatDisplay(c), drawable, xgc, x, y, string,
+                         length);
+    if (xgc)
+        pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, error == XCB_G_CONTEXT ? gc : drawable,
+                               wide ? XCB_IMAGE_TEXT_16 : XCB_IMAGE_TEXT_8,
+                               checked);
+}
+
+#define TEXT_WRAPPER(name, stringType, wideValue, checkedValue)            \
+    xcb_void_cookie_t name(xcb_connection_t *c, uint8_t length,            \
+                           xcb_drawable_t drawable, xcb_gcontext_t gc,     \
+                           int16_t x, int16_t y, stringType *string)       \
+    {                                                                      \
+        return imageText(c, length, drawable, gc, x, y, string, wideValue, \
+                         checkedValue);                                    \
+    }
+TEXT_WRAPPER(xcb_image_text_8, const char, 0, 0)
+TEXT_WRAPPER(xcb_image_text_8_checked, const char, 0, 1)
+TEXT_WRAPPER(xcb_image_text_16, const xcb_char2b_t, 1, 0)
+TEXT_WRAPPER(xcb_image_text_16_checked, const xcb_char2b_t, 1, 1)
+
+static int imagePayloadSize(uint16_t width,
+                            uint16_t height,
+                            uint8_t depth,
+                            size_t *rowBytes,
+                            size_t *totalBytes)
+{
+    unsigned int bitsPerPixel = depth <= 1    ? 1
+                                : depth <= 8  ? 8
+                                : depth <= 16 ? 16
+                                : depth <= 32 ? 32
+                                              : 0;
+    if (!bitsPerPixel)
+        return 0;
+    uint64_t rowBits = (uint64_t) width * bitsPerPixel;
+    uint64_t row = ((rowBits + 31) & ~UINT64_C(31)) / 8;
+    uint64_t total = row * height;
+    if (row > SIZE_MAX || total > SIZE_MAX || total > UINT32_MAX)
+        return 0;
+    *rowBytes = (size_t) row;
+    *totalBytes = (size_t) total;
+    return 1;
+}
+
+static xcb_void_cookie_t putImage(xcb_connection_t *c,
+                                  uint8_t format,
+                                  xcb_drawable_t drawable,
+                                  xcb_gcontext_t gc,
+                                  uint16_t width,
+                                  uint16_t height,
+                                  int16_t destinationX,
+                                  int16_t destinationY,
+                                  uint8_t leftPad,
+                                  uint8_t depth,
+                                  uint32_t dataLength,
+                                  const uint8_t *data,
+                                  int checked)
+{
+    REQUIRE_REQUEST(c, xcb_void_cookie_t);
+    GC xgc;
+    uint8_t error = lockDrawingResources(c, drawable, gc, &xgc);
+    uint32_t errorValue = error == XCB_G_CONTEXT ? gc : drawable;
+    size_t rowBytes = 0, bytes = 0;
+    if (!error && format != XCB_IMAGE_FORMAT_Z_PIXMAP) {
+        error = XCB_VALUE;
+        errorValue = format;
+    }
+    if (!error && leftPad != 0) {
+        error = XCB_VALUE;
+        errorValue = leftPad;
+    }
+    if (!error && !width) {
+        error = XCB_VALUE;
+        errorValue = width;
+    }
+    if (!error && !height) {
+        error = XCB_VALUE;
+        errorValue = height;
+    }
+    if (!error && depth != drawableDepth(c, drawable)) {
+        error = XCB_MATCH;
+        errorValue = drawable;
+    }
+    if (!error && !imagePayloadSize(width, height, depth, &rowBytes, &bytes)) {
+        error = XCB_LENGTH;
+        errorValue = dataLength;
+    }
+    if (!error && !requestPayloadFits(c, sizeof(xcb_put_image_request_t),
+                                      dataLength, 1)) {
+        error = XCB_LENGTH;
+        errorValue = dataLength;
+    }
+    if (!error && dataLength < bytes) {
+        error = XCB_VALUE;
+        errorValue = dataLength;
+    }
+    if (!error && !data) {
+        error = XCB_VALUE;
+        errorValue = dataLength;
+    }
+    if (!error) {
+        char *copy = malloc(bytes);
+        if (!copy)
+            error = XCB_ALLOC;
+        else {
+            memcpy(copy, data, bytes);
+            XImage *image = XCreateImage(
+                xcbCompatDisplay(c),
+                DefaultVisual(xcbCompatDisplay(c),
+                              DefaultScreen(xcbCompatDisplay(c))),
+                depth, ZPixmap, 0, copy, width, height, 32, (int) rowBytes);
+            if (!image) {
+                free(copy);
+                error = XCB_ALLOC;
+            } else {
+                XPutImage(xcbCompatDisplay(c), drawable, xgc, image, 0, 0,
+                          destinationX, destinationY, width, height);
+                XDestroyImage(image);
+            }
+        }
+    }
+    if (xgc)
+        pthread_mutex_unlock(&gcMutex);
+    return xcbCompatVoidCookie(c, error, errorValue, XCB_PUT_IMAGE, checked);
+}
+#define PUT_IMAGE_WRAPPER(name, checkedValue)                                  \
+    xcb_void_cookie_t name(xcb_connection_t *c, uint8_t format,                \
+                           xcb_drawable_t drawable, xcb_gcontext_t gc,         \
+                           uint16_t width, uint16_t height, int16_t x,         \
+                           int16_t y, uint8_t leftPad, uint8_t depth,          \
+                           uint32_t dataLength, const uint8_t *data)           \
+    {                                                                          \
+        return putImage(c, format, drawable, gc, width, height, x, y, leftPad, \
+                        depth, dataLength, data, checkedValue);                \
+    }
+PUT_IMAGE_WRAPPER(xcb_put_image, 0)
+PUT_IMAGE_WRAPPER(xcb_put_image_checked, 1)
+
+static xcb_get_image_cookie_t getImage(xcb_connection_t *c,
+                                       uint8_t format,
+                                       xcb_drawable_t drawable,
+                                       int16_t x,
+                                       int16_t y,
+                                       uint16_t width,
+                                       uint16_t height,
+                                       uint32_t planeMask,
+                                       int checked)
+{
+    REQUIRE_REQUEST(c, xcb_get_image_cookie_t);
+    xcb_get_image_cookie_t cookie = {nextSequence(c)};
+    if (!isDrawable(drawable)) {
+        xcbCompatStoreProtocolError(c, cookie.sequence, XCB_DRAWABLE, drawable,
+                                    XCB_GET_IMAGE, checked);
+        return cookie;
+    }
+    if (isInputOnlyDrawable(drawable)) {
+        xcbCompatStoreProtocolError(c, cookie.sequence, XCB_MATCH, drawable,
+                                    XCB_GET_IMAGE, checked);
+        return cookie;
+    }
+    if (format != XCB_IMAGE_FORMAT_Z_PIXMAP) {
+        xcbCompatStoreProtocolError(c, cookie.sequence, XCB_VALUE, format,
+                                    XCB_GET_IMAGE, checked);
+        return cookie;
+    }
+    if (!width || !height) {
+        xcbCompatStoreProtocolError(c, cookie.sequence, XCB_VALUE,
+                                    !width ? width : height, XCB_GET_IMAGE,
+                                    checked);
+        return cookie;
+    }
+
+    /* Core GetImage requires the rectangle to lie wholly inside the drawable.
+     * XGetImage zero-fills whatever hangs over the edge, so without this the
+     * client would get a successful reply full of invented pixels.
+     */
+    Window root;
+    int drawableX, drawableY;
+    unsigned int drawableWidth, drawableHeight, borderWidth, depth;
+    if (!XGetGeometry(xcbCompatDisplay(c), drawable, &root, &drawableX,
+                      &drawableY, &drawableWidth, &drawableHeight, &borderWidth,
+                      &depth) ||
+        x < 0 || y < 0 || (unsigned int) x + width > drawableWidth ||
+        (unsigned int) y + height > drawableHeight) {
+        xcbCompatStoreProtocolError(c, cookie.sequence, XCB_MATCH, drawable,
+                                    XCB_GET_IMAGE, checked);
+        return cookie;
+    }
+    XImage *image = XGetImage(xcbCompatDisplay(c), drawable, x, y, width,
+                              height, planeMask, ZPixmap);
+    if (!image) {
+        xcbCompatStoreProtocolError(c, cookie.sequence, XCB_MATCH, drawable,
+                                    XCB_GET_IMAGE, checked);
+        return cookie;
+    }
+    if (image->bytes_per_line < 0) {
+        XDestroyImage(image);
+        xcbCompatSetConnectionError(c, XCB_CONN_CLOSED_MEM_INSUFFICIENT);
+        return cookie;
+    }
+    uint64_t imageBytes =
+        (uint64_t) (unsigned int) image->bytes_per_line * height;
+    if (imageBytes > SIZE_MAX || imageBytes / 4 > UINT32_MAX) {
+        XDestroyImage(image);
+        xcbCompatSetConnectionError(c, XCB_CONN_CLOSED_MEM_INSUFFICIENT);
+        return cookie;
+    }
+    size_t bytes = 0;
+    xcb_get_image_reply_t *reply =
+        allocateReplyPayload(c, sizeof(*reply), imageBytes, 1, &bytes);
+    if (reply) {
+        reply->response_type = 1;
+        reply->depth = image->depth;
+        reply->visual =
+            isWindow(drawable)
+                ? XVisualIDFromVisual(DefaultVisual(
+                      xcbCompatDisplay(c), DefaultScreen(xcbCompatDisplay(c))))
+                : XCB_NONE;
+        reply->length = bytes / 4;
+        if (bytes)
+            memcpy(reply + 1, image->data, bytes);
+    }
+    XDestroyImage(image);
+    storeReply(c, cookie.sequence, reply);
+    return cookie;
+}
+xcb_get_image_cookie_t xcb_get_image(xcb_connection_t *c,
+                                     uint8_t format,
+                                     xcb_drawable_t drawable,
+                                     int16_t x,
+                                     int16_t y,
+                                     uint16_t width,
+                                     uint16_t height,
+                                     uint32_t planeMask)
+{
+    return getImage(c, format, drawable, x, y, width, height, planeMask, 1);
+}
+xcb_get_image_cookie_t xcb_get_image_unchecked(xcb_connection_t *c,
+                                               uint8_t format,
+                                               xcb_drawable_t drawable,
+                                               int16_t x,
+                                               int16_t y,
+                                               uint16_t width,
+                                               uint16_t height,
+                                               uint32_t planeMask)
+{
+    return getImage(c, format, drawable, x, y, width, height, planeMask, 0);
+}
+xcb_get_image_reply_t *xcb_get_image_reply(xcb_connection_t *c,
+                                           xcb_get_image_cookie_t cookie,
+                                           xcb_generic_error_t **error)
+{
+    return xcbCompatTakeReply(c, cookie.sequence, error);
+}
+int xcb_get_image_sizeof(const void *buffer)
+{
+    const xcb_get_image_reply_t *reply = buffer;
+    uint64_t bytes = reply ? (uint64_t) reply->length * 4u : 0;
+    return reply && bytes <= INT_MAX - sizeof(*reply)
+               ? (int) sizeof(*reply) + (int) bytes
+               : 0;
+}
+uint8_t *xcb_get_image_data(const xcb_get_image_reply_t *reply)
+{
+    return reply ? (uint8_t *) (reply + 1) : NULL;
+}
+int xcb_get_image_data_length(const xcb_get_image_reply_t *reply)
+{
+    uint64_t bytes = reply ? (uint64_t) reply->length * 4u : 0;
+    return bytes <= INT_MAX ? (int) bytes : 0;
+}
+xcb_generic_iterator_t xcb_get_image_data_end(
+    const xcb_get_image_reply_t *reply)
+{
+    xcb_generic_iterator_t iterator = {0};
+    uint64_t bytes = reply ? (uint64_t) reply->length * 4u : 0;
+    if (reply && bytes <= INT_MAX - sizeof(*reply)) {
+        iterator.data = xcb_get_image_data(reply) + (size_t) bytes;
+        iterator.index = sizeof(*reply) + (int) bytes;
+    }
+    return iterator;
 }
